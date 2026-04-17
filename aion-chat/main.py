@@ -165,6 +165,8 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_text(json.dumps({"type": "pong"}))
                 elif msg.get("type") == "tts_state":
                     manager.set_tts_state(ws, msg.get("enabled", False), msg.get("voice", ""))
+                elif msg.get("type") == "register_client":
+                    manager.register_client_id(ws, msg.get("client_id", ""))
             except (json.JSONDecodeError, Exception):
                 pass
     except WebSocketDisconnect:

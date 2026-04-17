@@ -10,7 +10,7 @@
 - **语音**：WebRTC VAD 语音检测 + 硬基流动 ASR (SenseVoiceSmall) + TTS (CosyVoice2)
 - **AI 接口**：硬基流动（OpenAI 兼容）、Google Gemini（REST API）、AiPro 中转站（OpenAI 兼容）
 - **Embedding**：Gemini `gemini-embedding-001`（3072维），余弦相似度检索
-- **Android App**：Java，WebView + 前台推送服务（OkHttp 4.12.0 WebSocket），compileSdk 34 / minSdk 24
+- **Android App**：Java，WebView + 前台推送服务（OkHttp 4.12.0 WebSocket）+ 原生录音桥 + 原生摄像头桥，compileSdk 34 / minSdk 24
 - **音乐**：pyncm（网易云音乐 API，搜索/歌曲详情/音频URL，支持 MUSIC_U Cookie VIP 登录 + 服务端代理推流）
 - **EPUB 解析**：ebooklib（EPUB 读取）+ BeautifulSoup4 / lxml（HTML 解析）
 - **依赖库**：fastapi, uvicorn, httpx, aiosqlite, opencv-python, Pillow, sounddevice, numpy, webrtcvad-wheels, pyncm, pywin32, psutil, ebooklib, beautifulsoup4, lxml
@@ -35,6 +35,7 @@
 │   │   ├── LauncherActivity.java # 启动页：双地址选择（家庭WiFi / Tailscale）+ 记住选择 + 启动推送服务
 │   │   ├── WebViewActivity.java  # WebView 主页：全屏加载 chat.html，麦克风权限，前后台状态通知推送服务
 │   │   ├── AudioBridge.java      # 原生录音桥：AudioRecord 16kHz → base64 → JS 回调
+│   │   ├── CameraBridge.java     # 原生摄像头桥：legacy Camera API → NV21 字节旋转 → JPEG → JS 轮询（绕过 WebView HTTPS 限制）
 │   │   └── AionPushService.java  # 前台推送服务：独立 WebSocket 长连接 + 通知弹窗 + 断线重连 + WakeLock/WifiLock 保活
 │   └── build.gradle              # compileSdk 34, minSdk 24, Gradle 8.5 + AGP 8.2.2, OkHttp 4.12.0
 ├── LittleToy/                    # BLE 玩具逆向分析 & 独立 demo
@@ -44,7 +45,7 @@
     ├── main.py                   # 入口：lifespan、路由注册、静态挂载、WebSocket、PWA 路由
     ├── config.py                 # 全局路径、常量、settings/worldbook/chat_status/cam_config 读写
     ├── database.py               # SQLite 初始化（conversations/messages/memories/schedules/theater 等表 + 性能索引）
-    ├── ws.py                     # WebSocket ConnectionManager 单例，含 tts_clients 状态追踪 + _tts_fallback HTTP 回落机制
+    ├── ws.py                     # WebSocket ConnectionManager 单例，含 tts_clients 状态追踪 + _tts_fallback HTTP 回落机制 + client_id 注册/定向推送
     ├── ai_providers.py           # AI 调用：硅基流动/Gemini/AiPro中转站 流式 + 多模态消息构建
     ├── memory.py                 # 向量记忆：embedding、综合评分召回、手动总结、即时哨兵(RAG路由)、原文追溯
     ├── camera.py                 # 摄像头：CameraMonitor 类、Sentinel 分析（注入设备活动摘要）、Core 唤醒、[CAM_CHECK]
@@ -57,13 +58,13 @@
     │   ├── __init__.py
     │   ├── book.py               # 阅读功能 API：书籍上传/列表/章节/进度/删除/图片/AI批注（单段+全章SSE）
     │   ├── theater.py            # 小剧场 API：独立对话CRUD、消息CRUD、角色CRUD、SSE流式回复（无记忆/系统能力注入）+ TTS
-    ├── chat.py               # 对话/消息 CRUD、send_message(SSE)、regenerate、cam-check-trigger、[MUSIC:xxx]/[ALARM:...]/[REMINDER:...]/[Monitor:...]/[TOY:x]/[查看动态:n] 检测
+    ├── chat.py               # 对话/消息 CRUD、send_message(SSE)、regenerate、cam-check-trigger、[MUSIC:xxx]/[ALARM:...]/[REMINDER:...]/[Monitor:...]/[TOY:x]/[查看动态:n]/[视频电话] 检测
     │   ├── music.py              # 音乐搜索/详情/播放/代理推流 API（pyncm）
     │   ├── schedule.py           # 日程 CRUD API（列表/添加/删除）
     │   ├── cam.py                # 摄像头控制 + 监控日志 API
     │   ├── location.py           # 定位 API：心跳上报、状态查询、POI搜索、配置管理、设置家位置
     │   ├── files.py              # 上传、聊天记录文件导出/管理
-    │   ├── settings.py           # 设置、世界书、模型列表、TTS 代理
+    │   ├── settings.py           # 设置、世界书、模型列表、TTS 代理、视频通话开关
     │   ├── memories.py           # 记忆库 CRUD + 手动总结触发 + 原文查看 + 锚点管理 API
     │   ├── heart_whispers.py     # 心语 API（列表查询 + 删除）
     │   ├── activity.py           # 活动日志 API（上报/查询/清理/状态诊断/10分钟摘要/AI联动开关配置）
@@ -88,6 +89,7 @@
     │   ├── activity-logs.html    # 活动日志页 → /activity-logs（双设备活动查看/筛选/清理/10分钟摘要弹窗/AI联动开关）
     │   ├── reading.html          # 阅读页 → /reading（书架+阅读器+AI批注+选文聊天+音乐播放）
     │   ├── theater.html          # 小剧场页 → /theater（独立聊天+多角色管理+TTS，茶色暗色主题）
+    │   ├── video-call.js         # 视频通话模块：摄像头预览 + 截图 + 语音复用 + 来电/去电 UI
     │   ├── manifest.json         # PWA Web App Manifest（从 /manifest.json 提供）
     │   └── sw.js                 # PWA Service Worker（从 /sw.js 提供）
     └── data/                     # ★ 备份只需复制此文件夹
@@ -276,6 +278,54 @@
   → TTS 分片通过 WebSocket tts_chunk 推送 → 前端按序播放
   → 全部合成完毕 → 服务端广播 tts_done → 前端 notifyVoiceAiSpeaking(false) → 恢复录音
   [CAM_CHECK] 触发时通知后端保持 AI 说话状态
+```
+
+### 视频通话（[视频电话]）
+204. **视频通话模式** — 在语音唤醒基础上增加摄像头画面，实现「看到你 + 听到你 + 跟你说话」的完整通话体验。功能本质是语音通话 + 摄像头截图，不涉及 WebRTC 实时音视频流
+205. **用户主动发起** — 聊天页面 📹 按钮发起视频通话，3 秒等待期间播放铃声动画，用户可取消
+206. **AI 主动发起** — AI 回复包含 `[视频电话]` 指令时，后端延迟 10 秒后通过 WebSocket 定向推送给发送者客户端，前端弹出来电 UI（铃声 + 接听/挂断按钮）
+207. **来电指示器** — AI 回复触发视频通话时，消息底部显示「📹 AI 正在发起视频通话...」动画指示器，10 秒后自动消失并触发来电 UI
+208. **摄像头预览** — 全屏通话界面显示用户摄像头画面（主画面）和 AI 头像（画中画），支持点击切换大小画面位置
+209. **摄像头截图** — 每条用户语音消息发送时自动截取当前摄像头画面，以 base64 JPEG 附加到消息中，AI 可以看到用户
+210. **前后摄像头切换** — 通话界面 🔄 按钮支持前后摄像头切换
+211. **语音复用** — 通话中的语音录音/ASR/TTS 完全复用现有语音唤醒系统，使用相同的 1.5 秒静音截断 + VAD 检测
+212. **Android 原生摄像头桥** — WebView 非安全上下文（HTTP 局域网）无法调用 `getUserMedia({video})`，通过 `CameraBridge.java` 使用 legacy Camera API 采集预览帧，NV21 纯字节数组旋转（不经过 Bitmap），后台线程 JPEG 编码，`setPreviewCallbackWithBuffer` 避免 GC 冻结，JS 通过 `requestAnimationFrame` 轮询 `getFrame()` 获取已旋转的 base64 JPEG
+213. **开关控制** — 聊天配置面板中「视频通话」开关控制 AI 是否具有发起视频通话的能力（`[视频电话]` 指令是否注入 prompt），用户主动发起不受开关影响
+214. **前端指令过滤** — 流式输出时前端实时 strip `[视频电话]`，用户看不到原始指令
+215. **消息保存** — 通话中的语音消息正常保存到聊天记录，截图作为图片附件一并存储
+216. **Chrome 兼容** — PC/手机 Chrome 浏览器使用标准 `getUserMedia` API 获取摄像头，无需原生桥；Android WebView 自动 fallback 到 `CameraBridge`
+
+### 视频通话工作流程
+```
+【用户主动发起】
+  点击 📹 按钮 → 3 秒等待（播放铃声动画）→ 进入通话界面
+  → 启动摄像头（getUserMedia 或 AionCamera 原生桥）
+  → 启动语音录音（复用语音唤醒 AudioBridge）
+  → 循环：
+    ├ VAD 检测 + 1.5 秒静音截断 → ASR 识别
+    ├ 截取摄像头画面 → base64 JPEG 附加到消息
+    ├ 发送消息到聊天（含截图）→ AI 回复 + TTS
+    └ TTS 播完 → 继续录音
+  → 挂断 → 停止摄像头 + 录音
+
+【AI 主动发起】
+  AI 回复包含 [视频电话] → 后端检测 → 从显示文本 strip
+  → 消息底部显示「📹 正在发起视频通话...」指示器
+  → 10 秒延迟 → WebSocket 定向推送 video_call_ring 给发送者
+  → 前端弹出来电 UI（铃声 + 接听/挂断）
+  → 用户接听 → 进入通话界面（同上）
+  → 用户挂断/超时 → 取消
+
+【Android 原生摄像头桥（CameraBridge.java）】
+  JS 调用 AionCamera.start("user"|"environment")
+  → Camera.open() → 设置 640×480 NV21 预览
+  → setPreviewCallbackWithBuffer（3 个预分配 buffer，零 GC）
+  → 摄像头回调 → 复制数据到 inputBuf → 归还 camera buffer
+  → 后台 ExecutorService 线程：
+    ├ NV21 纯字节数组旋转（rotateNV21_CW90/270/180，~1ms）
+    ├ YuvImage.compressToJpeg（已旋转的竖屏 JPEG）
+    └ Base64 编码 → 更新 lastFrameB64
+  → JS requestAnimationFrame 轮询 getFrame() → 更新 <img>.src
 ```
 
 ### 音乐点歌（[MUSIC:xxx]）

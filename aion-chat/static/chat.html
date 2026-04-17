@@ -894,6 +894,17 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
         </div>
         <div class="cam-status" id="voiceStatus">未开启</div>
       </div>
+      <div class="cam-section">
+        <div class="cam-section-title">📹 视频通话</div>
+        <div class="cam-toggle-row">
+          <span class="cam-toggle-label">允许 AI 发起视频通话</span>
+          <label class="toggle-switch">
+            <input type="checkbox" id="videoCallToggle" onchange="toggleVideoCallEnabled()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="cam-status" id="videoCallStatus" style="font-size:11px;color:var(--text-secondary)">关闭后 AI 不会主动发起视频通话，但你仍可手动发起</div>
+      </div>
     </div>
     <div class="context-bar" style="display:none">
       <span class="context-label">上下文:</span>
@@ -910,6 +921,7 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
       <div class="preview-area" id="previewArea"></div>
       <div class="input-row">
         <button class="upload-btn" onclick="$('fileInput').click()" title="发送图片/视频">📎</button>
+        <button class="upload-btn" onclick="if(typeof videoCall!=='undefined')videoCall.userInitiate()" title="视频通话" style="font-size:16px">📹</button>
         <input type="file" id="fileInput" accept="image/*,video/*" multiple style="display:none" onchange="handleFileSelect(this)">
         <textarea id="input" rows="1" placeholder="输入消息..." onkeydown="handleKey(event)" oninput="autoResize(this)"></textarea>
         <button class="send-btn" id="sendBtn" onclick="send()" disabled>➤</button>
@@ -928,6 +940,15 @@ let streamingAiId = null;
 let camCheckMsgId = null;
 let poiSearchMsgId = null;
 let poiSearchCategories = null;
+
+// 客户端唯一 ID（持久化）— 不用 crypto.randomUUID() 因为 WebView 非安全上下文不支持
+const _clientId = localStorage.getItem('aion_client_id') || (() => {
+  const a = new Uint8Array(16); crypto.getRandomValues(a);
+  a[6] = (a[6] & 0x0f) | 0x40; a[8] = (a[8] & 0x3f) | 0x80;
+  const h = [...a].map(b => b.toString(16).padStart(2, '0')).join('');
+  const id = `${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;
+  localStorage.setItem('aion_client_id', id); return id;
+})();
 let ws = null;
 let pendingAttachments = [];  // [{url, type, name}]
 let worldBook = { ai_persona: "", user_persona: "", ai_name: "AI", user_name: "你" };
@@ -1052,8 +1073,13 @@ function voiceHangup() {
   }
 }
 
-// 通知语音模块 AI 说话状态（自动分发到 local 或 remote）
+// 通知语音模块 AI 说话状态（自动分发到 local 或 remote 或视频通话）
 function notifyVoiceAiSpeaking(speaking) {
+  // 视频通话模式优先
+  if (typeof videoCall !== 'undefined' && videoCall.active) {
+    videoCall.setAiSpeaking(speaking);
+    return;
+  }
   if (isRemoteVoice() && remoteVoice.enabled) {
     remoteVoice.setAiSpeaking(speaking);
   } else {
@@ -1282,6 +1308,8 @@ const remoteVoice = {
   // Android 原生桥接推送的音频帧（由 Java evaluateJavascript 调用）
   _onNativeChunk(b64) {
     if (!this.enabled || this._processing) return;
+    // 视频通话进行中时，音频由 videoCall 模块处理，这里跳过
+    if (typeof videoCall !== 'undefined' && videoCall.active) return;
     // 解码 base64 → Int16 → Float32
     const binary = atob(b64);
     const len = binary.length / 2;
@@ -1298,6 +1326,8 @@ const remoteVoice = {
   // 统一音频处理入口（getUserMedia 和原生桥接共用）
   _onAudioFrame(input) {
     if (!this.enabled || this._processing) return;
+    // 视频通话进行中时跳过
+    if (typeof videoCall !== 'undefined' && videoCall.active) return;
     const energy = input.reduce((s, v) => s + Math.abs(v), 0) / input.length;
 
     // 校准阶段：前 20 帧（约 0.85 秒）采集噪音基线
@@ -1534,6 +1564,25 @@ const remoteVoice = {
   $('voiceMicSource').value = voiceMicSource;
 })();
 
+// ── 视频通话开关 ──
+async function toggleVideoCallEnabled() {
+  const enabled = $('videoCallToggle').checked;
+  try {
+    await fetch('/api/settings/video-call', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ enabled })
+    });
+  } catch(e) { console.warn('保存视频通话设置失败', e); }
+}
+(async function initVideoCallToggle() {
+  try {
+    const r = await fetch('/api/settings/video-call');
+    const d = await r.json();
+    $('videoCallToggle').checked = !!d.video_call_enabled;
+  } catch(e) {}
+})();
+
 // ── TTS 语音合成（服务端流式 TTS via WebSocket） ──
 let ttsEnabled = localStorage.getItem('aion_tts_enabled') === 'true';
 let ttsVoiceId = localStorage.getItem('aion_tts_voice') || '';
@@ -1592,7 +1641,7 @@ async function refreshTTSVoices() {
 }
 
 function enqueueTTSChunk(msgId, seq, url) {
-  if (!ttsEnabled) return;
+  if (!ttsEnabled && !(typeof videoCall !== 'undefined' && videoCall.active)) return;
   // 忽略小剧场的 TTS（tm_ 前缀），避免重复播放
   if (msgId.startsWith('tm_')) return;
   if (!ttsChunkQueues[msgId]) {
@@ -1601,14 +1650,14 @@ function enqueueTTSChunk(msgId, seq, url) {
   }
   ttsChunkQueues[msgId].chunks[seq] = url;
   // 通话中时通知语音模块 AI 开始说话
-  if (voiceInCall && !ttsPlaying) {
+  if ((voiceInCall || (typeof videoCall !== 'undefined' && videoCall.active)) && !ttsPlaying) {
     notifyVoiceAiSpeaking(true);
   }
   if (!ttsPlaying) playNextTTSChunk();
 }
 
 async function playNextTTSChunk() {
-  if (!ttsEnabled) { ttsPlaying = false; return; }
+  if (!ttsEnabled && !(typeof videoCall !== 'undefined' && videoCall.active)) { ttsPlaying = false; return; }
 
   // 找到当前应该播放的 msgId
   while (ttsPlayOrder.length > 0) {
@@ -1662,7 +1711,7 @@ async function playNextTTSChunk() {
 
   // 所有消息播完
   ttsPlaying = false;
-  if (voiceInCall) {
+  if (voiceInCall || (typeof videoCall !== 'undefined' && videoCall.active)) {
     notifyVoiceAiSpeaking(false);
   }
 }
@@ -1793,7 +1842,7 @@ async function api(method, url, body) {
 function connectWS() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(`${proto}//${location.host}/ws`);
-  ws.onopen = () => { _sendTTSState(); };
+  ws.onopen = () => { _sendTTSState(); ws.send(JSON.stringify({type:'register_client',client_id:_clientId})); };
   ws.onmessage = e => handleSync(JSON.parse(e.data));
   ws.onclose = () => setTimeout(connectWS, 2000);
 }
@@ -1840,7 +1889,7 @@ function handleSync(msg) {
         renderMessages();
         // TTS 现在由服务端流式推送 tts_chunk，不再需要前端主动合成
         // 语音通话中但 TTS 未启用时，通知语音模块 AI 说完了
-        if (data.role === 'assistant' && voiceInCall && !ttsEnabled) {
+        if (data.role === 'assistant' && (voiceInCall || (typeof videoCall !== 'undefined' && videoCall.active)) && !ttsEnabled) {
           notifyVoiceAiSpeaking(false);
         }
       }
@@ -1932,6 +1981,9 @@ function handleSync(msg) {
   } else if (type === "tts_done") {
     // 服务端通知该消息的所有 TTS 分段已推送完毕
     finishTTSForMsg(data.msg_id);
+  } else if (type === "video_call_ring") {
+    // AI 发起视频通话 — 定向推送到本客户端
+    if (typeof videoCall !== 'undefined') videoCall.aiInitiate(data);
   }
 }
 
@@ -2522,7 +2574,7 @@ async function send() {
     const res = await fetch(`/api/conversations/${currentConvId}/send`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ content: text, context_limit: contextLimit, attachments, whisper_mode: whisperMode, temperature, tts_enabled: ttsEnabled, tts_voice: ttsVoiceId })
+      body: JSON.stringify({ content: text, context_limit: contextLimit, attachments, whisper_mode: whisperMode, temperature, tts_enabled: ttsEnabled, tts_voice: ttsVoiceId, client_id: _clientId })
     });
 
     const reader = res.body.getReader();
@@ -2550,7 +2602,7 @@ async function send() {
           } else if (data.type === "chunk") {
             _stopTypingAnim();
             aiContent += data.content;
-            const display = aiContent.replace(/\[CAM_CHECK\]/g, '').replace(/\[POI_SEARCH:[^\]]*\]/g, '').replace(/\[MUSIC:[^\]]*\]/g, '').replace(/\[ALARM:[^\]]*\]/g, '').replace(/\[REMINDER:[^\]]*\]/g, '').replace(/\[Monitor:[^\]]*\]/g, '').replace(/\[SCHEDULE_DEL:[^\]]*\]/g, '').replace(/\[SCHEDULE_LIST\]/g, '').replace(/\[TOY:[^\]]*\]/g, '').replace(/\[HEART:[^\]]*\]/g, '').replace(/\[MEMORY:[^\]]*\]/g, '').replace(/\[查看动态:\d+\]/g, '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
+            const display = aiContent.replace(/\[CAM_CHECK\]/g, '').replace(/\[POI_SEARCH:[^\]]*\]/g, '').replace(/\[MUSIC:[^\]]*\]/g, '').replace(/\[ALARM:[^\]]*\]/g, '').replace(/\[REMINDER:[^\]]*\]/g, '').replace(/\[Monitor:[^\]]*\]/g, '').replace(/\[SCHEDULE_DEL:[^\]]*\]/g, '').replace(/\[SCHEDULE_LIST\]/g, '').replace(/\[TOY:[^\]]*\]/g, '').replace(/\[HEART:[^\]]*\]/g, '').replace(/\[MEMORY:[^\]]*\]/g, '').replace(/\[查看动态:\d+\]/g, '').replace(/\[视频电话\]/g, '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
             const mi = currentMessages.findIndex(m => m.id === aiMsgId);
             if (mi >= 0) currentMessages[mi].content = display;
             const container = document.getElementById(`m_${aiMsgId}`);
@@ -2596,6 +2648,8 @@ async function send() {
             showHeartWhisperHint(data.msg_id, data.content);
           } else if (data.type === "memory_record") {
             showMemoryRecordHint(data.msg_id, data.content);
+          } else if (data.type === "video_call_incoming") {
+            if (typeof videoCall !== 'undefined') videoCall.handleIncomingIndicator(data);
           }
         } catch {}
       }
@@ -2603,7 +2657,7 @@ async function send() {
     // TTS 由服务端流式推送，标记该消息 TTS 分段完成
     if (aiMsgId) finishTTSForMsg(aiMsgId);
     // TTS 关闭时直接通知语音模块 AI 说完了
-    if (voiceInCall && !ttsEnabled) {
+    if ((voiceInCall || (typeof videoCall !== 'undefined' && videoCall.active)) && !ttsEnabled) {
       notifyVoiceAiSpeaking(false);
     }
 
@@ -2712,7 +2766,7 @@ async function regenerateMsg(aiMsgId) {
           } else if (d.type === "chunk") {
             _stopTypingAnim();
             aiContent += d.content;
-            const display = aiContent.replace(/\[CAM_CHECK\]/g, '').replace(/\[POI_SEARCH:[^\]]*\]/g, '').replace(/\[MUSIC:[^\]]*\]/g, '').replace(/\[ALARM:[^\]]*\]/g, '').replace(/\[REMINDER:[^\]]*\]/g, '').replace(/\[Monitor:[^\]]*\]/g, '').replace(/\[SCHEDULE_DEL:[^\]]*\]/g, '').replace(/\[SCHEDULE_LIST\]/g, '').replace(/\[TOY:[^\]]*\]/g, '').replace(/\[HEART:[^\]]*\]/g, '').replace(/\[MEMORY:[^\]]*\]/g, '').replace(/\[查看动态:\d+\]/g, '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
+            const display = aiContent.replace(/\[CAM_CHECK\]/g, '').replace(/\[POI_SEARCH:[^\]]*\]/g, '').replace(/\[MUSIC:[^\]]*\]/g, '').replace(/\[ALARM:[^\]]*\]/g, '').replace(/\[REMINDER:[^\]]*\]/g, '').replace(/\[Monitor:[^\]]*\]/g, '').replace(/\[SCHEDULE_DEL:[^\]]*\]/g, '').replace(/\[SCHEDULE_LIST\]/g, '').replace(/\[TOY:[^\]]*\]/g, '').replace(/\[HEART:[^\]]*\]/g, '').replace(/\[MEMORY:[^\]]*\]/g, '').replace(/\[查看动态:\d+\]/g, '').replace(/\[视频电话\]/g, '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
             const mi = currentMessages.findIndex(m => m.id === newId);
             if (mi >= 0) currentMessages[mi].content = display;
             const b = document.querySelector(`#m_${newId} .msg-bubble`);
@@ -2740,13 +2794,15 @@ async function regenerateMsg(aiMsgId) {
             showHeartWhisperHint(d.msg_id, d.content);
           } else if (d.type === "memory_record") {
             showMemoryRecordHint(d.msg_id, d.content);
+          } else if (d.type === "video_call_incoming") {
+            if (typeof videoCall !== 'undefined') videoCall.handleIncomingIndicator(d);
           }
         } catch {}
       }
     }
     // TTS 由服务端流式推送，标记该消息 TTS 分段完成
     if (newId) finishTTSForMsg(newId);
-    if (voiceInCall && !ttsEnabled) {
+    if ((voiceInCall || (typeof videoCall !== 'undefined' && videoCall.active)) && !ttsEnabled) {
       notifyVoiceAiSpeaking(false);
     }
   } catch (err) {
@@ -3439,5 +3495,6 @@ window.addEventListener('popstate', function(e) {
 });
 </script>
 <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
+<script src="/static/video-call.js"></script>
 </body>
 </html>

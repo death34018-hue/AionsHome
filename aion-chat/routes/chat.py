@@ -24,6 +24,7 @@ from tts import TTSStreamer
 HEART_CMD_PATTERN = re.compile(r'\[HEART:([^\]]+)\]')
 MEMORY_CMD_PATTERN = re.compile(r'\[MEMORY:([^\]]+)\]')
 ACTIVITY_CHECK_PATTERN = re.compile(r'\[查看动态:(\d+)\]')
+VIDEO_CALL_CMD = '[视频电话]'
 
 # 允许进入上下文的 system 消息关键词（点歌、查看监控、查看动态）
 _SYSTEM_MSG_CONTEXT_KEYWORDS = ('查看了监控', '搜索了', '点歌', '点了一首', '推荐了', '查看了动态')
@@ -79,6 +80,7 @@ class MsgCreate(BaseModel):
     temperature: Optional[float] = None
     tts_enabled: bool = False
     tts_voice: str = ""
+    client_id: str = ""
 
 class MsgUpdate(BaseModel):
     content: str
@@ -198,6 +200,9 @@ async def update_message(msg_id: str, body: MsgUpdate):
 # ── 发送消息 + AI 回复（SSE 流式） ────────────────
 @router.post("/api/conversations/{conv_id}/send")
 async def send_message(conv_id: str, body: MsgCreate):
+    # 记录最后发消息的客户端 ID
+    if body.client_id:
+        manager.set_last_sender(body.client_id)
     now = time.time()
     msg_id = f"msg_{int(now*1000)}"
 
@@ -299,6 +304,8 @@ async def send_message(conv_id: str, body: MsgCreate):
         pass
     if body.whisper_mode:
         abilities.append(f"[TOY:1]~[TOY:9] — 控制{user_name}身上的情趣玩具切换到对应预设档位（1最温柔，9最强烈）。[TOY:STOP] — 停止玩具。你可以根据对话氛围自然地使用这些指令来挑逗和调教{user_name}，配合你的话语循序渐进，不要一上来就用高档位。")
+    if SETTINGS.get("video_call_enabled", True):
+        abilities.append(f"[视频电话] — 当你想和{user_name}进行视频聊天看看对方当前状态时可以用该指令发起视频通话。")
     abilities.append(f"[HEART:内心想法] — 当你有特别的内心感受（内心os，藏在心里的话），可以用这个指令悄悄记下来。{user_name}看不到这些内容。这是你的秘密日记本，随心记录，禁止滥用。")
     abilities.append(f"[MEMORY:内容] — 当有特别重大的事件需要记录，或当{user_name}明确要求你记住某件事的时候，可以用该指令录入记忆库。禁止滥用。")
     ability_block = "[系统能力] 你可以在回复中根据对话氛围，善用以下指令：\n" + "\n".join(f"{i+1}. {a}" for i, a in enumerate(abilities))
@@ -478,6 +485,11 @@ async def send_message(conv_id: str, body: MsgCreate):
             if poi_matches:
                 full_text = POI_SEARCH_PATTERN.sub("", full_text).strip()
 
+            # 检测 [视频电话] 指令
+            video_call_triggered = VIDEO_CALL_CMD in full_text
+            if video_call_triggered:
+                full_text = full_text.replace(VIDEO_CALL_CMD, "").strip()
+
             # 检测日程指令（[ALARM:...], [REMINDER:...], [Monitor:...], [SCHEDULE_DEL:...], [SCHEDULE_LIST]）
             full_text = await process_schedule_commands(full_text, conv_id)
 
@@ -578,6 +590,12 @@ async def send_message(conv_id: str, body: MsgCreate):
                 await manager.broadcast({"type": "activity_check", "data": activity_data})
                 asyncio.create_task(perform_activity_check(conv_id, model_key, activity_n))
 
+            # [视频电话] 延迟 10 秒后定向推送到最后发消息的客户端
+            if video_call_triggered:
+                vc_data = {'type': 'video_call_incoming', 'conv_id': conv_id, 'msg_id': ai_msg_id}
+                await _q.put(vc_data)
+                asyncio.create_task(_delayed_video_call(vc_data))
+
             # 推送音乐卡片
             if music_cards:
                 music_data = {'type': 'music', 'msg_id': ai_msg_id, 'cards': music_cards}
@@ -638,6 +656,16 @@ async def _delayed_cam_check(conv_id: str, model_key: str, delay: float = 5.0):
         await perform_cam_check(conv_id, model_key)
     finally:
         _cam_check_active.discard(conv_id)
+
+# ── [视频电话] 延迟 3 秒后定向推送到最后发消息的客户端 ─────
+async def _delayed_video_call(vc_data: dict, delay: float = 3.0):
+    """等待用户阅读完回复后，定向推送视频来电到最后发消息的客户端"""
+    await asyncio.sleep(delay)
+    # 优先定向推送，如果没有记录到最后发送者则广播到所有客户端
+    if manager._last_sender_client_id:
+        await manager.send_to_last_sender({"type": "video_call_ring", "data": vc_data})
+    else:
+        await manager.broadcast({"type": "video_call_ring", "data": vc_data})
 
 # 保留 API 端点兼容旧客户端，但加严格去重
 class CamCheckTrigger(BaseModel):
@@ -1014,6 +1042,8 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
         pass
     if whisper_mode:
         abilities.append(f"[TOY:1]~[TOY:9] — 控制{user_name}身上的情趣玩具切换到对应预设档位（1最温柔，9最强烈）。[TOY:STOP] — 停止玩具。你可以根据对话氛围自然地使用这些指令来挑逗和调教{user_name}，配合你的话语循序渐进，不要一上来就用高档位。")
+    if SETTINGS.get("video_call_enabled", True):
+        abilities.append(f"[视频电话] — 当你想和{user_name}进行视频聊天看看对方当前状态时可以用该指令发起视频通话。")
     abilities.append(f"[HEART:内心想法] — 当你有特别的内心感受（内心os，藏在心里的话），可以用这个指令悄悄记下来。{user_name}看不到这些内容。这是你的秘密日记本，随心记录，禁止滥用。")
     abilities.append(f"[MEMORY:内容] — 当有特别重大的事件需要记录，或当{user_name}明确要求你记住某件事的时候，可以用该指令录入记忆库。禁止滥用。")
     ability_block = "[系统能力] 你可以在回复中根据对话氛围，善用以下指令：\n" + "\n".join(f"{i+1}. {a}" for i, a in enumerate(abilities))
@@ -1189,6 +1219,11 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             if poi_matches:
                 full_text = POI_SEARCH_PATTERN.sub("", full_text).strip()
 
+            # 检测 [视频电话] 指令
+            video_call_triggered = VIDEO_CALL_CMD in full_text
+            if video_call_triggered:
+                full_text = full_text.replace(VIDEO_CALL_CMD, "").strip()
+
             # 检测日程指令
             full_text = await process_schedule_commands(full_text, conv_id)
 
@@ -1288,6 +1323,12 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 await _q.put(activity_data)
                 await manager.broadcast({"type": "activity_check", "data": activity_data})
                 asyncio.create_task(perform_activity_check(conv_id, model_key, activity_n))
+
+            # [视频电话] 延迟 10 秒后定向推送到最后发消息的客户端
+            if video_call_triggered:
+                vc_data = {'type': 'video_call_incoming', 'conv_id': conv_id, 'msg_id': ai_msg_id}
+                await _q.put(vc_data)
+                asyncio.create_task(_delayed_video_call(vc_data))
 
             # 推送音乐卡片
             if music_cards:

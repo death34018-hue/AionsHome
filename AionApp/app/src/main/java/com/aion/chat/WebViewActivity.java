@@ -41,6 +41,7 @@ import androidx.core.content.ContextCompat;
 public class WebViewActivity extends AppCompatActivity {
 
     private static final int REQ_AUDIO = 1001;
+    private static final int REQ_CAMERA = 1002;
     private WebView webView;
     private String targetUrl;
     private boolean pageLoaded = false;
@@ -93,6 +94,9 @@ public class WebViewActivity extends AppCompatActivity {
 
         // 原生麦克风桥接（绕过 getUserMedia 的 HTTPS 限制）
         webView.addJavascriptInterface(new AudioBridge(webView), "AionAudio");
+
+        // 原生摄像头桥接（绕过 getUserMedia 的 HTTPS 限制）
+        webView.addJavascriptInterface(new CameraBridge(webView), "AionCamera");
 
         // 原生 BLE 桥接（绕过 WebView 不支持 Web Bluetooth API 的限制）
         webView.addJavascriptInterface(new BleBridge(webView, this), "AionBle");
@@ -175,27 +179,36 @@ public class WebViewActivity extends AppCompatActivity {
         });
 
         webView.setWebChromeClient(new WebChromeClient() {
-            // ── 麦克风权限自动授予（给网页 getUserMedia 用） ──
+            // ── 麦克风+摄像头权限自动授予（给网页 getUserMedia 用） ──
             @Override
             public void onPermissionRequest(final PermissionRequest request) {
                 String[] resources = request.getResources();
+                boolean needAudio = false, needVideo = false;
                 for (String res : resources) {
-                    if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(res)) {
-                        if (ContextCompat.checkSelfPermission(
-                                WebViewActivity.this, Manifest.permission.RECORD_AUDIO)
-                                == PackageManager.PERMISSION_GRANTED) {
-                            request.grant(resources);
-                            return;
-                        } else {
-                            // 存下来，等 Android 权限回调后再授予
-                            pendingPermRequest = request;
-                            ActivityCompat.requestPermissions(WebViewActivity.this,
-                                    new String[]{Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
-                            return;
-                        }
-                    }
+                    if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(res)) needAudio = true;
+                    if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(res)) needVideo = true;
                 }
-                request.deny();
+                if (!needAudio && !needVideo) { request.deny(); return; }
+
+                // 检查所需的 Android 权限
+                boolean hasAudio = !needAudio || ContextCompat.checkSelfPermission(
+                        WebViewActivity.this, Manifest.permission.RECORD_AUDIO)
+                        == PackageManager.PERMISSION_GRANTED;
+                boolean hasVideo = !needVideo || ContextCompat.checkSelfPermission(
+                        WebViewActivity.this, Manifest.permission.CAMERA)
+                        == PackageManager.PERMISSION_GRANTED;
+
+                if (hasAudio && hasVideo) {
+                    request.grant(resources);
+                } else {
+                    // 存下来，等权限回调后再授予
+                    pendingPermRequest = request;
+                    java.util.List<String> missing = new java.util.ArrayList<>();
+                    if (!hasAudio) missing.add(Manifest.permission.RECORD_AUDIO);
+                    if (!hasVideo) missing.add(Manifest.permission.CAMERA);
+                    ActivityCompat.requestPermissions(WebViewActivity.this,
+                            missing.toArray(new String[0]), REQ_AUDIO);
+                }
             }
 
             // ── 文件上传（图片/视频选择） ──
@@ -273,10 +286,11 @@ public class WebViewActivity extends AppCompatActivity {
     // ── 串行权限请求链：页面加载后依次请求，每次只弹一个 ──
     private static final int PERM_STEP_NOTIFICATION = 0;
     private static final int PERM_STEP_AUDIO = 1;
-    private static final int PERM_STEP_LOCATION = 2;
-    private static final int PERM_STEP_BLUETOOTH = 3;
-    private static final int PERM_STEP_BATTERY = 4;
-    private static final int PERM_STEP_DONE = 5;
+    private static final int PERM_STEP_CAMERA = 2;
+    private static final int PERM_STEP_LOCATION = 3;
+    private static final int PERM_STEP_BLUETOOTH = 4;
+    private static final int PERM_STEP_BATTERY = 5;
+    private static final int PERM_STEP_DONE = 6;
     private static final int REQ_BLUETOOTH = 4001;
 
     /**
@@ -303,6 +317,16 @@ public class WebViewActivity extends AppCompatActivity {
                         != PackageManager.PERMISSION_GRANTED) {
                     ActivityCompat.requestPermissions(this,
                             new String[]{Manifest.permission.RECORD_AUDIO}, REQ_AUDIO);
+                    return;
+                }
+                requestPermissionsSequentially(PERM_STEP_CAMERA);
+                break;
+
+            case PERM_STEP_CAMERA:
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    ActivityCompat.requestPermissions(this,
+                            new String[]{Manifest.permission.CAMERA}, REQ_CAMERA);
                     return;
                 }
                 requestPermissionsSequentially(PERM_STEP_LOCATION);
@@ -397,6 +421,9 @@ public class WebViewActivity extends AppCompatActivity {
                 requestPermissionsSequentially(PERM_STEP_AUDIO);
                 break;
             case REQ_AUDIO:
+                requestPermissionsSequentially(PERM_STEP_CAMERA);
+                break;
+            case REQ_CAMERA:
                 requestPermissionsSequentially(PERM_STEP_LOCATION);
                 break;
             case REQ_LOCATION:

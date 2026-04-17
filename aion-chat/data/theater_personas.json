@@ -1,0 +1,20 @@
+[
+  {
+    "id": "default_01",
+    "name": "你的角色",
+    "persona": "你是一个新角色",
+    "model": "",
+    "temperature": 1.2,
+    "context_limit": 20,
+    "created_at": 1713168000
+  },
+  {
+    "id": "cb84dc96",
+    "name": "角色二",
+    "persona": "自己改一改吧",
+    "model": "",
+    "temperature": 1.2,
+    "context_limit": 20,
+    "created_at": 1776253288.9646802
+  }
+]

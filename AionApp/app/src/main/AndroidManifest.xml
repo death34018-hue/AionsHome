@@ -7,6 +7,8 @@
 
     <!-- 麦克风权限（语音唤醒/通话用） -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 摄像头权限（视频通话用） -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <!-- WebRTC 需要修改音频设置 -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 

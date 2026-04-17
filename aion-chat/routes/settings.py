@@ -80,6 +80,20 @@ async def update_temperature(body: TempUpdate):
     save_settings(SETTINGS)
     return {"ok": True}
 
+# ── 视频通话开关 ──────────────────────────────────
+@router.get("/api/settings/video-call")
+async def get_video_call_setting():
+    return {"video_call_enabled": SETTINGS.get("video_call_enabled", True)}
+
+class VideoCallToggle(BaseModel):
+    enabled: bool
+
+@router.put("/api/settings/video-call")
+async def update_video_call_setting(body: VideoCallToggle):
+    SETTINGS["video_call_enabled"] = body.enabled
+    save_settings(SETTINGS)
+    return {"ok": True, "video_call_enabled": body.enabled}
+
 # ── 世界书 ────────────────────────────────────────
 class WorldBookUpdate(BaseModel):
     ai_persona: str = ""

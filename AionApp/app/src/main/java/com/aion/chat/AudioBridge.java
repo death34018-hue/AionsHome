@@ -64,7 +64,8 @@ public class AudioBridge {
                     webView.post(() -> {
                         if (recording) {
                             webView.evaluateJavascript(
-                                    "typeof remoteVoice!=='undefined'&&remoteVoice._onNativeChunk('" + b64 + "')",
+                                    "typeof remoteVoice!=='undefined'&&remoteVoice._onNativeChunk('" + b64 + "');" +
+                                    "typeof videoCall!=='undefined'&&videoCall._onNativeChunk&&videoCall._onNativeChunk('" + b64 + "')",
                                     null);
                         }
                     });
