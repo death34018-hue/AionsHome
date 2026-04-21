@@ -52,6 +52,8 @@
       <div class="loc-stat"><span class="loc-stat-label">天气</span> <span class="loc-stat-val" id="lpWeather">--</span></div>
       <div class="loc-stat"><span class="loc-stat-label">更新</span> <span class="loc-stat-val" id="lpTime">--</span></div>
     </div>
+    <!-- 立即同步按钮 -->
+    <button id="btnForceSync" class="btn-save" style="width:100%;margin-bottom:12px;font-size:13px;padding:8px 0" onclick="forceSync()">🔄 立即同步位置</button>
     <!-- 配置区 -->
     <div class="loc-cfg-section">
       <h4 onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';this.querySelector('span').textContent=this.nextElementSibling.style.display==='none'?'▶':'▼'">⚙ 配置 <span>▼</span></h4>
@@ -167,6 +169,26 @@ async function saveLocPanel() {
     $("lpCfgMsg").textContent = "✅ 已保存";
     setTimeout(() => $("lpCfgMsg").textContent = "", 2000);
   } catch(e) { $("lpCfgMsg").textContent = "❌ " + e.message; }
+}
+
+async function forceSync() {
+  const btn = $("btnForceSync");
+  btn.disabled = true;
+  btn.textContent = "⏳ 同步中...";
+  try {
+    const r = await api("POST", "/api/location/force-sync");
+    if (r.ok) {
+      btn.textContent = "✅ 已同步";
+      const s = await api("GET", "/api/location/status");
+      updateLocPanelStatus(s);
+      renderLocPois(s.nearby_pois || {});
+    } else {
+      btn.textContent = "❌ " + (r.error || "同步失败");
+    }
+  } catch(e) {
+    btn.textContent = "❌ " + e.message;
+  }
+  setTimeout(() => { btn.disabled = false; btn.textContent = "🔄 立即同步位置"; }, 2000);
 }
 
 async function setHomeLoc() {

@@ -2429,8 +2429,25 @@ function playMusicOnline(songId) {
     bar.type = 'range'; bar.min = 0; bar.max = 1000; bar.value = 0;
     bar.style.cssText = 'flex:1;height:4px;accent-color:#e53935;cursor:pointer;';
 
+    const volWrap = document.createElement('span');
+    volWrap.style.cssText = 'display:flex;align-items:center;gap:2px;flex-shrink:0;';
+    const volIcon = document.createElement('span');
+    volIcon.textContent = '🔉';
+    volIcon.style.cssText = 'font-size:13px;cursor:pointer;user-select:none;';
+    const volBar = document.createElement('input');
+    volBar.id = 'globalMusicVol';
+    volBar.type = 'range'; volBar.min = 0; volBar.max = 100;
+    volBar.value = localStorage.getItem('musicVolume') ?? 50;
+    volBar.style.cssText = 'width:52px;height:4px;accent-color:#ff9800;cursor:pointer;';
+
     const audio = document.createElement('audio');
     audio.id = 'globalMusicAudio';
+    audio.volume = (localStorage.getItem('musicVolume') ?? 50) / 100;
+
+    volBar.oninput = () => { audio.volume = volBar.value / 100; localStorage.setItem('musicVolume', volBar.value); volIcon.textContent = volBar.value == 0 ? '🔇' : volBar.value < 50 ? '🔉' : '🔊'; };
+    volIcon.onclick = () => { if (audio.volume > 0) { volIcon.dataset.prev = volBar.value; volBar.value = 0; audio.volume = 0; volIcon.textContent = '🔇'; } else { volBar.value = volIcon.dataset.prev || 50; audio.volume = volBar.value / 100; volIcon.textContent = volBar.value < 50 ? '🔉' : '🔊'; } localStorage.setItem('musicVolume', volBar.value); };
+    volWrap.appendChild(volIcon);
+    volWrap.appendChild(volBar);
 
     playBtn.onclick = () => { if (audio.paused) { audio.play(); playBtn.textContent = '⏸'; } else { audio.pause(); playBtn.textContent = '▶'; } };
     audio.ontimeupdate = () => { if (audio.duration) bar.value = (audio.currentTime / audio.duration) * 1000; };
@@ -2446,6 +2463,7 @@ function playMusicOnline(songId) {
 
     wrap.appendChild(playBtn);
     wrap.appendChild(bar);
+    wrap.appendChild(volWrap);
     wrap.appendChild(audio);
     wrap.appendChild(closeBtn);
     document.body.appendChild(wrap);

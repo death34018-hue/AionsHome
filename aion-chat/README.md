@@ -42,12 +42,12 @@
 │   ├── toy_control_v4.html       # 独立 BLE 控制页面（可单独使用）
 │   └── 逆向分析笔记.md           # SOSEXY 设备协议逆向笔记
 └── aion-chat/
-    ├── main.py                   # 入口：lifespan、路由注册、静态挂载、WebSocket、PWA 路由
+    ├── main.py                   # 入口：lifespan、路由注册、静态挂载、WebSocket、PWA 路由、自动记忆总结定时任务
     ├── config.py                 # 全局路径、常量、settings/worldbook/chat_status/cam_config 读写
     ├── database.py               # SQLite 初始化（conversations/messages/memories/schedules/theater 等表 + 性能索引）
     ├── ws.py                     # WebSocket ConnectionManager 单例，含 tts_clients 状态追踪 + _tts_fallback HTTP 回落机制 + client_id 注册/定向推送
-    ├── ai_providers.py           # AI 调用：硅基流动/Gemini/AiPro中转站 流式 + 多模态消息构建
-    ├── memory.py                 # 向量记忆：embedding、综合评分召回、手动总结、即时哨兵(RAG路由)、原文追溯
+    ├── ai_providers.py           # AI 调用：硅基流动/Gemini/AiPro中转站 流式 + 非流式 + 多模态消息构建
+    ├── memory.py                 # 向量记忆：embedding、综合评分召回、手动/自动总结、即时哨兵(RAG路由)、原文追溯
     ├── camera.py                 # 摄像头：CameraMonitor 类、Sentinel 分析（注入设备活动摘要）、Core 唤醒、[CAM_CHECK]
     ├── location.py               # 高德地图定位：GPS心跳处理、三级研判、状态机(at_home/outside)、哨兵通知、POI搜索
     ├── voice.py                  # 语音唤醒 + 半双工通话（WebRTC VAD + 硬基流动 ASR），通话中自动携带 TTS 参数
@@ -160,7 +160,8 @@
 ### 哨兵/向量模型（支持独立 Gemini Free Key）
 - Sentinel 哨兵分析 → `gemini-3.1-flash-lite-preview`
 - 向量 Embedding → `gemini-embedding-001`（3072维）
-- 即时哨兵 / 手动总结 → `gemini-3.1-flash-lite-preview`
+- 即时哨兵 → `gemini-3.1-flash-lite-preview`
+- 记忆总结（手动/自动） → 当前聊天对话的核心模型（跟随用户选择）
 
 哨兵和向量模型支持配置独立的 Gemini Free Key，留空则自动复用主 Gemini Key。
 
@@ -190,7 +191,7 @@
 16. **Debug 条** — 每条 AI 消息下方显示：模型名、输入/输出/总 token、召回记忆数，点击展开详情
 
 ### 向量记忆库（RAG 重构）
-17. **手动总结（manual_digest）** — 用户点击「总结新记忆」按钮触发，从锚点之后的消息开始，每 20 条一组串行处理（余数 <5 合并到最后一组），flash-lite 提取结构化记忆（含关键词 + 重要度 0-1 + unresolved 判断），每组成功后更新锚点
+17. **记忆总结（手动 + 自动）** — 手动：用户点击「总结新记忆」按钮触发（无最低条数限制）。自动：每 30 分钟检测，若用户已 30 分钟未对话且未总结消息 ≥ 30 条则自动触发。两者共用同一套逻辑和锚点，不会重复总结。从锚点之后的消息开始，每 30 条一组串行处理（余数 <10 合并到最后一组），使用当前聊天的核心模型（而非 flash-lite）提取结构化记忆（含关键词 + 重要度 0-1 + unresolved 判断），Prompt 注入世界书 AI/用户人设使记忆更具个人视角。每组成功后更新锚点。全部总结完成后，带最近 30 条聊天上下文 + 人设再调用一次核心模型，生成一句感慨/吐槽，作为 assistant 消息插入聊天（前置一条「🧠 AI整理了记忆库」系统胶囊）
 18. **即时哨兵（instant_digest）** — 每次用户发消息时自动调用 flash-lite 分析最近对话，返回结构化 JSON：`{is_search_needed, keywords, require_detail, status, topic}`，决定是否需要搜索记忆、是否需要追溯原文细节，同时提供 topic 用于背景记忆浮现
 19. **向量化存储** — 使用 Gemini `gemini-embedding-001`（3072维）将记忆向量化，存入 SQLite memories 表，每条记忆含 keywords（JSON 关键词数组）、importance（重要度）、source_start_ts/source_end_ts（来源时间范围）、unresolved（是否待办/未完成）
 20. **综合评分召回** — `final_score = vec_sim × 0.6 + kw_score × 0.3 + importance × 0.1`，threshold=0.45，Top 5。关键词匹配支持子串模糊命中
@@ -409,7 +410,7 @@
 
 ### 背景记忆浮现（替代旧版“近期记忆注入”）
 104. **智能背景记忆浮现** — 每次发消息/重新生成时，通过三层策略构建背景记忆（最多 8 条）：① unresolved 记忆优先（最多 2 条，待办/未完成的事项）→ ② 话题相关浮现（用即时哨兵的 topic 做 embedding 匹配，Top 3）→ ③ 近期补充（最近 3 天，补满 8 条）。与 RAG 精确召回自动去重
-105. **Unresolved 标记** — 记忆表新增 `unresolved` 字段，标记悬而未决的计划/约定/承诺。手动总结时 flash-lite 自动判断，UI 中可通过 📌 按钮手动切换。unresolved 记忆在背景记忆中以 📌 前缀注入，确保 AI 记得追问
+105. **Unresolved 标记** — 记忆表新增 `unresolved` 字段，标记悬而未决的计划/约定/承诺。总结时核心模型自动判断，UI 中可通过 📌 按钮手动切换。unresolved 记忆在背景记忆中以 📌 前缀注入，确保 AI 记得追问
 
 ### 高德地图定位系统
 
@@ -943,11 +944,14 @@
     fetch_source_details: 在记忆 source 时间范围内按关键词筛选原始对话
     → 原文细节追加注入 prompt
 
-【手动总结 manual_digest — 用户点击按钮触发】
-  从锚点时间之后取消息 → 每 20 条一组（余数<5合并）→ 串行处理：
-    flash-lite 分析 → 输出 JSON 数组:
-      [{"content": "记忆内容", "type": "类型", "keywords": [...], "importance": 0.8, "unresolved": true/false}]
-    → 逐条 embedding 向量化 → 存入 SQLite → 更新锚点
+【记忆总结 _do_digest — 手动点击按钮 / 自动定时触发】
+  自动触发条件：每 30 分钟检测，用户已 30 分钟未对话 且 未总结消息 ≥ 30 条
+  手动触发：无最低条数限制，共用锚点不会重复总结
+  从锚点时间之后取消息 → 每 30 条一组（余数<10合并）→ 串行处理：
+    核心模型（当前聊天模型）分析，注入世界书 AI/用户人设 → 输出 JSON:
+      {"summary": "...", "keywords": [...], "importance": 0.8, "unresolved": true/false}
+    → embedding 向量化 → 存入 SQLite → 更新锚点
+  全部组处理完毕后 → 核心模型带上下文生成感慨 → 插入系统胶囊 + assistant 消息
 ```
 
 ### 向量记忆库工作流程
@@ -964,10 +968,12 @@
   recall_memories: 向量相似度×0.6 + 关键词×0.3 + 重要度×0.1
   → 过滤掉已在背景记忆中的 id → Top 5 注入 [相关记忆]
 
-【写入】manual_digest 用户手动触发
-  → flash-lite 从消息提取记忆（summary + keywords + importance + unresolved）
+【写入】手动按钮 / 自动定时触发（共用 _do_digest）
+  → 核心模型（当前聊天模型）+ 世界书人设注入，从消息提取记忆
+    （summary + keywords + importance + unresolved）
   → gemini-embedding-001 向量化（3072维）
   → 存入 SQLite memories 表 + WebSocket 广播
+  → 全部完成后生成感慨，插入聊天（系统胶囊 + assistant 消息）
 ```
 
 ## API 一览

@@ -170,6 +170,15 @@ async def call_aipro(messages: list, model: str, meta: dict | None = None, tempe
                     except:
                         pass
 
+# ── 非流式调用（收集流式输出） ────────────────────
+async def simple_ai_call(messages: list, model_key: str, temperature: float | None = None) -> str:
+    """收集 stream_ai 的全部 chunk，返回完整文本"""
+    full_text = ""
+    async for chunk in stream_ai(messages, model_key, temperature=temperature):
+        full_text += chunk
+    return full_text
+
+
 # ── 统一调度 ──────────────────────────────────────
 async def stream_ai(messages: list, model_key: str, meta: dict | None = None, temperature: float | None = None):
     normalized = []

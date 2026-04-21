@@ -321,10 +321,11 @@ def is_location_quiet_hours() -> bool:
 
 
 # ── 心跳处理核心逻辑 ─────────────────────────────
-async def process_heartbeat(lng: float, lat: float, accuracy: float = 0.0, is_gcj02: bool = False, skip_sentinel: bool = False) -> dict:
+async def process_heartbeat(lng: float, lat: float, accuracy: float = 0.0, is_gcj02: bool = False, skip_sentinel: bool = False, force_full: bool = False) -> dict:
     """
     处理一次定位心跳。
     lng/lat: 坐标（默认 WGS84，is_gcj02=True 时为 GCJ-02）
+    force_full: 强制全量刷新（地理编码+天气+POI）
     返回处理结果摘要。
     """
     cfg = load_location_config()
@@ -392,11 +393,25 @@ async def process_heartbeat(lng: float, lat: float, accuracy: float = 0.0, is_gc
 
     significant_move = moved_distance >= movement_threshold
 
-    # ── 3. 三级处理逻辑 ──
-    #   级别1（轻量）: 在家没动 / 外出没动  → 只存坐标，零 API
+    # ── 3. 天气过期检查（30分钟刷新） ──
+    WEATHER_STALE_SECONDS = 30 * 60  # 30 分钟
+    last_weather = old_status.get("weather", {})
+    last_weather_time = last_weather.get("reporttime", "")
+    weather_stale = True
+    if last_weather_time:
+        try:
+            wt = time.mktime(time.strptime(last_weather_time, "%Y-%m-%d %H:%M:%S"))
+            weather_stale = (time.time() - wt) > WEATHER_STALE_SECONDS
+        except Exception:
+            weather_stale = True
+    else:
+        weather_stale = bool(old_status.get("adcode"))
+
+    # ── 4. 三级处理逻辑 ──
+    #   级别1（轻量）: 在家没动 / 外出没动  → 只存坐标，零 API（天气过期时仅刷新天气）
     #   级别2（刷新）: 外出且显著移动        → 地理编码+天气+POI
     #   级别3（全量）: 状态变化(出门/回家)   → 刷新 + 哨兵通知
-    need_full_api = state_changed or significant_move
+    need_full_api = state_changed or significant_move or force_full
 
     now = time.time()
 
@@ -424,14 +439,24 @@ async def process_heartbeat(lng: float, lat: float, accuracy: float = 0.0, is_gc
         api_lat = round(gcj_lat, 6)
         print(f"[Location] 全量/刷新处理: moved={moved_distance:.0f}m, state_changed={state_changed}")
     else:
-        # ── 轻量级：复用上次数据，零 API 调用 ──
+        # ── 轻量级：复用上次数据 ──
         address = old_status.get("address", "")
         adcode = old_status.get("adcode", "")
         weather_data = {"live": old_status.get("weather", {}), "forecast": old_status.get("forecast", [])}
         nearby_pois = old_status.get("nearby_pois", {})
         api_lng = last_api_lng
         api_lat = last_api_lat
-        print(f"[Location] 轻量处理: moved={moved_distance:.0f}m, 复用缓存数据")
+
+        # 天气过期时单独刷新天气（不触发地理编码/POI）
+        if weather_stale and adcode and amap_key:
+            fresh_weather = await amap_weather(adcode, amap_key)
+            if fresh_weather.get("live"):
+                weather_data = fresh_weather
+                print(f"[Location] 轻量处理: 天气已过期，刷新天气数据")
+            else:
+                print(f"[Location] 轻量处理: 天气刷新失败，继续使用缓存")
+        else:
+            print(f"[Location] 轻量处理: moved={moved_distance:.0f}m, 复用缓存数据")
 
     new_status = {
         "state": new_state,

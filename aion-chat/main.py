@@ -20,7 +20,7 @@ logging.getLogger("uvicorn.access").addFilter(_QuietCamFilter())
 from fastapi.responses import FileResponse, HTMLResponse
 
 from config import BASE_DIR, PUBLIC_DIR, UPLOADS_DIR, SCREENSHOTS_DIR, load_cam_config
-from database import init_db
+from database import init_db, get_db
 from ws import manager
 from camera import cam
 from voice import voice
@@ -37,6 +37,36 @@ from routes import book as book_routes
 from routes import theater as theater_routes
 from routes import ghost_forest as ghost_forest_routes
 from activity import pc_tracker
+from memory import auto_digest
+
+
+# ── 自动记忆总结定时任务 ──────────────────────────
+async def _auto_digest_loop():
+    """每 30 分钟检查一次，若用户已 30 分钟未发消息则自动总结"""
+    import aiosqlite, time as _time
+    while True:
+        await asyncio.sleep(30 * 60)  # 30 分钟
+        try:
+            # 检查最后一条用户消息的时间
+            async with get_db() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    "SELECT created_at FROM messages WHERE role='user' ORDER BY created_at DESC LIMIT 1"
+                )
+                row = await cur.fetchone()
+            if not row:
+                continue
+            elapsed = _time.time() - row["created_at"]
+            if elapsed < 30 * 60:
+                print(f"[auto_digest] 用户 {elapsed/60:.0f} 分钟前仍在对话，跳过")
+                continue
+            print(f"[auto_digest] 用户已 {elapsed/60:.0f} 分钟未对话，开始自动总结")
+            result = await auto_digest()
+            print(f"[auto_digest] {result.get('message', '')}")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[auto_digest] ❌ 异常: {e}")
 
 
 @asynccontextmanager
@@ -60,7 +90,10 @@ async def lifespan(app: FastAPI):
         pc_tracker.start()
     except Exception as e:
         print(f"[PCActivity] ❌ 启动异常: {e}")
+    # 自动记忆总结定时任务
+    digest_task = asyncio.create_task(_auto_digest_loop())
     yield
+    digest_task.cancel()
     pc_tracker.stop()
     schedule_mgr.stop()
     voice.stop()

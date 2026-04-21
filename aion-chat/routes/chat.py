@@ -64,6 +64,24 @@ async def _toy_sys_msg(conv_id: str, commands: list):
                "content": text, "created_at": now, "attachments": []}
         await manager.broadcast({"type": "msg_created", "data": msg})
 
+async def _music_sys_msg(conv_id: str, music_cards: list):
+    """为点歌操作插入系统消息，使后续上下文能看到点歌信息"""
+    wb = load_worldbook()
+    ai_name = wb.get("ai_name", "AI")
+    parts = [f"《{s['name']}》- {s['artist']}" for s in music_cards]
+    text = f"🎵 {ai_name}点了一首{' / '.join(parts)}"
+    now = time.time()
+    msg_id = f"msg_{int(now*1000)}_music"
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
+            (msg_id, conv_id, "system", text, now, "[]"),
+        )
+        await db.commit()
+    msg = {"id": msg_id, "conv_id": conv_id, "role": "system",
+           "content": text, "created_at": now, "attachments": []}
+    await manager.broadcast({"type": "msg_created", "data": msg})
+
 # ── Pydantic 模型 ─────────────────────────────────
 class ConvCreate(BaseModel):
     title: str = "新对话"
@@ -585,6 +603,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 music_data = {'type': 'music', 'msg_id': ai_msg_id, 'cards': music_cards}
                 await _q.put(music_data)
                 await manager.broadcast({"type": "music", "data": music_data})
+                await _music_sys_msg(conv_id, music_cards)
 
             debug_data = {
                 "type": "debug",
@@ -1111,6 +1130,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                 music_data = {'type': 'music', 'msg_id': ai_msg_id, 'cards': music_cards}
                 await _q.put(music_data)
                 await manager.broadcast({"type": "music", "data": music_data})
+                await _music_sys_msg(conv_id, music_cards)
 
             debug_data = {
                 "type": "debug",
@@ -1851,6 +1871,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 music_data = {'type': 'music', 'msg_id': ai_msg_id, 'cards': music_cards}
                 await _q.put(music_data)
                 await manager.broadcast({"type": "music", "data": music_data})
+                await _music_sys_msg(conv_id, music_cards)
 
             debug_data = {
                 "type": "debug",

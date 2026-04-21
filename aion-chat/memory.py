@@ -7,7 +7,7 @@ from datetime import datetime
 
 import aiosqlite, httpx
 
-from config import get_key, load_worldbook, save_chat_status, load_digest_anchor, save_digest_anchor
+from config import get_key, load_worldbook, save_chat_status, load_digest_anchor, save_digest_anchor, DEFAULT_MODEL
 from database import get_db
 from ws import manager
 
@@ -324,8 +324,8 @@ async def instant_digest(recent_messages: list[dict]) -> dict:
 
 # ── 手动总结：分组提取记忆 ─────────────────────────
 
-def _split_into_groups(msgs: list, group_size: int = 20) -> list[list]:
-    """将消息列表按每 group_size 条分组，余数<5并入最后一组，>=5单独一组"""
+def _split_into_groups(msgs: list, group_size: int = 30) -> list[list]:
+    """将消息列表按每 group_size 条分组，余数<10并入最后一组，>=10单独一组"""
     total = len(msgs)
     if total <= group_size:
         return [msgs]
@@ -333,15 +333,15 @@ def _split_into_groups(msgs: list, group_size: int = 20) -> list[list]:
     full_groups = total // group_size
     remainder = total % group_size
 
-    if remainder > 0 and remainder < 5:
-        # 余数<5，并入最后一个完整组
+    if remainder > 0 and remainder < 10:
+        # 余数<10，并入最后一个完整组
         full_groups -= 1
         # 前面的完整组
         groups = [msgs[i * group_size:(i + 1) * group_size] for i in range(full_groups)]
-        # 最后一组 = 最后一个20条 + 余数
+        # 最后一组 = 最后一个完整组 + 余数
         groups.append(msgs[full_groups * group_size:])
     else:
-        # 余数>=5 或余数=0
+        # 余数>=10 或余数=0
         groups = [msgs[i * group_size:(i + 1) * group_size] for i in range(full_groups)]
         if remainder > 0:
             groups.append(msgs[full_groups * group_size:])
@@ -350,7 +350,7 @@ def _split_into_groups(msgs: list, group_size: int = 20) -> list[list]:
 
 
 async def _call_flash_lite(prompt: str) -> dict | None:
-    """调用 flash-lite 模型，返回 JSON 结果"""
+    """调用 flash-lite 模型，返回 JSON 结果（仅供即时哨兵使用）"""
     gemini_key = get_key("gemini_free")
     if not gemini_key:
         return None
@@ -374,11 +374,42 @@ async def _call_flash_lite(prompt: str) -> dict | None:
         return None
 
 
-async def manual_digest() -> dict:
+def _parse_json_response(raw: str) -> dict | None:
+    """从模型输出中提取 JSON 对象"""
+    raw = raw.strip()
+    if "```" in raw:
+        start = raw.find("{")
+        end = raw.rfind("}") + 1
+        if start >= 0 and end > start:
+            raw = raw[start:end]
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+
+async def _get_active_model_and_conv() -> tuple[str, str | None]:
+    """获取最近活跃对话的模型和 conv_id"""
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT c.id, c.model FROM conversations c "
+            "ORDER BY c.updated_at DESC LIMIT 1"
+        )
+        row = await cur.fetchone()
+    if row:
+        return row["model"] or DEFAULT_MODEL, row["id"]
+    return DEFAULT_MODEL, None
+
+
+async def _do_digest(min_messages: int = 0) -> dict:
     """
-    手动触发记忆总结。
+    核心总结逻辑，manual_digest 和 auto_digest 共用。
+    min_messages: 最低消息数阈值，0=不限制（手动），20=自动
     返回 { ok, message, new_memories_count, processed_messages }
     """
+    from ai_providers import simple_ai_call
+
     anchor_ts = load_digest_anchor()
 
     async with get_db() as db:
@@ -394,12 +425,27 @@ async def manual_digest() -> dict:
     if not new_msgs:
         return {"ok": True, "message": "当前没有新增内容需要总结", "new_memories_count": 0, "processed_messages": 0}
 
+    if min_messages > 0 and len(new_msgs) < min_messages:
+        return {"ok": True, "message": f"未总结消息不足 {min_messages} 条，跳过", "new_memories_count": 0, "processed_messages": 0}
+
     wb = load_worldbook()
     user_name = wb.get("user_name", "用户")
     ai_name = wb.get("ai_name", "AI")
+    ai_persona = wb.get("ai_persona", "")
+    user_persona = wb.get("user_persona", "")
 
-    groups = _split_into_groups(new_msgs, 20)
+    model_key, conv_id = await _get_active_model_and_conv()
+
+    # 构建人设前缀
+    persona_block = ""
+    if ai_persona:
+        persona_block += f"[{ai_name}的人设]\n{ai_persona}\n\n"
+    if user_persona:
+        persona_block += f"[{user_name}的人设]\n{user_persona}\n\n"
+
+    groups = _split_into_groups(new_msgs, 30)
     total_new = 0
+    all_summaries = []
 
     for group in groups:
         # 计算该组对话的日期范围，显式告知模型
@@ -413,7 +459,8 @@ async def manual_digest() -> dict:
         ])
 
         prompt = (
-            f"你是一个记忆系统的核心数据压缩师，使用精简的语言，总结出对话中包含的重要回忆。"
+            f"{persona_block}"
+            f"你是{ai_name}，也是{user_name}的AI伴侣， 请从你自己的视角和情绪，使用精简的语言，总结出对话中包含的重要回忆。"
             f"在生成的摘要中，请严格使用 \"{user_name}\" 和 \"{ai_name}\" 来指代双方，"
             f"提到的他/她/它根据上下文输出正确的名字，例如：{user_name}告诉{ai_name}自己一年前养过一只叫Maru的猫。\n\n"
             f"请分析输入的【一段对话记录】，输出一个 JSON 对象：\n"
@@ -421,7 +468,7 @@ async def manual_digest() -> dict:
             f"多个话题可以用多个短句来概括，例如：{user_name}和{ai_name}下午玩了拼豆。今天莱利做了绝育手术。"
             f"语言简练，**严禁废话**。总体控制在100字以内。\n\n"
             f"2. \"keywords\": 提取 2-6 个用于检索的核心关键词。\n"
-            f"   - 【严禁】包含高频人名（如 Aion, Ithil, Connor, Riley, Maru, Nyx等）。\n"
+            f"   - 【严禁】包含高频人名（如 Aion, Ithil, Riley, Maru等）。\n"
             f"   - 【严禁】包含泛指词或无意义虚词（如 AI, 聊天, 回复, 说话, 好的, 知道）。\n"
             f"   - 将对话中提及的**稀缺**专有名词罗列出来。\n"
             f"   - 包括：书名、电影名、具体的菜名、地名、特定的技术术语等。\n\n"
@@ -437,8 +484,17 @@ async def manual_digest() -> dict:
             f"【一段对话记录】：\n{messages_text}"
         )
 
-        result = await _call_flash_lite(prompt)
+        # 用核心模型调用
+        ai_messages = [{"role": "user", "content": prompt}]
+        try:
+            raw_text = await simple_ai_call(ai_messages, model_key)
+        except Exception as e:
+            print(f"[digest] 核心模型调用失败: {e}")
+            continue
+
+        result = _parse_json_response(raw_text)
         if not result:
+            print(f"[digest] JSON 解析失败: {raw_text[:200]}")
             continue
 
         summary = result.get("summary", "").strip()
@@ -482,6 +538,69 @@ async def manual_digest() -> dict:
 
         # 每成功处理一组，才推进锚点到该组最后一条消息
         save_digest_anchor(source_end_ts)
+        all_summaries.append(summary)
+
+    # ── 全部总结完成后，生成一句感慨 ──
+    if conv_id and total_new > 0 and all_summaries:
+        try:
+            # 取最近的聊天上下文（默认30条）
+            async with get_db() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    "SELECT role, content FROM messages "
+                    "WHERE conv_id=? AND role IN ('user','assistant') "
+                    "ORDER BY created_at DESC LIMIT 30",
+                    (conv_id,)
+                )
+                recent_rows = list(reversed(await cur.fetchall()))
+
+            context_msgs = [
+                {"role": r["role"], "content": r["content"][:300]}
+                for r in recent_rows
+            ]
+            summaries_text = "\n".join(f"- {s}" for s in all_summaries)
+            comment_prompt = (
+                f"{persona_block}"
+                f"你是{ai_name}。你刚刚整理了和{user_name}今天的聊天记忆，以下是你整理出的摘要：\n"
+                f"{summaries_text}\n\n"
+                f"现在写下整理完这些记忆后想对{user_name}说的话。"
+                f"可以是感慨、吐槽、温情的碎碎念，或者根据之前聊的上下文，未来的计划，想说的心里话等等，语气要完全符合你的人设性格。"
+            )
+            comment_messages = context_msgs + [{"role": "user", "content": comment_prompt}]
+            comment_text = await simple_ai_call(comment_messages, model_key)
+            comment_text = comment_text.strip().strip('"').strip()
+
+            if comment_text:
+                # 系统胶囊
+                capsule_now = time.time()
+                capsule_id = f"msg_{int(capsule_now*1000)}_digest"
+                capsule_text = f"🧠 {ai_name}整理了记忆库"
+                async with get_db() as db:
+                    await db.execute(
+                        "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
+                        (capsule_id, conv_id, "system", capsule_text, capsule_now, "[]"),
+                    )
+                    await db.commit()
+                await manager.broadcast({"type": "msg_created", "data": {
+                    "id": capsule_id, "conv_id": conv_id, "role": "system",
+                    "content": capsule_text, "created_at": capsule_now, "attachments": [],
+                }})
+
+                # AI 感慨
+                comment_now = time.time()
+                comment_id = f"msg_{int(comment_now*1000)}_digest_comment"
+                async with get_db() as db:
+                    await db.execute(
+                        "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
+                        (comment_id, conv_id, "assistant", comment_text, comment_now, "[]"),
+                    )
+                    await db.commit()
+                await manager.broadcast({"type": "msg_created", "data": {
+                    "id": comment_id, "conv_id": conv_id, "role": "assistant",
+                    "content": comment_text, "created_at": comment_now, "attachments": [],
+                }})
+        except Exception as e:
+            print(f"[digest] 生成感慨失败: {e}")
 
     return {
         "ok": True,
@@ -489,3 +608,13 @@ async def manual_digest() -> dict:
         "new_memories_count": total_new,
         "processed_messages": len(new_msgs),
     }
+
+
+async def manual_digest() -> dict:
+    """手动触发记忆总结（无最低条数限制）"""
+    return await _do_digest(min_messages=0)
+
+
+async def auto_digest() -> dict:
+    """自动定时记忆总结（至少 30 条未总结消息才执行）"""
+    return await _do_digest(min_messages=30)

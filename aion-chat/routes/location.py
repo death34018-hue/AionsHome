@@ -9,7 +9,7 @@ from typing import Optional
 
 from location import (
     load_location_config, save_location_config,
-    load_location_status,
+    load_location_status, save_location_status,
     process_heartbeat,
     amap_poi_search, format_nearby_pois_for_prompt,
     is_location_quiet_hours,
@@ -34,6 +34,23 @@ async def location_heartbeat(body: HeartbeatBody):
         return {"ok": False, "error": "定位功能未启用"}
 
     result = await process_heartbeat(body.lng, body.lat, body.accuracy, body.is_gcj02)
+    return {"ok": True, **result}
+
+
+# ── 立即同步（强制全量刷新）────────────────────────
+@router.post("/api/location/force-sync")
+async def location_force_sync():
+    """用当前已有坐标强制做一次全量刷新（地理编码+天气+POI）"""
+    cfg = load_location_config()
+    if not cfg.get("enabled"):
+        return {"ok": False, "error": "定位功能未启用"}
+    status = load_location_status()
+    if status.get("lng", 0) == 0 or status.get("lat", 0) == 0:
+        return {"ok": False, "error": "当前位置未知，请先上报一次定位"}
+    result = await process_heartbeat(
+        status["lng"], status["lat"], status.get("accuracy", 0),
+        is_gcj02=True, force_full=True
+    )
     return {"ok": True, **result}
 
 
