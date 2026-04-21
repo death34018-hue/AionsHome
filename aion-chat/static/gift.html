@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>爱的印记</title>
+<link rel="stylesheet" href="/static/common.css">
+<style>
+body { background: #1a1412; color: #e8ddd4; overflow: hidden; }
+
+.sub-page { max-width: 640px; }
+
+.top-bar {
+  background: rgba(26,20,18,0.9);
+  border-bottom: 1px solid rgba(255,131,89,0.15);
+}
+.top-bar h2 { color: #e8ddd4; }
+.top-bar .back-btn { color: #ff8359; }
+
+/* 测试按钮 */
+.test-gift-btn {
+  background: rgba(255,131,89,0.15);
+  border: 1px solid rgba(255,131,89,0.3);
+  color: #ff8359;
+  font-size: 12px;
+  padding: 4px 12px;
+  border-radius: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.test-gift-btn:hover { background: rgba(255,131,89,0.25); }
+.test-gift-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.page-content {
+  padding: 0 0 32px 0;
+  background: linear-gradient(180deg, #1a1412 0%, #231c18 100%);
+}
+
+/* 标题区 */
+.gallery-header {
+  text-align: center;
+  padding: 28px 16px 20px;
+  position: relative;
+}
+.gallery-header::after {
+  content: '';
+  display: block;
+  width: 60px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #ff8359, transparent);
+  margin: 16px auto 0;
+}
+.gallery-title {
+  font-size: 20px;
+  font-weight: 300;
+  letter-spacing: 6px;
+  color: #ffcba4;
+}
+.gallery-subtitle {
+  font-size: 12px;
+  color: rgba(255,203,164,0.4);
+  margin-top: 6px;
+  letter-spacing: 3px;
+}
+
+/* 空状态 */
+.gallery-empty {
+  text-align: center;
+  padding: 80px 24px;
+  color: rgba(232,221,212,0.3);
+}
+.gallery-empty-icon { font-size: 48px; margin-bottom: 16px; }
+.gallery-empty-text { font-size: 14px; line-height: 1.8; }
+
+/* 礼物卡片列表 */
+.gallery-list {
+  padding: 0 12px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+/* 缩略图卡片 */
+.gift-thumb {
+  position: relative;
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,131,89,0.1);
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.gift-thumb:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.3);
+}
+.gift-thumb:active { transform: scale(0.96); }
+
+.gift-thumb-img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+}
+
+.gift-thumb-date {
+  text-align: center;
+  font-size: 10px;
+  color: rgba(255,203,164,0.6);
+  padding: 5px 0;
+  letter-spacing: 0.5px;
+  background: rgba(0,0,0,0.3);
+}
+
+/* 展开详情弹窗 */
+.gift-detail-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.8);
+  z-index: 50;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.gift-detail-overlay.show { display: flex; opacity: 1; }
+
+.gift-detail-box {
+  max-width: 380px;
+  width: 90%;
+  max-height: 85vh;
+  overflow-y: auto;
+  border-radius: 16px;
+  background: #2a2220;
+  border: 1px solid rgba(255,131,89,0.15);
+  animation: detailSlideIn 0.35s ease-out;
+}
+@keyframes detailSlideIn { from { transform: scale(0.85) translateY(20px); opacity: 0; } to { transform: scale(1) translateY(0); opacity: 1; } }
+
+.gift-detail-img {
+  width: 100%;
+  display: block;
+  border-radius: 16px 16px 0 0;
+}
+.gift-detail-body {
+  padding: 16px 18px 18px;
+}
+.gift-detail-date {
+  font-size: 12px;
+  color: rgba(255,203,164,0.5);
+  margin-bottom: 10px;
+  letter-spacing: 1px;
+}
+.gift-detail-date::before {
+  content: '✦ ';
+  color: rgba(255,131,89,0.3);
+}
+.gift-detail-msg {
+  font-size: 14px;
+  line-height: 1.8;
+  color: rgba(232,221,212,0.85);
+}
+.gift-detail-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+  justify-content: center;
+}
+.gift-detail-actions button {
+  padding: 8px 20px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-detail-close {
+  background: rgba(255,255,255,0.1);
+  color: #e8ddd4;
+}
+.btn-detail-delete {
+  background: rgba(207,34,46,0.2);
+  color: #ff6b6b;
+}
+
+/* 删除确认弹窗 */
+.confirm-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  z-index: 100;
+  align-items: center;
+  justify-content: center;
+}
+.confirm-overlay.show { display: flex; }
+.confirm-box {
+  background: #2a2220;
+  border: 1px solid rgba(255,131,89,0.2);
+  border-radius: 16px;
+  padding: 24px 28px;
+  max-width: 320px;
+  width: 85%;
+  text-align: center;
+}
+.confirm-box p { font-size: 15px; margin-bottom: 20px; color: #e8ddd4; }
+.confirm-btns { display: flex; gap: 12px; justify-content: center; }
+.confirm-btns button {
+  padding: 8px 24px;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.btn-confirm-del { background: #cf222e; color: #fff; }
+.btn-confirm-cancel { background: rgba(255,255,255,0.1); color: #e8ddd4; }
+</style>
+</head>
+<body>
+<div class="sub-page">
+  <div class="top-bar">
+    <button class="back-btn" onclick="location.href='/'">‹</button>
+    <h2>爱的印记</h2>
+    <button class="test-gift-btn" id="testGiftBtn" onclick="testGift()">🎁 测试送礼</button>
+  </div>
+  <div class="page-content" id="pageContent">
+    <div class="gallery-header">
+      <div class="gallery-title">爱 的 印 记</div>
+      <div class="gallery-subtitle">LOVE MARKS</div>
+    </div>
+    <div class="gallery-list" id="galleryList"></div>
+  </div>
+</div>
+
+<!-- 详情弹窗 -->
+<div class="gift-detail-overlay" id="detailOverlay" onclick="if(event.target===this)closeDetail()">
+  <div class="gift-detail-box" id="detailBox"></div>
+</div>
+
+<!-- 删除确认 -->
+<div class="confirm-overlay" id="confirmOverlay">
+  <div class="confirm-box">
+    <p>确定要删除这份礼物吗？</p>
+    <div class="confirm-btns">
+      <button class="btn-confirm-cancel" onclick="cancelDelete()">取消</button>
+      <button class="btn-confirm-del" id="confirmDelBtn" onclick="confirmDelete()">删除</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/common.js"></script>
+<script>
+let _deleteId = null;
+let _allGifts = [];
+
+async function loadGifts() {
+  const list = document.getElementById('galleryList');
+  try {
+    const res = await fetch('/api/gift/list');
+    const data = await res.json();
+    if (!data.ok || !data.gifts || data.gifts.length === 0) {
+      _allGifts = [];
+      list.innerHTML = `
+        <div class="gallery-empty" style="grid-column:1/-1">
+          <div class="gallery-empty-icon">💝</div>
+          <div class="gallery-empty-text">还没有收到过礼物<br>美好的惊喜正在路上...</div>
+        </div>`;
+      return;
+    }
+    _allGifts = data.gifts;
+    renderGrid();
+  } catch(e) {
+    list.innerHTML = '<div class="gallery-empty" style="grid-column:1/-1"><div class="gallery-empty-text">加载失败</div></div>';
+  }
+}
+
+function renderGrid() {
+  const list = document.getElementById('galleryList');
+  if (!_allGifts.length) {
+    list.innerHTML = `
+      <div class="gallery-empty" style="grid-column:1/-1">
+        <div class="gallery-empty-icon">💝</div>
+        <div class="gallery-empty-text">还没有收到过礼物<br>美好的惊喜正在路上...</div>
+      </div>`;
+    return;
+  }
+  list.innerHTML = _allGifts.map((g, i) => {
+    const d = new Date(g.created_at * 1000);
+    const dateStr = `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')}`;
+    return `
+      <div class="gift-thumb" id="thumb_${g.id}" onclick="openDetail(${i})">
+        <img class="gift-thumb-img" src="/uploads/${escHtml(g.image_path)}" alt="礼物" loading="lazy" />
+        <div class="gift-thumb-date">${dateStr}</div>
+      </div>`;
+  }).join('');
+}
+
+function openDetail(idx) {
+  const g = _allGifts[idx];
+  if (!g) return;
+  const d = new Date(g.created_at * 1000);
+  const dateStr = `${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日`;
+  const box = document.getElementById('detailBox');
+  box.innerHTML = `
+    <img class="gift-detail-img" src="/uploads/${escHtml(g.image_path)}" alt="礼物" />
+    <div class="gift-detail-body">
+      <div class="gift-detail-date">${dateStr}</div>
+      <div class="gift-detail-msg">${escHtml(g.message)}</div>
+      <div class="gift-detail-actions">
+        <button class="btn-detail-close" onclick="closeDetail()">关闭</button>
+        <button class="btn-detail-delete" onclick="askDelete('${g.id}')">删除</button>
+      </div>
+    </div>`;
+  const overlay = document.getElementById('detailOverlay');
+  overlay.style.display = 'flex';
+  requestAnimationFrame(() => overlay.classList.add('show'));
+}
+
+function closeDetail() {
+  const overlay = document.getElementById('detailOverlay');
+  overlay.classList.remove('show');
+  setTimeout(() => overlay.style.display = 'none', 300);
+}
+
+function askDelete(id) {
+  _deleteId = id;
+  closeDetail();
+  setTimeout(() => document.getElementById('confirmOverlay').classList.add('show'), 200);
+}
+function cancelDelete() {
+  _deleteId = null;
+  document.getElementById('confirmOverlay').classList.remove('show');
+}
+async function confirmDelete() {
+  if (!_deleteId) return;
+  const id = _deleteId;
+  cancelDelete();
+  try {
+    await fetch(`/api/gift/${id}`, { method: 'DELETE' });
+    _allGifts = _allGifts.filter(g => g.id !== id);
+    renderGrid();
+  } catch(e) {
+    showToast('删除失败');
+  }
+}
+
+// 测试送礼
+async function testGift() {
+  const btn = document.getElementById('testGiftBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 生成中...';
+  try {
+    const res = await fetch('/api/gift/test', { method: 'POST' });
+    const data = await res.json();
+    showToast(data.message || '已触发');
+  } catch(e) {
+    showToast('请求失败');
+  }
+  btn.disabled = false;
+  btn.textContent = '🎁 测试送礼';
+}
+
+// 初始化
+connectCommonWS();
+loadGifts();
+</script>
+</body>
+</html>

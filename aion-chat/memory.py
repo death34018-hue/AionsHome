@@ -541,6 +541,7 @@ async def _do_digest(min_messages: int = 0) -> dict:
         all_summaries.append(summary)
 
     # ── 全部总结完成后，生成一句感慨 ──
+    context_msgs = []
     if conv_id and total_new > 0 and all_summaries:
         try:
             # 取最近的聊天上下文（默认30条）
@@ -601,6 +602,32 @@ async def _do_digest(min_messages: int = 0) -> dict:
                 }})
         except Exception as e:
             print(f"[digest] 生成感慨失败: {e}")
+
+    # ── 礼物判断：总结完成后让 AI 决定是否送礼 ──
+    if conv_id and total_new > 0 and all_summaries:
+        try:
+            # 复用已有的上下文（若上面感慨部分已获取）或重新获取
+            if not context_msgs:
+                async with get_db() as db:
+                    db.row_factory = aiosqlite.Row
+                    cur = await db.execute(
+                        "SELECT role, content FROM messages "
+                        "WHERE conv_id=? AND role IN ('user','assistant') "
+                        "ORDER BY created_at DESC LIMIT 30",
+                        (conv_id,)
+                    )
+                    recent_rows = list(reversed(await cur.fetchall()))
+                context_msgs = [
+                    {"role": r["role"], "content": r["content"][:300]}
+                    for r in recent_rows
+                ]
+            from gift import judge_and_send_gift
+            await judge_and_send_gift(
+                all_summaries, context_msgs, persona_block,
+                ai_name, user_name, model_key, conv_id,
+            )
+        except Exception as e:
+            print(f"[digest] 礼物判断失败: {e}")
 
     return {
         "ok": True,

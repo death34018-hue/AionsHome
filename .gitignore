@@ -26,6 +26,8 @@ aion-chat/data/activity_logs/*.jsonl
 aion-chat/data/screenshots/*
 aion-chat/data/uploads/*
 aion-chat/data/tts_cache/*
+aion-chat/data/aion.db
+aion-chat/data/theater_personas.json
 
 # ── 保留空文件夹的 .gitkeep ──
 !aion-chat/data/chats/.gitkeep

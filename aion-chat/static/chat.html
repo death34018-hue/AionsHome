@@ -652,6 +652,38 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 .alarm-box button:hover { background:#d97706; }
 @keyframes alarmPulse { from { box-shadow:0 0 20px rgba(245,158,11,0.3); } to { box-shadow:0 0 40px rgba(245,158,11,0.6); } }
 
+/* ── 礼物弹窗 ── */
+.gift-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:300; align-items:center; justify-content:center; opacity:0; transition:opacity 0.4s; }
+.gift-overlay.show { display:flex; opacity:1; }
+.gift-scene { display:flex; flex-direction:column; align-items:center; transition:all 0.6s cubic-bezier(.4,0,.2,1); }
+.gift-scene.fly-away { transform:scale(0.1) translate(200px,-400px); opacity:0; }
+.gift-box-wrap { cursor:pointer; animation:giftBounceIn 0.8s cubic-bezier(.34,1.56,.64,1) both; display:flex; flex-direction:column; align-items:center; gap:12px; }
+.gift-box-wrap:hover .gift-box-svg { transform:scale(1.05); }
+.gift-box-svg { transition:transform 0.2s; filter:drop-shadow(0 8px 24px rgba(255,131,89,0.4)); }
+.gift-tap-hint { color:rgba(255,255,255,0.7); font-size:14px; animation:hintPulse 1.5s ease-in-out infinite; }
+.gift-lid { transform-origin:100px 90px; transition:transform 0.5s cubic-bezier(.4,0,.2,1); }
+.gift-lid.lid-open { transform:translateY(-80px) rotate(-30deg); opacity:0; }
+.box-opening .gift-body { animation:boxShake 0.3s ease-in-out; }
+@keyframes giftBounceIn { 0%{transform:translateY(100vh) scale(0.5);opacity:0;} 60%{transform:translateY(-20px) scale(1.05);opacity:1;} 80%{transform:translateY(8px) scale(0.98);} 100%{transform:translateY(0) scale(1);} }
+@keyframes hintPulse { 0%,100%{opacity:0.5;} 50%{opacity:1;} }
+@keyframes boxShake { 0%,100%{transform:translateX(0);} 25%{transform:translateX(-4px);} 75%{transform:translateX(4px);} }
+.confetti-container { position:fixed; inset:0; pointer-events:none; overflow:hidden; z-index:310; }
+.confetti-piece { position:absolute; animation:confettiFall var(--duration,1.5s) var(--delay,0s) cubic-bezier(.25,.46,.45,.94) forwards; }
+.confetti-rect { width:10px; height:6px; border-radius:1px; }
+.confetti-circle { width:8px; height:8px; border-radius:50%; }
+.confetti-ribbon { width:4px; height:16px; border-radius:2px; }
+@keyframes confettiFall { 0%{transform:translate(0,0) rotate(0deg);opacity:1;} 30%{transform:translate(var(--x),var(--y)) rotate(var(--r));opacity:1;} 100%{transform:translate(var(--x),calc(var(--y) + 500px)) rotate(var(--r));opacity:0;} }
+.gift-reveal { flex-direction:column; align-items:center; gap:16px; max-width:360px; width:90%; }
+.gift-image-wrap { opacity:0; transform:scale(0.3); transition:all 0.6s cubic-bezier(.34,1.56,.64,1); cursor:pointer; border-radius:16px; overflow:hidden; box-shadow:0 8px 32px rgba(255,131,89,0.3); }
+.gift-image-wrap.show { opacity:1; transform:scale(1); }
+.gift-image { width:100%; max-width:320px; display:block; border-radius:16px; }
+.gift-message-wrap { background:rgba(255,255,255,0.12); backdrop-filter:blur(12px); border-radius:12px; padding:16px 20px; opacity:0; transform:translateY(16px); transition:all 0.4s ease-out; }
+.gift-message-wrap.show { opacity:1; transform:translateY(0); }
+.gift-message-text { color:#fff; font-size:15px; line-height:1.7; text-align:center; margin:0; }
+.gift-receive-btn { display:none; padding:12px 36px; border:none; border-radius:24px; background:linear-gradient(135deg,#ff8359,#ff6b9d); color:#fff; font-size:15px; font-weight:600; cursor:pointer; opacity:0; transform:translateY(12px); transition:all 0.4s ease-out; box-shadow:0 4px 16px rgba(255,107,157,0.4); }
+.gift-receive-btn.show { opacity:1; transform:translateY(0); }
+.gift-receive-btn:hover { transform:translateY(-2px); box-shadow:0 6px 20px rgba(255,107,157,0.5); }
+
 /* ── 密语时刻面板 ── */
 .whisper-modal { max-width:400px; max-height:85vh; overflow-y:auto; }
 .whisper-conn-bar { display:flex; align-items:center; justify-content:space-between; background:var(--surface2); border:1px solid var(--border); border-radius:10px; padding:10px 14px; margin-bottom:12px; }
@@ -1987,6 +2019,9 @@ function handleSync(msg) {
   } else if (type === "video_call_ring") {
     // AI 发起视频通话 — 定向推送到本客户端
     if (typeof videoCall !== 'undefined') videoCall.aiInitiate(data);
+  } else if (type === "gift_pending") {
+    // 礼物通知
+    _showGiftPopup(data);
   }
 }
 
@@ -3605,6 +3640,123 @@ function toyCloseEditor() { $('toyEditorOverlay').classList.remove('show'); }
 function onWhisperModeChange() {
   whisperMode = $('whisperModeToggle').checked;
   toyLog(whisperMode ? '🔮 密语模式已开启' : '🔮 密语模式已关闭', 'wl-sys');
+}
+
+// ── 礼物弹窗系统 ──
+let _giftQueue = [];
+let _giftShowing = false;
+
+// 页面加载时检查未领取的礼物
+(async function checkPendingGifts() {
+  try {
+    const res = await fetch('/api/gift/pending');
+    const data = await res.json();
+    if (data.ok && data.gifts && data.gifts.length > 0) {
+      data.gifts.forEach(g => _showGiftPopup(g));
+    }
+  } catch(e) {}
+})();
+
+function _showGiftPopup(gift) {
+  _giftQueue.push(gift);
+  if (!_giftShowing) _presentNextGift();
+}
+function _presentNextGift() {
+  if (!_giftQueue.length) { _giftShowing = false; return; }
+  _giftShowing = true;
+  const gift = _giftQueue[0];
+  const old = document.getElementById('giftOverlay');
+  if (old) old.remove();
+  const overlay = document.createElement('div');
+  overlay.id = 'giftOverlay';
+  overlay.className = 'gift-overlay';
+  overlay.innerHTML = `
+    <div class="gift-scene" id="giftScene">
+      <div class="gift-box-wrap" id="giftBoxWrap" onclick="_openGiftBox()">
+        <svg class="gift-box-svg" viewBox="0 0 200 200" width="180" height="180">
+          <rect class="gift-body" x="30" y="100" width="140" height="90" rx="8" fill="#ff8359" stroke="#e0693f" stroke-width="2"/>
+          <rect x="90" y="100" width="20" height="90" rx="2" fill="#ffcba4"/>
+          <g class="gift-lid" id="giftLid">
+            <rect x="22" y="80" width="156" height="28" rx="6" fill="#ff6b3d" stroke="#e0693f" stroke-width="2"/>
+            <rect x="90" y="80" width="20" height="28" rx="2" fill="#ffcba4"/>
+            <ellipse cx="100" cy="76" rx="24" ry="14" fill="#ffcba4" stroke="#e0693f" stroke-width="1.5"/>
+            <ellipse cx="100" cy="76" rx="6" ry="6" fill="#ff6b3d"/>
+          </g>
+          <text x="50" y="140" font-size="16" fill="#ffcba4" opacity="0.7">✦</text>
+          <text x="135" y="155" font-size="12" fill="#ffcba4" opacity="0.7">✦</text>
+          <text x="65" y="170" font-size="10" fill="#ffcba4" opacity="0.5">✦</text>
+        </svg>
+        <div class="gift-tap-hint">点击打开</div>
+      </div>
+      <div class="gift-reveal" id="giftReveal" style="display:none">
+        <div class="confetti-container" id="confettiContainer"></div>
+        <div class="gift-image-wrap" id="giftImageWrap" onclick="_showGiftMessage()">
+          <img class="gift-image" src="/uploads/${gift.image_path}" alt="礼物" />
+        </div>
+        <div class="gift-message-wrap" id="giftMessageWrap" style="display:none">
+          <p class="gift-message-text">${escHtml(gift.message)}</p>
+        </div>
+        <button class="gift-receive-btn" id="giftReceiveBtn" style="display:none" onclick="_receiveGift('${gift.id}')">💝 收下礼物</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add('show'));
+}
+function _openGiftBox() {
+  const lid = document.getElementById('giftLid');
+  const wrap = document.getElementById('giftBoxWrap');
+  const reveal = document.getElementById('giftReveal');
+  if (!lid || !wrap || !reveal) return;
+  // 播放开礼物音效
+  new Audio('/public/打开礼物.mp3').play().catch(() => {});
+  lid.classList.add('lid-open');
+  wrap.classList.add('box-opening');
+  setTimeout(() => {
+    wrap.style.display = 'none';
+    reveal.style.display = 'flex';
+    _spawnConfetti();
+    const imgWrap = document.getElementById('giftImageWrap');
+    setTimeout(() => imgWrap.classList.add('show'), 100);
+  }, 600);
+}
+function _spawnConfetti() {
+  const container = document.getElementById('confettiContainer');
+  if (!container) return;
+  const colors = ['#ff8359','#ffcba4','#ff6b9d','#ffd700','#7ecbff','#a8e6cf','#ff9a9e','#fad0c4','#fbc2eb','#a18cd1'];
+  const shapes = ['confetti-rect','confetti-circle','confetti-ribbon'];
+  for (let i = 0; i < 60; i++) {
+    const el = document.createElement('div');
+    el.className = `confetti-piece ${shapes[Math.floor(Math.random()*shapes.length)]}`;
+    el.style.setProperty('--x', (Math.random()*200-100)+'px');
+    el.style.setProperty('--y', -(Math.random()*300+200)+'px');
+    el.style.setProperty('--r', (Math.random()*720-360)+'deg');
+    el.style.setProperty('--delay', (Math.random()*0.3)+'s');
+    el.style.setProperty('--duration', (Math.random()*1+1.2)+'s');
+    el.style.backgroundColor = colors[Math.floor(Math.random()*colors.length)];
+    el.style.left = '50%'; el.style.top = '40%';
+    container.appendChild(el);
+  }
+  setTimeout(() => container.innerHTML = '', 3000);
+}
+function _showGiftMessage() {
+  const msgWrap = document.getElementById('giftMessageWrap');
+  const btn = document.getElementById('giftReceiveBtn');
+  if (msgWrap && msgWrap.style.display === 'none') {
+    msgWrap.style.display = 'block';
+    setTimeout(() => msgWrap.classList.add('show'), 50);
+    if (btn) { btn.style.display = 'inline-block'; setTimeout(() => btn.classList.add('show'), 200); }
+  }
+}
+async function _receiveGift(giftId) {
+  try { await fetch(`/api/gift/${giftId}/receive`, {method:'POST'}); } catch(e) {}
+  const scene = document.getElementById('giftScene');
+  if (scene) scene.classList.add('fly-away');
+  setTimeout(() => {
+    const overlay = document.getElementById('giftOverlay');
+    if (overlay) overlay.remove();
+    _giftQueue.shift();
+    _presentNextGift();
+  }, 800);
 }
 
 // URL 参数检查：从主页点击密语时刻跳转

@@ -145,3 +145,140 @@ textarea.form-input { resize:vertical; min-height:120px; line-height:1.6; }
   white-space: nowrap;
 }
 .toast-msg.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* ── 礼物弹窗 ── */
+.gift-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.75);
+  z-index: 300;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.4s;
+}
+.gift-overlay.show { display: flex; opacity: 1; }
+
+.gift-scene {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transition: all 0.6s cubic-bezier(.4,0,.2,1);
+}
+.gift-scene.fly-away {
+  transform: scale(0.1) translate(200px, -400px);
+  opacity: 0;
+}
+
+/* 礼物盒 */
+.gift-box-wrap {
+  cursor: pointer;
+  animation: giftBounceIn 0.8s cubic-bezier(.34,1.56,.64,1) both;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.gift-box-wrap:hover .gift-box-svg { transform: scale(1.05); }
+.gift-box-svg { transition: transform 0.2s; filter: drop-shadow(0 8px 24px rgba(255,131,89,0.4)); }
+
+.gift-tap-hint {
+  color: rgba(255,255,255,0.7);
+  font-size: 14px;
+  animation: hintPulse 1.5s ease-in-out infinite;
+}
+
+.gift-lid { transform-origin: 100px 90px; transition: transform 0.5s cubic-bezier(.4,0,.2,1); }
+.gift-lid.lid-open { transform: translateY(-80px) rotate(-30deg); opacity: 0; }
+.box-opening .gift-body { animation: boxShake 0.3s ease-in-out; }
+
+@keyframes giftBounceIn {
+  0% { transform: translateY(100vh) scale(0.5); opacity: 0; }
+  60% { transform: translateY(-20px) scale(1.05); opacity: 1; }
+  80% { transform: translateY(8px) scale(0.98); }
+  100% { transform: translateY(0) scale(1); }
+}
+@keyframes hintPulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+@keyframes boxShake {
+  0%,100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+/* 礼花 */
+.confetti-container { position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 310; }
+.confetti-piece {
+  position: absolute;
+  animation: confettiFall var(--duration, 1.5s) var(--delay, 0s) cubic-bezier(.25,.46,.45,.94) forwards;
+}
+.confetti-rect { width: 10px; height: 6px; border-radius: 1px; }
+.confetti-circle { width: 8px; height: 8px; border-radius: 50%; }
+.confetti-ribbon { width: 4px; height: 16px; border-radius: 2px; }
+
+@keyframes confettiFall {
+  0% { transform: translate(0,0) rotate(0deg); opacity: 1; }
+  30% { transform: translate(var(--x), var(--y)) rotate(var(--r)); opacity: 1; }
+  100% { transform: translate(var(--x), calc(var(--y) + 500px)) rotate(var(--r)); opacity: 0; }
+}
+
+/* 礼物图片展示 */
+.gift-reveal {
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  max-width: 360px;
+  width: 90%;
+}
+.gift-image-wrap {
+  opacity: 0;
+  transform: scale(0.3);
+  transition: all 0.6s cubic-bezier(.34,1.56,.64,1);
+  cursor: pointer;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(255,131,89,0.3);
+}
+.gift-image-wrap.show { opacity: 1; transform: scale(1); }
+.gift-image {
+  width: 100%;
+  max-width: 320px;
+  display: block;
+  border-radius: 16px;
+}
+
+.gift-message-wrap {
+  background: rgba(255,255,255,0.12);
+  backdrop-filter: blur(12px);
+  border-radius: 12px;
+  padding: 16px 20px;
+  opacity: 0;
+  transform: translateY(16px);
+  transition: all 0.4s ease-out;
+}
+.gift-message-wrap.show { opacity: 1; transform: translateY(0); }
+.gift-message-text {
+  color: #fff;
+  font-size: 15px;
+  line-height: 1.7;
+  text-align: center;
+  margin: 0;
+}
+
+.gift-receive-btn {
+  display: none;
+  padding: 12px 36px;
+  border: none;
+  border-radius: 24px;
+  background: linear-gradient(135deg, #ff8359, #ff6b9d);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(12px);
+  transition: all 0.4s ease-out;
+  box-shadow: 0 4px 16px rgba(255,107,157,0.4);
+}
+.gift-receive-btn.show { opacity: 1; transform: translateY(0); }
+.gift-receive-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(255,107,157,0.5); }

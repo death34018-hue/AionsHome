@@ -153,6 +153,19 @@ async def init_db():
             )
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_theater_msg_conv ON theater_messages(conv_id, created_at)")
+        # ── 礼物表 ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS gifts (
+                id TEXT PRIMARY KEY,
+                image_path TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                status TEXT DEFAULT 'pending',
+                received_at REAL
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_gifts_status ON gifts(status)")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_gifts_created ON gifts(created_at DESC)")
         await db.commit()
 
 

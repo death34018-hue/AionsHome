@@ -36,6 +36,7 @@ from routes import activity as activity_routes
 from routes import book as book_routes
 from routes import theater as theater_routes
 from routes import ghost_forest as ghost_forest_routes
+from routes import gift as gift_routes
 from activity import pc_tracker
 from memory import auto_digest
 
@@ -136,6 +137,7 @@ app.include_router(activity_routes.router)
 app.include_router(book_routes.router)
 app.include_router(theater_routes.router)
 app.include_router(ghost_forest_routes.router)
+app.include_router(gift_routes.router)
 
 
 # 页面
@@ -194,6 +196,10 @@ async def theater_page():
 @app.get("/ghost-forest")
 async def ghost_forest_page():
     return FileResponse(BASE_DIR / "static" / "ghost-forest.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+@app.get("/gift")
+async def gift_page():
+    return FileResponse(BASE_DIR / "static" / "gift.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 # PWA：Service Worker 必须从根路径提供，作用域才能覆盖所有页面
 @app.get("/sw.js")
