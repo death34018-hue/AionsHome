@@ -1011,7 +1011,6 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                         await manager.broadcast({"type": "memory_added", "data": mem_data})
                         mr_data = {'type': 'memory_record', 'msg_id': ai_msg_id, 'content': mem_content, 'mem_id': mem_id}
                         await _q.put(mr_data)
-                        await manager.broadcast({"type": "memory_record", "data": mr_data})
 
             full_text = META_TAG_PATTERN.sub("", full_text).strip()
 
@@ -1577,7 +1576,6 @@ async def send_message(conv_id: str, body: MsgCreate):
                         await manager.broadcast({"type": "memory_added", "data": mem_data})
                         mr_data = {'type': 'memory_record', 'msg_id': ai_msg_id, 'content': mem_content, 'mem_id': mem_id}
                         await _q.put(mr_data)
-                        await manager.broadcast({"type": "memory_record", "data": mr_data})
                         print(f"[MEMORY] AI 主动录入记忆: {mem_content[:50]}")
 
 
@@ -2505,7 +2503,6 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                         await manager.broadcast({"type": "memory_added", "data": mem_data})
                         mr_data = {'type': 'memory_record', 'msg_id': ai_msg_id, 'content': mem_content, 'mem_id': mem_id}
                         await _q.put(mr_data)
-                        await manager.broadcast({"type": "memory_record", "data": mr_data})
                         print(f"[MEMORY] AI 主动录入记忆: {mem_content[:50]}")
 
             # 检测 [转账：N元] 指令 — AI 转账入账
