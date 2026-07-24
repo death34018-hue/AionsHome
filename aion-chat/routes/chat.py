@@ -15,6 +15,7 @@ from typing import Optional, List, Any
 from config import DEFAULT_MODEL, MODELS, load_worldbook, SETTINGS, UPLOADS_DIR, CODEX_UPLOADS_DIR, PUBLIC_DIR, resolve_model_key
 from database import get_db
 from ws import manager
+from active_window_state import record_aion_private_active
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
 from memory import recall_memories, instant_digest, fetch_source_details, build_surfacing_memories, get_embedding, _pack_embedding, _memory_line_with_evidence
 from camera import cam, CAM_CHECK_CMD, perform_cam_check
@@ -28,6 +29,11 @@ from wechat_bridge import (
     dispatch_wechat_message,
     process_wechat_outbound_commands,
     record_wechat_route,
+)
+from band_commands import process_band_vibration, with_band_vibration_attachment
+from app_supervision_ai import (
+    queue_app_supervision_reply_command,
+    broadcast_app_supervision_command,
 )
 
 MOMENT_CMD_PATTERN = re.compile(r'\[MOMENT:(.+?)(?:\|(true|false))?\]')
@@ -51,6 +57,7 @@ _SYSTEM_MSG_CONTEXT_KEYWORDS = ('查看了监控', '搜索了', '点歌', '点�
 from context_builder import (
     fetch_merged_timeline, render_merged_timeline, build_health_summary,
     build_ability_block, WISH_CMD_PATTERN, _build_recall_query, strip_tool_commands,
+    BAND_VIBRATE_CMD_PATTERN,
 )
 from music import search_songs, get_audio_url
 from schedule import (
@@ -78,11 +85,14 @@ from web_search import (
 def _process_voice_attachments_in_history(history: list, keep_idx: int = -1):
     """处理历史消息中的语音/视频附件：
     - 所有语音/视频消息的转写文本注入 content
-    - keep_idx 位置的消息保留媒体 URL 用于 inline_data（-1 表示最后一条）
+    - keep_idx 位置的消息保留媒体 URL（-1 表示最新一条用户消息）
     - 其他消息移除所有附件
     """
     if keep_idx < 0:
-        keep_idx = len(history) - 1
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("role") == "user":
+                keep_idx = i
+                break
     for i, msg in enumerate(history):
         atts = msg.get("attachments", [])
         if not atts:
@@ -180,6 +190,12 @@ def _visible_ai_text(text: str) -> str:
     for idx, transfer in enumerate(transfers):
         cleaned = cleaned.replace(f"__AION_TRANSFER_{idx}__", transfer)
     return cleaned.strip()
+
+
+def _extract_mi_band_commands(text: str) -> tuple[str, list[str]]:
+    """Extract supported vibration commands before the visible reply is cleaned."""
+    commands = [value.lower() for value in BAND_VIBRATE_CMD_PATTERN.findall(text or "")]
+    return BAND_VIBRATE_CMD_PATTERN.sub("", text or "").strip(), commands
 
 
 def _chat_stream_event(model_key: str, full_text: str, chunk: str) -> dict[str, str]:
@@ -942,7 +958,6 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     if body.client_id:
         manager.set_last_sender(body.client_id)
     # Aion 侧：用户在 Aion 私聊发消息
-    manager.set_aion_last_active("private")
 
     # 1. 查出原消息信息
     async with get_db() as db:
@@ -971,6 +986,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
         await db.commit()
 
     # 广播更新和删除事件
+    await record_aion_private_active()
     updated_d = dict(orig)
     updated_d["content"] = body.content
     try: updated_d["attachments"] = json.loads(updated_d.get("attachments") or "[]") if updated_d.get("attachments") else []
@@ -1075,7 +1091,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
 
     if recall_query:
         recalled = [r for r in debug_top6 if r["score"] >= 0.45 and r["id"] not in surfaced_ids][:5]
-        if digest_result.get("require_detail") and recalled:
+        if (is_search_needed or digest_result.get("require_detail")) and recalled:
             detail_text = await fetch_source_details(recalled, recall_keywords)
 
     debug_recalled = [{"content": m["content"], "type": m["type"], "score": m["score"],
@@ -1154,6 +1170,13 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                     except Exception:
                         pass
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
+
+            full_text = await process_band_vibration(
+                full_text,
+                source_type="private",
+                source_id=conv_id,
+                source_msg_id=ai_msg_id,
+            )
 
             toy_matches = TOY_CMD_PATTERN.findall(full_text)
             if toy_matches:
@@ -1269,6 +1292,14 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 source_ref=f"{conv_id}:{ai_msg_id}",
             )
 
+            full_text, supervision_command = await queue_app_supervision_reply_command(
+                full_text,
+                source_message_id=ai_msg_id,
+                role_id="aion",
+                source_kind="private",
+                source_ref=conv_id,
+            )
+
             full_text = _visible_ai_text(full_text)
 
             # 检测 [转账：N元] 指令 — AI 转账入账（不从 full_text 中剥离，前端渲染卡片需要）
@@ -1296,6 +1327,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
             full_text, image_atts = _extract_reply_image_attachments(full_text)
             reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts)
             reply_atts = await _with_link_previews(full_text, reply_atts)
+            reply_atts = await with_band_vibration_attachment(ai_msg_id, reply_atts)
             att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else ""
 
             now2 = time.time()
@@ -1309,6 +1341,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
 
             ai_msg = {"id": ai_msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now2, "attachments": reply_atts, "reasoning_content": usage_meta.get("reasoning_content", "").strip()}
             await manager.broadcast({"type": "msg_created", "data": ai_msg})
+            await broadcast_app_supervision_command(supervision_command)
             await export_conversation(conv_id)
 
             if toy_matches:
@@ -1423,7 +1456,6 @@ async def send_message(conv_id: str, body: MsgCreate):
     if body.client_id:
         manager.set_last_sender(body.client_id)
     # Aion 侧：用户在 Aion 私聊发消息
-    manager.set_aion_last_active("private")
     now = time.time()
     msg_id = f"msg_{int(now*1000)}"
 
@@ -1470,6 +1502,7 @@ async def send_message(conv_id: str, body: MsgCreate):
             await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
         await db.commit()
 
+    await record_aion_private_active()
     if duplicate_msg:
         await manager.broadcast({"type": "msg_created", "data": duplicate_msg})
         return _done_streaming_response()
@@ -1661,7 +1694,7 @@ async def send_message(conv_id: str, body: MsgCreate):
         if recall_query:
             recalled = [r for r in debug_top6 if r["score"] >= 0.45 and r["id"] not in surfaced_ids][:5]
             # 如果需要补充记忆证据
-            if digest_result.get("require_detail") and recalled:
+            if (is_search_needed or digest_result.get("require_detail")) and recalled:
                 detail_text = await fetch_source_details(recalled, recall_keywords)
 
         debug_recalled = [{"content": m["content"], "type": m["type"], "score": m["score"],
@@ -1747,6 +1780,13 @@ async def send_message(conv_id: str, body: MsgCreate):
                     except Exception:
                         pass
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
+
+            full_text = await process_band_vibration(
+                full_text,
+                source_type="private",
+                source_id=conv_id,
+                source_msg_id=ai_msg_id,
+            )
 
             # 检测 [TOY:x] 指令
             toy_matches = TOY_CMD_PATTERN.findall(full_text)
@@ -1872,6 +1912,14 @@ async def send_message(conv_id: str, body: MsgCreate):
                 source_ref=f"{conv_id}:{ai_msg_id}",
             )
 
+            full_text, supervision_command = await queue_app_supervision_reply_command(
+                full_text,
+                source_message_id=ai_msg_id,
+                role_id="aion",
+                source_kind="private",
+                source_ref=conv_id,
+            )
+
             # 检测 [转账：N元] 指令 — AI 转账入账
             transfer_matches = TRANSFER_CMD_PATTERN.findall(full_text)
             for t_amount_str in transfer_matches:
@@ -1940,6 +1988,7 @@ async def send_message(conv_id: str, body: MsgCreate):
             full_text, image_atts = _extract_reply_image_attachments(full_text)
             reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts)
             reply_atts = await _with_link_previews(full_text, reply_atts)
+            reply_atts = await with_band_vibration_attachment(ai_msg_id, reply_atts)
             att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else ""
 
             now2 = time.time()
@@ -1953,6 +2002,7 @@ async def send_message(conv_id: str, body: MsgCreate):
 
             ai_msg = {"id": ai_msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now2, "attachments": reply_atts, "reasoning_content": usage_meta.get("reasoning_content", "").strip()}
             await manager.broadcast({"type": "msg_created", "data": ai_msg})
+            await broadcast_app_supervision_command(supervision_command)
             await export_conversation(conv_id)
 
             # 推送 [TOY:x] 指令到前端
@@ -2305,6 +2355,8 @@ async def perform_web_search_check(conv_id: str, model_key: str, searches: list[
         f"你刚才为了回答{user_name}发起了联网搜索或网页读取，系统已经完成。以下是结果：\n\n"
         f"{web_context}\n\n"
         f"请根据这些结果自然回答{user_name}。如果信息不足，请说明不足；不要编造来源。"
+        "请先自行归纳总结搜索结果，只提供与当前问题或分享主题直接相关的关键信息。"
+        "请像平时聊天一样自然表达，不要写成搜索报告，不要逐条复述搜索结果，也不要长篇大论。"
         f"除非确实必须继续核实，否则不要再次输出 [WEB_SEARCH:...] 或 [WEB_EXTRACT:...]。"
     )
     messages = prefix + recent + [{"role": "user", "content": web_prompt}]
@@ -2347,15 +2399,17 @@ async def perform_web_search_check(conv_id: str, model_key: str, searches: list[
     full_text = _visible_ai_text(clean_web_command_text(full_text))
 
     now = time.time()
+    reply_atts = await with_band_vibration_attachment(msg_id, [])
+    att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else "[]"
     async with get_db() as db:
         await db.execute(
             "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-            (msg_id, conv_id, "assistant", full_text, now, "[]"),
+            (msg_id, conv_id, "assistant", full_text, now, att_json),
         )
         await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
         await db.commit()
 
-    ai_msg = {"id": msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now, "attachments": []}
+    ai_msg = {"id": msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now, "attachments": reply_atts}
     await manager.broadcast({"type": "msg_created", "data": ai_msg})
     if web_tts:
         try:
@@ -2534,16 +2588,18 @@ async def perform_poi_check(conv_id: str, model_key: str, categories: list[str])
     await manager.broadcast({"type": "msg_created", "data": sys_msg})
 
     now = time.time()
+    reply_atts = await with_band_vibration_attachment(msg_id, [])
+    att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else "[]"
     async with get_db() as db:
         await db.execute(
             "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-            (msg_id, conv_id, "assistant", full_text, now, "[]")
+            (msg_id, conv_id, "assistant", full_text, now, att_json)
         )
         await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
         await db.commit()
 
     ai_msg = {"id": msg_id, "conv_id": conv_id, "role": "assistant",
-              "content": full_text, "created_at": now, "attachments": []}
+              "content": full_text, "created_at": now, "attachments": reply_atts}
     await manager.broadcast({"type": "msg_created", "data": ai_msg})
     if poi_tts:
         try:
@@ -2672,16 +2728,18 @@ async def perform_activity_check(conv_id: str, model_key: str, n: int = 6):
     await manager.broadcast({"type": "msg_created", "data": sys_msg})
 
     now = time.time()
+    reply_atts = await with_band_vibration_attachment(msg_id, [])
+    att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else "[]"
     async with get_db() as db:
         await db.execute(
             "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-            (msg_id, conv_id, "assistant", full_text, now, "[]")
+            (msg_id, conv_id, "assistant", full_text, now, att_json)
         )
         await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
         await db.commit()
 
     ai_msg = {"id": msg_id, "conv_id": conv_id, "role": "assistant",
-              "content": full_text, "created_at": now, "attachments": []}
+              "content": full_text, "created_at": now, "attachments": reply_atts}
     await manager.broadcast({"type": "msg_created", "data": ai_msg})
     if ac_tts:
         try:
@@ -2806,7 +2864,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
 
         if recall_query:
             recalled = [r for r in debug_top6 if r["score"] >= 0.45 and r["id"] not in surfaced_ids][:5]
-            if digest_result.get("require_detail") and recalled:
+            if (is_search_needed or digest_result.get("require_detail")) and recalled:
                 detail_text = await fetch_source_details(recalled, recall_keywords)
 
         debug_recalled = [{"content": m["content"], "type": m["type"], "score": m["score"],
@@ -2890,6 +2948,13 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                     except Exception:
                         pass
                 full_text = MUSIC_CMD_PATTERN.sub("", full_text).strip()
+
+            full_text = await process_band_vibration(
+                full_text,
+                source_type="private",
+                source_id=conv_id,
+                source_msg_id=ai_msg_id,
+            )
 
             # 检测 [TOY:x] 指令
             toy_matches = TOY_CMD_PATTERN.findall(full_text)
@@ -3044,6 +3109,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             full_text, image_atts = _extract_reply_image_attachments(full_text)
             reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts)
             reply_atts = await _with_link_previews(full_text, reply_atts)
+            reply_atts = await with_band_vibration_attachment(ai_msg_id, reply_atts)
             att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else ""
 
             now2 = time.time()

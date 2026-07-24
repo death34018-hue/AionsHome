@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional
 
 import aiosqlite
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from config import load_digest_anchor, load_worldbook, save_digest_anchor
@@ -19,7 +19,16 @@ from memory import (
     get_latest_daily_compression_review, apply_daily_compression_review,
     discard_daily_compression_review, update_daily_compression_review, _memory_time_payload,
 )
+from memory_compression import (
+    compression_preview,
+    create_calendar_compression_job,
+    get_calendar_compression_job,
+    list_latest_calendar_compression_jobs,
+    resolve_source_message_ids,
+    run_calendar_compression,
+)
 from ws import manager
+from sync_events import append_sync_event, attach_sync_seq
 
 router = APIRouter()
 
@@ -57,6 +66,12 @@ class DailyCompressionRequest(BaseModel):
 
 class DailyCompressionDraftUpdate(BaseModel):
     payload: dict
+
+
+class CalendarCompressionRequest(BaseModel):
+    target: str = "main"
+    level: str
+    model_key: str
 
 
 def _json_list(value):
@@ -185,15 +200,60 @@ async def _fetch_source_rows_by_ids(source_ids: list[str], user_name: str, ai_na
 
 
 @router.get("/api/memories")
-async def list_memories():
+async def list_memories(
+    limit: int = Query(50, ge=1, le=100),
+    before: Optional[float] = Query(None),
+    q: str = Query("", max_length=200),
+):
+    """Cursor-paginated memories; the former unbounded response was slow outdoors."""
+    search = (q or "").strip().lower()
+    where = ["COALESCE(archive_state,'active')='active'"]
+    params: list = []
+    sort_expr = "COALESCE(source_end_ts, source_start_ts, created_at)"
+    if before is not None:
+        where.append(f"{sort_expr} < ?")
+        params.append(before)
+    if search:
+        where.append("(LOWER(content) LIKE ? OR LOWER(COALESCE(keywords,'')) LIKE ? OR LOWER(type) LIKE ?)")
+        needle = f"%{search}%"
+        params.extend([needle, needle, needle])
+    where_sql = f" WHERE {' AND '.join(where)}" if where else ""
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
+            "SELECT COUNT(*) AS total, "
+            "SUM(CASE WHEN LOWER(type) IN ('daily','digest','seeky_digest','seeky_compressed') "
+            "THEN 1 ELSE 0 END) AS daily, "
+            "SUM(CASE WHEN LOWER(type) NOT IN ('daily','digest','seeky_digest','seeky_compressed') "
+            "THEN 1 ELSE 0 END) AS long_term "
+            "FROM memories WHERE COALESCE(archive_state,'active')='active'",
+        )
+        count_row = await cur.fetchone()
+        total = int(count_row["total"] or 0)
+        kind_totals = {
+            "all": total,
+            "daily": int(count_row["daily"] or 0),
+            "long_term": int(count_row["long_term"] or 0),
+        }
+        filtered_total = total
+        if search:
+            search_needle = f"%{search}%"
+            cur = await db.execute(
+                "SELECT COUNT(*) AS total FROM memories "
+                "WHERE COALESCE(archive_state,'active')='active' "
+                "AND (LOWER(content) LIKE ? OR LOWER(COALESCE(keywords,'')) LIKE ? OR LOWER(type) LIKE ?)",
+                (search_needle, search_needle, search_needle),
+            )
+            filtered_total = int((await cur.fetchone())["total"] or 0)
+        cur = await db.execute(
             "SELECT id, content, type, created_at, source_conv, keywords, importance, "
             "source_start_ts, source_end_ts, unresolved, source_msg_id, evidence_summary, evidence_detail_level "
-            "FROM memories ORDER BY COALESCE(source_end_ts, source_start_ts, created_at) DESC"
+            f"FROM memories{where_sql} ORDER BY {sort_expr} DESC LIMIT ?",
+            (*params, limit + 1),
         )
         rows = await cur.fetchall()
+        has_more = len(rows) > limit
+        rows = rows[:limit]
         result = []
         for row in rows:
             item = dict(row)
@@ -221,7 +281,18 @@ async def list_memories():
             else:
                 item["source_count"] = 0
             result.append(item)
-    return result
+    next_cursor = None
+    if result:
+        last = result[-1]
+        next_cursor = last.get("source_end_ts") or last.get("source_start_ts") or last.get("created_at")
+    return {
+        "items": result,
+        "total": total,
+        "kind_totals": kind_totals,
+        "filtered_total": filtered_total,
+        "has_more": has_more,
+        "next_cursor": next_cursor,
+    }
 
 
 @router.post("/api/memories")
@@ -229,13 +300,6 @@ async def create_memory(body: MemoryCreate):
     vec = await get_embedding(body.content)
     mem_id = f"mem_{int(time.time() * 1000)}"
     now = time.time()
-    async with get_db() as db:
-        await db.execute(
-            "INSERT INTO memories (id, content, type, created_at, source_conv, embedding, keywords, importance, source_start_ts, source_end_ts, evidence_summary, evidence_detail_level) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (mem_id, body.content, body.type, now, None, _pack_embedding(vec) if vec else None, "", 0.5, None, None, "", "summary"),
-        )
-        await db.commit()
     mem = {
         "id": mem_id,
         "content": body.content,
@@ -252,7 +316,16 @@ async def create_memory(body: MemoryCreate):
         "memory_kind_label": memory_kind_label(body.type),
     }
     mem.update(_memory_time_payload(mem))
-    await manager.broadcast({"type": "memory_added", "data": mem})
+    event = {"type": "memory_added", "data": mem}
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO memories (id, content, type, created_at, source_conv, embedding, keywords, importance, source_start_ts, source_end_ts, evidence_summary, evidence_detail_level) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (mem_id, body.content, body.type, now, None, _pack_embedding(vec) if vec else None, "", 0.5, None, None, "", "summary"),
+        )
+        seq = await append_sync_event(db, event)
+        await db.commit()
+    await manager.broadcast(attach_sync_seq(event, seq))
     return mem
 
 
@@ -279,8 +352,15 @@ async def update_memory(mem_id: str, body: MemoryUpdate):
             params.append(str(body.evidence_summary or "").strip())
         params.append(mem_id)
         await db.execute(f"UPDATE memories SET {', '.join(fields)} WHERE id=?", params)
+        event_data = {"id": mem_id, **body.model_dump(exclude_none=True)}
+        if body.type is not None:
+            event_data["memory_kind"] = memory_kind_for_type(body.type)
+            event_data["memory_kind_label"] = memory_kind_label(body.type)
+        event = {"type": "memory_updated", "data": event_data}
+        seq = await append_sync_event(db, event)
         await db.commit()
-    return {"ok": True, "id": mem_id}
+    await manager.broadcast(attach_sync_seq(event, seq))
+    return {"ok": True, **event_data}
 
 
 @router.patch("/api/memories/{mem_id}/kind")
@@ -296,13 +376,19 @@ async def update_memory_kind(mem_id: str, body: MemoryKindUpdate):
         if not row:
             raise HTTPException(status_code=404, detail="Memory not found")
         await db.execute("UPDATE memories SET type=? WHERE id=?", (new_type, mem_id))
+        event_data = {
+            "id": mem_id,
+            "type": new_type,
+            "memory_kind": selected_kind,
+            "memory_kind_label": memory_kind_label(new_type),
+        }
+        event = {"type": "memory_updated", "data": event_data}
+        seq = await append_sync_event(db, event)
         await db.commit()
+    await manager.broadcast(attach_sync_seq(event, seq))
     return {
         "ok": True,
-        "id": mem_id,
-        "type": new_type,
-        "memory_kind": selected_kind,
-        "memory_kind_label": memory_kind_label(new_type),
+        **event_data,
     }
 
 
@@ -310,7 +396,10 @@ async def update_memory_kind(mem_id: str, body: MemoryKindUpdate):
 async def delete_memory(mem_id: str):
     async with get_db() as db:
         await db.execute("DELETE FROM memories WHERE id=?", (mem_id,))
+        event = {"type": "memory_deleted", "data": {"id": mem_id}}
+        seq = await append_sync_event(db, event)
         await db.commit()
+    await manager.broadcast(attach_sync_seq(event, seq))
     return {"ok": True}
 
 
@@ -324,7 +413,10 @@ async def toggle_unresolved(mem_id: str):
             return {"ok": False, "message": "Memory not found"}
         new_val = 0 if row["unresolved"] else 1
         await db.execute("UPDATE memories SET unresolved=? WHERE id=?", (new_val, mem_id))
+        event = {"type": "memory_updated", "data": {"id": mem_id, "unresolved": new_val}}
+        seq = await append_sync_event(db, event)
         await db.commit()
+    await manager.broadcast(attach_sync_seq(event, seq))
     return {"ok": True, "unresolved": new_val}
 
 
@@ -359,7 +451,12 @@ async def latest_daily_compression_review(target: str = "main"):
 
 @router.post("/api/memories/compress-daily/{review_id}/apply")
 async def apply_daily_compression(review_id: str):
-    return await apply_daily_compression_review(review_id)
+    result = await apply_daily_compression_review(review_id)
+    await manager.broadcast({
+        "type": "memory_collection_changed",
+        "data": {"review_id": review_id, "reason": "compression"},
+    })
+    return result
 
 
 @router.patch("/api/memories/compress-daily/{review_id}")
@@ -370,6 +467,59 @@ async def update_daily_compression(review_id: str, body: DailyCompressionDraftUp
 @router.post("/api/memories/compress-daily/{review_id}/discard")
 async def discard_daily_compression(review_id: str):
     return await discard_daily_compression_review(review_id)
+
+
+@router.get("/api/memories/calendar-compression/preview")
+async def preview_calendar_compression(target: str = "main", level: str = "daily"):
+    try:
+        preview = await compression_preview(target=target, level=level)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "preview": preview}
+
+
+@router.post("/api/memories/calendar-compression/run")
+async def trigger_calendar_compression(body: CalendarCompressionRequest):
+    result = await run_calendar_compression(
+        target=body.target,
+        level=body.level,
+        model_key=body.model_key,
+    )
+    if result.get("ok"):
+        await manager.broadcast({
+            "type": "memory_collection_changed",
+            "data": {
+                "reason": "calendar_compression",
+                "target": body.target,
+                "level": body.level,
+            },
+        })
+    return result
+
+
+@router.get("/api/memories/calendar-compression/jobs")
+async def latest_calendar_compression_jobs(target: str = "main"):
+    return {
+        "ok": True,
+        "jobs": await list_latest_calendar_compression_jobs(target),
+    }
+
+
+@router.post("/api/memories/calendar-compression/jobs")
+async def start_calendar_compression_job(body: CalendarCompressionRequest):
+    return await create_calendar_compression_job(
+        target=body.target,
+        level=body.level,
+        model_key=body.model_key,
+    )
+
+
+@router.get("/api/memories/calendar-compression/jobs/{job_id}")
+async def calendar_compression_job_status(job_id: str):
+    job = await get_calendar_compression_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Compression job not found")
+    return {"ok": True, "job": job}
 
 
 @router.post("/api/memories/rebuild-embeddings")
@@ -403,7 +553,8 @@ async def get_memory_source(mem_id: str):
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "SELECT id, content, keywords, source_conv, source_start_ts, source_end_ts, source_msg_id "
+            "SELECT id, content, keywords, source_conv, source_start_ts, source_end_ts, "
+            "source_msg_id, compression_batch_id "
             "FROM memories WHERE id=?",
             (mem_id,),
         )
@@ -412,6 +563,8 @@ async def get_memory_source(mem_id: str):
         raise HTTPException(status_code=404, detail="Memory not found")
 
     selected_ids = set(_source_ids_for_memory(mem))
+    if not selected_ids and str(mem["compression_batch_id"] or "").strip():
+        selected_ids.update(await resolve_source_message_ids("main", mem_id))
     if not selected_ids and (not mem["source_start_ts"] or not mem["source_end_ts"]):
         return {"ok": False, "message": "No source messages for this memory"}
 

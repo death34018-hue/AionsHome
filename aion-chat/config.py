@@ -204,15 +204,11 @@ BUILTIN_MODELS = {
     "硅基GLM-5.2":      {"provider": "siliconflow", "model": "zai-org/GLM-5.2", "vision": False},
     "硅基Kimi2.7":      {"provider": "siliconflow", "model": "moonshotai/Kimi-K2.7-Code", "vision": True},
     "硅基DS-v4":      {"provider": "siliconflow", "model": "deepseek-ai/DeepSeek-V4-Pro", "vision": False},
-    "官方Gemini3.5flash":  {"provider": "gemini", "model": "gemini-3.5-flash", "vision": True},
-    "官方Gemini3.1pro":  {"provider": "gemini", "model": "gemini-3.1-pro-preview", "vision": True},
-    # Keep the established key for persisted chatroom settings on the warmer
-    # GPT-5.5 companion-chat default.
-    "Codex-5.5":            {"provider": "codex_cli",  "model": "gpt-5.5", "vision": True},
-    # GPT-5.6 tiers are intentionally disabled for companion chat. Keep the
-    # mappings here for a future opt-in without exposing them in the UI.
-    # "Codex":          {"provider": "codex_cli",  "model": "gpt-5.6-terra", "vision": True},
+    "官Gem3.6flash":  {"provider": "gemini", "model": "gemini-3.6-flash", "vision": True},
+    "官Gem3.1pro":  {"provider": "gemini", "model": "gemini-3.1-pro-preview", "vision": True},
+    # "Codex-5.5":            {"provider": "codex_cli",  "model": "gpt-5.5", "vision": True},
     "Codex-Sol":      {"provider": "codex_cli",  "model": "gpt-5.6-sol", "vision": True},
+    # "Codex":          {"provider": "codex_cli",  "model": "gpt-5.6-terra", "vision": True},
     # "Codex-Luna":     {"provider": "codex_cli",  "model": "gpt-5.6-luna", "vision": True},
     # "CLI-3.1pro":       {"provider": "gemini_cli", "model": "gemini-3.1-pro-preview", "vision": True},
 }
@@ -249,10 +245,12 @@ def normalize_custom_model_routes(value) -> list[dict]:
                 model_id = _clean_text(raw_model)
                 model_key = model_id
                 vision = True
+                audio = False
             elif isinstance(raw_model, dict):
                 model_id = _clean_text(raw_model.get("model") or raw_model.get("model_id"))
                 model_key = _clean_text(raw_model.get("key") or raw_model.get("name") or model_id)
                 vision = bool(raw_model.get("vision", True))
+                audio = raw_model.get("audio") is True
             else:
                 continue
             if not model_id or not model_key:
@@ -264,6 +262,7 @@ def normalize_custom_model_routes(value) -> list[dict]:
                 "key": model_key,
                 "model": model_id,
                 "vision": vision,
+                "audio": audio,
             })
         if models:
             routes.append({
@@ -287,6 +286,7 @@ def refresh_custom_models() -> None:
                 "provider": CUSTOM_OPENAI_PROVIDER,
                 "model": item["model"],
                 "vision": bool(item.get("vision", True)),
+                "audio": item.get("audio") is True,
                 "base_url": route["base_url"],
                 "api_key": route.get("api_key", ""),
                 "route_id": route["id"],

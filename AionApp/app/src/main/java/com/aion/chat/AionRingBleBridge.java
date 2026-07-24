@@ -17,6 +17,7 @@ import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanRecord;
 import android.bluetooth.le.ScanResult;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Handler;
@@ -52,6 +53,7 @@ public class AionRingBleBridge {
     private static final String KEY_LAST_SYNC_FAILURE = "bg_last_sync_failure";
     private static final String KEY_PAGE_CONNECTED = "page_connection_active";
     private static final String KEY_PAGE_CONNECTED_AT = "page_connection_active_at";
+    private static final String KEY_RING_ENABLED = "ring_enabled";
     private static final int AUTO_SYNC_OFFSET_MINUTE = 2;
     private static final UUID CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
     private static final int[] RING_COMPANY_IDS = {0x7810, 0x7811, 0x7812, 0x7813, 0xFEC5};
@@ -91,7 +93,7 @@ public class AionRingBleBridge {
     private final Runnable autoSyncRunnable = new Runnable() {
         @Override
         public void run() {
-            if (!connected) return;
+            if (!isRingEnabled() || !connected) return;
             markPageConnectionActive();
             callJs("ringNativeBle.onLog('原生定时触发戒指同步')");
             callJs("syncRingHistory(true)");
@@ -111,6 +113,8 @@ public class AionRingBleBridge {
     private boolean legacyGattMode = false;
     private boolean autoConnectScan = false;
     private boolean pickerScan = false;
+    private volatile boolean healthPageVisible = false;
+    private int backgroundHandoffGeneration = 0;
     private int scanSession = 0;
     private int autoConnectFailCount = 0;       // 自动连接失败计数
     private static final int MAX_AUTO_CONNECT_FAIL = 3;  // 最多自动连接尝试次数
@@ -125,6 +129,31 @@ public class AionRingBleBridge {
         this.context = context;
         BluetoothManager bm = (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
         if (bm != null) adapter = bm.getAdapter();
+    }
+
+    @JavascriptInterface
+    public boolean isRingEnabled() {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean(KEY_RING_ENABLED, true);
+    }
+
+    @JavascriptInterface
+    public void setRingEnabled(boolean enabled) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean(KEY_RING_ENABLED, enabled)
+                .apply();
+        if (!enabled) {
+            backgroundHandoffGeneration++;
+            mainHandler.post(() -> disconnectInternal(true));
+        }
+        try {
+            Intent intent = new Intent(context, AionPushService.class);
+            intent.putExtra("action", AionPushService.ACTION_RING_FEATURE_CHANGED);
+            context.startService(intent);
+        } catch (Exception e) {
+            Log.w(TAG, "Unable to notify ring feature setting change", e);
+        }
     }
 
     @JavascriptInterface
@@ -171,6 +200,7 @@ public class AionRingBleBridge {
     }
 
     private void startRingScan(boolean autoConnectSaved, boolean showPicker) {
+        if (!isRingEnabled()) return;
         if (adapter == null || !adapter.isEnabled()) {
             callJs("ringNativeBle.onError('蓝牙未开启')");
             return;
@@ -185,7 +215,7 @@ public class AionRingBleBridge {
             callJs("ringNativeBle.onConnected('" + escapeJs(deviceName) + "')");
             return;
         }
-        if (gatt != null && gattConnected) {
+        if (gatt != null && gattConnected && !showPicker) {
             callJs("ringNativeBle.onLog('已有GATT连接，重新发现服务')");
             discoverServices(gatt);
             return;
@@ -194,11 +224,19 @@ public class AionRingBleBridge {
             callJs("ringNativeBle.onLog('正在扫描中，请稍等')");
             return;
         }
+        // A previous connection attempt can own the peripheral even though it
+        // never reached the ready state. Close it before trying to discover the
+        // ring again, otherwise the ring may stop advertising and appear lost.
+        releaseUnreadyGattBeforeScan();
         scanner = adapter.getBluetoothLeScanner();
         if (scanner == null) {
             callJs("ringNativeBle.onError('无法获取BLE扫描器')");
             return;
         }
+        // Claim ownership before scanning so the background service cannot
+        // start a second GATT client during the page's connection handshake.
+        markPageConnectionActive();
+        requestBackgroundRingRelease();
         scanning = true;
         autoConnectScan = autoConnectSaved;
         pickerScan = showPicker;
@@ -246,8 +284,122 @@ public class AionRingBleBridge {
         }, 12000);
     }
 
+    private void releaseUnreadyGattBeforeScan() {
+        BluetoothGatt staleGatt = gatt;
+        if (staleGatt == null || connected) return;
+        gatt = null;
+        gattConnected = false;
+        writeChar = null;
+        currentDevice = null;
+        discoverAttempt = 0;
+        gattConnectAttempt = 0;
+        lastStage = "releasing_stale_gatt";
+        synchronized (gattOpQueue) {
+            gattOpQueue.clear();
+            gattOpBusy = false;
+        }
+        try { staleGatt.disconnect(); } catch (Exception ignored) {}
+        try { staleGatt.close(); } catch (Exception ignored) {}
+        callJs("ringNativeBle.onLog('已释放上一次未完成的戒指连接，重新扫描')");
+    }
+
+    private void requestBackgroundRingRelease() {
+        try {
+            Intent intent = new Intent(context, AionPushService.class);
+            intent.putExtra("action", AionPushService.ACTION_RELEASE_RING_FOR_PAGE);
+            context.startService(intent);
+        } catch (Exception e) {
+            Log.w(TAG, "Unable to request background ring handoff", e);
+        }
+    }
+
+    private void requestBackgroundRingAcquire() {
+        if (!isRingEnabled()) return;
+        try {
+            Intent intent = new Intent(context, AionPushService.class);
+            intent.putExtra("action", AionPushService.ACTION_ACQUIRE_RING_FOR_BACKGROUND);
+            context.startService(intent);
+        } catch (Exception e) {
+            Log.w(TAG, "Unable to request immediate background ring handoff", e);
+        }
+    }
+
     @JavascriptInterface
     public void disconnect() {
+        disconnectInternal(true);
+    }
+
+    /**
+     * The WebView cannot reliably execute health-page JavaScript after the app
+     * is backgrounded. Release its GATT client before the foreground service
+     * is told to take over scheduled synchronization.
+     */
+    public void releaseForBackgroundSync() {
+        if (!isRingEnabled()) {
+            disconnectInternal(true);
+            return;
+        }
+        handoffConnectedPageToBackground();
+    }
+
+    /** Ask the top-level chat page to report whether its persistent health iframe is visible. */
+    public void resumeHealthPageConnection() {
+        if (!isRingEnabled()) return;
+        if (!hasSavedDevice()) return;
+        mainHandler.post(() -> webView.evaluateJavascript(
+                "(function(){try{if(typeof window.syncHealthRingPageVisibility==='function'){"
+                        + "window.syncHealthRingPageVisibility();}}catch(e){}})()",
+                null));
+    }
+
+    /**
+     * Persistent feature iframes are hidden with CSS instead of being unloaded,
+     * so pagehide/visibilitychange cannot be used as the BLE ownership signal.
+     */
+    @JavascriptInterface
+    public void setHealthPageVisible(boolean visible) {
+        healthPageVisible = visible;
+        if (!isRingEnabled()) {
+            backgroundHandoffGeneration++;
+            disconnectInternal(true);
+            return;
+        }
+        if (!visible) {
+            handoffConnectedPageToBackground();
+            return;
+        }
+        backgroundHandoffGeneration++;
+        if (!hasSavedDevice()) return;
+        if (connected) {
+            requestBackgroundRingRelease();
+            markPageConnectionActive();
+            scheduleNextAutoSync();
+            callJs("ringNativeBle.onConnected('" + escapeJs(deviceName) + "')");
+            return;
+        }
+        callJs("ringNativeBle.onDisconnected();"
+                + "w.setTimeout(function(){w.reconnectSavedRingIfNeeded();},250)");
+    }
+
+    private void handoffConnectedPageToBackground() {
+        boolean hadReadyConnection = connected && writeChar != null;
+        healthPageVisible = false;
+        int handoffGeneration = ++backgroundHandoffGeneration;
+        Log.i(TAG, "health page hidden; ready=" + hadReadyConnection
+                + ", handing BLE ownership to background service");
+        if (hadReadyConnection) {
+            // Keep the old client alive briefly so the service can register its
+            // own GATT client against the known connected address. This avoids
+            // relying on an immediate advertising window after disconnect.
+            stopAutoSync();
+            clearPageConnectionActive();
+            requestBackgroundRingAcquire();
+            mainHandler.postDelayed(() -> {
+                if (handoffGeneration != backgroundHandoffGeneration || healthPageVisible) return;
+                disconnectInternal(true);
+            }, 3_500L);
+            return;
+        }
         disconnectInternal(true);
     }
 
@@ -283,6 +435,7 @@ public class AionRingBleBridge {
 
     @JavascriptInterface
     public void connectCandidate(int id) {
+        if (!isRingEnabled()) return;
         BluetoothDevice dev = candidateDevices.get(id);
         if (dev == null) {
             callJs("ringNativeBle.onError('候选设备不存在或已过期')");
@@ -300,6 +453,7 @@ public class AionRingBleBridge {
     public String getStatus() {
         boolean bluetoothEnabled = adapter != null && adapter.isEnabled();
         return "adapter=" + (adapter != null)
+                + ", ringEnabled=" + isRingEnabled()
                 + ", enabled=" + bluetoothEnabled
                 + ", scanner=" + (scanner != null)
                 + ", scanning=" + scanning
@@ -313,6 +467,7 @@ public class AionRingBleBridge {
 
     @JavascriptInterface
     public void write(final String hexPacket) {
+        if (!isRingEnabled()) return;
         if (!connected || writeChar == null || gatt == null) return;
         writeExecutor.execute(() -> writeInternal(hexPacket));
     }
@@ -526,11 +681,13 @@ public class AionRingBleBridge {
     }
 
     private void connectGatt(BluetoothDevice dev) {
+        if (!isRingEnabled()) return;
         gattConnectAttempt = 0;
         connectGatt(dev, false);
     }
 
     private void connectGatt(BluetoothDevice dev, boolean legacyMode) {
+        if (!isRingEnabled()) return;
         try {
             stopScan();
             connected = false;
@@ -567,6 +724,10 @@ public class AionRingBleBridge {
     private final BluetoothGattCallback gattCb = new BluetoothGattCallback() {
         @Override
         public void onConnectionStateChange(BluetoothGatt g, int status, int newState) {
+            if (g != gatt) {
+                try { g.close(); } catch (Exception ignored) {}
+                return;
+            }
             callJs("ringNativeBle.onLog('GATT状态变化: status=" + status + ", state=" + newState + "')");
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 connected = false;
@@ -610,6 +771,7 @@ public class AionRingBleBridge {
 
         @Override
         public void onServicesDiscovered(BluetoothGatt g, int status) {
+            if (g != gatt) return;
             discoverAttempt = 0;
             callJs("ringNativeBle.onLog('服务发现完成: status=" + status + ", count=" + g.getServices().size() + "')");
             if (status != BluetoothGatt.GATT_SUCCESS) {
@@ -854,7 +1016,7 @@ public class AionRingBleBridge {
     }
 
     private void scheduleNextAutoSync() {
-        if (!connected) return;
+        if (!isRingEnabled() || !connected) return;
         mainHandler.removeCallbacks(autoSyncRunnable);
         long delay = computeNextAutoSyncDelayMs();
         mainHandler.postDelayed(autoSyncRunnable, delay);

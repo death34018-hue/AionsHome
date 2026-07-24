@@ -2,7 +2,7 @@
 聊天室核心逻辑：Connor 代理调用、跨窗口上下文构建、AI 互聊控制、聊天室记忆管理
 """
 
-import json, time, struct, asyncio, uuid
+import json, time, struct, asyncio, uuid, os, threading
 from typing import Optional
 from pathlib import Path
 
@@ -21,6 +21,7 @@ from ws import manager
 
 # ── Connor-Codex 服务配置 ──
 CHATROOM_CONFIG_PATH = DATA_DIR / "chatroom_config.json"
+_CHATROOM_CONFIG_LOCK = threading.Lock()
 
 _DEFAULT_CONFIG = {
     "connor_url": "http://127.0.0.1:8787",
@@ -55,7 +56,13 @@ def load_chatroom_config() -> dict:
 
 
 def save_chatroom_config(data: dict):
-    CHATROOM_CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    """Atomically replace config so a killed/slow client cannot leave partial JSON."""
+    CHATROOM_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = CHATROOM_CONFIG_PATH.with_suffix(CHATROOM_CONFIG_PATH.suffix + ".tmp")
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    with _CHATROOM_CONFIG_LOCK:
+        temp_path.write_text(payload, encoding="utf-8")
+        os.replace(temp_path, CHATROOM_CONFIG_PATH)
 
 
 def get_chatroom_names() -> tuple[str, str, str]:
@@ -370,8 +377,9 @@ async def recall_chatroom_memories(
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 f"SELECT {select_cols} FROM chatroom_memories "
+                "WHERE scope = ? AND COALESCE(archive_state,'active')='active' "
                 "ORDER BY unresolved DESC, importance DESC, created_at DESC LIMIT ?",
-                (min(top_k, min_results),),
+                (scope, min(top_k, min_results)),
             )
             rows = await cur.fetchall()
         fallback = []
@@ -387,7 +395,9 @@ async def recall_chatroom_memories(
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            f"SELECT {select_cols} FROM chatroom_memories WHERE embedding IS NOT NULL",
+            f"SELECT {select_cols} FROM chatroom_memories WHERE embedding IS NOT NULL "
+            "AND scope = ? AND COALESCE(archive_state,'active')='active'",
+            (scope,),
         )
         rows = await cur.fetchall()
 
@@ -442,7 +452,9 @@ async def build_surfacing_chatroom_memories(
         cur = await db.execute(
             "SELECT id, content, scope AS type, created_at, keywords, importance, unresolved, "
             "source_start_ts, source_end_ts, evidence_summary "
-            "FROM chatroom_memories WHERE unresolved = 1 ORDER BY created_at DESC LIMIT 2"
+            "FROM chatroom_memories WHERE unresolved = 1 "
+            "AND COALESCE(archive_state,'active')='active' "
+            "ORDER BY created_at DESC LIMIT 2"
         )
         unresolved_rows = await cur.fetchall()
     for row in unresolved_rows:
@@ -468,7 +480,8 @@ async def build_surfacing_chatroom_memories(
                 cur = await db.execute(
                     "SELECT id, content, scope AS type, created_at, embedding, keywords, importance, "
                     "source_start_ts, source_end_ts, evidence_summary "
-                    "FROM chatroom_memories WHERE embedding IS NOT NULL"
+                    "FROM chatroom_memories WHERE embedding IS NOT NULL "
+                    "AND COALESCE(archive_state,'active')='active'"
                 )
                 rows = await cur.fetchall()
             scored = []
@@ -503,7 +516,8 @@ async def build_surfacing_chatroom_memories(
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "SELECT id, content, scope AS type, created_at, source_start_ts, source_end_ts, evidence_summary FROM chatroom_memories "
-                "WHERE COALESCE(source_end_ts, source_start_ts, created_at) > ? "
+                "WHERE COALESCE(archive_state,'active')='active' "
+                "AND COALESCE(source_end_ts, source_start_ts, created_at) > ? "
                 "ORDER BY COALESCE(source_end_ts, source_start_ts, created_at) DESC LIMIT ?",
                 (three_days_ago, max_total)
             )
@@ -660,7 +674,7 @@ async def save_chatroom_memory(
 
 async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_wishes: bool = False) -> dict:
     """对 Connor 的所有消息（1v1 + 群聊）统一进行总结，通过 Codex 生成记忆。
-    支持分组（每 30 条一组），总结后生成日记 + 可选朋友圈 + 礼物判断。
+    支持分组（每批 20-50 条），总结后生成日记 + 可选朋友圈 + 礼物判断。
     room_id 参数保留兼容性但不再用于限定数据源。"""
 
     # 读取统一锚点（以 "connor_unified" 为 key）
@@ -720,8 +734,8 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
             "processed_messages": 0,
         }
 
-    if len(msgs) < 30:
-        return {"ok": False, "message": f"消息不足（{len(msgs)}条），至少需要 30 条"}
+    if len(msgs) < 40:
+        return {"ok": False, "message": f"消息不足（{len(msgs)}条），至少需要 40 条"}
 
     # 读取世界书人设
     wb = load_worldbook()
@@ -735,9 +749,9 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
     if wb.get("user_persona"):
         persona_block += f"[{user_name}的信息]\n{wb['user_persona']}\n\n"
 
-    # ── 分组（每 30 条一组，余数<10 并入最后一组）──
+    # ── 分组（每批 20-50 条，均匀分配且绝不超过 50 条）──
     from memory import _atomic_digest_prompt, _normalize_digest_memory_items, _split_into_groups
-    groups = _split_into_groups(msgs, 30)
+    groups = _split_into_groups(msgs)
     total_new = 0
     all_summaries = []
     digest_incomplete = False
@@ -1049,15 +1063,11 @@ async def build_aion_group_context(
         recent_for_digest.append({"role": role, "content": msg.get("content", "")[:200]})
     actual_recent = [m for m in recent_for_digest if m["role"] in ("user", "assistant")][-3:]
 
-    # 4. 记忆召回（使用共享模块，Aion 读主记忆库 + 聊天室记忆）
-    async def _chatroom_recall(query, keywords):
-        return await recall_chatroom_memories(query, room_id, "group", keywords, top_k=5, min_results=3)
-
+    # 4. 记忆召回：主角色只读取主记忆库，不合并副角色的聊天室记忆。
     mem_result = await build_memory_blocks(
         query_text,
         recent_messages=actual_recent,
         use_main_memories=True,
-        chatroom_recall_fn=_chatroom_recall,
         digest_result=digest_result,
         always_include_recalled=True,
     )

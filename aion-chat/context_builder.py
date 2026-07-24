@@ -21,6 +21,7 @@ from capabilities import (
     format_ability_block,
     is_capability_enabled,
 )
+from app_supervision_ai import APP_COMMAND_PATTERN
 from memory import (
     instant_digest, recall_memories, build_surfacing_memories,
     fetch_source_details, _memory_line_with_evidence,
@@ -41,6 +42,11 @@ POI_SEARCH_PATTERN = re.compile(r'\[POI_SEARCH:([^\]]+)\]')
 TOY_CMD_PATTERN = re.compile(r'\[TOY:(\d|STOP)\]')
 PET_CMD_PATTERN = re.compile(r'\[PET:([a-z_\-]+)\]', re.IGNORECASE)
 HOME_CMD_PATTERN = re.compile(r'\[HOME:([^\]]+)\]', re.IGNORECASE)
+BAND_VIBRATE_CMD_PATTERN = re.compile(r'\[BAND_VIBRATE:(single|call)\]', re.IGNORECASE)
+BAND_NOTE_CMD_PATTERN = re.compile(
+    r'\[BAND_NOTE_(?:SINGLE|CALL)\s*[：:]\s*[^\]]*\]',
+    re.IGNORECASE,
+)
 TRANSFER_CMD_PATTERN = re.compile(r'\[转账[：:]\s*(-?\d+(?:\.\d+)?)\s*元\]')
 PRIVATE_WHISPER_CMD_PATTERN = re.compile(r'\[悄悄话[：:]\s*([^\]]+)\]')
 VIDEO_CALL_CMD = '[视频电话]'
@@ -51,8 +57,10 @@ _ALL_CMD_PATTERNS = [
     MUSIC_CMD_PATTERN, MOMENT_CMD_PATTERN, MEMORY_CMD_PATTERN, WISH_CMD_PATTERN,
     ACTIVITY_CHECK_PATTERN, SELFIE_CMD_PATTERN, DRAW_CMD_PATTERN, SONG_CMD_PATTERN,
     POI_SEARCH_PATTERN, TOY_CMD_PATTERN, PET_CMD_PATTERN,
-    HOME_CMD_PATTERN, LUCKIN_CMD_PATTERN, TRANSFER_CMD_PATTERN, PRIVATE_WHISPER_CMD_PATTERN,
+    HOME_CMD_PATTERN, BAND_VIBRATE_CMD_PATTERN, BAND_NOTE_CMD_PATTERN,
+    LUCKIN_CMD_PATTERN, TRANSFER_CMD_PATTERN, PRIVATE_WHISPER_CMD_PATTERN,
     WECHAT_MESSAGE_PATTERN, WEB_SEARCH_CMD_PATTERN, WEB_EXTRACT_CMD_PATTERN,
+    APP_COMMAND_PATTERN,
 ]
 
 def strip_tool_commands(text: str) -> str:
@@ -94,17 +102,16 @@ def _timeline_display_names() -> tuple[str, str, str]:
 
 
 async def build_health_summary() -> str:
-    """当健康数据分享开关打开时，构建一行简短的身体数据摘要。"""
+    """当健康数据分享开关打开时，构建简短的身体数据摘要。"""
     if not is_capability_enabled("health_context"):
         return ""
     try:
         from health_context import category_label, classify_heart_rate, get_heart_config
+        from routes.health import build_mi_band_summary
 
-        heart_cfg = None
         async with get_db() as db:
             db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT * FROM health_ring_latest WHERE id=1")
-            ring = await cur.fetchone()
+            mi_band = await build_mi_band_summary(db)
             heart_cfg = await get_heart_config(db)
             cur = await db.execute(
                 "SELECT weight_kg FROM health_weight_entries ORDER BY date DESC LIMIT 1"
@@ -116,40 +123,58 @@ async def build_health_summary() -> str:
             period_row = await cur.fetchone()
 
         parts = []
-        if ring:
-            hr = ring["heart_rate"]
-            measured_at = ring["measured_at"]
-            sys_bp = ring["systolic_bp"]
-            dia_bp = ring["diastolic_bp"]
-            spo2 = ring["spo2"]
-            hrv = ring["hrv"]
-            if hr:
-                try:
-                    age_seconds = time.time() - float(measured_at or 0)
-                    stale_minutes = int((heart_cfg or {}).get("stale_minutes") or 30)
-                    if measured_at and age_seconds <= stale_minutes * 60:
-                        cat = category_label(classify_heart_rate(int(hr), heart_cfg))
-                        parts.append(f"心率:{hr}({cat})")
-                    else:
-                        parts.append(f"心率:{hr}(数据过期，可能未佩戴/没电/未同步)")
-                except Exception:
-                    parts.append(f"心率:{hr}")
-            if sys_bp and dia_bp: parts.append(f"血压:{sys_bp}/{dia_bp}")
-            if spo2: parts.append(f"血氧:{spo2}")
-            if hrv: parts.append(f"HRV:{hrv}")
-            # 睡眠
-            deep = ring["sleep_deep_min"]
-            light = ring["sleep_light_min"]
-            rem = ring["sleep_rem_min"]
-            awake_c = ring["sleep_wake_count"]
-            awake_m = ring["sleep_wake_min"]
-            if deep or light or rem:
-                sleep_parts = []
-                if deep: sleep_parts.append(f"深睡{deep}m")
-                if light: sleep_parts.append(f"浅睡{light}m")
-                if rem: sleep_parts.append(f"REM{rem}m")
-                if awake_c: sleep_parts.append(f"清醒{awake_c}次{awake_m or 0}m")
-                parts.append(f"睡眠:{'/'.join(sleep_parts)}")
+        hr = mi_band.get("latestHeartRate")
+        measured_at = mi_band.get("latestHeartRateAt")
+        if hr:
+            try:
+                age_seconds = time.time() - float(measured_at or 0)
+                stale_minutes = int((heart_cfg or {}).get("stale_minutes") or 30)
+                if measured_at and age_seconds <= stale_minutes * 60:
+                    cat = category_label(classify_heart_rate(int(hr), heart_cfg))
+                    parts.append(f"心率:{hr}({cat})")
+                else:
+                    parts.append(f"心率:{hr}(数据过期，可能未佩戴/没电/未同步)")
+            except Exception:
+                parts.append(f"心率:{hr}")
+
+        parts.append(
+            f"今日步数:{int(mi_band.get('todaySteps') or 0)} | "
+            f"活动:{int(mi_band.get('activityMinutes') or 0)}分钟"
+        )
+        parts.append(
+            f"最近30分钟：活动{int(mi_band.get('recent30ActivityMinutes') or 0)}分钟，"
+            f"{int(mi_band.get('recent30Steps') or 0)}步"
+        )
+        parts.append(
+            f"最近60分钟：活动{int(mi_band.get('recent60ActivityMinutes') or 0)}分钟，"
+            f"{int(mi_band.get('recent60Steps') or 0)}步"
+        )
+
+        sleep = mi_band.get("sleep") or {}
+        total = int(sleep.get("totalMin") or 0)
+        deep = int(sleep.get("deepMin") or 0)
+        light = int(sleep.get("lightMin") or 0)
+        rem = int(sleep.get("remMin") or 0)
+        if deep or light or rem:
+            if total:
+                parts.append(f"睡眠:总计{total}m")
+            sessions = sleep.get("sessions") or []
+            for session in sessions:
+                start_at = session.get("startAt")
+                end_at = session.get("endAt")
+                if not start_at or not end_at:
+                    continue
+                label = "小睡" if session.get("kind") == "nap" else "主睡"
+                start_text = datetime.fromtimestamp(float(start_at)).strftime("%H:%M")
+                end_text = datetime.fromtimestamp(float(end_at)).strftime("%H:%M")
+                session_min = int(session.get("totalMin") or 0)
+                parts.append(f"{label}:{start_text}-{end_text} | {session_min}m")
+            sleep_stage_parts = []
+            if deep: sleep_stage_parts.append(f"深睡:{deep}m")
+            if light: sleep_stage_parts.append(f"浅睡:{light}m")
+            if rem: sleep_stage_parts.append(f"REM:{rem}m")
+            if sleep_stage_parts:
+                parts.append(" | ".join(sleep_stage_parts))
 
         if weight_row:
             parts.append(f"体重:{weight_row['weight_kg']}kg")
@@ -169,7 +194,7 @@ async def build_health_summary() -> str:
 
         if not parts:
             return ""
-        return f"\n\n[用户健康数据] {' '.join(parts)}"
+        return "\n\n[用户健康数据]\n" + "\n".join(parts)
     except Exception:
         return ""
 
@@ -254,20 +279,18 @@ def _build_recall_query(
     recent_messages: list[dict] = None,
     status: str = "",
 ) -> str:
-    """Build the vector-search query from a topic digest instead of a raw last message."""
+    """Prefer sentinel clues, falling back to the latest user message."""
     if isinstance(keywords, str):
         keywords = [k.strip() for k in re.split(r"[,，、\s]+", keywords) if k.strip()]
     keyword_text = " ".join(str(k).strip() for k in (keywords or []) if str(k).strip())
 
     base = str(topic or "").strip()
     base_from_keywords = False
-    if not base:
-        base = str(status or "").strip()
     if not base and keyword_text:
         base = f"当前话题：{keyword_text}"
         base_from_keywords = True
     if not base:
-        base = "当前对话的记忆线索"
+        return str(query_text or "").strip()
 
     if base_from_keywords:
         return base.strip()
@@ -300,7 +323,7 @@ async def build_memory_blocks(
       chatroom_source_fn: 可选的聊天室原文追溯函数 async (memories, keywords) -> str
       skip_digest: 跳过 instant_digest（快速模式）
       digest_result: 外部传入的 digest 结果（复用同一次调用）
-      always_include_recalled: 是否每轮都注入最高相关的摘要记忆；记忆证据仍由 require_detail 控制
+      always_include_recalled: 已弃用的兼容参数；摘要记忆现在每轮都会按相关度注入
 
     返回 dict:
       time_block: str — 当前时间 + 背景记忆文本
@@ -387,7 +410,7 @@ async def build_memory_blocks(
 
     # RAG 摘要召回；always_include_recalled 用于需要每轮主动带摘要记忆的上下文。
     recalled = []
-    if recall_query and (is_search_needed or always_include_recalled):
+    if recall_query:
         # 主记忆库
         if main_candidates:
             recalled = [r for r in main_candidates if r["score"] >= 0.45 and r["id"] not in surfaced_ids][:5]
@@ -403,7 +426,7 @@ async def build_memory_blocks(
     if recalled:
         mem_lines = "\n".join([_memory_line_with_evidence(m, 200) for m in recalled])
         memory_block = f"[相关记忆]\n你脑海中与当前话题相关的记忆：\n{mem_lines}"
-        if digest_result.get("require_detail"):
+        if is_search_needed or digest_result.get("require_detail"):
             detail_text = ""
             if use_main_memories:
                 detail_text = await fetch_source_details(
@@ -451,6 +474,40 @@ SYSTEM_MSG_CONTEXT_KEYWORDS = ('搜索了', '点歌', '点了一首', '推荐了
 # 这些标记会泄漏文件路径到 LLM 上下文，污染 instant_digest 关键词，
 # 也会触发 Gemini CLI 的 agent 模式扫描文件，必须替换为干净占位符。
 _CHATROOM_IMG_TAG_RE = re.compile(r'\[\[image:[^\]]+\]\]')
+TIMELINE_IMAGE_CONTEXT_USER_TURNS = 3
+_TIMELINE_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp"})
+
+
+def _parse_timeline_attachments(raw) -> list:
+    """把数据库 JSON 或现成列表统一为附件列表。"""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw) if raw else []
+        except Exception:
+            return []
+    return list(raw) if isinstance(raw, list) else []
+
+
+def _is_timeline_image_attachment(attachment) -> bool:
+    """判断附件是否为可在后续用户轮次继续提供给模型的图片。"""
+    if isinstance(attachment, str):
+        url = attachment.strip()
+        type_hint = ""
+    elif isinstance(attachment, dict):
+        url = str(attachment.get("url") or "").strip()
+        type_hint = str(
+            attachment.get("type") or attachment.get("mime_type") or ""
+        ).lower().strip()
+    else:
+        return False
+
+    if not url:
+        return False
+    if type_hint == "image" or type_hint.startswith("image/"):
+        return True
+
+    clean_url = url.split("?", 1)[0].split("#", 1)[0].lower()
+    return any(clean_url.endswith(ext) for ext in _TIMELINE_IMAGE_EXTENSIONS)
 
 
 def _sanitize_timeline_content(content: str) -> str:
@@ -581,17 +638,24 @@ def render_merged_timeline(
     current_source = None
     pending_scene_marker = ""   # 待并入下一条消息内容的场景切换提示
 
-    # 找到最后一条用户消息索引（用于保留附件）
-    last_user_idx = None
-    for i in range(len(merged) - 1, -1, -1):
-        if merged[i]["sender"] == "user":
-            last_user_idx = i
-            break
+    # 图片按用户发言计轮：发图当轮 + 后续两次用户发言，共三轮。
+    # AI 与系统消息不会消耗图片上下文轮数。
+    user_message_indices = [
+        idx for idx, message in enumerate(merged)
+        if message.get("sender") == "user"
+    ]
+    last_user_idx = user_message_indices[-1] if user_message_indices else None
+    retained_image_user_indices = set(
+        user_message_indices[-TIMELINE_IMAGE_CONTEXT_USER_TURNS:]
+    )
 
     for idx, msg in enumerate(merged):
         source = msg["source"]
         sender = msg["sender"]
         content = _sanitize_timeline_content(msg.get("content", ""))
+        message_attachments = _parse_timeline_attachments(
+            msg.get("attachments", [])
+        )
 
         # ── 场景切换标记：不再插入 fake 应答对，仅记录下来在下一条消息前内联输出 ──
         if has_mixed and source != current_source:
@@ -603,7 +667,14 @@ def render_merged_timeline(
 
         # ── 说话人映射：所有历史记录都作为 user 侧 transcript 提供，避免多 assistant 污染输出格式 ──
         if sender == "system":
-            if not any(kw in content for kw in SYSTEM_MSG_CONTEXT_KEYWORDS):
+            explicitly_model_visible = any(
+                isinstance(attachment, dict)
+                and attachment.get("type") == "system_model_context"
+                for attachment in message_attachments
+            )
+            if not explicitly_model_visible and not any(
+                kw in content for kw in SYSTEM_MSG_CONTEXT_KEYWORDS
+            ):
                 continue
             speaker = "系统事件"
         elif sender == "user":
@@ -632,16 +703,18 @@ def render_merged_timeline(
 
         entry = {"role": role, "content": content}
 
-        # ── 附件：只保留最后一条用户消息的附件 ──
+        # ── 附件：当前用户消息完整保留；前两轮用户消息只延续图片 ──
+        attachments = []
         if idx == last_user_idx:
-            attachments = msg.get("attachments", [])
-            if isinstance(attachments, str):
-                try:
-                    attachments = json.loads(attachments) if attachments else []
-                except Exception:
-                    attachments = []
-            if attachments:
-                entry["attachments"] = attachments
+            attachments = message_attachments
+        elif idx in retained_image_user_indices and sender == "user":
+            attachments = [
+                attachment
+                for attachment in message_attachments
+                if _is_timeline_image_attachment(attachment)
+            ]
+        if attachments:
+            entry["attachments"] = attachments
 
         history.append(entry)
 

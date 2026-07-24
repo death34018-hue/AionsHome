@@ -164,6 +164,16 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
   overflow-wrap: anywhere;
 }
 .inner-monologue-line::before { content: "💭 "; opacity: .85; }
+.band-vibration-line {
+  color: var(--text3);
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: .9;
+  padding: 1px 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.band-vibration-line::before { content: "⌚ "; opacity: .85; }
 .msg-bubbles { display:flex; flex-direction:column; gap:3px; }
 .msg-row.user .msg-bubbles { align-items:flex-end; }
 .msg-row.assistant .msg-bubbles { align-items:flex-start; }

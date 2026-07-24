@@ -18,10 +18,28 @@ public class CachePolicyTest {
     }
 
     @Test
-    public void sharedAssetCacheBypassesVersionedStaticUrls() {
-        assertTrue(SharedAssetCache.hasEncodedQuery("v=system-event-mobile-width"));
-        assertFalse(SharedAssetCache.hasEncodedQuery(""));
-        assertFalse(SharedAssetCache.hasEncodedQuery(null));
+    public void sharedAssetCacheCanonicalizesManifestPaths() {
+        assertEquals("/static/chatroom.css", SharedAssetCache.canonicalPath("/static/chatroom.css"));
+        assertEquals("/moments", SharedAssetCache.canonicalPath("/moments/"));
+        assertEquals("/", SharedAssetCache.canonicalPath(""));
+    }
+
+    @Test
+    public void manifestRedirectRequiresCloudflareAccessOnProtectedRoute() {
+        String login = "https://super-paper-137a.cloudflareaccess.com/cdn-cgi/access/login";
+        assertEquals(SharedAssetCache.RefreshResult.AUTH_REQUIRED,
+                SharedAssetCache.classifyManifestResponse(
+                        ConnectionEndpoint.CLOUDFLARE_PAGE_URL, 302, login));
+        assertEquals(SharedAssetCache.RefreshResult.NOT_REFRESHED,
+                SharedAssetCache.classifyManifestResponse(
+                        "http://100.117.195.40:8080/chat", 302, login));
+        assertEquals(SharedAssetCache.RefreshResult.NOT_REFRESHED,
+                SharedAssetCache.classifyManifestResponse(
+                        ConnectionEndpoint.CLOUDFLARE_PAGE_URL, 200, login));
+        assertEquals(SharedAssetCache.RefreshResult.NOT_REFRESHED,
+                SharedAssetCache.classifyManifestResponse(
+                        ConnectionEndpoint.CLOUDFLARE_PAGE_URL, 302,
+                        "https://cloudflareaccess.com.evil.example/login"));
     }
 
     @Test

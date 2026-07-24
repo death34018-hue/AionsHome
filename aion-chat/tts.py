@@ -307,6 +307,7 @@ class TTSStreamer:
         merge_segments: bool = False,
         delete_segments_after_seconds: int | None = None,
         cache_max_bytes: int | None = TTS_CACHE_MAX_BYTES,
+        event_data: dict | None = None,
     ):
         self.msg_id = msg_id
         self.voice = voice
@@ -322,11 +323,45 @@ class TTSStreamer:
         self._tasks: list[asyncio.Task] = []
         self._segment_paths: dict[int, Path] = {}
         self._merge_segments = merge_segments
+        self._merge_task: asyncio.Task | None = None
         self._delete_segments_after_seconds = delete_segments_after_seconds
         self._cache_max_bytes = cache_max_bytes
+        self._event_data = dict(event_data or {})
+        self._cancelled = False
+
+    def _with_event_data(self, data: dict) -> dict:
+        return {**self._event_data, **data}
+
+    def cancel(self):
+        """Suppress notifications and remove every file owned by this streamer."""
+        self._cancelled = True
+        self._buffer = ""
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
+        self._cleanup_owned_files()
+
+    def _cleanup_owned_files(self):
+        safe_id = re.sub(r'[^a-zA-Z0-9_\-]', '', self.msg_id)
+        if not safe_id:
+            return
+        paths = set(self._segment_paths.values())
+        paths.update(
+            path for path in self._cache_dir.glob(f"{safe_id}_s*.mp3")
+            if re.fullmatch(rf"{re.escape(safe_id)}_s\d+\.mp3", path.name)
+        )
+        paths.add(self._cache_dir / f"{safe_id}.mp3")
+        paths.add(self._cache_dir / f"{safe_id}.tmp")
+        for path in paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as e:
+                log.warning("TTS cancellation cleanup failed for %s: %s", path, e)
 
     async def _notify(self, payload: dict):
         """通过 WebSocket 或 SSE Queue 推送事件"""
+        if self._cancelled:
+            return
         if self._ws:
             if payload.get("type") in {"tts_chunk", "tts_done", "tts_merged"} and hasattr(self._ws, "send_tts_event"):
                 await self._ws.send_tts_event(payload)
@@ -337,6 +372,8 @@ class TTSStreamer:
 
     def feed(self, chunk: str):
         """喂入 AI 流式 chunk，检测到可切分的句子就异步发起合成"""
+        if self._cancelled:
+            return
         self._buffer += chunk
         self._try_split()
 
@@ -373,14 +410,22 @@ class TTSStreamer:
 
     def _dispatch(self, text: str):
         """发起异步合成任务"""
+        if self._cancelled:
+            return
         seq = self._seq
         self._seq += 1
         safe_id = re.sub(r'[^a-zA-Z0-9_\-]', '', self.msg_id)
         task = asyncio.create_task(self._synthesize(text, seq, safe_id))
         self._tasks.append(task)
 
-    async def flush(self):
+    async def flush(self, *, wait_for_merge: bool = False):
         """流结束后，处理 buffer 中剩余文本并等待所有合成任务完成"""
+        if self._cancelled:
+            self._buffer = ""
+            if self._tasks:
+                await asyncio.gather(*self._tasks, return_exceptions=True)
+            self._cleanup_owned_files()
+            return
         remaining = _strip_tags(self._buffer).strip()
         if remaining:
             self._dispatch(remaining)
@@ -393,13 +438,18 @@ class TTSStreamer:
         # 通知前端该消息的 TTS 分段已全部推送完毕
         await self._notify({
             "type": "tts_done",
-            "data": {"msg_id": self.msg_id, "created_at": time.time()}
+            "data": self._with_event_data({"msg_id": self.msg_id, "created_at": time.time()})
         })
 
         if self._merge_segments:
-            asyncio.create_task(self._finalize_merged_audio())
+            self._merge_task = asyncio.create_task(self._finalize_merged_audio())
+            if wait_for_merge:
+                await self._merge_task
 
     async def _finalize_merged_audio(self):
+        if self._cancelled:
+            self._cleanup_owned_files()
+            return
         safe_id = re.sub(r'[^a-zA-Z0-9_\-]', '', self.msg_id)
         if not safe_id:
             return
@@ -414,13 +464,16 @@ class TTSStreamer:
         merged_path = self._cache_dir / f"{safe_id}.mp3"
         try:
             await asyncio.to_thread(self._merge_mp3_files, paths, merged_path)
+            if self._cancelled:
+                self._cleanup_owned_files()
+                return
             await self._notify({
                 "type": "tts_merged",
-                "data": {
+                "data": self._with_event_data({
                     "msg_id": self.msg_id,
                     "url": f"{self._audio_url_prefix}/{safe_id}",
                     "created_at": time.time(),
-                }
+                })
             })
             log.info("TTS merged audio ready: msg=%s segments=%d", self.msg_id, len(paths))
         except Exception as e:
@@ -450,25 +503,30 @@ class TTSStreamer:
         """调用硅基流动 TTS 合成 → 保存文件 → WS 推送"""
         chunk_name = f"{safe_id}_s{seq}"
         try:
+            if self._cancelled:
+                return
             audio_data = await _request_tts_audio(text, self.voice, seq=seq)
-            if not audio_data:
+            if not audio_data or self._cancelled:
                 return
 
             cache_path = self._cache_dir / f"{chunk_name}.mp3"
             cache_path.write_bytes(audio_data)
             self._segment_paths[seq] = cache_path
+            if self._cancelled:
+                self._cleanup_owned_files()
+                return
             if self._cache_max_bytes and self._cache_dir.resolve() == TTS_CACHE_DIR.resolve():
                 await asyncio.to_thread(cleanup_tts_cache_dir, self._cache_dir, self._cache_max_bytes, skip={cache_path})
 
             await self._notify({
                 "type": "tts_chunk",
-                "data": {
+                "data": self._with_event_data({
                     "msg_id": self.msg_id,
                     "seq": seq,
                     "url": f"{self._audio_url_prefix}/{chunk_name}",
                     "text": text,
                     "created_at": time.time(),
-                }
+                })
             })
             log.info("TTS chunk pushed: msg=%s seq=%d len=%d", self.msg_id, seq, len(text))
 

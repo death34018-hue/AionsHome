@@ -19,10 +19,34 @@ let chatroomMemoryCache = [];
 let chatroomMemoryKindFilter = 'all';
 let chatroomMemoryKindMenuId = null;
 let chatroomDailyCompressReview = null;
+let _chatroomCompressionRequestBusy = false;
 let crMsgDebugData = {};
 let crSystemLogs = [];
 let crSysLogHasUnreadError = false;
 const CR_AMBIENT_LOCAL_ARMED_KEY = 'aion_chatroom_ambient_local_armed';
+const CR_TTS_VOICES_CACHE_KEY = 'chatroom_tts_voices_v1';
+const CR_SETTINGS_SNAPSHOT_PREFIX = 'chatroom_settings_snapshot_v2_';
+const CR_SYNC_SEQ_KEY = 'aion_sync_seq_v1:chatroom';
+let crSettingsDirtyAt = 0;
+let crSettingsLoadingRoomId = null;
+let crSyncReplayPromise = null;
+
+window.addEventListener('aion-client-update-ready', () => {
+  if (window.__aionClientUpdateScheduled) return;
+  window.__aionClientUpdateScheduled = true;
+  const reloadWhenIdle = () => {
+    const active = document.activeElement;
+    const editing = active && active.matches?.('input,textarea,select,[contenteditable="true"]');
+    const settingsDirty = document.getElementById('settingsOverlay')?.classList.contains('active')
+      && !!crSettingsDirtyAt;
+    if (isSending || isAiChatting || editing || settingsDirty || _ttsEngine?.playing) {
+      setTimeout(reloadWhenIdle, 1500);
+      return;
+    }
+    location.reload();
+  };
+  setTimeout(reloadWhenIdle, 800);
+});
 
 document.addEventListener('click', () => {
   if (!chatroomMemoryKindMenuId) return;
@@ -793,27 +817,38 @@ function onWhisperToggleChange() {
   crWhisperMode = !!document.getElementById('setWhisperMode')?.checked;
 }
 
+function crApplyTTSVoices(data) {
+  const aionSel = document.getElementById('setTtsAionVoice');
+  const connorSel = document.getElementById('setTtsConnorVoice');
+  if (!aionSel || !connorSel) return;
+  if (data?.voices && data.voices.length > 0) {
+    const opts = data.voices.map(v => ({ uri: v.uri, name: v.customName || v.uri || 'Unknown' }));
+    aionSel.innerHTML = opts.map(o =>
+      `<option value="${o.uri}" ${o.uri === crTtsAionVoice ? 'selected' : ''}>${o.name}</option>`
+    ).join('');
+    connorSel.innerHTML = opts.map(o =>
+      `<option value="${o.uri}" ${o.uri === crTtsConnorVoice ? 'selected' : ''}>${o.name}</option>`
+    ).join('');
+  } else if (!aionSel.options.length || !connorSel.options.length) {
+    aionSel.innerHTML = '<option value="">无可用音色</option>';
+    connorSel.innerHTML = '<option value="">无可用音色</option>';
+  }
+}
+
 async function crLoadTTSVoices() {
   try {
-    const resp = await fetch('/api/tts/voices');
+    const cached = JSON.parse(localStorage.getItem(CR_TTS_VOICES_CACHE_KEY) || 'null');
+    if (cached?.data) crApplyTTSVoices(cached.data);
+  } catch(e) {}
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    const resp = await fetch('/api/tts/voices', { signal: controller.signal });
+    clearTimeout(timer);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
-    const aionSel = document.getElementById('setTtsAionVoice');
-    const connorSel = document.getElementById('setTtsConnorVoice');
-    if (data.voices && data.voices.length > 0) {
-      const opts = data.voices.map(v => {
-        const name = v.customName || v.uri || 'Unknown';
-        return { uri: v.uri, name };
-      });
-      aionSel.innerHTML = opts.map(o =>
-        `<option value="${o.uri}" ${o.uri === crTtsAionVoice ? 'selected' : ''}>${o.name}</option>`
-      ).join('');
-      connorSel.innerHTML = opts.map(o =>
-        `<option value="${o.uri}" ${o.uri === crTtsConnorVoice ? 'selected' : ''}>${o.name}</option>`
-      ).join('');
-    } else {
-      aionSel.innerHTML = '<option value="">无可用音色</option>';
-      connorSel.innerHTML = '<option value="">无可用音色</option>';
-    }
+    crApplyTTSVoices(data);
+    localStorage.setItem(CR_TTS_VOICES_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), data }));
   } catch(e) {
     console.error('加载TTS音色失败:', e);
   }
@@ -900,16 +935,58 @@ function resizeInput() {
   inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
 }
 
+let inputResizeFrame = null;
+
+function scheduleInputResize() {
+  if (inputResizeFrame !== null) return;
+  inputResizeFrame = requestAnimationFrame(() => {
+    inputResizeFrame = null;
+    resizeInput();
+  });
+}
+
+function cancelPendingInputResize() {
+  if (inputResizeFrame === null) return;
+  cancelAnimationFrame(inputResizeFrame);
+  inputResizeFrame = null;
+}
+
+window.addEventListener('pagehide', cancelPendingInputResize);
+
 // ══════════════════════════════════════════════════
 //  API 调用
 // ══════════════════════════════════════════════════
 
 async function api(path, opts = {}) {
-  const resp = await fetch(API + path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
-  return resp.json();
+  const timeoutMs = Number(opts.timeoutMs || 15000);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const fetchOpts = { ...opts };
+  delete fetchOpts.timeoutMs;
+  try {
+    const resp = await fetch(API + path, {
+      ...fetchOpts,
+      headers: { 'Content-Type': 'application/json', ...(fetchOpts.headers || {}) },
+      signal: controller.signal,
+    });
+    const text = await resp.text();
+    let payload = null;
+    if (text) {
+      try { payload = JSON.parse(text); }
+      catch(e) { payload = { detail: text }; }
+    }
+    if (!resp.ok) {
+      const error = new Error(payload?.detail || payload?.error || `请求失败 (${resp.status})`);
+      error.status = resp.status;
+      throw error;
+    }
+    return payload;
+  } catch(e) {
+    if (e?.name === 'AbortError') throw new Error('网络响应超时，请稍后重试');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function crAmbientSetLocalArmed(armed) {
@@ -2654,6 +2731,19 @@ function crRenderMessageItems(items, { sender, name, avatar, msgId, msg, fmt, is
   return htmlParts.join('');
 }
 
+function crBandVibrationNoteHtml(atts) {
+  const note = (Array.isArray(atts) ? atts : []).find(item =>
+    item && typeof item === 'object' && item.type === 'band_vibration'
+  );
+  if (!note) return '';
+  const fallback = note.note
+    ? `${note.pattern === 'call' ? '手环呼唤：' : '手环轻震：'}${note.note}`
+    : (note.pattern === 'call'
+      ? '手环震动：紧急呼叫！'
+      : '手环震动：轻轻想了你一下');
+  return `<div class="band-vibration-line">${esc(note.label || fallback)}</div>`;
+}
+
 function msgHTML(m) {
   const sender = m.sender || 'user';
 
@@ -2702,6 +2792,7 @@ function msgHTML(m) {
   // 渲染附件图片
   const toyHtml = renderToyAttachments(messageAttachments);
   const attHtml = renderAttachments(messageAttachments);
+  const bandVibrationHtml = crBandVibrationNoteHtml(messageAttachments);
 
   const msgId = m.id || '';
 
@@ -2713,6 +2804,7 @@ function msgHTML(m) {
           ${bubblesHtml}
           ${toyHtml}
           ${hasWishFulfillmentAtt || hasDateSummaryAtt ? '' : attHtml}
+          ${bandVibrationHtml}
         </div>
       </div>
       <div class="message-meta">${time}</div>
@@ -3398,7 +3490,7 @@ function handleSSE(data) {
   }
 }
 
-inputEl.addEventListener('input', resizeInput);
+inputEl.addEventListener('input', scheduleInputResize);
 inputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.isComposing) {
     // Shift+Enter 或 Ctrl+Enter 发送，Enter 换行
@@ -3484,55 +3576,113 @@ async function triggerReplyOnce(speaker) {
 //  设置
 // ══════════════════════════════════════════════════
 
-async function openSettings() {
-  if (!currentRoom) { toast('请先选择一个房间'); return; }
+function crSettingsSnapshotBridge() {
+  try { return window.top?.AppSharedData || window.AppSharedData || null; }
+  catch(e) { return window.AppSharedData || null; }
+}
 
-  // 先立即打开面板，再异步填充数据（提升感知速度）
-  document.getElementById('setTtsEnabled').checked = crTtsEnabled;
-  crAmbientUpdateToggleView();
-  document.getElementById('settingsOverlay').classList.add('active');
-  const ambientLoadStartedAt = Date.now();
+function crSettingsSnapshotKey(roomId) {
+  return `${CR_SETTINGS_SNAPSHOT_PREFIX}${roomId}`;
+}
 
-  // 三个请求并行发起，避免串行等待外部服务超时
-  const [room, cfg] = await Promise.all([
-    api(`/rooms/${currentRoom.id}`),
-    api('/config'),
-    crLoadTTSVoices(),
-  ]);
+function crSaveSettingsSnapshot(room, config) {
+  if (!room?.id || !config) return;
+  try {
+    const key = crSettingsSnapshotKey(room.id);
+    const payload = JSON.stringify({ schema: 2, savedAt: Date.now(), room, config });
+    localStorage.setItem(key, payload);
+    if (payload.length < 900000) crSettingsSnapshotBridge()?.put?.(key, payload);
+  } catch(e) {}
+}
+
+function crLoadSettingsSnapshot(roomId) {
+  try {
+    const key = crSettingsSnapshotKey(roomId);
+    const raw = crSettingsSnapshotBridge()?.get?.(key) || localStorage.getItem(key) || '';
+    const snapshot = JSON.parse(raw || 'null');
+    return snapshot?.schema === 2 ? snapshot : null;
+  } catch(e) { return null; }
+}
+
+function crCurrentSettingsConfig() {
+  return {
+    ai_name: crAiName,
+    user_name: crUserName,
+    connor_name: crConnorName,
+    tts_enabled: crTtsEnabled,
+    tts_aion_voice: crTtsAionVoice,
+    tts_connor_voice: crTtsConnorVoice,
+    aion_model: chatroomModel,
+    connor_model: chatroomConnorModel,
+    reply_order: chatroomReplyOrder,
+    ambient_voice_enabled: crAmbientVoiceEnabled,
+    ambient_voice_wake_word: crAmbientWakeWord,
+    ambient_voice_stop_word: crAmbientStopWord,
+    ambient_voice_min_chars: crAmbientMinChars,
+    ambient_voice_interval_seconds: crAmbientIntervalSec,
+    ambient_voice_cooldown_seconds: crAmbientCooldownSec,
+  };
+}
+
+function crPopulateSettings(room, cfg = {}) {
+  if (!room) return;
   applyChatroomNames(cfg);
-  if (crAmbientLastUserToggleAt <= ambientLoadStartedAt) {
-    crApplyAmbientVoiceConfig(cfg);
-  } else {
-    crAmbientUpdateToggleView();
-    crAmbientUpdateBufferView();
-  }
+  if (cfg.tts_enabled !== undefined) crTtsEnabled = !!cfg.tts_enabled;
+  if (cfg.tts_aion_voice !== undefined) crTtsAionVoice = cfg.tts_aion_voice || '';
+  if (cfg.tts_connor_voice !== undefined) crTtsConnorVoice = cfg.tts_connor_voice || '';
+  document.getElementById('setTtsEnabled').checked = crTtsEnabled;
+  if (document.getElementById('setTtsAionVoice')) document.getElementById('setTtsAionVoice').value = crTtsAionVoice;
+  if (document.getElementById('setTtsConnorVoice')) document.getElementById('setTtsConnorVoice').value = crTtsConnorVoice;
+  crApplyAmbientVoiceConfig({ ...crCurrentSettingsConfig(), ...cfg });
 
   document.getElementById('setTitle').value = room.title || '';
   document.getElementById('setContextLimit').value = room.context_limit || room.context_minutes || 30;
   document.getElementById('setAiRounds').value = room.ai_chat_rounds || 1;
+  chatroomModel = cfg.aion_model || chatroomModel;
   chatroomConnorModel = cfg.connor_model || chatroomConnorModel || 'Codex';
   document.getElementById('setAionModel').innerHTML = renderModelOptions(chatroomModel);
   document.getElementById('setConnorModel').innerHTML = renderModelOptions(chatroomConnorModel);
   document.getElementById('setAionModel').value = chatroomModel || '';
   document.getElementById('setConnorModel').value = chatroomConnorModel || 'Codex';
 
-  // 回复顺序选项：用世界书和配置中的名字
-  const aionName = crAiName;
-  const connorName = crConnorName;
-  document.getElementById('optAion').textContent = `${aionName} 优先`;
-  document.getElementById('optConnor').textContent = `${connorName} 优先`;
-  chatroomReplyOrder = cfg.reply_order || 'random';
-  document.getElementById('setReplyOrder').value = cfg.reply_order || 'random';
+  document.getElementById('optAion').textContent = `${crAiName} 优先`;
+  document.getElementById('optConnor').textContent = `${crConnorName} 优先`;
+  chatroomReplyOrder = cfg.reply_order || chatroomReplyOrder || 'random';
+  document.getElementById('setReplyOrder').value = chatroomReplyOrder;
   updateHeaderActions();
 
-  // connor_1v1 隐藏群聊专属设置
   const isConnor1v1 = room.type === 'connor_1v1';
   document.getElementById('fieldAiRounds').style.display = isConnor1v1 ? 'none' : '';
   document.getElementById('fieldReplyOrder').style.display = isConnor1v1 ? 'none' : '';
   document.getElementById('fieldAionModel').style.display = isConnor1v1 ? 'none' : '';
 }
 
+async function openSettings() {
+  if (!currentRoom) { toast('请先选择一个房间'); return; }
+
+  const roomId = currentRoom.id;
+  const openStartedAt = Date.now();
+  crSettingsDirtyAt = 0;
+  crSettingsLoadingRoomId = roomId;
+  document.getElementById('settingsOverlay').classList.add('active');
+  const cached = crLoadSettingsSnapshot(roomId);
+  crPopulateSettings(cached?.room || currentRoom, cached?.config || crCurrentSettingsConfig());
+  crLoadTTSVoices(); // 音色慢也不阻塞主要设置。
+
+  try {
+    const result = await api(`/rooms/${roomId}/settings`, { timeoutMs: 10000 });
+    if (crSettingsLoadingRoomId !== roomId || currentRoom?.id !== roomId) return;
+    crSaveSettingsSnapshot(result.room, result.config);
+    if (!crSettingsDirtyAt || crSettingsDirtyAt <= openStartedAt) {
+      crPopulateSettings(result.room, result.config);
+    }
+  } catch(e) {
+    if (!cached) toast(e.message || '设置刷新失败，当前显示本地值');
+  }
+}
+
 function closeSettings() {
+  crSettingsLoadingRoomId = null;
   document.getElementById('settingsOverlay').classList.remove('active');
 }
 
@@ -3559,6 +3709,9 @@ let crPersonaEvolutionRuns = [];
 let crPersonaSelectedRunIndex = -1;
 let crPersonaEvolutionSaving = false;
 let crPersonaResizeBound = false;
+let crPersonaViewportWidth = window.innerWidth;
+const crPersonaResizeFrames = new WeakMap();
+const crPersonaTextareaMetrics = new WeakMap();
 
 function crPersonaFieldId(key) {
   return `personaSection_${key}`;
@@ -3575,26 +3728,51 @@ function crEstimatePersonaRows(text) {
 
 function crResizePersonaTextarea(el) {
   if (!el) return;
-  const style = window.getComputedStyle(el);
-  const lineHeight = parseFloat(style.lineHeight) || 19;
-  const verticalPadding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0) + 2;
+  let metrics = crPersonaTextareaMetrics.get(el);
+  if (!metrics) {
+    const style = window.getComputedStyle(el);
+    metrics = {
+      lineHeight: parseFloat(style.lineHeight) || 19,
+      verticalPadding: (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0) + 2,
+    };
+    crPersonaTextareaMetrics.set(el, metrics);
+  }
   const estimatedRows = crEstimatePersonaRows(el.value);
-  const charCount = [...String(el.value || '')].length;
+  const charCount = String(el.value || '').length;
   const minRows = (charCount > 220 || estimatedRows > 12)
     ? 14
     : (charCount > 60 || estimatedRows > 5)
       ? 10
       : (charCount > 0 ? 5 : 4);
-  const minHeight = Math.round((lineHeight * minRows) + verticalPadding);
+  const minHeight = Math.round((metrics.lineHeight * minRows) + metrics.verticalPadding);
   const maxHeight = Math.max(220, Math.min(window.innerHeight * 0.56, 560));
   el.style.height = 'auto';
-  const nextHeight = Math.min(Math.max(el.scrollHeight, minHeight), maxHeight);
+  const scrollHeight = el.scrollHeight;
+  const nextHeight = Math.min(Math.max(scrollHeight, minHeight), maxHeight);
   el.style.height = `${nextHeight}px`;
-  el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+  el.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
+}
+
+function crSchedulePersonaTextareaResize(el) {
+  if (!el || crPersonaResizeFrames.has(el)) return;
+  const frame = requestAnimationFrame(() => {
+    crPersonaResizeFrames.delete(el);
+    crResizePersonaTextarea(el);
+  });
+  crPersonaResizeFrames.set(el, frame);
 }
 
 function crResizePersonaTextareas(root = document) {
   root.querySelectorAll?.('.persona-page-body textarea').forEach(crResizePersonaTextarea);
+}
+
+function crHandlePersonaViewportResize() {
+  const nextWidth = window.innerWidth;
+  if (nextWidth === crPersonaViewportWidth) return;
+  crPersonaViewportWidth = nextWidth;
+  if (document.getElementById('personaOverlay')?.classList.contains('active')) {
+    crResizePersonaTextareas(document.getElementById('personaOverlay'));
+  }
 }
 
 function crPersonaSectionForHeading(heading) {
@@ -3689,15 +3867,11 @@ function crRenderPersonaSections() {
     sectionEl.addEventListener('toggle', () => crResizePersonaTextareas(sectionEl));
   });
   container.querySelectorAll('textarea').forEach(textarea => {
-    textarea.addEventListener('input', () => crResizePersonaTextarea(textarea));
+    textarea.addEventListener('input', () => crSchedulePersonaTextareaResize(textarea));
   });
-  document.getElementById('personaExtraText')?.addEventListener('input', event => crResizePersonaTextarea(event.currentTarget));
+  document.getElementById('personaExtraText')?.addEventListener('input', event => crSchedulePersonaTextareaResize(event.currentTarget));
   if (!crPersonaResizeBound) {
-    window.addEventListener('resize', () => {
-      if (document.getElementById('personaOverlay')?.classList.contains('active')) {
-        crResizePersonaTextareas(document.getElementById('personaOverlay'));
-      }
-    });
+    window.addEventListener('resize', crHandlePersonaViewportResize, { passive: true });
     crPersonaResizeBound = true;
   }
   document.getElementById('personaConnorName')?.addEventListener('input', crSyncPersonaNameLabels);
@@ -4048,49 +4222,67 @@ async function crSavePersona(options = {}) {
 
 async function saveSettings() {
   if (!currentRoom) return;
-
-  // 保存房间设置
-  await api(`/rooms/${currentRoom.id}`, {
-    method: 'PUT',
-    body: JSON.stringify({
+  const roomId = currentRoom.id;
+  const btn = document.getElementById('saveSettingsBtn');
+  const oldText = btn?.textContent || '保存';
+  if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+  const nextReplyOrder = document.getElementById('setReplyOrder').value || 'random';
+  const nextAionModel = document.getElementById('setAionModel')?.value || chatroomModel;
+  const nextConnorModel = document.getElementById('setConnorModel')?.value || chatroomConnorModel || 'Codex';
+  const ambient = crAmbientReadInputs();
+  const payload = {
       title: document.getElementById('setTitle').value,
       context_limit: parseInt(document.getElementById('setContextLimit').value) || 30,
       ai_chat_rounds: parseInt(document.getElementById('setAiRounds').value) || 1,
-    }),
-  });
-
-  // 保存 Connor 配置
-  const nextReplyOrder = document.getElementById('setReplyOrder').value || 'random';
-  chatroomModel = document.getElementById('setAionModel')?.value || chatroomModel;
-  chatroomConnorModel = document.getElementById('setConnorModel')?.value || chatroomConnorModel || 'Codex';
-  await api('/config', {
-    method: 'PUT',
-    body: JSON.stringify({
-      aion_model: chatroomModel,
-      connor_model: chatroomConnorModel,
+      aion_model: nextAionModel,
+      connor_model: nextConnorModel,
+      tts_enabled: !!document.getElementById('setTtsEnabled').checked,
       tts_aion_voice: document.getElementById('setTtsAionVoice').value,
       tts_connor_voice: document.getElementById('setTtsConnorVoice').value,
       reply_order: nextReplyOrder,
-    }),
-  });
-  await crSaveAmbientVoiceSettings({ silent: true, sync: false });
-  await loadMessages();
+      ...ambient,
+  };
 
-  // 同步本地变量
-  crTtsAionVoice = document.getElementById('setTtsAionVoice').value;
-  crTtsConnorVoice = document.getElementById('setTtsConnorVoice').value;
-  crTtsPlaybackActiveAt = Date.now() / 1000;
-  crSendTTSState();
-  chatroomReplyOrder = nextReplyOrder;
-  updateHeaderActions();
-  crAmbientSyncRunning();
+  try {
+    let result;
+    try {
+      result = await api(`/rooms/${roomId}/settings`, {
+        method: 'PATCH', body: JSON.stringify(payload), timeoutMs: 15000,
+      });
+    } catch(saveError) {
+      if (saveError?.status && saveError.status < 500) throw saveError;
+      // 超时可能发生在服务器已落盘之后；只读核对避免误报失败。
+      const checked = await api(`/rooms/${roomId}/settings`, { timeoutMs: 8000 }).catch(() => null);
+      if (!checked || checked.config?.reply_order !== payload.reply_order || checked.room?.title !== payload.title) {
+        throw saveError;
+      }
+      result = { ok: true, ...checked };
+    }
 
-  // 刷新
-  currentRoom.title = document.getElementById('setTitle').value;
-  roomTitleEl.textContent = currentRoom.title;
-  await loadRooms();
-  closeSettings();
-  toast('已保存');
+    chatroomModel = result.config?.aion_model || nextAionModel;
+    chatroomConnorModel = result.config?.connor_model || nextConnorModel;
+    crTtsEnabled = !!(result.config?.tts_enabled ?? payload.tts_enabled);
+    crTtsAionVoice = result.config?.tts_aion_voice ?? payload.tts_aion_voice;
+    crTtsConnorVoice = result.config?.tts_connor_voice ?? payload.tts_connor_voice;
+    chatroomReplyOrder = result.config?.reply_order || nextReplyOrder;
+    crApplyAmbientVoiceConfig(result.config || payload);
+    crTtsPlaybackActiveAt = Date.now() / 1000;
+    crSendTTSState();
+    updateHeaderActions();
+    crAmbientSyncRunning().catch(() => {});
+
+    currentRoom = { ...currentRoom, ...(result.room || {}), context_limit: result.room?.context_limit || payload.context_limit };
+    rooms = rooms.map(room => room.id === roomId ? { ...room, ...currentRoom } : room);
+    roomTitleEl.textContent = currentRoom.title;
+    renderRoomList();
+    crSaveSettingsSnapshot(currentRoom, result.config || payload);
+    closeSettings();
+    toast('已保存');
+  } catch(e) {
+    toast(`保存失败：${e.message || '网络异常'}`, 3500);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = oldText; }
+  }
 }
 
 async function triggerDigest() {
@@ -4396,8 +4588,9 @@ function renderChatroomCompressionReview() {
   const messages = (chat.messages || []).filter(Boolean);
   const errors = (chat.errors || []).filter(Boolean);
   const warnings = chatroomCompressionWarnings();
-  const canApply = chatroomDailyCompressReview.status === 'draft'
+  const canApply = !_chatroomCompressionRequestBusy && chatroomDailyCompressReview.status === 'draft'
     && (dailyCount || importantCount || Number(chat.processed || 0));
+  const actionDisabled = _chatroomCompressionRequestBusy ? 'disabled' : '';
   el.style.display = 'block';
   el.innerHTML = `
     <div class="chatroom-compress-head">
@@ -4430,8 +4623,8 @@ function renderChatroomCompressionReview() {
       ${oldRowCount ? renderChatroomOldRows() : '<div class="mem-empty">没有旧日常会被处理</div>'}
     </details>
     <div class="chatroom-compress-actions">
-      <button class="chatroom-compress-discard" onclick="saveChatroomDailyCompressionDraft(false)">保存草稿</button>
-      <button class="chatroom-compress-discard" onclick="discardChatroomDailyCompressionDraft('${esc(chatroomDailyCompressReview.id)}')">废弃草稿</button>
+      <button class="chatroom-compress-discard" onclick="saveChatroomDailyCompressionDraft(false)" ${actionDisabled}>保存草稿</button>
+      <button class="chatroom-compress-discard" onclick="discardChatroomDailyCompressionDraft('${esc(chatroomDailyCompressReview.id)}')" ${actionDisabled}>废弃草稿</button>
       <button class="chatroom-compress-apply" onclick="applyChatroomDailyCompressionDraft('${esc(chatroomDailyCompressReview.id)}')" ${canApply ? '' : 'disabled'}>确认应用</button>
     </div>`;
 }
@@ -4442,19 +4635,37 @@ function setChatroomCompressionBusy(value) {
   if (btn) btn.disabled = value;
 }
 
+function startChatroomCompressionElapsedTimer(onTick) {
+  const startedAt = Date.now();
+  const tick = () => {
+    const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    const minutes = Math.floor(seconds / 60);
+    const remainder = seconds % 60;
+    onTick(minutes ? `${minutes}分${remainder}秒` : `${remainder}秒`);
+  };
+  tick();
+  const timer = setInterval(tick, 1000);
+  return () => clearInterval(timer);
+}
+
 async function compressChatroomDailyMemories() {
   if (!currentRoom) return;
+  if (_chatroomCompressionRequestBusy) {
+    toast('压缩任务仍在处理中，请勿重复操作');
+    return;
+  }
   if (chatroomDailyCompressReview && chatroomDailyCompressReview.status === 'draft') {
     renderChatroomCompressionReview();
     toast('已经有一份聊天室压缩草稿，先确认应用或废弃它');
     return;
   }
   if (!confirm('将按 15-90 天、90-180 天、180-365 天、365 天以上分阶段生成聊天室压缩草稿；这一步不会修改记忆库。继续？')) return;
+  _chatroomCompressionRequestBusy = true;
   const btn = document.getElementById('chatroomCompressDailyBtn');
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = '生成中...';
-  }
+  setChatroomCompressionBusy(true);
+  const stopElapsedTimer = startChatroomCompressionElapsedTimer(elapsed => {
+    if (btn) btn.textContent = `生成中，已等待 ${elapsed}`;
+  });
   toast('正在生成聊天室压缩草稿...');
   try {
     const result = await memoryCompressionApi('POST', '/api/memories/compress-daily', { target: 'chatroom', days: 15 });
@@ -4464,18 +4675,30 @@ async function compressChatroomDailyMemories() {
   } catch (err) {
     toast('生成压缩草稿失败: ' + err.message);
   } finally {
+    stopElapsedTimer();
+    _chatroomCompressionRequestBusy = false;
+    setChatroomCompressionBusy(false);
     if (btn) {
-      btn.disabled = false;
       btn.textContent = '🗜️ 压缩日常';
     }
+    if (chatroomDailyCompressReview) renderChatroomCompressionReview();
   }
 }
 
 async function applyChatroomDailyCompressionDraft(reviewId) {
   if (!reviewId) return;
+  if (_chatroomCompressionRequestBusy) return;
   const chat = chatroomDailyCompressReview?.counts?.chatroom || {};
   if (!confirm(`确认应用这份聊天室压缩草稿？将移除旧日常 ${Number(chat.processed || 0)} 条，并写入新日常 ${Number(chat.created_daily || 0)} 条、新长期重要 ${Number(chat.created_important || 0)} 条。`)) return;
+  _chatroomCompressionRequestBusy = true;
   setChatroomCompressionBusy(true);
+  const stopElapsedTimer = startChatroomCompressionElapsedTimer(elapsed => {
+    const applyBtn = document.querySelector('.chatroom-compress-apply');
+    if (applyBtn) {
+      applyBtn.disabled = true;
+      applyBtn.textContent = `应用中，已等待 ${elapsed}`;
+    }
+  });
   toast('正在保存并应用聊天室压缩草稿...');
   try {
     await saveChatroomDailyCompressionDraft(true);
@@ -4484,11 +4707,14 @@ async function applyChatroomDailyCompressionDraft(reviewId) {
     chatroomDailyCompressReview = null;
     renderChatroomCompressionReview();
     await loadMemories();
-    setChatroomCompressionBusy(false);
     toast(result.message || '聊天室压缩草稿已应用', 3000);
   } catch (err) {
     toast('应用压缩草稿失败: ' + err.message);
+  } finally {
+    stopElapsedTimer();
+    _chatroomCompressionRequestBusy = false;
     setChatroomCompressionBusy(false);
+    if (chatroomDailyCompressReview) renderChatroomCompressionReview();
   }
 }
 
@@ -4587,11 +4813,16 @@ function renderChatroomMemories(focusMemId = '') {
       <button class="${curKind === 'daily' ? 'active' : ''}" onclick="selectChatroomMemoryKind('${m.id}','daily',event)">日常</button>
     </div>` : '';
     const unresolved = Boolean(m.unresolved);
+    const importance = m.importance == null
+      ? ''
+      : `<span class="mem-importance" title="重要程度">${Number(m.importance).toFixed(1)}</span>`;
     return `
       <div class="mem-item${unresolved ? ' mem-unresolved' : ''}" data-id="${m.id}">
         <div class="mem-head">
-          <div class="mem-kind-wrap"><button class="mem-kind ${kindClass}" onclick="openChatroomMemoryKindMenu('${m.id}', event)" title="点击选择标签" aria-label="选择记忆标签">${esc(kindLabel)}</button>${kindMenu}</div>
-          <div class="mem-content">${esc(m.content)}</div>
+          <div class="mem-labels">
+            <div class="mem-kind-wrap"><button class="mem-kind ${kindClass}" onclick="openChatroomMemoryKindMenu('${m.id}', event)" title="点击选择标签" aria-label="选择记忆标签">${esc(kindLabel)}</button>${kindMenu}</div>
+            ${importance}
+          </div>
           <div class="mem-actions">
             <button class="mem-pin${unresolved ? ' active' : ''}" onclick="toggleChatroomMemoryUnresolved('${m.id}')" title="${unresolved ? '取消未完成标记' : '标记为未完成'}">📌</button>
             ${hasSource ? `<button onclick="viewMemSource('${m.id}')" title="查看原文">📜</button>` : ''}
@@ -4599,9 +4830,9 @@ function renderChatroomMemories(focusMemId = '') {
             <button class="del" onclick="deleteMemory('${m.id}')" title="删除">✕</button>
           </div>
         </div>
+        <div class="mem-content">${esc(m.content)}</div>
         <div class="mem-meta">
           ${date ? `<span>${esc(date)}</span>` : ''}
-          <span>重要度: ${m.importance}</span>
           ${kw ? `<span>${kw}</span>` : ''}
         </div>
       </div>`;
@@ -4878,6 +5109,11 @@ function closeMemSource() {
 document.getElementById('settingsOverlay').addEventListener('click', (e) => {
   if (e.target.id === 'settingsOverlay') closeSettings();
 });
+['input', 'change'].forEach(eventName => {
+  document.getElementById('settingsOverlay').addEventListener(eventName, e => {
+    if (e.isTrusted && e.target?.matches('input,select,textarea')) crSettingsDirtyAt = Date.now();
+  });
+});
 
 // ══════════════════════════════════════════════════
 //  Connor 状态
@@ -4929,6 +5165,111 @@ function renderEmptyChat() {
 //  WebSocket 实时同步
 // ══════════════════════════════════════════════════
 
+function crRememberSyncSeq(event) {
+  const seq = Number(event?.sync_seq || 0);
+  if (!seq) return;
+  const current = Number(localStorage.getItem(CR_SYNC_SEQ_KEY) || 0);
+  if (seq > current) localStorage.setItem(CR_SYNC_SEQ_KEY, String(seq));
+}
+
+function crApplySettingsSync(data) {
+  const cfg = data?.config || null;
+  const room = data?.room || null;
+  if (cfg) {
+    applyChatroomNames(cfg);
+    chatroomModel = cfg.aion_model || chatroomModel;
+    chatroomConnorModel = cfg.connor_model || chatroomConnorModel;
+    chatroomReplyOrder = cfg.reply_order || chatroomReplyOrder;
+    crTtsEnabled = !!(cfg.tts_enabled ?? crTtsEnabled);
+    crTtsAionVoice = cfg.tts_aion_voice ?? crTtsAionVoice;
+    crTtsConnorVoice = cfg.tts_connor_voice ?? crTtsConnorVoice;
+    crApplyAmbientVoiceConfig(cfg);
+    updateHeaderActions();
+  }
+  if (room?.id) {
+    rooms = rooms.map(item => item.id === room.id ? { ...item, ...room } : item);
+    if (currentRoom?.id === room.id) {
+      currentRoom = { ...currentRoom, ...room };
+      roomTitleEl.textContent = currentRoom.title;
+    }
+    crSaveSettingsSnapshot(room, cfg || crCurrentSettingsConfig());
+  } else if (currentRoom && cfg) {
+    crSaveSettingsSnapshot(currentRoom, cfg);
+  }
+  if (document.getElementById('settingsOverlay').classList.contains('active')
+      && !crSettingsDirtyAt
+      && (!data?.room_id || data.room_id === currentRoom?.id)) {
+    crPopulateSettings(room || currentRoom, cfg || crCurrentSettingsConfig());
+  }
+  renderRoomList();
+}
+
+function crApplyReplayedSyncEvent(event) {
+  // sync_event replay uses the same legacy event shape and remains idempotent.
+  if (!event?.type) return;
+  if (event.type === 'chatroom_settings_updated') {
+    crApplySettingsSync(event.data || {});
+    return;
+  }
+  if (event.type === 'chatroom_room_created' || event.type === 'chatroom_room_updated'
+      || event.type === 'chatroom_room_deleted') {
+    loadRooms();
+    return;
+  }
+  if (!currentRoom || event.data?.room_id !== currentRoom.id) return;
+  const data = event.data || {};
+  if (event.type === 'chatroom_msg_created') {
+    if (!messagesEl.querySelector(`[data-msg-id="${data.id}"]`) && !document.getElementById(`streaming-${data.id}`)) {
+      if (!reconcileLocalUserEcho(data)) appendMessage(data);
+    }
+  } else if (event.type === 'chatroom_msg_deleted') {
+    delete crMessagesById[data.id];
+    document.querySelector(`[data-msg-id="${data.id}"]`)?.remove();
+  } else if (event.type === 'chatroom_msg_updated') {
+    crMessagesById[data.id] = data;
+    const row = document.querySelector(`[data-msg-id="${data.id}"]`);
+    if (row) {
+      const div = document.createElement('div');
+      div.innerHTML = msgHTML(data);
+      row.replaceWith(div.firstElementChild);
+    }
+  }
+}
+
+async function crReconcileSyncEvents() {
+  if (crSyncReplayPromise) return crSyncReplayPromise;
+  crSyncReplayPromise = (async () => {
+    let after = Number(localStorage.getItem(CR_SYNC_SEQ_KEY) || 0);
+    for (let batch = 0; batch < 20; batch++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      let response;
+      try {
+        response = await fetch(`/api/sync/changes?after=${after}&limit=200`, { signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!response.ok) throw new Error(`sync HTTP ${response.status}`);
+      const result = await response.json();
+      if (result.reset_required) {
+        if (currentRoom) refreshCurrentChatroomFromServer();
+        const latest = Number(result.latest_seq || 0);
+        localStorage.setItem(CR_SYNC_SEQ_KEY, String(latest));
+        break;
+      }
+      const events = Array.isArray(result.events) ? result.events : [];
+      events.forEach(event => {
+        crApplyReplayedSyncEvent(event);
+        crRememberSyncSeq(event);
+        after = Math.max(after, Number(event.sync_seq || 0));
+      });
+      if (!result.has_more || !events.length) break;
+    }
+  })().catch(e => console.warn('[chatroom sync] reconcile failed:', e))
+    .finally(() => { crSyncReplayPromise = null; });
+  return crSyncReplayPromise;
+}
+
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
@@ -4938,11 +5279,13 @@ function connectWS() {
     ws.send(JSON.stringify({ type: 'register_client', client_id: crAmbientClientId }));
     crSendTTSState();
     ws.send(JSON.stringify({ type: 'ping' }));
+    crReconcileSyncEvents();
   };
 
   ws.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
+      crRememberSyncSeq(data);
       if (data.type === 'pong') return;
 
       if (data.type === 'tts_chunk' && data.data) {
@@ -5017,14 +5360,22 @@ function connectWS() {
         }
       }
 
+      if (data.type === 'chatroom_settings_updated' && data.data) {
+        crApplySettingsSync(data.data);
+      }
+
       if (data.type === 'wish_updated' && data.data) {
         document.querySelectorAll('.wish-fulfill-card').forEach(card => {
           if (card.dataset.wishId === data.data.id) crApplyWishCardStatus(card, data.data.status || 'active');
         });
       }
 
-      if (data.type === 'chatroom_room_created' || data.type === 'chatroom_room_deleted' || data.type === 'chatroom_room_updated') {
+      if (data.type === 'chatroom_room_created' || data.type === 'chatroom_room_deleted') {
         loadRooms();
+      } else if (data.type === 'chatroom_room_updated' && data.data) {
+        rooms = rooms.map(room => room.id === data.data.id ? { ...room, ...data.data } : room);
+        if (currentRoom?.id === data.data.id) currentRoom = { ...currentRoom, ...data.data };
+        renderRoomList();
       }
 
       // 音乐广播（来自 WS broadcast）— 仅在非发送状态下处理（发送时 SSE 已处理）
@@ -5058,6 +5409,10 @@ function connectWS() {
   };
   ws.onerror = () => ws.close();
 }
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') crReconcileSyncEvents();
+});
 
 // ══════════════════════════════════════════════════
 //  图片上传 & 预览 & 查看器

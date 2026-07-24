@@ -6,6 +6,7 @@ import java.net.URISyntaxException;
 /** Keeps public and private connection routes isolated. */
 final class ConnectionEndpoint {
     static final String CLOUDFLARE_HOST = "chat.aionshome.com";
+    static final String CLOUDFLARE_ACCESS_HOST = "cloudflareaccess.com";
     static final String LEGACY_CLOUDFLARE_WS_HOST = "ws.aionshome.com";
     static final String CLOUDFLARE_PAGE_URL = "https://" + CLOUDFLARE_HOST + "/chat";
     static final String CLOUDFLARE_COOKIE_URL = "https://" + CLOUDFLARE_HOST + "/";
@@ -52,6 +53,53 @@ final class ConnectionEndpoint {
 
     static boolean isCloudflareHost(String host) {
         return host != null && CLOUDFLARE_HOST.equalsIgnoreCase(host);
+    }
+
+    static boolean isCloudflareAccessHost(String host) {
+        if (host == null) return false;
+        String normalized = host.toLowerCase(java.util.Locale.ROOT);
+        return CLOUDFLARE_ACCESS_HOST.equals(normalized)
+                || normalized.endsWith("." + CLOUDFLARE_ACCESS_HOST);
+    }
+
+    static boolean isCloudflareUrl(String rawUrl) {
+        if (rawUrl == null) return false;
+        try {
+            return isCloudflareHost(new URI(rawUrl).getHost());
+        } catch (URISyntaxException ignored) {
+            return false;
+        }
+    }
+
+    static boolean isCloudflareAccessUrl(String rawUrl) {
+        if (rawUrl == null) return false;
+        try {
+            return isCloudflareAccessHost(new URI(rawUrl).getHost());
+        } catch (URISyntaxException ignored) {
+            return false;
+        }
+    }
+
+    static boolean shouldBypassCloudflareMainDocument(
+            String targetUrl, String requestUrl, boolean mainFrame) {
+        if (!mainFrame || !isCloudflareUrl(targetUrl) || !isCloudflareUrl(requestUrl)) {
+            return false;
+        }
+        try {
+            URI target = new URI(targetUrl);
+            URI request = new URI(requestUrl);
+            return canonicalPath(target.getPath()).equals(canonicalPath(request.getPath()));
+        } catch (URISyntaxException ignored) {
+            return false;
+        }
+    }
+
+    private static String canonicalPath(String path) {
+        if (path == null || path.isEmpty()) return "/";
+        if (path.length() > 1 && path.endsWith("/")) {
+            return path.substring(0, path.length() - 1);
+        }
+        return path;
     }
 
     static boolean hasCloudflareAccessCookie(String cookieHeader) {

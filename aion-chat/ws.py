@@ -177,6 +177,15 @@ class ConnectionManager:
 
     async def broadcast(self, data: dict, exclude: WebSocket = None):
         payload = _with_private_notification_sender(data)
+        if "sync_seq" not in payload:
+            try:
+                from sync_events import attach_sync_seq, is_sync_event_type, persist_sync_event
+                if is_sync_event_type(str(payload.get("type") or "")):
+                    payload = attach_sync_seq(payload, await persist_sync_event(payload))
+            except Exception as e:
+                # Live delivery remains available while startup migrations or a
+                # transient SQLite lock are being resolved.
+                log.warning("sync event persistence failed: %s", type(e).__name__)
         msg = json.dumps(payload, ensure_ascii=False)
         msg_type = payload.get("type", "unknown")
         targets = [ws for ws in self.active.copy() if ws is not exclude]

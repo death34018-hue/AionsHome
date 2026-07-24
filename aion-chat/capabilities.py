@@ -45,7 +45,9 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef("music", "点歌", "media", "注入 [MUSIC:歌曲名 歌手名]，让模型可以点歌或推荐音乐。"),
     CapabilityDef("cam_check", "查看监控/状态", "core", "注入 [CAM_CHECK]，让模型可以主动请求查看当前画面。"),
     CapabilityDef("schedule", "闹铃/日程/监督", "core", "注入闹铃、日程、定时监督和删除日程指令；关闭后也不注入当前日程列表。"),
+    CapabilityDef("app_supervision", "应用监管", "core", "注入应用使用缓存和锁定、暂时解锁、解除锁定指令；关闭后手机计时、上报和检查点唤醒全部静默。"),
     CapabilityDef("home", "智能家居", "life", "注入 [HOME:...]，让模型可以控制或查询 Home Assistant 设备。"),
+    CapabilityDef("band_vibration", "手环呼唤", "life", "注入轻震/呼唤小纸条指令，让模型可以通过小米手环震动并显示一句话。"),
     CapabilityDef("activity_check", "查看活动动态", "context", "注入 [查看动态:n]，让模型可以查看近期设备活动摘要。", runtime_note="还需要活动日志页的 AI 联动开启。"),
     CapabilityDef("location_context", "位置上下文", "context", "注入当前位置/天气等上下文信息。"),
     CapabilityDef("poi_search", "周边 POI 搜索", "life", "注入 [POI_SEARCH:类型名]，仅在位置追踪开启且当前在户外时可用。", runtime_note="仅户外位置状态下注入。"),
@@ -245,6 +247,24 @@ def build_cli_file_storage_text(model_key: str | None = None) -> str:
     )
 
 
+def build_band_note_ability_text(user_name: str, *, passive: bool = False) -> str:
+    """Return the shared model-visible Mi Band note instructions."""
+    if not is_capability_enabled("band_vibration"):
+        return ""
+    text = (
+        f"[BAND_NOTE_SINGLE:一句纸条] — 让{user_name}的小米手环轻震一次，并显示你写的一句纸条。"
+        f"适合想念、轻轻叫人或温柔提醒；[BAND_NOTE_CALL:一句纸条] — 连震三次并显示纸条，"
+        f"用于明确呼叫{user_name}尽快看消息。纸条只写真正想让{user_name}在手环上看到的话，"
+        "不要在自然语言正文里重复。每次回复最多使用一个；系统会隐藏并执行指令，不要解释或朗读指令本身。"
+    )
+    if passive:
+        text += (
+            f"在闹铃叫醒、监督到点、巡逻发现{user_name}长时间没有动静或疑似装睡时，"
+            "可以主动使用轻震或三连震直接催醒、催促回应。"
+        )
+    return text
+
+
 async def build_capability_prompt_items(
     user_name: str,
     *,
@@ -281,8 +301,17 @@ async def build_capability_prompt_items(
             "[SCHEDULE_DEL:日程id] — 删除指定日程/闹铃/定时监控。",
         ])
 
+    if is_capability_enabled("app_supervision"):
+        from app_supervision_ai import build_app_supervision_ability_text
+        supervision_text = build_app_supervision_ability_text()
+        if supervision_text:
+            abilities.append(supervision_text)
+
     if is_capability_enabled("home"):
         abilities.append(HOME_ABILITY_TEXT)
+
+    if is_capability_enabled("band_vibration"):
+        abilities.append(build_band_note_ability_text(user_name))
 
     if include_private_whisper and is_capability_enabled("private_whisper"):
         abilities.append(

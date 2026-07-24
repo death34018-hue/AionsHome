@@ -309,6 +309,12 @@ const LOCK_LABELS = {
   temporary: "临时"
 };
 
+let worldbookViewportWidth = window.innerWidth;
+let worldbookPreviewDirty = true;
+let worldbookPreviewFrame = null;
+const worldbookResizeFrames = new WeakMap();
+const worldbookTextareaMetrics = new WeakMap();
+
 function fieldId(prefix, key) {
   return `${prefix}_${key}`;
 }
@@ -320,26 +326,50 @@ function estimateTextareaRows(text) {
 
 function resizeWorldbookTextarea(el) {
   if (!el) return;
-  const style = window.getComputedStyle(el);
-  const lineHeight = parseFloat(style.lineHeight) || 19;
-  const verticalPadding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0) + 2;
+  let metrics = worldbookTextareaMetrics.get(el);
+  if (!metrics) {
+    const style = window.getComputedStyle(el);
+    metrics = {
+      lineHeight: parseFloat(style.lineHeight) || 19,
+      verticalPadding: (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0) + 2
+    };
+    worldbookTextareaMetrics.set(el, metrics);
+  }
   const estimatedRows = estimateTextareaRows(el.value);
-  const charCount = [...String(el.value || "")].length;
+  const charCount = String(el.value || "").length;
   const minRows = (charCount > 220 || estimatedRows > 12)
     ? 14
     : (charCount > 60 || estimatedRows > 5)
       ? 10
       : (charCount > 0 ? 5 : 4);
   const maxHeight = Math.max(220, Math.min(window.innerHeight * 0.56, 560));
-  const minHeight = Math.round(lineHeight * minRows + verticalPadding);
+  const minHeight = Math.round(metrics.lineHeight * minRows + metrics.verticalPadding);
   el.style.height = "auto";
-  const nextHeight = Math.min(Math.max(el.scrollHeight, minHeight), maxHeight);
+  const scrollHeight = el.scrollHeight;
+  const nextHeight = Math.min(Math.max(scrollHeight, minHeight), maxHeight);
   el.style.height = `${nextHeight}px`;
-  el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
+  el.style.overflowY = scrollHeight > maxHeight ? "auto" : "hidden";
+}
+
+function scheduleWorldbookTextareaResize(el) {
+  if (!el || worldbookResizeFrames.has(el)) return;
+  const frame = requestAnimationFrame(() => {
+    worldbookResizeFrames.delete(el);
+    resizeWorldbookTextarea(el);
+  });
+  worldbookResizeFrames.set(el, frame);
 }
 
 function resizeWorldbookTextareas(root = document) {
   root.querySelectorAll?.(".wb-section textarea").forEach(resizeWorldbookTextarea);
+}
+
+function handleWorldbookViewportResize() {
+  const nextWidth = window.innerWidth;
+  if (nextWidth === worldbookViewportWidth) return;
+  worldbookViewportWidth = nextWidth;
+  const activePanel = document.querySelector(".wb-panel.active");
+  if (activePanel) resizeWorldbookTextareas(activePanel);
 }
 
 function renderSections(prefix, containerId, sections) {
@@ -360,8 +390,8 @@ function renderSections(prefix, containerId, sections) {
   sections.forEach(section => {
     const textarea = $(fieldId(prefix, section.key));
     textarea.addEventListener("input", () => {
-      resizeWorldbookTextarea(textarea);
-      syncPreview();
+      scheduleWorldbookTextareaResize(textarea);
+      schedulePreviewSync();
     });
   });
 }
@@ -373,7 +403,7 @@ function setPanel(panel) {
     $(`panel${name}`).classList.toggle("active", key === panel);
   });
   resizeWorldbookTextareas($(`panel${panel[0].toUpperCase()}${panel.slice(1)}`));
-  syncPreview();
+  schedulePreviewSync();
 }
 
 function hasStructuredSections(data, sections) {
@@ -564,17 +594,31 @@ function syncNameLabels() {
   document.title = `世界书 - ${aiName}`;
 }
 
+function schedulePreviewSync() {
+  worldbookPreviewDirty = true;
+  if (worldbookPreviewFrame !== null) return;
+  worldbookPreviewFrame = requestAnimationFrame(() => {
+    worldbookPreviewFrame = null;
+    syncPreview();
+  });
+}
+
 function syncPreview() {
+  syncNameLabels();
+  if (!$("panelPreview")?.classList.contains("active")) {
+    worldbookPreviewDirty = true;
+    return;
+  }
   const ai = compileSections("ai", AI_SECTIONS);
   const user = compileSections("user", USER_SECTIONS);
   const creative = $("wbCreativeRules")?.value.trim() || "";
   const enabled = $("wbSystemPromptEnabled")?.checked;
-  syncNameLabels();
   $("wbPreview").value = [
     `[系统设定 - ${currentAiName()}人设]\n${ai || "(空)"}`,
     `[系统设定 - ${currentUserName()}信息]\n${user || "(空)"}`,
     `[系统提示：${enabled ? "启用" : "关闭"}]\n${creative || "(空)"}`
   ].join("\n\n---\n\n");
+  worldbookPreviewDirty = false;
 }
 
 let personaEvolutionRuns = [];
@@ -946,18 +990,15 @@ async function init() {
   setupEvolutionDateInput("wbEvolutionDate");
   const creativeTextarea = $("wbCreativeRules");
   creativeTextarea.addEventListener("input", () => {
-    resizeWorldbookTextarea(creativeTextarea);
-    syncPreview();
+    scheduleWorldbookTextareaResize(creativeTextarea);
+    schedulePreviewSync();
   });
   creativeTextarea.closest(".wb-section")?.addEventListener("toggle", () => resizeWorldbookTextarea(creativeTextarea));
-  window.addEventListener("resize", () => {
-    const activePanel = document.querySelector(".wb-panel.active");
-    if (activePanel) resizeWorldbookTextareas(activePanel);
-  });
-  $("wbSystemPromptEnabled").addEventListener("change", syncPreview);
+  window.addEventListener("resize", handleWorldbookViewportResize, { passive: true });
+  $("wbSystemPromptEnabled").addEventListener("change", schedulePreviewSync);
   $("wbPersonaEvolutionEnabled").addEventListener("change", () => savePersonaEvolutionToggle("ai"));
-  $("wbAiName").addEventListener("input", syncPreview);
-  $("wbUserName").addEventListener("input", syncPreview);
+  $("wbAiName").addEventListener("input", schedulePreviewSync);
+  $("wbUserName").addEventListener("input", schedulePreviewSync);
 
   const wb = await api("GET", "/api/worldbook");
   $("wbAiName").value = wb.ai_name || "";

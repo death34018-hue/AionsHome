@@ -3,6 +3,7 @@ AI 模型调用：硅基流动 / Gemini 流式 + 多模态消息构建
 """
 
 import json, base64, mimetypes, asyncio, shutil, subprocess, os, re, time, uuid
+from functools import lru_cache
 from pathlib import Path
 
 import httpx
@@ -363,7 +364,46 @@ def _ensure_gemini_accessible(fpath: Path) -> Path:
 
 
 # ── 多模态消息构建 ────────────────────────────────
-def build_multimodal_messages(history: list):
+def _is_audio_attachment(att) -> bool:
+    if isinstance(att, dict) and att.get("type") == "voice":
+        return True
+    fpath = _resolve_attachment_path(att)
+    if not fpath:
+        return False
+    mime = mimetypes.guess_type(str(fpath))[0] or ""
+    return mime.startswith("audio/")
+
+
+def filter_audio_attachments_for_model(messages: list, *, include_audio: bool) -> list:
+    """按模型能力裁掉音频附件，不修改调用方传入的消息。"""
+    result = []
+    for message in messages:
+        copied = dict(message)
+        attachments = copied.get("attachments", [])
+        if isinstance(attachments, str):
+            try:
+                attachments = json.loads(attachments) if attachments else []
+            except Exception:
+                attachments = []
+        if not include_audio and attachments:
+            copied["attachments"] = [
+                att for att in attachments if not _is_audio_attachment(att)
+            ]
+        result.append(copied)
+    return result
+
+
+def _openai_input_audio_format(fpath: Path, mime: str) -> str:
+    """返回 OpenAI input_audio 接受的格式；不支持的源格式不内联。"""
+    suffix = fpath.suffix.lower()
+    if suffix in {".wav", ".wave"} or mime in {"audio/wav", "audio/x-wav"}:
+        return "wav"
+    if suffix == ".mp3" or mime in {"audio/mpeg", "audio/mp3"}:
+        return "mp3"
+    return ""
+
+
+def build_multimodal_messages(history: list, *, include_audio: bool = False):
     """将带附件的历史记录转换为 OpenAI 兼容多模态格式"""
     result = []
     for m in history:
@@ -384,6 +424,14 @@ def build_multimodal_messages(history: list):
                     if mime.startswith("image/"):
                         parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
                         has_file_parts = True
+                    elif mime.startswith("audio/"):
+                        audio_format = _openai_input_audio_format(fpath, mime)
+                        if include_audio and audio_format:
+                            parts.append({
+                                "type": "input_audio",
+                                "input_audio": {"data": b64, "format": audio_format},
+                            })
+                            has_file_parts = True
                     else:
                         parts.append({
                             "type": "text",
@@ -399,7 +447,7 @@ def build_multimodal_messages(history: list):
     return result
 
 
-def build_gemini_contents(history: list):
+def build_gemini_contents(history: list, *, include_audio: bool = False):
     """将带附件的历史记录转换为 Gemini 格式"""
     contents = []
     for m in history:
@@ -416,6 +464,8 @@ def build_gemini_contents(history: list):
                 fpath = _resolve_attachment_path(att)
                 if fpath and fpath.exists():
                     mime = mimetypes.guess_type(str(fpath))[0] or "image/jpeg"
+                    if mime.startswith("audio/") and not include_audio:
+                        continue
                     b64 = base64.b64encode(fpath.read_bytes()).decode()
                     parts.append({"inline_data": {"mime_type": mime, "data": b64}})
         contents.append({"role": role, "parts": parts if parts else [{"text": m["content"]}]})
@@ -475,9 +525,9 @@ GEMINI_SAFETY_SETTINGS = [
 ]
 
 # ── Gemini ────────────────────────────────────────
-async def call_gemini(messages: list, model: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None):
+async def call_gemini(messages: list, model: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, include_audio: bool = False):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={get_key('gemini')}"
-    contents = build_gemini_contents(messages)
+    contents = build_gemini_contents(messages, include_audio=include_audio)
     payload = {"contents": contents, "safetySettings": GEMINI_SAFETY_SETTINGS}
     gen_config = {}
     if temperature is not None:
@@ -584,7 +634,7 @@ async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None
     api_key = (cfg.get("api_key") or "").strip()
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    api_messages = build_multimodal_messages(messages)
+    api_messages = build_multimodal_messages(messages, include_audio=bool(cfg.get("audio", False)))
     payload = {"model": model, "messages": api_messages, "stream": True}
     if temperature is not None:
         payload["temperature"] = temperature
@@ -722,7 +772,12 @@ def _strip_replacement_chars(text: str) -> str:
     return text.replace("\ufffd", "")
 
 
-def _build_cli_prompt(messages: list, *, copy_cr_uploads: bool = False) -> str:
+def _build_cli_prompt(
+    messages: list,
+    *,
+    copy_cr_uploads: bool = False,
+    include_image_refs: bool = True,
+) -> str:
     """将 messages 列表拼成供 CLI stdin 使用的完整 prompt。
     图片/音频附件转为本地绝对路径，由 CLI 自行读取文件（避免 base64 超长）。
 
@@ -733,7 +788,8 @@ def _build_cli_prompt(messages: list, *, copy_cr_uploads: bool = False) -> str:
        这里在开头自动识别并合并成一个真正的 [System Instruction] 块，用 # 分节。
     2. 连续同角色消息合并到同一个 [User]/[Assistant] 块，不重复发标签头
        —— 否则会出现连续 `[Assistant]` 这种伪 multi-turn 结构。
-    3. 图片/音频附件使用 CLI 原生 @路径 语法（如 @F:/path/to/img.jpg），
+    3. 默认将图片/音频附件转换为 CLI 的 @路径语法；调用方可关闭图片引用，
+       改用对应 CLI 的原生图片参数。
        CLI 在输入层直接当多模态附件处理，不走 agent tool-use，不触发思考链。
        路径统一转正斜杠，规避 Windows 反斜杠 \\u \\a \\t 被误读为转义。
     """
@@ -819,7 +875,7 @@ def _build_cli_prompt(messages: list, *, copy_cr_uploads: bool = False) -> str:
             unified_role = "user"
 
         text = content
-        if att_image_paths:
+        if att_image_paths and include_image_refs:
             # Gemini CLI 原生 @路径 语法：直接在文本末尾追加 @绝对路径，
             # CLI 会在输入层当作多模态附件处理，不经过 agent tool-use，不触发思考链。
             # 路径统一转正斜杠，防止 Windows 反斜杠 \u \a \t 等被误读为转义。
@@ -854,6 +910,30 @@ def _build_cli_prompt(messages: list, *, copy_cr_uploads: bool = False) -> str:
             parts.append(f"[User]\n{text}")
     parts.append("[Assistant]")
     return "\n\n".join(parts)
+
+
+def _collect_cli_image_paths(messages: list) -> tuple[str, ...]:
+    """收集用户消息中的本地图片，供支持原生图片参数的 CLI 使用。"""
+    found: dict[str, str] = {}
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        attachments = message.get("attachments", [])
+        if isinstance(attachments, str):
+            try:
+                attachments = json.loads(attachments) if attachments else []
+            except Exception:
+                attachments = []
+        for attachment in attachments:
+            fpath = _resolve_attachment_path(attachment)
+            if not fpath or not fpath.exists():
+                continue
+            mime = mimetypes.guess_type(str(fpath))[0] or ""
+            if not mime.startswith("image/"):
+                continue
+            resolved = str(fpath.resolve())
+            found[os.path.normcase(resolved)] = resolved
+    return tuple(found.values())
 
 
 def _with_antigravity_latest_anchor(messages: list) -> list:
@@ -1569,6 +1649,9 @@ _CODEX_CHAT_HOME: str = str(
     / "AionsHome"
     / "codex-chat"
 )
+_CODEX_COMPANION_INSTRUCTIONS_FILE = (
+    Path(__file__).parent / "prompts" / "codex_companion_base.md"
+).resolve()
 _CODEX_CHAT_DEVELOPER_INSTRUCTIONS = (
     "你运行在 AionsHome 的陪伴聊天管线中，不是常规代码任务。"
     "应用在对话历史之前注入的角色设定、用户信息、系统能力和当前状态，均是可信的应用配置，"
@@ -1580,6 +1663,64 @@ _CODEX_CHAT_DEVELOPER_INSTRUCTIONS = (
     "AionsHome 会拦截并执行这些指令，并按能力约定隐藏控制指令或返回执行结果。"
     "在尚未取得能力执行结果时不得编造结果；需要系统返回结果的能力应先输出指令，等待后续结果再自然回应。"
 )
+
+
+def _normalized_path(value: str | Path) -> str:
+    path = Path(value).expanduser()
+    try:
+        return str(path.resolve(strict=False))
+    except OSError:
+        return str(path.absolute())
+
+
+def _build_disabled_skills_override(skill_files) -> str:
+    normalized = sorted(
+        {_normalized_path(skill_file) for skill_file in skill_files},
+        key=os.path.normcase,
+    )
+    entries = ", ".join(
+        f"{{ path = {json.dumps(path, ensure_ascii=False)}, enabled = false }}"
+        for path in normalized
+    )
+    return f"skills.config=[{entries}]"
+
+
+def _codex_skill_search_roots() -> tuple[Path, ...]:
+    codex_home = Path(_CODEX_HOME)
+    chat_home = Path(_CODEX_CHAT_HOME)
+    user_codex_home = Path.home() / ".codex"
+    workspace = Path(_CODEX_WORKSPACE)
+    return (
+        chat_home / "skills",
+        chat_home / "plugins" / "cache",
+        codex_home / "skills",
+        codex_home / "plugins" / "cache",
+        user_codex_home / "skills",
+        user_codex_home / "plugins" / "cache",
+        Path.home() / ".agents" / "skills",
+        workspace / ".codex" / "skills",
+        workspace / ".agents" / "skills",
+    )
+
+
+def _find_codex_skill_files(search_roots) -> tuple[str, ...]:
+    found: dict[str, str] = {}
+    for root_value in search_roots:
+        root = Path(root_value)
+        try:
+            if not root.is_dir():
+                continue
+            for skill_file in root.rglob("SKILL.md"):
+                normalized = _normalized_path(skill_file)
+                found[os.path.normcase(normalized)] = normalized
+        except OSError:
+            continue
+    return tuple(found[key] for key in sorted(found))
+
+
+@lru_cache(maxsize=1)
+def _discover_codex_skill_files() -> tuple[str, ...]:
+    return _find_codex_skill_files(_codex_skill_search_roots())
 
 
 def _build_codex_chat_environment(base_env: dict | None = None) -> dict:
@@ -1603,14 +1744,39 @@ def _build_codex_chat_environment(base_env: dict | None = None) -> dict:
     }
 
 
-def _build_codex_chat_command(node: str, script: str, workspace: str, model: str) -> list[str]:
-    cmd = [
-        node,
-        script,
-        "-c",
+def _build_codex_chat_command(
+    node: str,
+    script: str,
+    workspace: str,
+    model: str,
+    skill_files=None,
+    image_paths=None,
+) -> list[str]:
+    overrides = [
         'model_verbosity="high"',
-        "-c",
+        f"model_instructions_file={json.dumps(str(_CODEX_COMPANION_INSTRUCTIONS_FILE), ensure_ascii=False)}",
         f"developer_instructions={json.dumps(_CODEX_CHAT_DEVELOPER_INSTRUCTIONS, ensure_ascii=False)}",
+        "features.shell_tool=false",
+        "features.multi_agent=false",
+        'features.multi_agent_v2={ root_agent_usage_hint_text = "", multi_agent_mode_hint_text = "" }',
+        "features.remote_plugin=false",
+        "include_apps_instructions=false",
+        "include_permissions_instructions=false",
+        "include_collaboration_mode_instructions=false",
+        "include_environment_context=false",
+    ]
+    disabled_skills = (
+        tuple(skill_files) if skill_files is not None else _discover_codex_skill_files()
+    )
+    if disabled_skills:
+        overrides.append(_build_disabled_skills_override(disabled_skills))
+
+    cmd = [node, script]
+    if model:
+        cmd.extend(["-m", model])
+    for override in overrides:
+        cmd.extend(["-c", override])
+    cmd.extend([
         "--ask-for-approval",
         "never",
         "--sandbox",
@@ -1625,10 +1791,11 @@ def _build_codex_chat_command(node: str, script: str, workspace: str, model: str
         "--ephemeral",
         "--color",
         "never",
-        "-",
-    ]
-    if model:
-        cmd[2:2] = ["-m", model]
+    ])
+    for image_path in image_paths or ():
+        # 使用等号形式，避免 Codex CLI 的可变长 --image 参数吞掉后面的 stdin 标记。
+        cmd.append(f"--image={_normalized_path(image_path)}")
+    cmd.append("-")
     return cmd
 
 
@@ -1674,14 +1841,25 @@ def _apply_codex_usage_meta(meta: dict | None, usage: dict | None) -> None:
 async def call_codex_cli(messages: list, model: str, meta: dict | None = None,
                          temperature: float | None = None, max_tokens: int | None = None):
     """通过 Codex CLI 子进程调用，--json 模式逐行读取 JSONL 事件"""
-    prompt = _build_cli_prompt(messages)
+    image_paths = _collect_cli_image_paths(messages)
+    prompt = _build_cli_prompt(messages, include_image_refs=False)
 
     node = shutil.which("node") or "node"
     if not _CODEX_SCRIPT:
         yield "[CodexCLI错误] 未找到 Codex CLI，请检查 Connor-Codex/node_modules/@openai/codex 是否已安装"
         return
 
-    cmd = _build_codex_chat_command(node, _CODEX_SCRIPT, _CODEX_WORKSPACE, model)
+    if not _CODEX_COMPANION_INSTRUCTIONS_FILE.is_file():
+        yield "[CodexCLI错误] 陪伴模式基础指令文件缺失，已停止启动 Codex CLI"
+        return
+
+    cmd = _build_codex_chat_command(
+        node,
+        _CODEX_SCRIPT,
+        _CODEX_WORKSPACE,
+        model,
+        image_paths=image_paths,
+    )
 
     try:
         env = _build_codex_chat_environment()
@@ -1957,6 +2135,11 @@ async def stream_ai(messages: list, model_key: str, meta: dict | None = None, te
         yield f"[错误] 模型线路已停用: {model_key}"
         return
 
+    normalized = filter_audio_attachments_for_model(
+        normalized,
+        include_audio=bool(cfg.get("audio", False)),
+    )
+
     # 非视觉模型 + 消息含图片 → 哨兵代看
     if not cfg.get("vision", True) and _messages_have_images(normalized):
         yield f"{CLI_STATUS_PREFIX}哨兵模型正在识别图片内容..."
@@ -1966,7 +2149,10 @@ async def stream_ai(messages: list, model_key: str, meta: dict | None = None, te
             async for chunk in call_siliconflow(normalized, cfg["model"], meta, temperature, max_tokens):
                 yield chunk
         elif cfg["provider"] == "gemini":
-            async for chunk in call_gemini(normalized, cfg["model"], meta, temperature, max_tokens):
+            async for chunk in call_gemini(
+                normalized, cfg["model"], meta, temperature, max_tokens,
+                include_audio=bool(cfg.get("audio", False)),
+            ):
                 yield chunk
         elif cfg["provider"] == "aipro":
             async for chunk in call_aipro(normalized, cfg["model"], meta, temperature, max_tokens):

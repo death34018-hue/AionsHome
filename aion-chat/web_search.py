@@ -13,7 +13,11 @@ TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 TAVILY_EXTRACT_URL = "https://api.tavily.com/extract"
 WEB_SEARCH_CMD_PATTERN = re.compile(r"\[WEB_SEARCH\s*[：:]\s*([^\]]+)\]", re.IGNORECASE)
 WEB_EXTRACT_CMD_PATTERN = re.compile(r"\[WEB_EXTRACT\s*[：:]\s*([^\]]+)\]", re.IGNORECASE)
-_WEB_CMD_START_RE = re.compile(r"\[(?:WEB_SEARCH|WEB_EXTRACT)\s*[：:]", re.IGNORECASE)
+_WEB_CMD_START_RE = re.compile(
+    r"\[(?:(?:WEB_SEARCH|WEB_EXTRACT)\s*[：:]|BAND_VIBRATE\s*:"
+    r"|BAND_NOTE_(?:SINGLE|CALL)\s*[：:]|APP_(?:LOCK|TEMP_UNLOCK|UNLOCK)\s*:)",
+    re.IGNORECASE,
+)
 _MAX_QUERIES = 3
 _MAX_EXTRACT_URLS = 3
 
@@ -150,7 +154,7 @@ async def run_web_commands(searches: list[str], extracts: list[str]) -> list[str
 
 
 class WebCommandStreamFilter:
-    """Suppress WEB_SEARCH/WEB_EXTRACT tags from streamed UI and TTS chunks."""
+    """Suppress hidden tool tags from streamed UI and TTS chunks."""
 
     def __init__(self):
         self._pending = ""
@@ -229,7 +233,13 @@ def _truncate(text: str, max_chars: int) -> str:
 
 
 def _possible_command_prefix_len(text: str) -> int:
-    probes = ("[WEB_SEARCH:", "[WEB_SEARCH：", "[WEB_EXTRACT:", "[WEB_EXTRACT：")
+    probes = (
+        "[WEB_SEARCH:", "[WEB_SEARCH：", "[WEB_EXTRACT:", "[WEB_EXTRACT：",
+        "[BAND_VIBRATE:",
+        "[BAND_NOTE_SINGLE:", "[BAND_NOTE_SINGLE：",
+        "[BAND_NOTE_CALL:", "[BAND_NOTE_CALL：",
+        "[APP_LOCK:", "[APP_TEMP_UNLOCK:", "[APP_UNLOCK:",
+    )
     max_len = min(len(text), max(len(item) for item in probes) - 1)
     upper = text.upper()
     for size in range(max_len, 0, -1):

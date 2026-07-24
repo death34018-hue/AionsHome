@@ -13,11 +13,14 @@ import aiosqlite
 from config import DB_PATH, DEFAULT_MODEL, load_worldbook, SETTINGS
 from database import get_db
 from ws import manager
+from band_commands import process_band_vibration, with_band_vibration_attachment
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
 from memory import recall_memories
 from music import search_songs, get_audio_url
 from routes.music import MUSIC_CMD_PATTERN
 from tts import TTSStreamer
+from web_search import WebCommandStreamFilter
+from capabilities import build_band_note_ability_text
 from wechat_bridge import (
     dispatch_wechat_message,
     process_wechat_outbound_commands,
@@ -215,6 +218,7 @@ class ScheduleManager:
             if origin_room:
                 return {"type": "chatroom", "room_id": origin_room}
             return {"type": "private"}
+
         else:  # aion
             last = manager.get_aion_last_active()
             if last and last.startswith("chatroom:"):
@@ -224,6 +228,46 @@ class ScheduleManager:
             if origin_room:
                 return {"type": "chatroom", "room_id": origin_room}
             return {"type": "private"}
+
+    async def fire_app_supervision_checkpoint(
+        self,
+        group: dict,
+        *,
+        event_id: str,
+        checkpoint_minutes: int,
+    ) -> None:
+        display_name = str(group.get("displayName") or group.get("groupId") or "应用")
+        role_id = "connor" if group.get("roleId") == "connor" else "aion"
+        role_name = get_schedule_origin_name(role_id)
+        minutes = int(checkpoint_minutes)
+        capture_requested_at = time.time()
+        await manager.broadcast({
+            "type": "cam_check",
+            "data": {
+                "capture_only": True,
+                "reason": "app_supervision_checkpoint",
+                "event_id": event_id,
+            },
+        })
+        from phone_screen import wait_for_phone_screen_after, freeze_phone_screen
+        phone_path = await wait_for_phone_screen_after(capture_requested_at)
+        phone_attachment = (
+            freeze_phone_screen(phone_path, event_id=event_id)
+            if phone_path is not None else ""
+        )
+
+        alarm_item = {
+            "id": event_id,
+            "content": f"{display_name}本轮累计达到 {minutes} 分钟检查点，请结合最近对话和当前应用状态自然回复，并自行决定是否干预。",
+            "trigger_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "origin": role_id,
+            "origin_room_id": "",
+            "_app_supervision_checkpoint": True,
+            "_app_supervision_display": f"【{display_name}本轮累计达到{minutes}分钟检查，唤醒{role_name}进行判定。】",
+        }
+        if phone_attachment:
+            alarm_item["_app_supervision_phone_attachment"] = phone_attachment
+        await self._fire_alarm(alarm_item)
 
     async def _save_to_private(
         self,
@@ -249,6 +293,8 @@ class ScheduleManager:
         await manager.broadcast({"type": "msg_created", "data": sys_msg})
 
         now2 = time.time()
+        music_atts = await with_band_vibration_attachment(ai_msg_id, music_atts)
+        att_json = json.dumps(music_atts, ensure_ascii=False) if music_atts else "[]"
         async with get_db() as db:
             await db.execute(
                 "INSERT INTO messages (id, conv_id, role, content, created_at, attachments, reasoning_content) VALUES (?,?,?,?,?,?,?)",
@@ -289,6 +335,8 @@ class ScheduleManager:
         await manager.broadcast({"type": "chatroom_msg_created", "data": sys_msg})
 
         now2 = time.time()
+        music_atts = await with_band_vibration_attachment(ai_msg_id, music_atts)
+        att_json = json.dumps(music_atts, ensure_ascii=False) if music_atts else "[]"
         async with get_db() as db:
             await db.execute(
                 "INSERT INTO chatroom_messages (id, room_id, sender, content, created_at, attachments, reasoning_content) VALUES (?,?,?,?,?,?,?)",
@@ -307,20 +355,27 @@ class ScheduleManager:
         content = item["content"]
         trigger_at = item["trigger_at"]
         origin = item.get("origin", "aion")
+        is_app_checkpoint = bool(item.get("_app_supervision_checkpoint"))
+        checkpoint_display = str(item.get("_app_supervision_display") or "").strip()
+        checkpoint_phone_attachment = str(
+            item.get("_app_supervision_phone_attachment") or ""
+        ).strip()
         origin_name = get_schedule_origin_name(origin)
         log.info("firing alarm %s: %s @%s (origin=%s)", sid, content, trigger_at, origin)
 
         # 标记为已触发
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("UPDATE schedules SET status='triggered' WHERE id=?", (sid,))
-            await db.commit()
+        if not is_app_checkpoint:
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("UPDATE schedules SET status='triggered' WHERE id=?", (sid,))
+                await db.commit()
 
         # 广播给前端弹窗
-        await manager.broadcast({
-            "type": "schedule_alarm",
-            "data": {"id": sid, "content": content, "trigger_at": trigger_at, "origin": origin, "origin_name": origin_name},
-        })
-        await manager.broadcast({"type": "schedule_changed"})
+        if not is_app_checkpoint:
+            await manager.broadcast({
+                "type": "schedule_alarm",
+                "data": {"id": sid, "content": content, "trigger_at": trigger_at, "origin": origin, "origin_name": origin_name},
+            })
+            await manager.broadcast({"type": "schedule_changed"})
 
         # ── 确定响应目标 ──
         target = self._resolve_target(item)
@@ -377,12 +432,18 @@ class ScheduleManager:
 
             now_str = datetime.now().strftime("%Y年%m月%d日  %H:%M:%S")
             trigger_prompt = (
-                f"[日程闹铃触发]\n"
+                f"{'[应用使用检查点触发]' if is_app_checkpoint else '[日程闹铃触发]'}\n"
                 f"日程内容：{trigger_at} — {content}\n"
                 f"现在时间已经到了（当前 {now_str}），请提醒【{user_name}】。"
                 f"{heart_rate_block}"
             )
+            if checkpoint_phone_attachment:
+                trigger_prompt += "\n系统附带了本次检查点刚刚截取的手机屏幕，请结合画面判断。"
+            elif is_app_checkpoint:
+                trigger_prompt += "\n本次手机屏幕未能在等待时间内取得，请根据应用状态和对话继续判断。"
             messages_ctx.append({"role": "user", "content": trigger_prompt})
+            if checkpoint_phone_attachment:
+                messages_ctx[-1]["attachments"] = [checkpoint_phone_attachment]
             messages = messages_ctx
         else:
             # Aion 来源 → 沿用原有逻辑
@@ -408,6 +469,9 @@ class ScheduleManager:
             abilities.append("[REMINDER:YYYY-MM-DD|内容] — 设置日程提醒（不闹铃），你在合适时机自然提起即可。")
             abilities.append(f"[Monitor:YYYY-MM-DDTHH:MM|内容] — 设置定时监督。到时间后系统自动截取摄像头画面发送给你，你可以查看{user_name}的状态。")
             abilities.append("[SCHEDULE_DEL:日程id] — 删除指定日程/闹铃/定时监控。")
+            passive_band_ability = build_band_note_ability_text(user_name, passive=True)
+            if passive_band_ability:
+                abilities.append(passive_band_ability)
             ability_block = "[系统能力] 你可以在回复中根据对话氛围，善用以下指令：\n" + "\n".join(f"{i+1}. {a}" for i, a in enumerate(abilities))
 
             active_schedules = await get_active_schedules()
@@ -419,11 +483,15 @@ class ScheduleManager:
             history.insert(cap_idx + 1, {"role": "assistant", "content": "好的，需要时我会使用这些指令。"})
 
             trigger_prompt = (
-                f"[日程闹铃触发]\n"
+                f"{'[应用使用检查点触发]' if is_app_checkpoint else '[日程闹铃触发]'}\n"
                 f"日程内容：{trigger_at} — {content}\n"
                 f"现在时间已经到了（当前 {now_str}），请提醒【{user_name}】。"
                 f"{heart_rate_block}"
             )
+            if checkpoint_phone_attachment:
+                trigger_prompt += "\n系统附带了本次检查点刚刚截取的手机屏幕，请结合画面判断。"
+            elif is_app_checkpoint:
+                trigger_prompt += "\n本次手机屏幕未能在等待时间内取得，请根据应用状态和对话继续判断。"
 
             recalled, _ = await recall_memories(trigger_prompt[:300])
             debug_recalled = recalled
@@ -435,13 +503,20 @@ class ScheduleManager:
                     {"role": "assistant", "content": "收到，我会自然地参考这些记忆。"},
                 ]
 
-            messages = prefix + mem_inject + history + [{"role": "user", "content": trigger_prompt}]
+            trigger_message = {"role": "user", "content": trigger_prompt}
+            if checkpoint_phone_attachment:
+                trigger_message["attachments"] = [checkpoint_phone_attachment]
+            messages = prefix + mem_inject + history + [trigger_message]
+
+        from app_supervision_ai import inject_app_supervision_context
+        inject_app_supervision_context(messages)
 
         # 预生成 ai_msg_id（TTS 分段文件命名需要）
         ai_msg_id = f"msg_{int(time.time()*1000)}_sa"
         usage_meta = _new_background_meta()
         debug_model_key = model_key
         has_error = False
+        alarm_command_filter = WebCommandStreamFilter()
 
         # Connor 来源时根据配置的模型调用
         if origin == "connor":
@@ -464,7 +539,9 @@ class ScheduleManager:
                             continue
                         full_text += chunk
                         if alarm_tts:
-                            alarm_tts.feed(chunk)
+                            visible_chunk = alarm_command_filter.feed(chunk)
+                            if visible_chunk:
+                                alarm_tts.feed(visible_chunk)
                 else:
                     _temp = SETTINGS.get("temperature")
                     async for chunk in stream_ai(messages, _connor_model, meta=usage_meta, temperature=_temp):
@@ -472,7 +549,9 @@ class ScheduleManager:
                             continue
                         full_text += chunk
                         if alarm_tts:
-                            alarm_tts.feed(chunk)
+                            visible_chunk = alarm_command_filter.feed(chunk)
+                            if visible_chunk:
+                                alarm_tts.feed(visible_chunk)
             except Exception as e:
                 has_error = True
                 full_text = f"[闹铃提醒回复失败] {e}"
@@ -491,7 +570,9 @@ class ScheduleManager:
                         continue
                     full_text += chunk
                     if alarm_tts:
-                        alarm_tts.feed(chunk)
+                        visible_chunk = alarm_command_filter.feed(chunk)
+                        if visible_chunk:
+                            alarm_tts.feed(visible_chunk)
             except Exception as e:
                 has_error = True
                 full_text = f"[闹铃提醒回复失败] {e}"
@@ -534,7 +615,10 @@ class ScheduleManager:
         reasoning_content = (usage_meta.get("reasoning_content") or "").strip()
 
         # ── 保存到目标窗口 ──
-        sys_content = f"⏰ 日程闹铃触发：{content}"
+        sys_content = (
+            checkpoint_display or f"应用使用检查点触发：{content}"
+            if is_app_checkpoint else f"⏰ 日程闹铃触发：{content}"
+        )
         if is_chatroom:
             await self._save_to_chatroom(target["room_id"], sender, sys_content, full_text, ai_msg_id, att_json, music_atts, reasoning_content)
         else:
@@ -552,6 +636,9 @@ class ScheduleManager:
         # 刷新 TTS 剩余文本
         if alarm_tts:
             try:
+                visible_tail = alarm_command_filter.flush()
+                if visible_tail:
+                    alarm_tts.feed(visible_tail)
                 await alarm_tts.flush()
             except Exception:
                 pass
@@ -584,11 +671,16 @@ class ScheduleManager:
         # 尝试截图（优先摄像头+屏幕，摄像头未开启时仅截取屏幕+手机）
         from camera import cam
         fname = None
-        # 播放提示音 + 5秒延迟，给用户反应时间
+        # 请求手机截图，并等待服务器确实收到本次请求之后的新结果。
+        phone_screen_requested_at = time.time()
         await manager.broadcast({"type": "monitor_alert", "data": {"content": content, "origin": origin, "origin_name": origin_name}})
-        await asyncio.sleep(5)
+        from phone_screen import wait_for_phone_screen_after
+        await wait_for_phone_screen_after(phone_screen_requested_at)
 
-        jpg_bytes = cam.get_frame_jpeg() or cam.get_screen_only_jpeg()
+        jpg_bytes = (
+            cam.get_frame_jpeg(phone_screen_after=phone_screen_requested_at)
+            or cam.get_screen_only_jpeg(phone_screen_after=phone_screen_requested_at)
+        )
         if jpg_bytes:
             from config import UPLOADS_DIR, SCREENSHOTS_DIR
             ts = time.strftime("%Y%m%d_%H%M%S")
@@ -711,6 +803,9 @@ class ScheduleManager:
             abilities.append("[REMINDER:YYYY-MM-DD|内容] — 设置日程提醒（不闹铃），你在合适时机自然提起即可。")
             abilities.append(f"[Monitor:YYYY-MM-DDTHH:MM|内容] — 设置定时监督。到时间后系统自动截取摄像头画面发送给你，你可以查看{user_name}的状态。")
             abilities.append("[SCHEDULE_DEL:日程id] — 删除指定日程/闹铃/定时监控。")
+            passive_band_ability = build_band_note_ability_text(user_name, passive=True)
+            if passive_band_ability:
+                abilities.append(passive_band_ability)
             ability_block = "[系统能力] 你可以在回复中根据对话氛围，善用以下指令：\n" + "\n".join(f"{i+1}. {a}" for i, a in enumerate(abilities))
 
             active_schedules = await get_active_schedules()
@@ -726,11 +821,15 @@ class ScheduleManager:
                 trigger_msg["attachments"] = [f"/uploads/{fname}"]
             messages = prefix + history + [trigger_msg]
 
+        from app_supervision_ai import inject_app_supervision_context
+        inject_app_supervision_context(messages)
+
         # 预生成 ai_msg_id（TTS 分段文件命名需要）
         ai_msg_id = f"msg_{int(time.time()*1000)}_sm"
         usage_meta = _new_background_meta()
         debug_model_key = model_key
         has_error = False
+        monitor_command_filter = WebCommandStreamFilter()
 
         # Connor 来源时根据配置的模型调用
         if origin == "connor":
@@ -753,7 +852,9 @@ class ScheduleManager:
                             continue
                         full_text += chunk
                         if monitor_tts:
-                            monitor_tts.feed(chunk)
+                            visible_chunk = monitor_command_filter.feed(chunk)
+                            if visible_chunk:
+                                monitor_tts.feed(visible_chunk)
                 else:
                     _temp = SETTINGS.get("temperature")
                     async for chunk in stream_ai(messages, _connor_model, meta=usage_meta, temperature=_temp):
@@ -761,7 +862,9 @@ class ScheduleManager:
                             continue
                         full_text += chunk
                         if monitor_tts:
-                            monitor_tts.feed(chunk)
+                            visible_chunk = monitor_command_filter.feed(chunk)
+                            if visible_chunk:
+                                monitor_tts.feed(visible_chunk)
             except Exception as e:
                 has_error = True
                 full_text = f"[定时监控回复失败] {e}"
@@ -779,7 +882,9 @@ class ScheduleManager:
                         continue
                     full_text += chunk
                     if monitor_tts:
-                        monitor_tts.feed(chunk)
+                        visible_chunk = monitor_command_filter.feed(chunk)
+                        if visible_chunk:
+                            monitor_tts.feed(visible_chunk)
             except Exception as e:
                 has_error = True
                 full_text = f"[定时监控回复失败] {e}"
@@ -845,6 +950,9 @@ class ScheduleManager:
         # 刷新 TTS 剩余文本
         if monitor_tts:
             try:
+                visible_tail = monitor_command_filter.flush()
+                if visible_tail:
+                    monitor_tts.feed(visible_tail)
                 await monitor_tts.flush()
             except Exception:
                 pass
@@ -963,7 +1071,9 @@ async def _chatroom_sys_msg(room_id: str, content: str, after_msg_id: str = None
     """Insert a chatroom system notice and broadcast it immediately."""
     now = time.time()
     msg_id = f"cm_{time.time_ns()}_sys"
-    order_atts = [{"type": "system_notice_order", "after_msg_id": after_msg_id}] if after_msg_id else []
+    order_atts = [{"type": "system_model_context"}]
+    if after_msg_id:
+        order_atts.append({"type": "system_notice_order", "after_msg_id": after_msg_id})
     att_json = json.dumps(order_atts, ensure_ascii=False) if order_atts else "[]"
     async with get_db() as db:
         await db.execute(
@@ -1043,6 +1153,27 @@ async def _process_background_reply_commands(
         sender=sender,
         ai_msg_id=ai_msg_id,
     )
+    target_type = "chatroom" if (target or {}).get("type") == "chatroom" else "private"
+    source_id = (target or {}).get("room_id") if target_type == "chatroom" else conv_id
+    cleaned = await process_band_vibration(
+        cleaned,
+        source_type=f"background_{target_type}",
+        source_id=source_id or "",
+        source_msg_id=ai_msg_id,
+        sender=sender,
+    )
+    from app_supervision_ai import (
+        queue_app_supervision_reply_command,
+        broadcast_app_supervision_command,
+    )
+    cleaned, supervision_command = await queue_app_supervision_reply_command(
+        cleaned,
+        source_message_id=ai_msg_id,
+        role_id="connor" if sender == "connor" else "aion",
+        source_kind=f"background_{target_type}",
+        source_ref=source_id or "",
+    )
+    await broadcast_app_supervision_command(supervision_command)
     return cleaned
 
 

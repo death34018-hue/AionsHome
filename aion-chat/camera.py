@@ -16,6 +16,7 @@ from ws import manager
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
 from memory import recall_memories
 from tts import TTSStreamer
+from web_search import WebCommandStreamFilter
 
 
 # ── 监控日志文件读写 ──────────────────────────────
@@ -669,12 +670,21 @@ class CameraMonitor:
         )
         return out
 
-    def _combine_with_screen(self, cam_frame: np.ndarray, *, force_pc_screen: bool = False) -> np.ndarray:
+    def _combine_with_screen(
+        self,
+        cam_frame: np.ndarray,
+        *,
+        force_pc_screen: bool = False,
+        phone_screen_after: float | None = None,
+    ) -> np.ndarray:
         """将摄像头画面（上）和主屏幕截图（下）上下拼接"""
         cam_layer = self._add_layer_label(cam_frame, "CAMERA VIEW - body/location source")
         screen = self._capture_screen(force=force_pc_screen)
         if screen is None:
-            phone_layer = self._build_phone_only_layer(cam_frame.shape[1])
+            phone_layer = self._build_phone_only_layer(
+                cam_frame.shape[1],
+                phone_screen_after=phone_screen_after,
+            )
             if phone_layer is not None:
                 return np.vstack([cam_layer, phone_layer])
             return cam_layer
@@ -683,7 +693,10 @@ class CameraMonitor:
         scr_h, scr_w = screen.shape[:2]
         new_scr_h = int(cam_w / scr_w * scr_h)
         screen_resized = cv2.resize(screen, (cam_w, new_scr_h), interpolation=cv2.INTER_AREA)
-        screen_resized = self._overlay_phone_screen(screen_resized)
+        screen_resized = self._overlay_phone_screen(
+            screen_resized,
+            phone_screen_after=phone_screen_after,
+        )
         screen_resized = self._add_layer_label(screen_resized, "DEVICE CONTEXT - phone/PC only")
         # 上下拼接
         combined = np.vstack([cam_layer, screen_resized])
@@ -709,11 +722,19 @@ class CameraMonitor:
             print(f"[Camera] PC 显示状态检查失败，继续截图: {e}")
             return True
 
-    def _overlay_phone_screen(self, screen_frame: np.ndarray) -> np.ndarray:
+    def _overlay_phone_screen(
+        self,
+        screen_frame: np.ndarray,
+        *,
+        phone_screen_after: float | None = None,
+    ) -> np.ndarray:
         """把最近的手机屏幕截图缩到与电脑屏幕层同高，贴在左侧窄条。"""
         try:
             from phone_screen import get_recent_phone_screen_path
-            phone_path = get_recent_phone_screen_path(max_age_seconds=150)
+            phone_path = get_recent_phone_screen_path(
+                max_age_seconds=150,
+                received_after=phone_screen_after,
+            )
             if not phone_path:
                 return screen_frame
             phone = cv2.imread(str(phone_path))
@@ -738,11 +759,19 @@ class CameraMonitor:
             print(f"[Camera] 手机屏幕拼接失败: {e}")
             return screen_frame
 
-    def _build_phone_only_layer(self, cam_w: int) -> np.ndarray | None:
+    def _build_phone_only_layer(
+        self,
+        cam_w: int,
+        *,
+        phone_screen_after: float | None = None,
+    ) -> np.ndarray | None:
         """PC 屏幕跳过时，仍保留手机截图所在的下方窄层。"""
         try:
             from phone_screen import get_recent_phone_screen_path
-            phone_path = get_recent_phone_screen_path(max_age_seconds=150)
+            phone_path = get_recent_phone_screen_path(
+                max_age_seconds=150,
+                received_after=phone_screen_after,
+            )
             if not phone_path:
                 return None
             phone = cv2.imread(str(phone_path))
@@ -788,26 +817,46 @@ class CameraMonitor:
             print(f"[Camera] 手机单独图层构建失败: {e}")
             return None
 
-    def get_frame_jpeg(self, *, force_pc_screen: bool = False) -> bytes | None:
+    def get_frame_jpeg(
+        self,
+        *,
+        force_pc_screen: bool = False,
+        phone_screen_after: float | None = None,
+    ) -> bytes | None:
         with self._lock:
             if self._latest_frame is None:
                 return None
             frame = self._apply_crop(self._latest_frame)
-        combined = self._combine_with_screen(frame, force_pc_screen=force_pc_screen)
+        combined = self._combine_with_screen(
+            frame,
+            force_pc_screen=force_pc_screen,
+            phone_screen_after=phone_screen_after,
+        )
         _, buf = cv2.imencode(".jpg", combined)
         return buf.tobytes()
 
-    def get_screen_only_jpeg(self, *, force_pc_screen: bool = False) -> bytes | None:
+    def get_screen_only_jpeg(
+        self,
+        *,
+        force_pc_screen: bool = False,
+        phone_screen_after: float | None = None,
+    ) -> bytes | None:
         """摄像头未开启时，仅截取 PC 屏幕 + 手机截屏，返回 JPEG bytes。"""
         screen = self._capture_screen(force=force_pc_screen)
         if screen is not None:
-            screen = self._overlay_phone_screen(screen)
+            screen = self._overlay_phone_screen(
+                screen,
+                phone_screen_after=phone_screen_after,
+            )
             _, buf = cv2.imencode(".jpg", screen)
             return buf.tobytes()
         # PC 屏幕不可用时尝试仅手机截屏
         try:
             from phone_screen import get_recent_phone_screen_path
-            phone_path = get_recent_phone_screen_path(max_age_seconds=150)
+            phone_path = get_recent_phone_screen_path(
+                max_age_seconds=150,
+                received_after=phone_screen_after,
+            )
             if phone_path:
                 phone = cv2.imread(str(phone_path))
                 if phone is not None:
@@ -817,22 +866,31 @@ class CameraMonitor:
             pass
         return None
 
-    def save_screenshot(self) -> str | None:
+    def save_screenshot(self, *, phone_screen_after: float | None = None) -> str | None:
         frame = None
         with self._lock:
             if self._latest_frame is not None:
                 frame = self._apply_crop(self._latest_frame).copy()
         if frame is not None:
-            combined = self._combine_with_screen(frame)
+            combined = self._combine_with_screen(
+                frame,
+                phone_screen_after=phone_screen_after,
+            )
         else:
             # 摄像头未开启，尝试仅截屏
             screen = self._capture_screen()
             if screen is not None:
-                combined = self._overlay_phone_screen(screen)
+                combined = self._overlay_phone_screen(
+                    screen,
+                    phone_screen_after=phone_screen_after,
+                )
             else:
                 try:
                     from phone_screen import get_recent_phone_screen_path
-                    phone_path = get_recent_phone_screen_path(max_age_seconds=150)
+                    phone_path = get_recent_phone_screen_path(
+                        max_age_seconds=150,
+                        received_after=phone_screen_after,
+                    )
                     if phone_path:
                         phone = cv2.imread(str(phone_path))
                         if phone is not None:
@@ -920,16 +978,27 @@ class CameraMonitor:
             if self._is_quiet_hours():
                 print("[Monitor] 当前处于静默时段，跳过截图")
                 continue
-            # 播放提示音，给用户5秒准备时间
+            # 请求手机截图并等待服务器收到本轮的新上传；户外慢网不再固定 5 秒抢跑。
+            phone_screen_requested_at = time.time()
             if self._loop:
-                asyncio.run_coroutine_threadsafe(
+                broadcast_future = asyncio.run_coroutine_threadsafe(
                     manager.broadcast({"type": "monitor_alert", "data": {"content": "哨兵即将查看监控"}}),
                     self._loop
                 )
-            time.sleep(5)
+                try:
+                    broadcast_future.result(timeout=5)
+                except Exception as error:
+                    print(f"[Monitor] 手机截图请求广播失败: {error}")
+                from phone_screen import wait_for_phone_screen_after_sync
+                wait_for_phone_screen_after_sync(
+                    phone_screen_requested_at,
+                    should_continue=lambda: self.monitoring,
+                )
             if not self.monitoring:
                 break
-            filename = self.save_screenshot()
+            filename = self.save_screenshot(
+                phone_screen_after=phone_screen_requested_at,
+            )
             if filename and self._loop:
                 print(f"[Monitor] 截图已保存: {filename}, 开始 Sentinel 分析")
                 asyncio.run_coroutine_threadsafe(
@@ -1023,9 +1092,9 @@ class CameraMonitor:
         except Exception:
             heart_rate_summary_text = ""
         heart_rate_block = (
-            f"\n{user_name}最近心率摘要（戒指数据，仅作辅助）：\n{heart_rate_summary_text}\n"
+            f"\n{user_name}最近心率摘要（穿戴设备数据，仅作辅助）：\n{heart_rate_summary_text}\n"
             if heart_rate_summary_text
-            else f"\n{user_name}最近心率摘要（戒指数据，仅作辅助）：\n（暂无可用心率数据）\n"
+            else f"\n{user_name}最近心率摘要（穿戴设备数据，仅作辅助）：\n（暂无可用心率数据）\n"
         )
 
         prompt = f"""你是一个监控画面分析师，同时也是{user_name}的恋人。分析当前画面，并根据历史日志和当前状况，决定是否调用伴侣职权。
@@ -1260,7 +1329,17 @@ class CameraMonitor:
             core_prompt += "\n\n（附带了最新的监控截图，请结合画面内容回应。）"
             last_msg["content"] = core_prompt
 
-        messages = prefix + mem_inject + history + [last_msg]
+        from capabilities import build_band_note_ability_text
+        passive_band_ability = build_band_note_ability_text(user_name, passive=True)
+        passive_band_messages = []
+        if passive_band_ability:
+            passive_band_messages = [
+                {"role": "user", "content": f"[系统能力]\n{passive_band_ability}"},
+                {"role": "assistant", "content": "收到，需要时我会使用手环纸条提醒。"},
+            ]
+        messages = prefix + mem_inject + history + passive_band_messages + [last_msg]
+        from app_supervision_ai import inject_app_supervision_context
+        inject_app_supervision_context(messages)
 
         # 预生成 msg_id（TTS 分段文件命名需要）
         core_msg_id = f"msg_{int(time.time()*1000)}_cr"
@@ -1275,6 +1354,7 @@ class CameraMonitor:
                 core_tts = TTSStreamer(core_msg_id, tts_voice, manager)
 
         full_text = ""
+        core_command_filter = WebCommandStreamFilter()
         try:
             _temp = SETTINGS.get("temperature")
             async for chunk in stream_ai(messages, model_key, meta=usage_meta, temperature=_temp):
@@ -1282,7 +1362,9 @@ class CameraMonitor:
                     continue
                 full_text += chunk
                 if core_tts:
-                    core_tts.feed(chunk)
+                    visible_chunk = core_command_filter.feed(chunk)
+                    if visible_chunk:
+                        core_tts.feed(visible_chunk)
         except Exception as e:
             has_error = True
             full_text = f"[Core 回复失败] {e}"
@@ -1355,6 +1437,9 @@ class CameraMonitor:
         # 刷新 TTS 剩余文本
         if core_tts:
             try:
+                visible_tail = core_command_filter.flush()
+                if visible_tail:
+                    core_tts.feed(visible_tail)
                 await core_tts.flush()
             except Exception:
                 pass
@@ -1427,9 +1512,19 @@ async def perform_cam_check(conv_id: str, model_key: str):
         cam_prompt += await build_heart_rate_prompt_block(user_name)
     except Exception:
         pass
-    messages = prefix + recent + [
+    from capabilities import build_band_note_ability_text
+    passive_band_ability = build_band_note_ability_text(user_name, passive=True)
+    passive_band_messages = []
+    if passive_band_ability:
+        passive_band_messages = [
+            {"role": "user", "content": f"[系统能力]\n{passive_band_ability}"},
+            {"role": "assistant", "content": "收到，需要时我会使用手环纸条提醒。"},
+        ]
+    messages = prefix + recent + passive_band_messages + [
         {"role": "user", "content": cam_prompt, "attachments": [f"/uploads/{fname}"]}
     ]
+    from app_supervision_ai import inject_app_supervision_context
+    inject_app_supervision_context(messages)
 
     # 预生成 msg_id（TTS 分段文件命名需要）
     msg_id = f"msg_{int(time.time()*1000)}_cc"
@@ -1445,6 +1540,7 @@ async def perform_cam_check(conv_id: str, model_key: str):
             cam_tts = TTSStreamer(msg_id, tts_voice, manager)
 
     full_text = ""
+    cam_command_filter = WebCommandStreamFilter()
     try:
         _temp = SETTINGS.get("temperature")
         async for chunk in stream_ai(messages, model_key, meta=usage_meta, temperature=_temp):
@@ -1452,7 +1548,9 @@ async def perform_cam_check(conv_id: str, model_key: str):
                 continue
             full_text += chunk
             if cam_tts:
-                cam_tts.feed(chunk)
+                visible_chunk = cam_command_filter.feed(chunk)
+                if visible_chunk:
+                    cam_tts.feed(visible_chunk)
     except Exception as e:
         has_error = True
         full_text = f"[监控查看失败] {e}"
@@ -1508,6 +1606,9 @@ async def perform_cam_check(conv_id: str, model_key: str):
     # 刷新 TTS 剩余文本
     if cam_tts:
         try:
+            visible_tail = cam_command_filter.flush()
+            if visible_tail:
+                cam_tts.feed(visible_tail)
             await cam_tts.flush()
         except Exception:
             pass

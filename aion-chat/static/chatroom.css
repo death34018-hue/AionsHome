@@ -517,6 +517,24 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
   content: "💭 ";
   opacity: .85;
 }
+.band-vibration-line {
+  color: var(--text3);
+  font-size: 12px;
+  line-height: 1.45;
+  opacity: .9;
+  padding: 1px 8px;
+  margin-left: 34px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.band-vibration-line::before {
+  content: "⌚ ";
+  opacity: .85;
+}
+.message-row.user .band-vibration-line {
+  margin-left: 0;
+  margin-right: 34px;
+}
 .bubbles {
   display: flex;
   flex-direction: column;
@@ -2071,13 +2089,15 @@ body[data-theme="light"] .link-preview-card:hover {
 .chatroom-compress-apply { background: #2e7d32; color: #fff; }
 .chatroom-compress-actions button:disabled { opacity: 0.55; cursor: not-allowed; }
 .mem-item {
-  padding: 10px;
-  background: var(--bg);
-  border-radius: 8px;
-  margin-bottom: 6px;
+  padding: 12px 10px 14px;
+  background: transparent;
+  border-bottom: 1px solid var(--border);
   font-size: 13px;
   line-height: 1.5;
   position: relative;
+}
+.mem-item:last-child {
+  border-bottom: none;
 }
 .mem-item.mem-unresolved {
   background: rgba(255, 152, 0, 0.08);
@@ -2089,7 +2109,15 @@ body[data-theme="light"] .link-preview-card:hover {
 .mem-item .mem-head {
   display: flex;
   align-items: flex-start;
+  justify-content: space-between;
   gap: 8px;
+  margin-bottom: 6px;
+}
+.mem-item .mem-labels {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 .mem-item .mem-kind-wrap {
   position: relative;
@@ -2116,6 +2144,12 @@ body[data-theme="light"] .link-preview-card:hover {
 }
 .mem-item .mem-kind:hover {
   filter: brightness(1.08);
+}
+.mem-item .mem-importance {
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 .mem-item .mem-kind-menu {
   position: absolute;
@@ -2155,8 +2189,6 @@ body[data-theme="light"] .link-preview-card:hover {
   font-weight: 700;
 }
 .mem-item .mem-content {
-  flex: 1;
-  min-width: 0;
   color: var(--text);
   word-break: break-word;
   white-space: pre-wrap;
@@ -2173,7 +2205,6 @@ body[data-theme="light"] .link-preview-card:hover {
 .mem-item .mem-actions {
   display: flex;
   gap: 4px;
-  margin-left: auto;
   flex-shrink: 0;
   margin-top: -2px;
 }
@@ -2255,12 +2286,18 @@ body[data-theme="light"] .link-preview-card:hover {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  scrollbar-width: auto;
+  scrollbar-color: var(--accent) var(--surface2);
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
   padding: 4px;
   margin-bottom: 8px;
 }
+.memory-list::-webkit-scrollbar { width: 10px; }
+.memory-list::-webkit-scrollbar-track { background: var(--surface2); border-radius: 10px; }
+.memory-list::-webkit-scrollbar-thumb { background: var(--accent); border: 2px solid var(--surface2); border-radius: 10px; }
+.memory-list::-webkit-scrollbar-thumb:hover { background: #9b7ad8; }
 .memory-footer-actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2342,8 +2379,6 @@ body[data-theme="light"] .link-preview-card:hover {
 @media (max-width: 700px) {
   .memory-panel .panel-header { padding-top: max(14px, env(safe-area-inset-top)); }
   .memory-panel .panel-body { padding: 10px; }
-  .mem-item .mem-head { position: relative; padding-top: 28px; }
-  .mem-item .mem-actions { position: absolute; top: 0; right: 0; }
   .memory-footer-actions {
     margin-inline: 6px;
     padding-bottom: calc(18px + env(safe-area-inset-bottom));
@@ -3402,5 +3437,18 @@ body[data-theme="light"] .toast {
     top: max(10px, env(safe-area-inset-top, 0px));
     bottom: max(10px, env(safe-area-inset-bottom, 0px));
     border-radius: 0 18px 18px 0;
+  }
+}
+
+/* Android WebView: avoid recompositing two full-screen blur layers on every IME input. */
+@media (max-width: 760px) and (pointer: coarse) {
+  .persona-page-overlay.active {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .persona-page-panel {
+    background: var(--bg);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 }

@@ -41,19 +41,28 @@ import okhttp3.ResponseBody;
  * entries are activated only after the selected route returns a fresh manifest.
  */
 final class SharedAssetCache {
+    enum RefreshResult {
+        REFRESHED,
+        NOT_REFRESHED,
+        AUTH_REQUIRED
+    }
+
     interface Completion {
-        void onComplete(boolean refreshed);
+        void onComplete(RefreshResult result);
     }
 
     private static final String TAG = "SharedAssetCache";
     private static final String MANIFEST_NAME = "manifest.json";
     private static final String PREVIOUS_MANIFEST_NAME = "manifest.previous.json";
+    private static final String STAGING_MANIFEST_NAME = "manifest.staging.json";
+    private static final String ACTIVE_VERSION_NAME = "active-version";
     private static final int BUFFER_SIZE = 32 * 1024;
 
     private final Context context;
     private final File rootDir;
     private final File objectDir;
     private final OkHttpClient client;
+    private final OkHttpClient manifestClient;
     private final Set<String> verifiedObjects =
             Collections.newSetFromMap(new ConcurrentHashMap<>());
     private volatile Map<String, Entry> activeEntries = Collections.emptyMap();
@@ -71,6 +80,10 @@ final class SharedAssetCache {
                 .connectTimeout(4, java.util.concurrent.TimeUnit.SECONDS)
                 .readTimeout(12, java.util.concurrent.TimeUnit.SECONDS)
                 .build();
+        this.manifestClient = client.newBuilder()
+                .followRedirects(false)
+                .followSslRedirects(false)
+                .build();
         loadPersistedManifest();
     }
 
@@ -81,7 +94,7 @@ final class SharedAssetCache {
     void refreshManifest(String pageUrl, Completion completion) {
         String manifestUrl = buildManifestUrl(pageUrl);
         if (manifestUrl == null) {
-            completion.onComplete(false);
+            completion.onComplete(RefreshResult.NOT_REFRESHED);
             return;
         }
 
@@ -94,28 +107,44 @@ final class SharedAssetCache {
             builder.header("Cookie", cookie);
         }
 
-        client.newCall(builder.build()).enqueue(new Callback() {
+        manifestClient.newCall(builder.build()).enqueue(new Callback() {
             @Override
             public void onFailure(Call call, java.io.IOException e) {
                 android.util.Log.i(TAG, "Manifest unavailable: " + e.getClass().getSimpleName());
-                completion.onComplete(false);
+                completion.onComplete(RefreshResult.NOT_REFRESHED);
             }
 
             @Override
             public void onResponse(Call call, Response response) {
                 try (Response closeable = response) {
+                    RefreshResult responseResult = classifyManifestResponse(
+                            pageUrl, response.code(), response.header("Location"));
+                    if (responseResult == RefreshResult.AUTH_REQUIRED) {
+                        android.util.Log.i(TAG, "Cloudflare Access authentication required");
+                        completion.onComplete(responseResult);
+                        return;
+                    }
                     ResponseBody body = response.body();
                     if (!response.isSuccessful() || body == null) {
-                        completion.onComplete(false);
+                        completion.onComplete(RefreshResult.NOT_REFRESHED);
                         return;
                     }
                     JSONObject json = new JSONObject(body.string());
                     ParsedManifest parsed = parseManifest(json);
+                    if (parsed.version.equals(activeVersion)) {
+                        completion.onComplete(RefreshResult.NOT_REFRESHED);
+                        return;
+                    }
+                    if (!stageEssentialAssets(pageUrl, parsed)) {
+                        android.util.Log.w(TAG, "Staging bundle incomplete; keeping active version");
+                        completion.onComplete(RefreshResult.NOT_REFRESHED);
+                        return;
+                    }
                     persistAndActivate(json, parsed);
-                    completion.onComplete(true);
+                    completion.onComplete(RefreshResult.REFRESHED);
                 } catch (Exception e) {
                     android.util.Log.w(TAG, "Manifest rejected: " + e.getClass().getSimpleName());
-                    completion.onComplete(false);
+                    completion.onComplete(RefreshResult.NOT_REFRESHED);
                 }
             }
         });
@@ -123,12 +152,8 @@ final class SharedAssetCache {
 
     WebResourceResponse intercept(Uri uri, Map<String, String> requestHeaders) {
         if (uri == null || activeEntries.isEmpty()) return null;
-        String path = uri.getPath();
+        String path = canonicalPath(uri);
         if (path == null) return null;
-        // Manifest entries are keyed by path only; versioned URLs such as
-        // /static/chatroom.css?v=... must hit the network instead of an older
-        // persisted object with the same path.
-        if (hasQuery(uri)) return null;
         Entry entry = activeEntries.get(path);
         if (entry == null) return null;
 
@@ -178,6 +203,26 @@ final class SharedAssetCache {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private boolean stageEssentialAssets(String pageUrl, ParsedManifest parsed) {
+        for (Map.Entry<String, Entry> item : parsed.entries.entrySet()) {
+            Entry entry = item.getValue();
+            if (!entry.isEssential()) continue;
+            File objectFile = new File(objectDir, entry.sha256);
+            try {
+                if (isVerified(objectFile, entry)) continue;
+                String path = item.getKey();
+                if (copyBundledAsset(path, objectFile, entry)) continue;
+                String url = resolveUrl(pageUrl, path);
+                if (url == null || !downloadVerified(url, Collections.emptyMap(), objectFile, entry)) {
+                    return false;
+                }
+            } catch (Exception e) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private boolean copyBundledAsset(String path, File destination, Entry entry) {
@@ -250,7 +295,7 @@ final class SharedAssetCache {
         if (!rootDir.exists() && !rootDir.mkdirs()) throw new java.io.IOException("mkdir failed");
         File current = new File(rootDir, MANIFEST_NAME);
         File previous = new File(rootDir, PREVIOUS_MANIFEST_NAME);
-        File temp = new File(rootDir, MANIFEST_NAME + ".part");
+        File temp = new File(rootDir, STAGING_MANIFEST_NAME);
         try (OutputStream output = new BufferedOutputStream(new FileOutputStream(temp))) {
             output.write(json.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         }
@@ -259,13 +304,22 @@ final class SharedAssetCache {
             android.util.Log.w(TAG, "Could not retain previous manifest");
         }
         if (!temp.renameTo(current)) throw new java.io.IOException("manifest rename failed");
-        // Keep one internally consistent bundle for the current page load. A
-        // late Cloudflare response is persisted for the next Activity instead
-        // of swapping JS/CSS underneath a page that is already rendering.
-        if (!frozenForPageLoad || activeEntries.isEmpty()) {
-            activeEntries = parsed.entries;
-            activeVersion = parsed.version;
+        File activeVersionFile = new File(rootDir, ACTIVE_VERSION_NAME);
+        File activeVersionTemp = new File(rootDir, ACTIVE_VERSION_NAME + ".part");
+        try (OutputStream output = new BufferedOutputStream(new FileOutputStream(activeVersionTemp))) {
+            output.write(parsed.version.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         }
+        if (activeVersionFile.exists() && !activeVersionFile.delete()) {
+            throw new java.io.IOException("active version delete failed");
+        }
+        if (!activeVersionTemp.renameTo(activeVersionFile)) {
+            throw new java.io.IOException("active version rename failed");
+        }
+        // Every essential object was staged and verified before this point, so
+        // switching the in-memory map is safe. The already parsed page keeps
+        // running until WebViewActivity requests one idle reload.
+        activeEntries = parsed.entries;
+        this.activeVersion = parsed.version;
         pruneObjects(parsed.entries, readManifestEntries(previous));
     }
 
@@ -275,6 +329,15 @@ final class SharedAssetCache {
         try {
             JSONObject json = readJsonFile(current);
             ParsedManifest parsed = parseManifest(json);
+            File pointer = new File(rootDir, ACTIVE_VERSION_NAME);
+            String pointedVersion = pointer.isFile() ? readTextFile(pointer).trim() : "";
+            if (!pointedVersion.isEmpty() && !pointedVersion.equals(parsed.version)) {
+                File previous = new File(rootDir, PREVIOUS_MANIFEST_NAME);
+                if (previous.isFile()) {
+                    ParsedManifest fallback = parseManifest(readJsonFile(previous));
+                    if (pointedVersion.equals(fallback.version)) parsed = fallback;
+                }
+            }
             activeEntries = parsed.entries;
             activeVersion = parsed.version;
         } catch (Exception e) {
@@ -319,20 +382,37 @@ final class SharedAssetCache {
         }
     }
 
+    private static String readTextFile(File file) throws Exception {
+        try (InputStream input = new FileInputStream(file)) {
+            byte[] bytes = new byte[(int) file.length()];
+            int offset = 0;
+            while (offset < bytes.length) {
+                int count = input.read(bytes, offset, bytes.length - offset);
+                if (count < 0) break;
+                offset += count;
+            }
+            return new String(bytes, 0, offset, java.nio.charset.StandardCharsets.UTF_8);
+        }
+    }
+
     private static ParsedManifest parseManifest(JSONObject json) throws Exception {
-        if (json.getInt("schema") != 1) throw new IllegalArgumentException("schema");
+        if (json.getInt("schema") != 2) throw new IllegalArgumentException("schema");
         String version = json.getString("version");
         JSONObject files = json.getJSONObject("files");
         Map<String, Entry> entries = new HashMap<>();
         Iterator<String> keys = files.keys();
         while (keys.hasNext()) {
             String path = keys.next();
-            if (!path.startsWith("/static/") && !path.startsWith("/public/")) continue;
+            if (!path.startsWith("/")) continue;
             JSONObject value = files.getJSONObject(path);
             String sha = value.getString("sha256").toLowerCase(Locale.ROOT);
             long size = value.getLong("size");
             if (!sha.matches("[0-9a-f]{64}") || size < 0) continue;
-            entries.put(path, new Entry(sha, size, value.getString("content_type")));
+            entries.put(path, new Entry(
+                    sha,
+                    size,
+                    value.getString("content_type"),
+                    value.optString("category", "visual")));
         }
         if (entries.isEmpty()) throw new IllegalArgumentException("empty manifest");
         return new ParsedManifest(version, Collections.unmodifiableMap(entries));
@@ -348,12 +428,34 @@ final class SharedAssetCache {
         }
     }
 
-    static boolean hasQuery(Uri uri) {
-        return hasEncodedQuery(uri == null ? null : uri.getEncodedQuery());
+    static RefreshResult classifyManifestResponse(
+            String pageUrl, int statusCode, String location) {
+        if (statusCode >= 300 && statusCode < 400
+                && ConnectionEndpoint.isCloudflareUrl(pageUrl)
+                && ConnectionEndpoint.isCloudflareAccessUrl(location)) {
+            return RefreshResult.AUTH_REQUIRED;
+        }
+        return RefreshResult.NOT_REFRESHED;
     }
 
-    static boolean hasEncodedQuery(String query) {
-        return query != null && !query.isEmpty();
+    static String canonicalPath(Uri uri) {
+        if (uri == null) return null;
+        return canonicalPath(uri.getPath());
+    }
+
+    static String canonicalPath(String path) {
+        if (path == null || path.isEmpty()) return "/";
+        if (path.length() > 1 && path.endsWith("/")) return path.substring(0, path.length() - 1);
+        return path;
+    }
+
+    static String resolveUrl(String pageUrl, String path) {
+        try {
+            URI page = new URI(pageUrl);
+            return new URI(page.getScheme(), null, page.getHost(), page.getPort(), path, null, null).toString();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private static void copyHeader(Map<String, String> headers, Request.Builder builder,
@@ -385,11 +487,17 @@ final class SharedAssetCache {
         final String sha256;
         final long size;
         final String contentType;
+        final String category;
 
-        Entry(String sha256, long size, String contentType) {
+        Entry(String sha256, long size, String contentType, String category) {
             this.sha256 = sha256;
             this.size = size;
             this.contentType = contentType;
+            this.category = category;
+        }
+
+        boolean isEssential() {
+            return "frontend".equals(category) || "document".equals(category);
         }
     }
 

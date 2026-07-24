@@ -35,6 +35,7 @@ public class AionAccessibilityService extends AccessibilityService {
     private static final String TAG = "AionAccessibility";
     private static final long MIN_CAPTURE_INTERVAL_MS = 8_000;
     private static final long FORCE_CAPTURE_INTERVAL_MS = 2_500;
+    private static final long FOREGROUND_RECONCILE_DELAY_MS = 400L;
     private static volatile AionAccessibilityService instance;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -98,6 +99,9 @@ public class AionAccessibilityService extends AccessibilityService {
         // 标记用户曾主动开启过无障碍，用于自动恢复判断
         getSharedPreferences("aion_prefs", MODE_PRIVATE)
                 .edit().putBoolean("accessibility_user_opted_in", true).apply();
+        com.aion.chat.supervision.AppSupervisionRuntime runtime =
+                com.aion.chat.supervision.AppSupervisionRuntime.start(this);
+        runtime.onAccessibilityConnected();
         Log.i(TAG, "Accessibility screenshot service connected");
     }
 
@@ -107,6 +111,9 @@ public class AionAccessibilityService extends AccessibilityService {
         serviceActive = false;
         mainHandler.removeCallbacksAndMessages(null);
         if (instance == this) instance = null;
+        com.aion.chat.supervision.AppSupervisionRuntime runtime =
+                com.aion.chat.supervision.AppSupervisionRuntime.get();
+        if (runtime != null) runtime.onAccessibilityUnavailable();
         super.onDestroy();
     }
 
@@ -116,6 +123,9 @@ public class AionAccessibilityService extends AccessibilityService {
         serviceActive = false;
         mainHandler.removeCallbacksAndMessages(null);
         if (instance == this) instance = null;
+        com.aion.chat.supervision.AppSupervisionRuntime runtime =
+                com.aion.chat.supervision.AppSupervisionRuntime.get();
+        if (runtime != null) runtime.onAccessibilityUnavailable();
         return super.onUnbind(intent);
     }
 
@@ -128,17 +138,23 @@ public class AionAccessibilityService extends AccessibilityService {
             return;
         }
 
-        String pkg = event.getPackageName().toString();
-        if (pkg.isEmpty() || pkg.equals(getPackageName())) return;
-        if (!pkg.equals(lastPackageName)) {
-            lastPackageName = pkg;
-        }
+        com.aion.chat.supervision.AppSupervisionRuntime runtime =
+                com.aion.chat.supervision.AppSupervisionRuntime.get();
+        if (runtime == null) return;
+        mainHandler.removeCallbacks(foregroundReconcile);
+        mainHandler.postDelayed(foregroundReconcile, FOREGROUND_RECONCILE_DELAY_MS);
     }
 
     @Override
     public void onInterrupt() {
         Log.i(TAG, "Accessibility service interrupted");
     }
+
+    private final Runnable foregroundReconcile = () -> {
+        com.aion.chat.supervision.AppSupervisionRuntime runtime =
+                com.aion.chat.supervision.AppSupervisionRuntime.get();
+        if (runtime != null) runtime.reconcileForegroundOnce();
+    };
 
     private void queueCapture(String app, String reason, boolean force, long delayMs) {
         if (!serviceActive) return;

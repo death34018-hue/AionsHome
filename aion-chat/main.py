@@ -24,6 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from config import BASE_DIR, PUBLIC_DIR, UPLOADS_DIR, SONGS_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, load_cam_config
 from database import init_db, get_db
+from active_window_state import restore_active_windows
 from ws import manager
 from camera import cam
 from voice import voice
@@ -52,6 +53,7 @@ from routes import seeky as seeky_routes
 from routes import wallet as wallet_routes
 from routes import connor_wallet as connor_wallet_routes
 from routes import health as health_routes
+from routes import band_commands as band_commands_routes
 from routes import phone_screen as phone_screen_routes
 from routes import search as search_routes
 from routes import autonomy as autonomy_routes
@@ -60,8 +62,11 @@ from routes import wishes as wishes_routes
 from routes import xhs_lite as xhs_lite_routes
 from routes import capabilities as capabilities_routes
 from routes import wechat as wechat_routes
+from routes import sync as sync_routes
+from routes import app_supervision as app_supervision_routes
 from activity import pc_tracker, pc_display_tracker
 from memory import auto_digest
+from memory_compression import migrate_legacy_daily_capsules
 from chatroom import _connor_1v1_auto_digest_loop
 from fund import fund_scheduler
 from autonomy import idle_autonomy_mgr
@@ -115,6 +120,14 @@ async def _auto_digest_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    await restore_active_windows()
+    migrated_legacy_capsules = await migrate_legacy_daily_capsules()
+    if migrated_legacy_capsules["main"] or migrated_legacy_capsules["chatroom"]:
+        print(
+            "[memory_compression] 旧版日常已登记为单日胶囊："
+            f"主记忆 {migrated_legacy_capsules['main']} 条，"
+            f"聊天室 {migrated_legacy_capsules['chatroom']} 条"
+        )
     loop = asyncio.get_event_loop()
     cam.set_event_loop(loop)
     cam_cfg = load_cam_config()
@@ -173,6 +186,7 @@ app = FastAPI(lifespan=lifespan)
 # Android app additionally uses /api/client-assets to share verified objects
 # between LAN, Tailscale, and Cloudflare origins.
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -191,6 +205,7 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
         return response
 
 app.add_middleware(NoCacheStaticMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=5)
 
 # 静态文件
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -229,6 +244,7 @@ app.include_router(seeky_routes.router)
 app.include_router(wallet_routes.router)
 app.include_router(connor_wallet_routes.router)
 app.include_router(health_routes.router)
+app.include_router(band_commands_routes.router)
 app.include_router(phone_screen_routes.router)
 app.include_router(search_routes.router)
 app.include_router(autonomy_routes.router)
@@ -237,6 +253,8 @@ app.include_router(wishes_routes.router)
 app.include_router(xhs_lite_routes.router)
 app.include_router(capabilities_routes.router)
 app.include_router(wechat_routes.router)
+app.include_router(sync_routes.router)
+app.include_router(app_supervision_routes.router)
 
 
 @app.get("/api/client-assets")
@@ -264,6 +282,10 @@ async def settings_page():
 async def capabilities_page():
     return FileResponse(BASE_DIR / "static" / "capabilities.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
+@app.get("/app-supervision")
+async def app_supervision_page():
+    return FileResponse(BASE_DIR / "static" / "app-supervision.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
 @app.get("/worldbook")
 async def worldbook_page():
     return FileResponse(BASE_DIR / "static" / "worldbook.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
@@ -271,6 +293,10 @@ async def worldbook_page():
 @app.get("/memory")
 async def memory_page():
     return FileResponse(BASE_DIR / "static" / "memory.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+@app.get("/memory-compression")
+async def memory_compression_page():
+    return FileResponse(BASE_DIR / "static" / "memory-compression.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/schedule")
 async def schedule_page():

@@ -43,6 +43,9 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+
+import com.aion.chat.supervision.AppSupervisionBridge;
+import com.aion.chat.supervision.AppSupervisionRuntime;
 import androidx.core.view.WindowCompat;
 
 /**
@@ -60,13 +63,20 @@ public class WebViewActivity extends AppCompatActivity {
     private MediaCacheStore mediaCacheStore;
     private SharedJsonStore sharedJsonStore;
     private AionRingBleBridge ringBleBridge;
+    private AionMiBandBleBridge miBandBleBridge;
     private String targetUrl;
     private boolean initialPageLoadStarted = false;
     private boolean pageLoaded = false;
     private boolean permissionsRequested = false;
     private int retryCount = 0;
     private static final int MAX_RETRY = 5;
+    private static final long CLIENT_ASSET_CHECK_INTERVAL_MS = 30L * 60L * 1000L;
+    private static final String CLIENT_ASSET_LAST_CHECK = "client_asset_last_check";
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private boolean clientAssetRefreshInFlight = false;
+    private boolean pendingClientUpdateReady = false;
+    private boolean cloudflareAuthManifestRetried = false;
+    private final CloudflareReauthState cloudflareReauthState = new CloudflareReauthState();
     private ValueCallback<Uri[]> fileCallback;
     private PermissionRequest pendingPermRequest;
     private static final String CLOUDFLARE_HOST = ConnectionEndpoint.CLOUDFLARE_HOST;
@@ -130,6 +140,11 @@ public class WebViewActivity extends AppCompatActivity {
         sharedJsonStore = new SharedJsonStore(this);
         webView.setBackgroundColor(android.graphics.Color.TRANSPARENT);
         setContentView(webView);
+
+        AppSupervisionRuntime.start(this);
+        webView.addJavascriptInterface(
+                new AppSupervisionBridge(this, AppSupervisionRuntime.get()),
+                "AionAppSupervision");
 
         // 状态栏图标样式桥接（让网页可以根据主题动态切换深色/浅色图标）
         webView.addJavascriptInterface(new Object() {
@@ -233,6 +248,8 @@ public class WebViewActivity extends AppCompatActivity {
         webView.addJavascriptInterface(new BleBridge(webView, this), "AionBle");
         ringBleBridge = new AionRingBleBridge(webView, this);
         webView.addJavascriptInterface(ringBleBridge, "AionRingBle");
+        miBandBleBridge = new AionMiBandBleBridge(webView, this);
+        webView.addJavascriptInterface(miBandBleBridge, "AionMiBand");
 
         // 图片保存桥接（WebView 不支持 blob URL 下载，用原生方法写入相册）
         webView.addJavascriptInterface(new Object() {
@@ -350,6 +367,12 @@ public class WebViewActivity extends AppCompatActivity {
 
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                if (cloudflareReauthState.shouldBypass(
+                        targetUrl, request.getUrl().toString(), request.isForMainFrame())) {
+                    android.util.Log.i("AionWebView",
+                            "Bypassing cached Cloudflare document for Access authentication");
+                    return super.shouldInterceptRequest(view, request);
+                }
                 String path = request.getUrl().getPath();
                 String host = request.getUrl().getHost();
                 if (path == null) return super.shouldInterceptRequest(view, request);
@@ -385,6 +408,7 @@ public class WebViewActivity extends AppCompatActivity {
                     }
                     notifyCloudflareAuthReady(url);
                     runForegroundResumeSync();
+                    notifyClientUpdateReady();
                 }
             }
 
@@ -503,11 +527,10 @@ public class WebViewActivity extends AppCompatActivity {
         if (targetUrl == null || targetUrl.isEmpty()) {
             targetUrl = "http://192.168.xx.xxx:8080/chat";
         }
-        // Prefer a fresh manifest before the first page load. A short timeout
-        // keeps authentication portals and unreachable routes responsive.
-        sharedAssetCache.refreshManifest(targetUrl,
-                refreshed -> mainHandler.post(this::loadTargetUrlOnce));
-        mainHandler.postDelayed(this::loadTargetUrlOnce, 1200);
+        // Cached active documents render immediately. Version discovery and
+        // staging happen in the background and never hold the first frame.
+        loadTargetUrlOnce();
+        maybeRefreshClientAssets(true);
     }
 
     private void loadTargetUrlOnce() {
@@ -823,15 +846,22 @@ public class WebViewActivity extends AppCompatActivity {
         super.onResume();
         // 告诉推送服务：前台已打开，不需要弹通知
         notifyServiceForeground(true);
+        if (ringBleBridge != null) {
+            ringBleBridge.resumeHealthPageConnection();
+        }
         // 回到前台：重连 WebSocket（如需要），并补拉当前会话，避免 WebView 后台冻结漏消息。
         if (webView != null && pageLoaded) {
             webView.evaluateJavascript(ForegroundResumeSyncScript.build(), null);
         }
+        maybeRefreshClientAssets(false);
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        if (ringBleBridge != null) {
+            ringBleBridge.releaseForBackgroundSync();
+        }
         // 告诉推送服务：前台已关闭，需要弹通知
         notifyServiceForeground(false);
     }
@@ -857,19 +887,56 @@ public class WebViewActivity extends AppCompatActivity {
             String cookie = CookieManager.getInstance()
                     .getCookie(ConnectionEndpoint.CLOUDFLARE_COOKIE_URL);
             if (!ConnectionEndpoint.hasCloudflareAccessCookie(cookie)) return;
+            cloudflareReauthState.authenticationCompleted();
             Intent intent = new Intent(this, AionPushService.class);
             intent.putExtra("action", AionPushService.ACTION_REFRESH_CLOUDFLARE_AUTH);
             intent.putExtra("url", pageUrl);
             startService(intent);
-            sharedAssetCache.refreshManifest(pageUrl, refreshed -> {
-                if (refreshed) {
-                    android.util.Log.i("SharedAssetCache", "Cloudflare manifest refreshed");
-                }
-            });
+            // Retry at most once if the cold-start check raced the Access cookie.
+            if (!cloudflareAuthManifestRetried) {
+                cloudflareAuthManifestRetried = true;
+                mainHandler.postDelayed(() -> maybeRefreshClientAssets(true), 1000);
+            }
         } catch (Exception e) {
             android.util.Log.w("AionWebView", "Cloudflare auth sync failed: "
                     + e.getClass().getSimpleName());
         }
+    }
+
+    private void maybeRefreshClientAssets(boolean force) {
+        if (sharedAssetCache == null || targetUrl == null || targetUrl.isEmpty()
+                || clientAssetRefreshInFlight) return;
+        SharedPreferences prefs = getSharedPreferences("aion_prefs", MODE_PRIVATE);
+        long now = System.currentTimeMillis();
+        long last = prefs.getLong(CLIENT_ASSET_LAST_CHECK, 0L);
+        if (!force && now - last < CLIENT_ASSET_CHECK_INTERVAL_MS) return;
+        prefs.edit().putLong(CLIENT_ASSET_LAST_CHECK, now).apply();
+        clientAssetRefreshInFlight = true;
+        sharedAssetCache.refreshManifest(targetUrl, result -> mainHandler.post(() -> {
+            clientAssetRefreshInFlight = false;
+            if (result == SharedAssetCache.RefreshResult.AUTH_REQUIRED) {
+                beginCloudflareReauthentication();
+                return;
+            }
+            if (result == SharedAssetCache.RefreshResult.REFRESHED) {
+                pendingClientUpdateReady = true;
+                notifyClientUpdateReady();
+            }
+        }));
+    }
+
+    private void beginCloudflareReauthentication() {
+        if (webView == null || !cloudflareReauthState.begin(targetUrl)) return;
+        android.util.Log.i("AionWebView", "Opening Cloudflare Access authentication");
+        pageLoaded = false;
+        webView.loadUrl(targetUrl);
+    }
+
+    private void notifyClientUpdateReady() {
+        if (!pendingClientUpdateReady || webView == null || !pageLoaded) return;
+        pendingClientUpdateReady = false;
+        webView.evaluateJavascript(
+                "window.dispatchEvent(new CustomEvent('aion-client-update-ready'));", null);
     }
 
     private void requestBatteryOptimization() {
@@ -911,6 +978,10 @@ public class WebViewActivity extends AppCompatActivity {
         if (ringBleBridge != null) {
             ringBleBridge.close();
             ringBleBridge = null;
+        }
+        if (miBandBleBridge != null) {
+            miBandBleBridge.destroy();
+            miBandBleBridge = null;
         }
         if (mediaCacheStore != null) mediaCacheStore.shutdown();
         if (webView != null) {
