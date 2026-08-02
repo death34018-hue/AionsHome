@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -31,7 +31,7 @@
 .health-tab.active { background: var(--surface); color: var(--health); box-shadow: 0 1px 4px rgba(0,0,0,.06); }
 .health-tab-panel { display: none; flex-direction: column; gap: 12px; }
 .health-tab-panel.active { display: flex; }
-.body-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.body-summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .body-summary-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; min-height: 82px; }
 .body-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
 .body-summary-label { color: var(--text2); font-size: 12px; margin-bottom: 7px; }
@@ -42,25 +42,6 @@
 .card-icon-btn.sync { font-size: 16px; font-weight: 700; }
 .card-icon-btn:disabled { opacity: .55; cursor: default; }
 .ring-head-actions { display: flex; align-items: center; gap: 8px; }
-.ring-feature-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; padding: 9px 10px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; }
-.ring-feature-row .toggle-switch { flex-shrink: 0; }
-.legacy-ring-section { display: none !important; }
-.mi-band-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.mi-band-schedule { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.mi-band-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.mi-band-summary-item { padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
-.mi-band-summary-value { color: var(--text); font-size: 18px; font-weight: 800; margin-top: 4px; overflow-wrap: anywhere; }
-.mi-band-inline { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.mi-band-advanced { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
-.mi-band-advanced summary { color: var(--text2); font-size: 12px; cursor: pointer; user-select: none; }
-.mi-band-advanced-body { display: grid; gap: 9px; margin-top: 10px; }
-.mi-band-log { min-height: 48px; max-height: 120px; }
-.mi-band-scan-status { color: var(--text3); font-size: 12px; line-height: 1.45; }
-.mi-band-scan-results { display: grid; gap: 6px; }
-.mi-band-scan-result { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); padding: 10px; text-align: left; cursor: pointer; }
-.mi-band-scan-result strong { display: block; font-size: 13px; }
-.mi-band-scan-result small { display: block; margin-top: 3px; color: var(--text3); font-size: 11px; }
-.mi-band-scan-result span { flex-shrink: 0; color: var(--health); font-size: 12px; font-weight: 700; }
 .hidden-control { display: none !important; }
 .step-diag-box { display: none; margin-top: 8px; font-size: 11px; color: var(--text3); background: var(--surface2); padding: 7px 8px; border-radius: 7px; word-break: break-all; }
 .step-diag-box.show { display: block; }
@@ -87,13 +68,8 @@
 .vital-unit { color: var(--text3); font-size: 11px; margin-left: 2px; }
 .sleep-box { margin-top: 8px; background: #f6f8ff; border: 1px solid #e3e8fb; border-radius: 8px; padding: 10px; }
 .sleep-main { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
-.sleep-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
-.sleep-actions .action-btn { padding: 7px 10px; font-size: 12px; }
 .sleep-total { font-size: 22px; font-weight: 800; color: var(--health3); }
 .sleep-meta { margin-top: 7px; color: var(--text2); font-size: 12px; line-height: 1.6; }
-.sleep-session-list { display: grid; gap: 5px; margin-top: 8px; }
-.sleep-session-item { display: flex; justify-content: space-between; gap: 10px; padding: 6px 8px; border-radius: 7px; background: var(--surface); color: var(--text2); font-size: 12px; }
-.sleep-session-item strong { color: var(--text); }
 .heart-auto-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; padding: 9px 10px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; }
 .heart-auto-row .action-btn { flex-shrink: 0; min-width: 86px; }
 .heart-history { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -149,10 +125,8 @@
 .dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
 .dialog-actions button { border: 0; border-radius: 8px; padding: 10px 12px; font-weight: 700; cursor: pointer; }
 @media (max-width: 460px) {
-  .ring-actions, .inline-form, .body-summary-grid, .mi-band-actions { grid-template-columns: 1fr; }
+  .ring-actions, .inline-form, .body-summary-grid { grid-template-columns: 1fr; }
   .heart-auto-row { align-items: stretch; flex-direction: column; }
-  .sleep-main { align-items: stretch; }
-  .sleep-actions { align-items: flex-start; }
   .vital-value { font-size: 21px; }
   .day-cell { min-height: 48px; padding: 4px; }
 }
@@ -174,7 +148,7 @@
   <div class="page-content">
     <div class="health-tabs" role="tablist" aria-label="健康数据分类">
       <button class="health-tab active" id="tabBody" type="button" role="tab" aria-selected="true" aria-controls="healthTabBody" onclick="switchHealthTab('body')">身体情况</button>
-      <button class="health-tab" id="tabRing" type="button" role="tab" aria-selected="false" aria-controls="healthTabRing" onclick="switchHealthTab('ring')">小米手环</button>
+      <button class="health-tab" id="tabRing" type="button" role="tab" aria-selected="false" aria-controls="healthTabRing" onclick="switchHealthTab('ring')">戒指数据</button>
     </div>
 
     <div class="health-tab-panel active" id="healthTabBody" role="tabpanel" aria-labelledby="tabBody">
@@ -182,7 +156,7 @@
         <div class="section-head">
           <div>
             <div class="section-title">身体情况</div>
-            <div class="muted">体重、姨妈期与今日步数</div>
+            <div class="muted">体重、姨妈期、步数与睡眠</div>
           </div>
           <span class="muted" id="bodyUpdatedAt"></span>
         </div>
@@ -197,6 +171,14 @@
           </div>
           <div class="body-summary-card">
             <div class="body-card-head">
+              <div class="body-summary-label">今日步数</div>
+              <button class="card-icon-btn" type="button" aria-label="手动输入步数" title="手动输入步数" onclick="openStepModal()">+</button>
+            </div>
+            <div class="body-summary-value" id="todayStepsValue">--</div>
+            <div class="body-summary-meta" id="todayStepsMeta">手动记录</div>
+          </div>
+          <div class="body-summary-card">
+            <div class="body-card-head">
               <div class="body-summary-label">上一次姨妈期</div>
               <button class="card-icon-btn" type="button" aria-label="记录姨妈期" title="记录姨妈期" onclick="openPeriodModal()">+</button>
             </div>
@@ -205,15 +187,13 @@
           </div>
           <div class="body-summary-card">
             <div class="body-card-head">
-              <div class="body-summary-label">今日运动步数</div>
-              <button id="btnPhoneSync" class="card-icon-btn sync" type="button" aria-label="同步手机步数" title="同步手机步数" onclick="phoneSync()">↻</button>
+              <div class="body-summary-label">最近睡眠</div>
+              <button class="card-icon-btn" type="button" aria-label="手动输入睡眠" title="手动输入睡眠" onclick="openSleepModal()">+</button>
             </div>
-            <div class="body-summary-value" id="todayStepsValue">--</div>
-            <div class="body-summary-meta" id="todayStepsMeta">等待手机同步</div>
+            <div class="body-summary-value" id="latestSleepValue">--</div>
+            <div class="body-summary-meta" id="latestSleepMeta">手动记录</div>
           </div>
         </div>
-        <button class="hidden-control" type="button" onclick="stepDiag()">步数诊断</button>
-        <div id="stepDiagInfo" class="step-diag-box"></div>
       </section>
 
       <section class="section">
@@ -302,118 +282,72 @@
           </div>
         </div>
       </div>
+
+      <div class="health-modal" id="stepModal" aria-hidden="true">
+        <div class="health-dialog" role="dialog" aria-modal="true" aria-labelledby="stepModalTitle">
+          <div class="health-dialog-head">
+            <div class="health-dialog-title" id="stepModalTitle">记录步数</div>
+            <button class="dialog-close" type="button" aria-label="关闭" onclick="closeHealthModal('stepModal')">×</button>
+          </div>
+          <div class="form-grid">
+            <div class="input-wrap">
+              <label>日期</label>
+              <input type="date" id="stepDate">
+            </div>
+            <div class="input-wrap">
+              <label>步数</label>
+              <input type="number" id="stepValue" step="1" min="0" max="200000" placeholder="例如 8500">
+            </div>
+          </div>
+          <div class="input-wrap" style="margin-top:8px">
+            <label>备注</label>
+            <input id="stepNote" maxlength="80" placeholder="可不填">
+          </div>
+          <div class="dialog-actions">
+            <button class="btn-cancel" type="button" onclick="closeHealthModal('stepModal')">取消</button>
+            <button class="btn-save" type="button" onclick="saveManualSteps()">保存</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="health-modal" id="sleepModal" aria-hidden="true">
+        <div class="health-dialog" role="dialog" aria-modal="true" aria-labelledby="sleepModalTitle">
+          <div class="health-dialog-head">
+            <div class="health-dialog-title" id="sleepModalTitle">记录睡眠</div>
+            <button class="dialog-close" type="button" aria-label="关闭" onclick="closeHealthModal('sleepModal')">×</button>
+          </div>
+          <div class="input-wrap">
+            <label>日期</label>
+            <input type="date" id="sleepDate">
+          </div>
+          <div class="form-grid" style="margin-top:8px">
+            <div class="input-wrap">
+              <label>入睡时间</label>
+              <input type="time" id="sleepStartTime" onchange="calcSleepDuration()">
+            </div>
+            <div class="input-wrap">
+              <label>醒来时间</label>
+              <input type="time" id="sleepEndTime" onchange="calcSleepDuration()">
+            </div>
+          </div>
+          <div class="input-wrap" style="margin-top:8px">
+            <label>睡眠时长（自动计算或手动输入）</label>
+            <input type="text" id="sleepDuration" placeholder="根据入睡/醒来时间自动计算，也可手动输入" onchange="parseSleepDuration()">
+          </div>
+          <div class="input-wrap" style="margin-top:8px">
+            <label>备注</label>
+            <input id="sleepNote" maxlength="80" placeholder="如：中途醒了、做梦、睡眠质量等">
+          </div>
+          <div class="dialog-actions">
+            <button class="btn-cancel" type="button" onclick="closeHealthModal('sleepModal')">取消</button>
+            <button class="btn-save" type="button" onclick="saveSleepEntry()">保存</button>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="health-tab-panel" id="healthTabRing" role="tabpanel" aria-labelledby="tabRing">
-      <section class="section" id="miBandConnectionSection">
-        <div class="section-head">
-          <div>
-            <div class="section-title">小米手环 7</div>
-            <div class="muted" id="miBandConnectionMeta">等待手机连接</div>
-          </div>
-          <span class="muted" id="miBandBattery">电量 --</span>
-        </div>
-        <div class="status-row">
-          <span class="status-dot" id="miBandDot"></span>
-          <span id="miBandStatus">未连接</span>
-        </div>
-        <div class="mi-band-actions">
-          <button class="action-btn primary" id="miBandConnectButton" type="button" onclick="miBandConnect()">连接</button>
-          <button class="action-btn" id="miBandReconnectButton" type="button" onclick="miBandReconnect()">手动重连</button>
-          <button class="action-btn" id="miBandDisconnectButton" type="button" onclick="miBandDisconnect()">断开</button>
-        </div>
-      </section>
-
-      <section class="section" id="miBandScheduleSection">
-        <div class="section-head">
-          <div>
-            <div class="section-title">同步设置</div>
-            <div class="muted" id="miBandScheduleMeta">白天 1 分钟 · 02:00–08:00 每 20 分钟</div>
-          </div>
-          <button class="action-btn primary" id="miBandSyncButton" type="button" onclick="miBandSyncNow()">立即同步</button>
-        </div>
-        <div class="mi-band-schedule">
-          <div class="input-wrap">
-            <label>白天同步</label>
-            <select id="miBandDayInterval">
-              <option value="1" selected>1 分钟</option><option value="5">5 分钟</option><option value="10">10 分钟</option>
-              <option value="20">20 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option><option value="-1">暂停</option>
-            </select>
-          </div>
-          <div class="input-wrap">
-            <label>夜间同步</label>
-            <select id="miBandNightInterval">
-              <option value="1">1 分钟</option><option value="5">5 分钟</option><option value="10">10 分钟</option>
-              <option value="20" selected>20 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option><option value="-1">暂停</option>
-            </select>
-          </div>
-          <div class="input-wrap"><label>夜间开始</label><input id="miBandNightStart" type="time" value="02:00"></div>
-          <div class="input-wrap"><label>夜间结束</label><input id="miBandNightEnd" type="time" value="08:00"></div>
-        </div>
-        <button class="save-btn" type="button" style="width:100%;margin-top:9px" onclick="miBandSaveSchedule()">保存同步设置</button>
-      </section>
-
-      <section class="section" id="miBandRealtimeSection">
-        <div class="mi-band-inline">
-          <div>
-            <div class="section-title">实时心率</div>
-            <div class="muted" id="miBandRealtimeMeta">需要时开启，关闭后立即停止测量</div>
-          </div>
-          <label class="toggle-switch" title="开启或关闭实时心率">
-            <input type="checkbox" id="miBandRealtimeToggle" onchange="miBandToggleRealtime(this.checked)">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <div style="margin-top:10px"><span class="vital-value" id="miBandRealtimeValue">--</span><span class="vital-unit">bpm</span></div>
-      </section>
-
-      <section class="section" id="miBandDataSection">
-        <div class="section-head">
-          <div>
-            <div class="section-title">同步数据</div>
-            <div class="muted" id="miBandSyncResult">还没有同步</div>
-          </div>
-        </div>
-        <div class="mi-band-summary">
-          <div class="mi-band-summary-item"><div class="vital-label">最新心率</div><div class="mi-band-summary-value" id="miBandLatestHeart">-- bpm</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">下次同步</div><div class="mi-band-summary-value" id="miBandNextSync">--</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">今日步数</div><div class="mi-band-summary-value" id="miBandTodaySteps">--</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">活动分钟</div><div class="mi-band-summary-value" id="miBandActivityMinutes">--</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">最近30分钟</div><div class="mi-band-summary-value" id="miBandRecent30">--</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">最近60分钟</div><div class="mi-band-summary-value" id="miBandRecent60">--</div></div>
-        </div>
-        <div class="sleep-box">
-          <div class="sleep-main">
-            <div><div class="vital-label">最近睡眠</div><div class="sleep-total" id="miBandSleepTotal">--</div></div>
-            <div class="muted" id="miBandSleepRange">暂无手环睡眠</div>
-          </div>
-          <div class="sleep-meta" id="miBandSleepMeta">深睡 -- · 浅睡 -- · REM --</div>
-          <div class="sleep-session-list" id="miBandSleepSessions"></div>
-        </div>
-        <div class="heart-history">
-          <div class="heart-history-head"><div class="section-title">最近心率</div><span class="muted" id="miBandHistoryCount">0/20</span></div>
-          <div class="heart-history-list" id="miBandRecentList"><div class="heart-history-empty">暂无心率记录</div></div>
-        </div>
-        <details id="miBandAdvanced" class="mi-band-advanced">
-          <summary>手环设置</summary>
-          <div class="mi-band-advanced-body">
-            <div class="input-wrap"><label>16 字节绑定密钥（32 位十六进制）</label><input id="miBandAuthKey" type="password" autocomplete="new-password" maxlength="32" placeholder="只保存在手机私有配置中"></div>
-            <div class="mi-band-actions">
-              <button class="save-btn" id="miBandScanButton" type="button" onclick="miBandToggleScan()">扫描附近手环</button>
-              <button class="action-btn" id="miBandReselectButton" type="button" onclick="miBandReselect()">重新选择设备</button>
-            </div>
-            <div class="mi-band-scan-status" id="miBandScanStatus">首次只需填写密钥，然后扫描并选择一次</div>
-            <div class="mi-band-scan-results" id="miBandScanResults"></div>
-            <div class="mi-band-actions">
-              <button class="action-btn" id="miBandVibrateSingle" type="button" onclick="miBandVibrate('single')">短震一次</button>
-              <button class="action-btn" id="miBandVibrateCall" type="button" onclick="miBandVibrate('call')">呼唤三次</button>
-            </div>
-            <div class="log-box mi-band-log" id="miBandLog"></div>
-          </div>
-        </details>
-      </section>
-
-      <section class="section legacy-ring-section">
+      <section class="section">
         <div class="section-head">
           <div>
             <div class="section-title">智能戒指</div>
@@ -424,23 +358,13 @@
             <span class="muted" id="batteryInfo"></span>
           </div>
         </div>
-        <div class="ring-feature-row">
-          <div>
-            <div class="vital-label">戒指连接与自动同步</div>
-            <div class="muted" id="ringFeatureStatus">开启后每10分钟在固定节点同步</div>
-          </div>
-          <label class="toggle-switch" title="开启或关闭智能戒指连接与同步">
-            <input type="checkbox" id="ringFeatureToggle" checked onchange="toggleRingFeature(this.checked)">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
         <div class="status-row">
           <span class="status-dot" id="ringDot"></span>
           <span id="ringStatus">未连接</span>
         </div>
         <div class="ring-actions">
           <button class="action-btn" id="btnConnect" onclick="ringToggleConnect()">连接</button>
-          <button class="action-btn" id="btnReselectRing" onclick="resetSavedRingDevice()">重选戒指</button>
+          <button class="action-btn" onclick="resetSavedRingDevice()">重选戒指</button>
           <button class="action-btn primary" id="btnSync" onclick="syncRingHistory()">同步新数据</button>
           <button class="action-btn warn" id="btnClearRing" onclick="clearRingCache()">清除戒指缓存</button>
         </div>
@@ -460,7 +384,7 @@
         <div class="heart-auto-row">
           <div>
             <div class="vital-label">自动心率</div>
-            <div class="muted" id="hrAutoStatus">戒指每10分钟自动检测，连接后同步新数据</div>
+            <div class="muted" id="hrAutoStatus">连接戒指后每10分钟检测一次</div>
           </div>
           <button class="action-btn primary" id="btnMeasureHrNow" type="button" onclick="measureHeartRateNow()">立即测一次</button>
         </div>
@@ -479,10 +403,7 @@
               <div class="vital-label">最近睡眠</div>
               <div class="sleep-total" id="sleepTotal">--</div>
             </div>
-            <div class="sleep-actions">
-              <div class="muted" id="sleepRange">暂无数据</div>
-              <button class="action-btn primary" id="btnSyncSleep" type="button" onclick="syncRingSleepHistory()">同步睡眠</button>
-            </div>
+            <div class="muted" id="sleepRange">暂无数据</div>
           </div>
           <div class="sleep-meta" id="sleepMeta">深睡 -- · 浅睡 -- · REM -- · 清醒 --</div>
         </div>
@@ -598,6 +519,7 @@ const HEALTH_HISTORY_TIMEOUT_MS = 120000;
 const HEALTH_ACCUMULATE_TIMEOUT_MS = 5000;
 const HEART_MEASURE_TYPE = 0;
 const HEART_MONITOR_INTERVAL_MIN = 10;
+const HEART_AUTO_INTERVAL_MS = HEART_MONITOR_INTERVAL_MIN * 60 * 1000;
 const HEART_MEASURE_SETTLE_MS = 5000;
 const HEART_MEASURE_MAX_MS = 30000;
 
@@ -607,16 +529,16 @@ let reassemblyData = null, reassemblyFlag = false;
 let healthAccumulator = {};
 let pendingResponses = {};
 let historyData = {};
-let healthState = { weights: [], periods: [], ring: null, miBand: null, heartRates: [], heartConfig: null, heartEvents: [], location: null };
+let healthState = { weights: [], periods: [], ring: null, heartRates: [], heartConfig: null, heartEvents: [], location: null, manualSteps: [], sleepEntries: [] };
 let calendarDate = new Date();
 let ringCandidates = [];
 let syncing = false;
 let autoSyncKey = '';
 let ringDeviceName = '';
-let ringFeatureEnabled = true;
 let heartMeasure = null;
+let heartAutoTimer = null;
+let heartAutoKickTimer = null;
 let ringReconnectTimer = null;
-const RING_FEATURE_CONTROL_IDS = ['btnConnect', 'btnReselectRing', 'btnSync', 'btnClearRing', 'btnMeasureHrNow', 'btnSyncSleep'];
 const HEART_CONFIG_INPUTS = [
   ['sleep_low_max', 'heartSleepLowMax'],
   ['normal_min', 'heartNormalMin'],
@@ -630,270 +552,6 @@ const HEART_CONFIG_INPUTS = [
   ['night_end_hour', 'heartNightEnd'],
   ['stale_minutes', 'heartStaleMinutes']
 ];
-
-let miBandState = null;
-let miBandSamples = [];
-let miBandScanning = false;
-let miBandScanItems = [];
-
-window.miBandNative = {
-  onStatus(status) { renderMiBandStatus(status || {}); },
-  onSamples(payload) {
-    miBandSamples = (payload && payload.items) || [];
-    renderMiBandSamples(miBandSamples);
-    logMiBand(`收到 ${miBandSamples.length} 条 activity`);
-    loadHealth().catch(() => {});
-  },
-  onError(error) {
-    const message = error && error.message ? error.message : '手环操作失败';
-    logMiBand(message);
-    showToast(message);
-  },
-  onScanState(payload) {
-    miBandScanning = !!(payload && payload.scanning);
-    $('miBandScanButton').textContent = miBandScanning ? '停止扫描' : '扫描附近手环';
-    $('miBandScanStatus').textContent = (payload && payload.message) || (miBandScanning ? '正在扫描…' : '可以重新扫描');
-    logMiBand($('miBandScanStatus').textContent);
-  },
-  onScanResults(payload) {
-    miBandScanItems = (payload && payload.items) || [];
-    renderMiBandScanResults();
-  }
-};
-
-function initMiBand() {
-  if (!window.AionMiBand) {
-    renderMiBandStatus({ state: 'unavailable', error: '当前 APK 未包含小米手环模块' });
-    return;
-  }
-  try {
-    const status = JSON.parse(window.AionMiBand.getStatus() || '{}');
-    renderMiBandStatus(status);
-    logMiBand('已检测到手机原生小米手环桥');
-  } catch (e) {
-    window.miBandNative.onError({ message: e.message || String(e) });
-  }
-}
-
-function renderMiBandStatus(status) {
-  miBandState = status || {};
-  const connected = !!status.connected && !!status.authenticated;
-  $('miBandDot').classList.toggle('on', connected);
-  const labels = {
-    idle: '未连接', connecting: '连接中…', ready: '已连接', realtime: '实时心率中',
-    syncing: '同步中…', waiting_reconnect: '等待自动重连', disconnected: '已断开',
-    error: '连接异常', unavailable: '模块不可用', vibrating: '正在呼唤…'
-  };
-  $('miBandStatus').textContent = labels[status.state] || status.state || '未连接';
-  const savedDevice = [status.saved_device_name || status.device_name, status.saved_device_address].filter(Boolean).join(' · ');
-  $('miBandConnectionMeta').textContent = status.error || savedDevice || '等待手机连接';
-  $('miBandBattery').textContent = Number(status.battery) >= 0 ? `电量 ${status.battery}%` : '电量 --';
-  $('miBandReconnectButton').disabled = status.state === 'connecting';
-  $('miBandSyncButton').disabled = !connected || !!status.syncing || !!status.realtime;
-  $('miBandRealtimeToggle').checked = !!status.realtime;
-  $('miBandRealtimeValue').textContent = Number(status.latest_heart_rate) > 0 ? status.latest_heart_rate : '--';
-  const storedHeart = healthState.miBand && Number(healthState.miBand.latestHeartRate);
-  const latestHeart = Number(status.latest_heart_rate) > 0 ? Number(status.latest_heart_rate) : storedHeart;
-  $('miBandLatestHeart').textContent = Number(latestHeart) > 0 ? `${latestHeart} bpm` : '-- bpm';
-  $('miBandSyncResult').textContent = status.error
-    ? status.error
-    : status.last_sync_at > 0
-      ? `上次同步 ${new Date(status.last_sync_at * 1000).toLocaleString()}`
-      : '还没有同步';
-  $('miBandNextSync').textContent = status.next_sync_at > 0
-    ? new Date(status.next_sync_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : '暂停';
-  if (Number.isFinite(Number(status.day_interval_minutes))) $('miBandDayInterval').value = String(status.day_interval_minutes);
-  if (Number.isFinite(Number(status.night_interval_minutes))) $('miBandNightInterval').value = String(status.night_interval_minutes);
-  if (status.night_start) $('miBandNightStart').value = status.night_start;
-  if (status.night_end) $('miBandNightEnd').value = status.night_end;
-  $('miBandScheduleMeta').textContent = `白天 ${intervalLabel(status.day_interval_minutes)} · ${status.night_start || '02:00'}–${status.night_end || '08:00'} ${intervalLabel(status.night_interval_minutes)}`;
-  $('miBandReselectButton').style.display = status.configured ? '' : 'none';
-}
-
-function intervalLabel(value) {
-  return Number(value) < 0 ? '暂停' : `每 ${value || '--'} 分钟`;
-}
-
-function miBandConnect() {
-  if (!window.AionMiBand) return showToast('请先安装包含手环模块的新 APK');
-  if (!miBandState || !miBandState.configured) {
-    $('miBandAdvanced').open = true;
-    $('miBandAuthKey').focus();
-    return showToast('首次请填写绑定密钥，然后扫描并选择手环');
-  }
-  window.AionMiBand.connect();
-}
-
-function miBandReconnect() {
-  if (!window.AionMiBand) return showToast('当前 APK 没有手环模块');
-  window.AionMiBand.manualReconnect();
-}
-
-function miBandDisconnect() {
-  if (window.AionMiBand) window.AionMiBand.disconnect();
-}
-
-function miBandSyncNow() {
-  if (!window.AionMiBand) return showToast('当前 APK 没有手环模块');
-  window.AionMiBand.syncNow();
-}
-
-function miBandToggleRealtime(enabled) {
-  if (!window.AionMiBand) {
-    $('miBandRealtimeToggle').checked = false;
-    return showToast('当前 APK 没有手环模块');
-  }
-  if (enabled) window.AionMiBand.startRealtime();
-  else window.AionMiBand.stopRealtime();
-}
-
-function miBandSaveSchedule() {
-  if (!window.AionMiBand) return showToast('当前 APK 没有手环模块');
-  const payload = {
-    day_interval_minutes: Number($('miBandDayInterval').value),
-    night_start: $('miBandNightStart').value || '02:00',
-    night_end: $('miBandNightEnd').value || '08:00',
-    night_interval_minutes: Number($('miBandNightInterval').value)
-  };
-  window.AionMiBand.setSchedule(JSON.stringify(payload));
-  showToast('同步设置已保存');
-}
-
-function miBandToggleScan() {
-  if (!window.AionMiBand) return showToast('当前 APK 没有手环模块');
-  const authKey = $('miBandAuthKey').value.trim();
-  if (miBandScanning) {
-    window.AionMiBand.stopScan();
-    return;
-  }
-  if (!(miBandState && miBandState.auth_key_configured) && !/^[0-9a-f]{32}$/i.test(authKey)) {
-    return showToast('首次请填写 32 位十六进制绑定密钥');
-  }
-  miBandScanItems = [];
-  renderMiBandScanResults();
-  window.AionMiBand.startScan();
-}
-
-function miBandReselect() {
-  if (!window.AionMiBand) return showToast('当前 APK 没有手环模块');
-  $('miBandAdvanced').open = true;
-  miBandScanItems = [];
-  renderMiBandScanResults();
-  window.AionMiBand.reselectDevice();
-}
-
-function renderMiBandScanResults() {
-  const list = $('miBandScanResults');
-  list.innerHTML = '';
-  miBandScanItems.forEach(item => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'mi-band-scan-result';
-    const title = document.createElement('div');
-    const strong = document.createElement('strong');
-    strong.textContent = item.name || '未命名 BLE 设备';
-    const small = document.createElement('small');
-    small.textContent = `${maskMiBandAddress(item.address)} · 信号 ${item.rssi} dBm`;
-    title.append(strong, small);
-    const action = document.createElement('span');
-    action.textContent = '选择';
-    button.append(title, action);
-    button.onclick = () => miBandSelectDevice(item);
-    list.append(button);
-  });
-}
-
-function miBandSelectDevice(item) {
-  if (!window.AionMiBand) return showToast('当前 APK 没有手环模块');
-  const authKey = $('miBandAuthKey').value.trim();
-  if (!(miBandState && miBandState.auth_key_configured) && !/^[0-9a-f]{32}$/i.test(authKey)) {
-    return showToast('绑定密钥必须是 32 位十六进制');
-  }
-  const payload = {
-    address: item.address || '',
-    name: item.name || 'Xiaomi Smart Band 7',
-    auth_key: authKey,
-    day_interval_minutes: Number($('miBandDayInterval').value),
-    night_start: $('miBandNightStart').value || '02:00',
-    night_end: $('miBandNightEnd').value || '08:00',
-    night_interval_minutes: Number($('miBandNightInterval').value)
-  };
-  window.AionMiBand.selectDevice(JSON.stringify(payload));
-  $('miBandAuthKey').value = '';
-  $('miBandScanStatus').textContent = `已选择 ${item.name || '手环'}，正在连接`;
-  showToast('设备已保存，正在连接');
-}
-
-function maskMiBandAddress(address) {
-  const parts = String(address || '').split(':');
-  return parts.length === 6 ? `${parts[0]}:${parts[1]}:**:**:${parts[4]}:${parts[5]}` : '地址已隐藏';
-}
-
-function miBandVibrate(pattern) {
-  if (!window.AionMiBand) return showToast('当前 APK 没有手环模块');
-  window.AionMiBand.vibrate(pattern);
-}
-
-function logMiBand(message) {
-  const log = $('miBandLog');
-  if (!log) return;
-  const line = document.createElement('div');
-  line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
-  log.prepend(line);
-  while (log.children.length > 30) log.removeChild(log.lastChild);
-}
-
-function renderMiBandSamples(items) {
-  const rows = (items || [])
-    .filter(item => Number(item.heart_rate) >= 20 && Number(item.heart_rate) <= 240)
-    .sort((a, b) => Number(b.measured_at) - Number(a.measured_at))
-    .slice(0, 20);
-  $('miBandHistoryCount').textContent = `${rows.length}/20`;
-  const list = $('miBandRecentList');
-  if (!rows.length) {
-    list.innerHTML = '<div class="heart-history-empty">暂无心率记录</div>';
-    return;
-  }
-  list.innerHTML = rows.map(item => `<div class="heart-history-item">
-    <div><div class="heart-history-time">${fmtHeartTime(item.measured_at)}</div>
-    <div class="heart-history-meta">小米手环${item.steps != null ? ` · ${item.steps} 步` : ''}</div></div>
-    <div class="heart-history-bpm">${item.heart_rate || '--'} bpm</div>
-  </div>`).join('');
-}
-
-function renderMiBandSummary(summary) {
-  healthState.miBand = summary || null;
-  const value = summary || {};
-  $('miBandTodaySteps').textContent = Number(value.todaySteps || 0).toLocaleString('zh-CN');
-  $('miBandActivityMinutes').textContent = `${Number(value.activityMinutes || 0)} 分钟`;
-  $('miBandRecent30').textContent = `${Number(value.recent30ActivityMinutes || 0)} 分钟 · ${Number(value.recent30Steps || 0)} 步`;
-  $('miBandRecent60').textContent = `${Number(value.recent60ActivityMinutes || 0)} 分钟 · ${Number(value.recent60Steps || 0)} 步`;
-  $('miBandLatestHeart').textContent = Number(value.latestHeartRate) > 0
-    ? `${value.latestHeartRate} bpm` : '-- bpm';
-  const sleep = value.sleep;
-  if (sleep) {
-    $('miBandSleepTotal').textContent = fmtMin(Number(sleep.totalMin || 0));
-    const primaryLabel = sleep.kind === 'nap' ? '小睡' : '主睡眠';
-    $('miBandSleepRange').textContent = `${primaryLabel} ${fmtTime(sleep.startAt)} - ${fmtTime(sleep.endAt)}`;
-    $('miBandSleepMeta').textContent = `深睡 ${sleep.deepMin || 0}m · 浅睡 ${sleep.lightMin || 0}m · REM ${sleep.remMin || 0}m`;
-    $('miBandSleepSessions').innerHTML = (sleep.sessions || []).map(session => {
-      const label = session.kind === 'nap' ? '小睡' : '主睡眠';
-      return `<div class="sleep-session-item"><strong>${label}</strong><span>${fmtTime(session.startAt)} - ${fmtTime(session.endAt)} · ${fmtMin(Number(session.totalMin || 0))}</span></div>`;
-    }).join('');
-  } else {
-    $('miBandSleepTotal').textContent = '--';
-    $('miBandSleepRange').textContent = '暂无手环睡眠';
-    $('miBandSleepMeta').textContent = '深睡 -- · 浅睡 -- · REM --';
-    $('miBandSleepSessions').innerHTML = '';
-  }
-  const recent = (value.recentHeartRates || []).map(item => {
-    let raw = {};
-    try { raw = typeof item.raw_json === 'string' ? JSON.parse(item.raw_json || '{}') : (item.raw || {}); } catch (e) {}
-    return { ...raw, heart_rate: item.heart_rate, measured_at: item.measured_at };
-  });
-  renderMiBandSamples(recent);
-}
 
 function todayStr() {
   const d = new Date();
@@ -1014,91 +672,19 @@ function setRingConnected(on, name = '') {
   if (name) ringDeviceName = name;
   if (!isConnected) stopHeartAutoLoop();
   $('ringDot').classList.toggle('on', isConnected);
-  $('ringStatus').textContent = !ringFeatureEnabled
-    ? '功能已关闭'
-    : isConnected ? `已连接${name ? ': ' + name : ''}` : '未连接';
+  $('ringStatus').textContent = isConnected ? `已连接${name ? ': ' + name : ''}` : '未连接';
   $('btnConnect').textContent = isConnected ? '断开' : '连接';
-  updateHeartAutoStatus(!ringFeatureEnabled
-    ? '戒指功能已关闭，不会自动连接或同步'
-    : isConnected ? '等待戒指初始化完成' : '连接后自动同步新数据；需要立即测可手动点');
+  updateHeartAutoStatus(isConnected ? '等待戒指初始化完成' : '连接戒指后每10分钟检测一次');
 }
 function setBusy(id, busy, text) {
   const btn = $(id);
   if (!btn) return;
-  btn.disabled = busy || (!ringFeatureEnabled && RING_FEATURE_CONTROL_IDS.includes(id));
+  btn.disabled = busy;
   if (text) btn.textContent = text;
-}
-
-function applyRingFeatureEnabled(enabled) {
-  ringFeatureEnabled = !!enabled;
-  const toggle = $('ringFeatureToggle');
-  if (toggle) toggle.checked = ringFeatureEnabled;
-  RING_FEATURE_CONTROL_IDS.forEach(id => {
-    const control = $(id);
-    if (control) control.disabled = !ringFeatureEnabled;
-  });
-  const status = $('ringFeatureStatus');
-  if (status) status.textContent = ringFeatureEnabled
-    ? '已开启：每10分钟在固定节点同步'
-    : '已关闭：不会扫描、连接或同步戒指';
-  if (!ringFeatureEnabled) {
-    if (ringReconnectTimer) clearTimeout(ringReconnectTimer);
-    ringReconnectTimer = null;
-    ringCandidates = [];
-    renderRingCandidates();
-    stopHeartAutoLoop(false);
-    setRingConnected(false);
-    $('ringStatus').textContent = '功能已关闭';
-    updateHeartAutoStatus('戒指功能已关闭，不会自动连接或同步');
-  } else if (!isConnected) {
-    $('ringStatus').textContent = '未连接';
-    updateHeartAutoStatus('连接后自动同步新数据；需要立即测可手动点');
-  }
-}
-
-async function refreshRingFeatureSetting() {
-  let enabled = true;
-  try {
-    const stored = localStorage.getItem('aion_ring_feature_enabled');
-    if (stored !== null) enabled = stored !== 'false';
-  } catch (e) {}
-  if (window.AionRingBle && typeof window.AionRingBle.isRingEnabled === 'function') {
-    try { enabled = !!window.AionRingBle.isRingEnabled(); } catch (e) {}
-  }
-  applyRingFeatureEnabled(enabled);
-  return enabled;
-}
-
-async function toggleRingFeature(enabled) {
-  enabled = !!enabled;
-  try { localStorage.setItem('aion_ring_feature_enabled', String(enabled)); } catch (e) {}
-  try {
-    if (window.AionRingBle && typeof window.AionRingBle.setRingEnabled === 'function') {
-      window.AionRingBle.setRingEnabled(enabled);
-    } else if (!enabled) {
-      ringDisconnect();
-    }
-  } catch (e) {
-    logRing('切换戒指功能失败: ' + (e.message || e));
-  }
-  applyRingFeatureEnabled(enabled);
-  autoSyncKey = '';
-  if (!enabled) {
-    logRing('戒指功能已关闭，后台不再扫描或同步');
-    showToast('戒指连接与自动同步已关闭');
-    return;
-  }
-  logRing('戒指功能已开启');
-  showToast('戒指连接与自动同步已开启');
-  setTimeout(reconnectSavedRingIfNeeded, 350);
 }
 
 window.ringNativeBle = {
   onConnected(name) {
-    if (!ringFeatureEnabled) {
-      if (window.AionRingBle) window.AionRingBle.disconnect();
-      return;
-    }
     nativeConnected = true;
     nativeMode = true;
     setRingConnected(true, name || '');
@@ -1148,7 +734,6 @@ function renderRingCandidates() {
 }
 
 function connectRingCandidate(id) {
-  if (!ringFeatureEnabled) return showToast('请先开启戒指连接与自动同步');
   if (!window.AionRingBle || typeof window.AionRingBle.connectCandidate !== 'function') {
     showToast('当前 APK 不支持手动选择设备');
     return;
@@ -1158,7 +743,6 @@ function connectRingCandidate(id) {
 }
 
 function resetSavedRingDevice() {
-  if (!ringFeatureEnabled) return showToast('请先开启戒指连接与自动同步');
   if (!window.AionRingBle || typeof window.AionRingBle.forgetSavedDevice !== 'function') {
     showToast('当前 APK 不支持重选戒指');
     return;
@@ -1174,7 +758,6 @@ function resetSavedRingDevice() {
 }
 
 async function ringToggleConnect() {
-  if (!ringFeatureEnabled) return showToast('请先开启戒指连接与自动同步');
   if (isConnected) {
     ringDisconnect();
     return;
@@ -1220,7 +803,6 @@ async function ringToggleConnect() {
 }
 
 async function webBleConnect() {
-  if (!ringFeatureEnabled) return;
   if (!navigator.bluetooth) {
     showToast('当前浏览器不支持 Web Bluetooth');
     return;
@@ -1288,7 +870,7 @@ function releaseRingForBackgroundSync(reason) {
 }
 
 function reconnectSavedRingIfNeeded() {
-  if (!ringFeatureEnabled || isConnected || nativeConnected || !window.AionRingBle) return;
+  if (isConnected || nativeConnected || !window.AionRingBle) return;
   if (typeof window.AionRingBle.hasSavedDevice !== 'function'
       || typeof window.AionRingBle.autoConnect !== 'function'
       || !window.AionRingBle.hasSavedDevice()) return;
@@ -1312,7 +894,6 @@ document.addEventListener('visibilitychange', () => {
 });
 
 async function deviceInitHandshake() {
-  if (!ringFeatureEnabled) return;
   deviceReady = false;
   await sleep(350);
   const now = new Date();
@@ -1327,16 +908,10 @@ async function deviceInitHandshake() {
   await sleep(500);
   await sendPacket(DT_GET_POWER, new Uint8Array(0));
   await sleep(500);
-  if (!ringFeatureEnabled || !isConnected) return;
   deviceReady = true;
   logRing('设备初始化完成');
   await configureHeartMonitor10Min();
-  startHeartAutoLoop(false);
-  try {
-    await syncRingHistory(true);
-  } catch (e) {
-    logRing('连接后自动同步失败: ' + (e.message || e));
-  }
+  startHeartAutoLoop(true);
 }
 
 function updateHeartAutoStatus(text) {
@@ -1345,7 +920,7 @@ function updateHeartAutoStatus(text) {
 }
 
 async function configureHeartMonitor10Min() {
-  if (!ringFeatureEnabled || !isConnected) return;
+  if (!isConnected) return;
   try {
     await sendPacket(DT_SETTING_HEART_MONITOR, new Uint8Array([1, HEART_MONITOR_INTERVAL_MIN]));
     logRing(`已设置戒指心率自动监测：每${HEART_MONITOR_INTERVAL_MIN}分钟`);
@@ -1356,22 +931,42 @@ async function configureHeartMonitor10Min() {
 
 function startHeartAutoLoop(runSoon = false) {
   stopHeartAutoLoop(false);
-  if (!ringFeatureEnabled || !isConnected || !deviceReady) return;
-  updateHeartAutoStatus(`戒指已开启每${HEART_MONITOR_INTERVAL_MIN}分钟自动检测；连接后自动同步新数据`);
+  if (!isConnected || !deviceReady) return;
+  updateHeartAutoStatus(`已开启：每${HEART_MONITOR_INTERVAL_MIN}分钟检测并上传`);
+  if (runSoon) {
+    heartAutoKickTimer = setTimeout(() => {
+      runHeartAutoMeasurement('auto-connect');
+    }, 1800);
+  }
+  heartAutoTimer = setInterval(() => {
+    runHeartAutoMeasurement('auto-10min');
+  }, HEART_AUTO_INTERVAL_MS);
 }
 
 function stopHeartAutoLoop(update = true) {
+  if (heartAutoTimer) {
+    clearInterval(heartAutoTimer);
+    heartAutoTimer = null;
+  }
+  if (heartAutoKickTimer) {
+    clearTimeout(heartAutoKickTimer);
+    heartAutoKickTimer = null;
+  }
   if (heartMeasure) {
     clearTimeout(heartMeasure.settleTimer);
     clearTimeout(heartMeasure.maxTimer);
     heartMeasure.resolve(null);
     heartMeasure = null;
   }
-  if (update) updateHeartAutoStatus('连接后自动同步新数据；需要立即测可手动点');
+  if (update) updateHeartAutoStatus('连接戒指后每10分钟检测一次');
+}
+
+async function runHeartAutoMeasurement(source) {
+  if (!isConnected || !deviceReady || syncing || heartMeasure) return null;
+  return startHeartMeasurement(source);
 }
 
 async function measureHeartRateNow() {
-  if (!ringFeatureEnabled) return showToast('请先开启戒指连接与自动同步');
   if (!isConnected) return showToast('请先连接戒指');
   if (!deviceReady) return showToast('戒指还在初始化');
   setBusy('btnMeasureHrNow', true, '测量中...');
@@ -1502,7 +1097,6 @@ function _validHrClient(value) {
 }
 
 async function syncRingHistory(auto = false) {
-  if (!ringFeatureEnabled) { if (!auto) showToast('请先开启戒指连接与自动同步'); return; }
   if (syncing) return;
   if (heartMeasure) { if (!auto) showToast('心率检测中，稍后再同步'); return; }
   if (!isConnected) { if (!auto) showToast('请先连接戒指'); return; }
@@ -1511,7 +1105,16 @@ async function syncRingHistory(auto = false) {
   setBusy('btnSync', true, '同步中...');
   historyData = {};
   try {
-    const types = [[DT_HEALTH_ALL, '综合']];
+    const types = [
+      [DT_HEALTH_HEART, '心率'],
+      ...(auto ? [] : [
+        [DT_HEALTH_SLEEP, '睡眠'],
+        [DT_HEALTH_BLOOD, '血压'],
+        [DT_HEALTH_ALL, '综合'],
+        [DT_HEALTH_SPO2, '血氧'],
+        [DT_HEALTH_BODY, '身体数据']
+      ])
+    ];
     for (const [dt, name] of types) {
       logRing(`请求${name}历史`);
       const promise = waitForResponse(dt, HEALTH_HISTORY_TIMEOUT_MS);
@@ -1520,10 +1123,14 @@ async function syncRingHistory(auto = false) {
       if (response == null) logRing(`${name}历史等待超时`);
       await sleep(350);
     }
+    if (auto) {
+      const saved = await uploadLatestHeartHistory();
+      if (!saved) logRing('没有同步到新的心率历史');
+      return;
+    }
     const payload = buildSnapshotPayload();
     if (!payload) {
-      if (auto) logRing('没有同步到新数据');
-      else showToast('没有同步到新数据');
+      showToast('没有同步到新数据');
       return;
     }
     const saved = await api('POST', '/api/health/ring/latest', payload);
@@ -1531,112 +1138,21 @@ async function syncRingHistory(auto = false) {
     renderRing(saved);
     await refreshHeartRateHistory();
     $('ringSub').textContent = '同步于 ' + new Date(saved.synced_at * 1000).toLocaleString();
-    if (auto) logRing('自动同步新数据完成');
-    else showToast('戒指数据已同步');
-  } catch (e) {
-    if (auto) logRing('自动同步新数据失败: ' + (e.message || e));
-    else showToast('戒指数据同步失败: ' + (e.message || e));
+    showToast('戒指数据已同步');
   } finally {
     syncing = false;
     setBusy('btnSync', false, '同步新数据');
   }
 }
 
-async function syncRingSleepHistory() {
-  if (!ringFeatureEnabled) return showToast('请先开启戒指连接与自动同步');
-  if (syncing) return;
-  if (heartMeasure) { showToast('心率检测中，稍后再同步睡眠'); return; }
-  if (!isConnected) { showToast('请先连接戒指'); return; }
-  if (!deviceReady) { showToast('戒指还在初始化'); return; }
-  syncing = true;
-  setBusy('btnSyncSleep', true, '同步中...');
-  historyData = {};
-  try {
-    logRing('请求睡眠历史');
-    const promise = waitForResponse(DT_HEALTH_SLEEP, HEALTH_HISTORY_TIMEOUT_MS);
-    await sendPacket(DT_HEALTH_SLEEP, new Uint8Array(0));
-    const response = await promise;
-    if (response == null) {
-      logRing('睡眠历史等待超时');
-      showToast('睡眠数据同步超时');
-      return;
-    }
-    const payload = buildSleepSnapshotPayload();
-    if (!payload) {
-      showToast('没有同步到睡眠数据');
-      return;
-    }
-    const saved = await api('POST', '/api/health/ring/latest', payload);
-    healthState.ring = saved;
-    renderRing(saved);
-    $('ringSub').textContent = '睡眠同步于 ' + new Date(saved.synced_at * 1000).toLocaleString();
-    showToast('睡眠数据已同步');
-  } finally {
-    syncing = false;
-    setBusy('btnSyncSleep', false, '同步睡眠');
-  }
+async function uploadLatestHeartHistory() {
+  const heart = latestHistoryRecord(historyData[DT_HEALTH_HEART]);
+  if (!heart || !_validHrClient(heart.hr)) return null;
+  return uploadHeartRate(heart.hr, heart.time.getTime() / 1000, 'history-heart');
 }
 
 function latestHistoryRecord(list) {
   return (list && list.length) ? [...list].sort((a, b) => b.time - a.time)[0] : null;
-}
-
-function getRingDeviceName() {
-  return ringDeviceName || (bleDevice && bleDevice.name) || (healthState.ring && healthState.ring.device_name) || '';
-}
-
-function parseExistingRingRaw() {
-  const raw = healthState.ring && healthState.ring.raw_json;
-  if (!raw) return {};
-  if (typeof raw === 'object') return raw;
-  try { return JSON.parse(raw) || {}; } catch (e) { return {}; }
-}
-
-function sleepPayloadFromRecord(sleep) {
-  if (!sleep) return null;
-  return {
-    start_at: sleep.time.getTime() / 1000,
-    end_at: sleep.timeEnd.getTime() / 1000,
-    total_min: (sleep.deepMin || 0) + (sleep.lightMin || 0) + (sleep.remMin || 0),
-    deep_min: sleep.deepMin,
-    light_min: sleep.lightMin,
-    rem_min: sleep.remMin,
-    wake_min: sleep.wakeMin,
-    wake_count: sleep.wakeCount
-  };
-}
-
-function existingSleepPayload() {
-  const ring = healthState.ring || {};
-  if (!ring.sleep_start_at || !ring.sleep_end_at) return null;
-  return {
-    start_at: ring.sleep_start_at,
-    end_at: ring.sleep_end_at,
-    total_min: ring.sleep_total_min,
-    deep_min: ring.sleep_deep_min,
-    light_min: ring.sleep_light_min,
-    rem_min: ring.sleep_rem_min,
-    wake_min: ring.sleep_wake_min,
-    wake_count: ring.sleep_wake_count
-  };
-}
-
-function buildSleepSnapshotPayload() {
-  const sleep = latestHistoryRecord(historyData[DT_HEALTH_SLEEP]);
-  if (!sleep) return null;
-  const ring = healthState.ring || {};
-  const existingRaw = parseExistingRingRaw();
-  return {
-    device_name: getRingDeviceName(),
-    heart_rate: ring.heart_rate ?? null,
-    systolic_bp: ring.systolic_bp ?? null,
-    diastolic_bp: ring.diastolic_bp ?? null,
-    spo2: ring.spo2 ?? null,
-    hrv: ring.hrv ?? null,
-    measured_at: ring.measured_at || Date.now() / 1000,
-    sleep: sleepPayloadFromRecord(sleep),
-    raw: { ...existingRaw, sleep, sleep_synced_at: Date.now() / 1000 }
-  };
 }
 
 async function refreshHeartRateHistory() {
@@ -1651,7 +1167,7 @@ async function refreshHeartRateHistory() {
 
 // ── 定时自动同步：戒指整 10 分钟测量后，错后 2 分钟拉取历史 ──
 setInterval(() => {
-  if (!ringFeatureEnabled || !isConnected || !deviceReady || syncing) return;
+  if (!isConnected || !deviceReady || syncing) return;
   const now = new Date();
   const min = now.getMinutes();
   if (min % 10 !== 2) return;
@@ -1663,7 +1179,6 @@ setInterval(() => {
 }, 30000);
 
 async function clearRingCache() {
-  if (!ringFeatureEnabled) return showToast('请先开启戒指连接与自动同步');
   if (!isConnected) return showToast('请先连接戒指');
   if (!confirm('确定清除戒指里的已同步缓存吗？')) return;
   setBusy('btnClearRing', true, '清除中...');
@@ -1881,17 +1396,22 @@ function buildSnapshotPayload() {
   if (!all && !heart && !blood && !spo2 && !body && !sleep) return null;
   const measuredDates = [all, heart, blood, spo2, body].filter(Boolean).map(r => r.time.getTime());
   const measuredAt = measuredDates.length ? Math.max(...measuredDates) / 1000 : Date.now() / 1000;
-  const existingRaw = parseExistingRingRaw();
   return {
-    device_name: getRingDeviceName(),
+    device_name: (bleDevice && bleDevice.name) || '',
     heart_rate: (all && all.hr) || (heart && heart.hr) || (blood && blood.hr) || null,
     systolic_bp: (all && all.sbp) || (blood && blood.sbp) || null,
     diastolic_bp: (all && all.dbp) || (blood && blood.dbp) || null,
     spo2: (all && all.spo2) || (spo2 && spo2.spo2) || null,
     hrv: (body && body.hrv) || (all && all.hrv) || null,
     measured_at: measuredAt,
-    sleep: sleepPayloadFromRecord(sleep) || existingSleepPayload(),
-    raw: { ...existingRaw, all, heart, blood, spo2, body, sleep: sleep || existingRaw.sleep || null }
+    sleep: sleep ? {
+      start_at: sleep.time.getTime() / 1000,
+      end_at: sleep.timeEnd.getTime() / 1000,
+      total_min: (sleep.deepMin || 0) + (sleep.lightMin || 0) + (sleep.remMin || 0),
+      deep_min: sleep.deepMin, light_min: sleep.lightMin, rem_min: sleep.remMin,
+      wake_min: sleep.wakeMin, wake_count: sleep.wakeCount
+    } : null,
+    raw: { all, heart, blood, spo2, body, sleep }
   };
 }
 
@@ -1934,12 +1454,6 @@ function renderHeartRates(items) {
       <div class="heart-history-bpm">${Number.isFinite(bpm) ? bpm : '--'} bpm</div>
     </div>`;
   }).join('');
-  const bandRows = rows.filter(item => item.source === 'mi_band_7').map(item => {
-    let raw = {};
-    try { raw = typeof item.raw_json === 'string' ? JSON.parse(item.raw_json || '{}') : (item.raw || {}); } catch (e) {}
-    return { ...raw, heart_rate: item.heart_rate, measured_at: item.measured_at };
-  });
-  if (bandRows.length) renderMiBandSamples(bandRows);
 }
 
 function renderHeartEvents(items) {
@@ -2004,60 +1518,158 @@ function renderBodySummary() {
     $('latestPeriodValue').textContent = '--';
     $('latestPeriodMeta').textContent = '暂无记录';
   }
+
+  renderManualSteps();
+  renderLatestSleep();
+}
+
+function renderManualSteps() {
+  const today = todayStr();
+  const todayStep = (healthState.manualSteps || []).find(s => s.date === today);
+  if (todayStep) {
+    $('todayStepsValue').textContent = Number(todayStep.steps).toLocaleString('zh-CN');
+    $('todayStepsMeta').textContent = todayStep.note ? `今日 · ${todayStep.note}` : '今日手动记录';
+    if (todayStep.updated_at) {
+      const t = new Date(todayStep.updated_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      $('bodyUpdatedAt').textContent = t;
+    }
+  } else {
+    const latest = [...(healthState.manualSteps || [])].sort((a, b) => b.date.localeCompare(a.date))[0];
+    if (latest) {
+      $('todayStepsValue').textContent = '--';
+      $('todayStepsMeta').textContent = `上次 ${fmtDate(latest.date)} · ${Number(latest.steps).toLocaleString('zh-CN')}步`;
+    } else {
+      $('todayStepsValue').textContent = '--';
+      $('todayStepsMeta').textContent = '手动记录';
+    }
+  }
+}
+
+function renderLatestSleep() {
+  const latest = [...(healthState.sleepEntries || [])].sort((a, b) => b.date.localeCompare(a.date))[0];
+  if (latest) {
+    const h = Math.floor(latest.total_min / 60);
+    const m = latest.total_min % 60;
+    $('latestSleepValue').textContent = h ? `${h}h${m ? m + 'm' : ''}` : `${m}m`;
+    const parts = [];
+    if (latest.sleep_start_time && latest.sleep_end_time) {
+      parts.push(`${latest.sleep_start_time.slice(0,5)}-${latest.sleep_end_time.slice(0,5)}`);
+    }
+    parts.push(fmtDate(latest.date));
+    if (latest.note) parts.push(latest.note);
+    $('latestSleepMeta').textContent = parts.join(' · ');
+  } else {
+    $('latestSleepValue').textContent = '--';
+    $('latestSleepMeta').textContent = '手动记录';
+  }
 }
 
 function renderStepStatus(status) {
   healthState.location = status || null;
-  const steps = status && status.steps != null && status.steps !== undefined ? Number(status.steps) : null;
-  $('todayStepsValue').textContent = Number.isFinite(steps) ? steps.toLocaleString('zh-CN') : '--';
-  const meta = [];
-  if (status && status.step_logical_date) {
-    meta.push(status.step_logical_date === todayStr() ? '今日' : `日期 ${status.step_logical_date}`);
-  }
-  if (status && status.updated_at) {
-    const t = new Date(status.updated_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    meta.push(`更新 ${t}`);
-    $('bodyUpdatedAt').textContent = t;
-  }
-  $('todayStepsMeta').textContent = meta.join(' · ') || '等待手机同步';
 }
 
-async function loadStepStatus() {
-  try {
-    const status = await api('GET', '/api/location/status');
-    renderStepStatus(status);
-  } catch (e) {
-    $('todayStepsMeta').textContent = '步数读取失败';
+function openStepModal() {
+  $('stepDate').value = todayStr();
+  openHealthModal('stepModal');
+  setTimeout(() => $('stepValue')?.focus(), 50);
+}
+
+async function saveManualSteps() {
+  const date = $('stepDate').value;
+  const steps = parseInt($('stepValue').value, 10);
+  if (!date) return showToast('请选择日期');
+  if (!Number.isFinite(steps) || steps < 0) return showToast('请填写有效步数');
+  const item = await api('POST', '/api/health/manual-steps', {
+    date,
+    steps,
+    note: $('stepNote').value.trim()
+  });
+  if (item.error) return showToast(item.error);
+  healthState.manualSteps = (healthState.manualSteps || []).filter(s => s.date !== item.date);
+  healthState.manualSteps.unshift(item);
+  $('stepNote').value = '';
+  $('stepValue').value = '';
+  renderManualSteps();
+  renderCalendar();
+  closeHealthModal('stepModal');
+  showToast('步数已保存');
+}
+
+function openSleepModal() {
+  $('sleepDate').value = todayStr();
+  $('sleepStartTime').value = '';
+  $('sleepEndTime').value = '';
+  $('sleepDuration').value = '';
+  $('sleepNote').value = '';
+  openHealthModal('sleepModal');
+  setTimeout(() => $('sleepStartTime')?.focus(), 50);
+}
+
+function calcSleepDuration() {
+  const start = $('sleepStartTime').value;
+  const end = $('sleepEndTime').value;
+  if (!start || !end) return;
+  const [sh, sm] = start.split(':').map(Number);
+  const [eh, em] = end.split(':').map(Number);
+  let totalMin = (eh * 60 + em) - (sh * 60 + sm);
+  if (totalMin <= 0) totalMin += 24 * 60;
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  $('sleepDuration').value = h ? `${h}h${m ? m + 'm' : ''}` : `${m}m`;
+}
+
+function parseSleepDuration() {
+  const raw = $('sleepDuration').value.trim();
+  if (!raw) return;
+  const hMatch = raw.match(/(\d+)\s*h/);
+  const mMatch = raw.match(/(\d+)\s*m/);
+  const h = hMatch ? parseInt(hMatch[1], 10) : 0;
+  const m = mMatch ? parseInt(mMatch[1], 10) : 0;
+  if (h === 0 && m === 0) {
+    const num = parseInt(raw, 10);
+    if (Number.isFinite(num) && num > 0) {
+      $('sleepDuration').value = Math.floor(num / 60) ? `${Math.floor(num/60)}h${num%60 ? num%60+'m' : ''}` : `${num}m`;
+    }
   }
 }
 
-async function phoneSync() {
-  const btn = $('btnPhoneSync');
-  btn.disabled = true;
-  btn.textContent = '…';
-  try {
-    await api('POST', '/api/location/request-phone-sync');
-    btn.textContent = '✓';
-    setTimeout(loadStepStatus, 3000);
-  } catch (e) {
-    btn.textContent = '!';
-    showToast(e.message || '同步手机步数失败');
-  }
-  setTimeout(() => {
-    btn.disabled = false;
-    btn.textContent = '↻';
-  }, 4000);
-}
+async function saveSleepEntry() {
+  const date = $('sleepDate').value;
+  const startTime = $('sleepStartTime').value;
+  const endTime = $('sleepEndTime').value;
+  const durRaw = $('sleepDuration').value.trim();
+  if (!date) return showToast('请选择日期');
 
-async function stepDiag() {
-  const el = $('stepDiagInfo');
-  el.classList.add('show');
-  try {
-    const r = await api('GET', '/api/location/step-diag');
-    el.textContent = r.info ? `诊断：${r.info}` : '还没有诊断数据，等待手机下次心跳上报或点“同步手机步数”触发';
-  } catch (e) {
-    el.textContent = '诊断读取失败：' + (e.message || e);
+  let totalMin = 0;
+  if (durRaw) {
+    const hMatch = durRaw.match(/(\d+)\s*h/);
+    const mMatch = durRaw.match(/(\d+)\s*m/);
+    totalMin = (hMatch ? parseInt(hMatch[1], 10) * 60 : 0) + (mMatch ? parseInt(mMatch[1], 10) : 0);
+    if (totalMin === 0) {
+      const num = parseInt(durRaw, 10);
+      if (Number.isFinite(num)) totalMin = num;
+    }
   }
+  if (totalMin <= 0 && !startTime && !endTime) return showToast('请填写入睡/醒来时间或睡眠时长');
+
+  const item = await api('POST', '/api/health/sleep-entries', {
+    date,
+    sleep_start_time: startTime,
+    sleep_end_time: endTime,
+    total_min: totalMin,
+    note: $('sleepNote').value.trim()
+  });
+  if (item.error) return showToast(item.error);
+  healthState.sleepEntries = (healthState.sleepEntries || []).filter(s => s.id !== item.id);
+  healthState.sleepEntries.unshift(item);
+  $('sleepStartTime').value = '';
+  $('sleepEndTime').value = '';
+  $('sleepDuration').value = '';
+  $('sleepNote').value = '';
+  renderLatestSleep();
+  renderCalendar();
+  closeHealthModal('sleepModal');
+  showToast('睡眠已保存');
 }
 
 function handleHealthWs(msg) {
@@ -2068,18 +1680,9 @@ function handleHealthWs(msg) {
     refreshHealthShareSetting();
   }
   if (msg.type === 'location_update' && msg.data) renderStepStatus(msg.data);
-  if (msg.type === 'step_diag' && msg.info) {
-    const el = $('stepDiagInfo');
-    el.classList.add('show');
-    el.textContent = '诊断：' + msg.info;
-  }
   if (msg.type === 'health_ring_updated' && msg.data) {
     healthState.ring = msg.data;
     renderRing(msg.data);
-  }
-  if (msg.type === 'health_mi_band_updated' && msg.data) {
-    healthState.miBand = msg.data;
-    renderMiBandSummary(msg.data);
   }
   if (msg.type === 'health_ring_heart_rates_updated' && msg.items) {
     healthState.heartRates = msg.items;
@@ -2111,28 +1714,39 @@ function handleHealthWs(msg) {
     renderBodySummary();
     renderCalendar();
   }
+  if (msg.type === 'health_manual_steps_updated' && msg.data) {
+    healthState.manualSteps = (healthState.manualSteps || []).filter(s => s.date !== msg.data.date);
+    healthState.manualSteps.unshift(msg.data);
+    renderManualSteps();
+    renderCalendar();
+  }
+  if (msg.type === 'health_sleep_entry_updated' && msg.data) {
+    healthState.sleepEntries = (healthState.sleepEntries || []).filter(s => s.id !== msg.data.id);
+    healthState.sleepEntries.unshift(msg.data);
+    renderLatestSleep();
+    renderCalendar();
+  }
 }
 
 async function loadHealth() {
   const data = await api('GET', '/api/health/summary');
   healthState = {
     ring: data.ring,
-    miBand: data.miBand || null,
     heartRates: data.heartRates || [],
     heartConfig: data.heartConfig || healthState.heartConfig,
     heartEvents: data.heartEvents || [],
     weights: data.weights || [],
     periods: data.periods || [],
+    manualSteps: data.manualSteps || [],
+    sleepEntries: data.sleepEntries || [],
     location: healthState.location
   };
   renderRing(healthState.ring);
-  renderMiBandSummary(healthState.miBand);
   renderHeartRates(healthState.heartRates);
   renderHeartConfig(healthState.heartConfig);
   renderHeartEvents(healthState.heartEvents);
   renderBodySummary();
   renderCalendar();
-  await loadStepStatus();
 }
 
 async function saveWeight() {
@@ -2219,7 +1833,6 @@ function isPeriodDate(ds) {
 }
 
 async function sendPacket(dataType, payload) {
-  if (!ringFeatureEnabled) return false;
   const pkt = buildPacket(dataType, payload || new Uint8Array(0));
   if (window.AionRingBle && nativeMode) {
     window.AionRingBle.write(bytesToHex(pkt));
@@ -2306,14 +1919,10 @@ async function refreshHealthShareSetting() {
   await refreshHealthShareSetting();
   connectCommonWS(handleHealthWs);
   await loadHealth();
-  initMiBand();
-  await refreshRingFeatureSetting();
   if (navigator.userAgent.includes('AionChatApp')) {
     if (window.AionRingBle) {
       logRing('已检测到手机原生戒指蓝牙桥');
-      if (!ringFeatureEnabled) {
-        logRing('戒指功能当前已关闭，不会自动连接');
-      } else if (typeof window.AionRingBle.hasSavedDevice === 'function'
+      if (typeof window.AionRingBle.hasSavedDevice === 'function'
           && typeof window.AionRingBle.autoConnect === 'function'
           && window.AionRingBle.hasSavedDevice()) {
         nativeMode = true;
@@ -2330,13 +1939,8 @@ async function refreshHealthShareSetting() {
 
 window.addEventListener('focus', refreshHealthShareSetting);
 window.addEventListener('pageshow', refreshHealthShareSetting);
-window.addEventListener('focus', refreshRingFeatureSetting);
-window.addEventListener('pageshow', refreshRingFeatureSetting);
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) {
-    refreshHealthShareSetting();
-    refreshRingFeatureSetting();
-  }
+  if (!document.hidden) refreshHealthShareSetting();
 });
 </script>
 </body>

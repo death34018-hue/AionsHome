@@ -1,12 +1,9 @@
-import json
-import os
-import subprocess
 import sys
 import tempfile
 import tomllib
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parent
@@ -16,14 +13,6 @@ if str(ROOT) not in sys.path:
 import ai_providers
 
 
-def _config_overrides(command):
-    return [
-        command[index + 1]
-        for index, value in enumerate(command[:-1])
-        if value == "-c"
-    ]
-
-
 class CodexCliMinimalModeTests(unittest.TestCase):
     def test_chat_command_uses_a_minimal_read_only_profile(self):
         command = ai_providers._build_codex_chat_command(
@@ -31,7 +20,6 @@ class CodexCliMinimalModeTests(unittest.TestCase):
             "codex.js",
             "workspace",
             "gpt-5.6-terra",
-            skill_files=(),
         )
 
         self.assertEqual(command[:4], ["node", "codex.js", "-m", "gpt-5.6-terra"])
@@ -60,7 +48,6 @@ class CodexCliMinimalModeTests(unittest.TestCase):
             "codex.js",
             "workspace",
             "gpt-5.6-sol",
-            skill_files=(),
         )
 
         exec_index = command.index("exec")
@@ -83,156 +70,12 @@ class CodexCliMinimalModeTests(unittest.TestCase):
         self.assertIn("主动调用", instructions)
         self.assertIn("原样输出", instructions)
 
-    def test_chat_command_replaces_development_context_and_disables_dev_features(self):
-        skill_files = [
-            Path(r"C:\profiles\alpha\SKILL.md"),
-            Path(r"C:\profiles\quote'and space\SKILL.md"),
-        ]
-        command = ai_providers._build_codex_chat_command(
-            "node",
-            "codex.js",
-            "workspace",
-            "gpt-5.6-terra",
-            skill_files=skill_files,
-        )
-
-        exec_index = command.index("exec")
-        overrides = _config_overrides(command)
-        parsed = tomllib.loads("\n".join(overrides))
-
-        self.assertEqual(
-            Path(parsed["model_instructions_file"]),
-            ai_providers._CODEX_COMPANION_INSTRUCTIONS_FILE.resolve(),
-        )
-        self.assertFalse(parsed["features"]["shell_tool"])
-        self.assertFalse(parsed["features"]["multi_agent"])
-        self.assertEqual(
-            parsed["features"]["multi_agent_v2"]["root_agent_usage_hint_text"],
-            "",
-        )
-        self.assertEqual(
-            parsed["features"]["multi_agent_v2"]["multi_agent_mode_hint_text"],
-            "",
-        )
-        self.assertFalse(parsed["features"]["remote_plugin"])
-        self.assertFalse(parsed["include_apps_instructions"])
-        self.assertFalse(parsed["include_permissions_instructions"])
-        self.assertFalse(parsed["include_collaboration_mode_instructions"])
-        self.assertFalse(parsed["include_environment_context"])
-        self.assertEqual(
-            {Path(item["path"]) for item in parsed["skills"]["config"]},
-            {path.resolve() for path in skill_files},
-        )
-        self.assertTrue(
-            all(not item["enabled"] for item in parsed["skills"]["config"])
-        )
-        self.assertTrue(all(command.index(value) < exec_index for value in overrides))
-        self.assertFalse(any("web_search" in value for value in overrides))
-        self.assertFalse(any("view_image" in value for value in overrides))
-
-    def test_real_cli_prompt_omits_multi_agent_guidance(self):
-        script = ai_providers._CODEX_SCRIPT
-        if not script or not Path(script).is_file():
-            self.skipTest("bundled Codex CLI is unavailable")
-
-        command = ai_providers._build_codex_chat_command(
-            "node",
-            script,
-            ai_providers._CODEX_WORKSPACE,
-            "",
-        )
-        exec_index = command.index("exec")
-        command = command[:exec_index] + ["debug", "prompt-input", "hello"]
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            env = {
-                **os.environ,
-                "CODEX_HOME": tmpdir,
-                "HOME": tmpdir,
-                "USERPROFILE": tmpdir,
-                "NO_COLOR": "1",
-            }
-            completed = subprocess.run(
-                command,
-                cwd=ai_providers._CODEX_WORKSPACE,
-                env=env,
-                capture_output=True,
-                check=True,
-            )
-
-        items = json.loads(completed.stdout.decode("utf-8"))
-        prompt_text = "\n".join(
-            part.get("text", "")
-            for item in items
-            for part in item.get("content", [])
-            if part.get("type") == "input_text"
-        )
-        self.assertNotIn("primary agent in a team of agents", prompt_text)
-        self.assertNotIn("Do not spawn sub-agents unless", prompt_text)
-
-    def test_companion_base_prompt_is_short_generic_and_non_coding(self):
-        text = ai_providers._CODEX_COMPANION_INSTRUCTIONS_FILE.read_text(
-            encoding="utf-8"
-        )
-
-        self.assertLess(len(text), 1000)
-        for hardcoded_name in ("Aion", "Ithil", "Connor"):
-            with self.subTest(hardcoded_name=hardcoded_name):
-                self.assertNotIn(hardcoded_name.casefold(), text.casefold())
-        self.assertIn("Do not inspect the workspace", text)
-        self.assertIn("Never invent", text)
-
-    def test_skill_discovery_finds_exact_skill_files_once_in_stable_order(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            alpha = root / "z-root" / "alpha" / "SKILL.md"
-            beta = root / "a-root" / "beta" / "SKILL.md"
-            alpha.parent.mkdir(parents=True)
-            beta.parent.mkdir(parents=True)
-            alpha.write_text("alpha", encoding="utf-8")
-            beta.write_text("beta", encoding="utf-8")
-
-            actual = ai_providers._find_codex_skill_files(
-                [root / "z-root", root / "missing", root / "a-root", root / "z-root"]
-            )
-            expected = tuple(
-                sorted({str(alpha.resolve()), str(beta.resolve())}, key=os.path.normcase)
-            )
-
-        self.assertEqual(actual, expected)
-
-    def test_chat_command_uses_discovered_skills_when_not_injected(self):
-        skill_file = Path(r"C:\profiles\discovered\SKILL.md").resolve()
-        with patch.object(
-            ai_providers,
-            "_discover_codex_skill_files",
-            return_value=(str(skill_file),),
-            create=True,
-        ):
-            command = ai_providers._build_codex_chat_command(
-                "node", "codex.js", "workspace", "gpt-5.6-terra"
-            )
-
-        skill_overrides = [
-            value
-            for value in _config_overrides(command)
-            if value.startswith("skills.config=")
-        ]
-        self.assertEqual(len(skill_overrides), 1)
-        parsed = tomllib.loads(skill_overrides[0])
-        self.assertEqual(
-            parsed["skills"]["config"],
-            [{"path": str(skill_file), "enabled": False}],
-        )
-
     def test_chat_environment_syncs_auth_to_an_isolated_home(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             desktop_home = Path(tmpdir) / "desktop-codex"
             chat_home = Path(tmpdir) / "chat-codex"
             desktop_home.mkdir()
             (desktop_home / "auth.json").write_text('{"token":"test"}', encoding="utf-8")
-            desktop_config = desktop_home / "config.toml"
-            desktop_config.write_text('model = "desktop-model"', encoding="utf-8")
 
             with (
                 patch.object(ai_providers, "_CODEX_HOME", str(desktop_home)),
@@ -245,44 +88,8 @@ class CodexCliMinimalModeTests(unittest.TestCase):
             self.assertEqual(env["HOME"], str(chat_home.parent))
             self.assertEqual(env["USERPROFILE"], str(chat_home.parent))
             self.assertEqual(env["NO_COLOR"], "1")
-            self.assertEqual(
-                desktop_config.read_text(encoding="utf-8"),
-                'model = "desktop-model"',
-            )
-            self.assertFalse((chat_home / "config.toml").exists())
             self.assertFalse((chat_home / "models_cache.json").exists())
             self.assertFalse((chat_home / "skills").exists())
-
-
-class CodexCliMinimalModeAsyncTests(unittest.IsolatedAsyncioTestCase):
-    async def test_missing_companion_prompt_does_not_spawn_codex(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            missing_prompt = Path(tmpdir) / "missing.md"
-            with (
-                patch.object(ai_providers, "_CODEX_SCRIPT", "codex.js"),
-                patch.object(
-                    ai_providers,
-                    "_CODEX_COMPANION_INSTRUCTIONS_FILE",
-                    missing_prompt,
-                ),
-                patch.object(
-                    ai_providers,
-                    "_spawn_cli_process",
-                    new_callable=AsyncMock,
-                ) as spawn,
-            ):
-                spawn.side_effect = AssertionError("subprocess started")
-                chunks = [
-                    chunk
-                    async for chunk in ai_providers.call_codex_cli(
-                        [{"role": "user", "content": "hello"}],
-                        "gpt-5.6-terra",
-                    )
-                ]
-
-        self.assertEqual(len(chunks), 1)
-        self.assertIn("陪伴模式基础指令文件缺失", chunks[0])
-        spawn.assert_not_awaited()
 
 
 if __name__ == "__main__":

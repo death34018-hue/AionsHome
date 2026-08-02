@@ -66,16 +66,6 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 .config-btn { background:var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:8px; padding:6px 10px; font-size:14px; cursor:pointer; flex-shrink:0; }
 .config-btn:hover { border-color:var(--text2); }
 
-/* ── 顶部 TTS 播放器（位于标题栏下方，不遮挡菜单和设置按钮） ── */
-.tts-top-player { display:none; position:absolute; top: calc(60px + env(safe-area-inset-top)); left:12px; right:12px; z-index:7; min-height:48px; padding:8px 10px; align-items:center; gap:8px; border:1px solid var(--border); border-radius:12px; background:rgba(17,22,61,0.94); box-shadow:0 8px 24px rgba(0,0,0,0.25); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px); }
-.tts-top-player.show { display:flex; }
-.tts-top-player button { width:30px; height:30px; flex-shrink:0; border:1px solid var(--border); border-radius:50%; background:var(--surface2); color:var(--text); cursor:pointer; line-height:1; }
-.tts-top-player button:hover { border-color:var(--accent); }
-.tts-top-player .tts-time { min-width:42px; color:var(--text2); font-size:11px; font-variant-numeric:tabular-nums; text-align:center; }
-.tts-top-player input[type="range"] { flex:1; min-width:60px; accent-color:var(--accent); cursor:pointer; }
-.tts-top-player input[type="range"]:disabled { cursor:default; opacity:0.45; }
-.chat-area.tts-player-open .messages { padding-top:116px; }
-
 /* ── 配置弹窗 ── */
 .config-popup { display:none; position:absolute; right:16px; top:52px; background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:16px; z-index:15; min-width:260px; box-shadow:0 8px 24px rgba(0,0,0,0.4); max-height:calc(100dvh - 70px); overflow-y:auto; }
 .config-popup.show { display:block; }
@@ -215,9 +205,6 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
   .chat-header .menu-btn { display:block; }
   .msg-bubble { font-size: 14px; padding: 9px 12px; }
   .messages { padding: 10px; padding-top: calc(56px + env(safe-area-inset-top)); gap: 4px; }
-  .chat-area.tts-player-open .messages { padding-top: calc(112px + env(safe-area-inset-top)); }
-  .tts-top-player { left:8px; right:8px; gap:5px; padding-left:7px; padding-right:7px; }
-  .tts-top-player .tts-time { min-width:38px; font-size:10px; }
   .msg-avatar { width:24px; height:24px; }
 }
 </style>
@@ -280,15 +267,6 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
       </div>
     </div>
 
-    <div class="tts-top-player" id="ttsTopPlayer" aria-label="音频播放器">
-      <button id="ttsTopToggle" type="button" onclick="toggleTopTTS()" title="播放或暂停">▶</button>
-      <span class="tts-time" id="ttsTopCurrent">00:00</span>
-      <input id="ttsTopSeek" type="range" min="0" max="0" step="0.1" value="0"
-        oninput="seekTopTTS(this.value)" aria-label="音频进度" disabled>
-      <span class="tts-time" id="ttsTopDuration">合成中</span>
-      <button id="ttsTopStop" type="button" onclick="stopTTSPlayback()" title="停止播放">✕</button>
-    </div>
-
     <div class="messages" id="messages"></div>
 
     <div class="input-box">
@@ -323,7 +301,6 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 <div class="toast-msg" id="toast"></div>
 
 <script src="/static/theme.js?v=theme-20260621-theater"></script>
-<script src="/static/theater_tts_queue.js?v=theater-tts-20260713"></script>
 <script>
 /* ══════════════════════════════════════════════════
    小剧场 — 独立聊天功能，不涉及记忆库
@@ -350,14 +327,6 @@ let ttsMergedUrls = new Map();
 let ttsPlaying = false;
 let currentAudio = null;
 let manualReplay = null;
-let activeTTS = null;
-let ttsPlaybackToken = 0;
-let ttsSuppressedMessages = new Set();
-let ttsDeletedMessages = new Set();
-let ttsDeletedConversations = new Set();
-let ttsMessageConversations = new Map();
-let ttsLiveMessages = new Set();
-let pendingManualReplayMsgId = null;
 let ttsPlaybackActiveAt = Date.now() / 1000;
 const theaterClientId = localStorage.getItem('theater_client_id') || (() => {
   const id = `theater_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -531,7 +500,6 @@ function handleSync(msg) {
   const d = msg.data;
   switch (msg.type) {
     case 'theater_conv_created':
-      ttsDeletedConversations.delete(d.id);
       if (!conversations.find(c => c.id === d.id)) {
         conversations.unshift(d);
         renderConvList();
@@ -549,7 +517,6 @@ function handleSync(msg) {
       if (d.id === currentConvId && d.title) $('chatTitle').textContent = d.title;
       break;
     case 'theater_conv_deleted':
-      discardConversationTTS(d.id);
       conversations = conversations.filter(c => c.id !== d.id);
       renderConvList();
       if (d.id === currentConvId) {
@@ -560,11 +527,6 @@ function handleSync(msg) {
       }
       break;
     case 'theater_msg_created':
-      if (ttsDeletedConversations.has(d.conv_id)) {
-        discardMessageTTS(d.id, true);
-        break;
-      }
-      if (d.id && d.conv_id) ttsMessageConversations.set(d.id, d.conv_id);
       if (d.conv_id === currentConvId && !currentMessages.find(m => m.id === d.id)) {
         currentMessages.push(d);
         renderMessages();
@@ -581,7 +543,6 @@ function handleSync(msg) {
       }
       break;
     case 'theater_msg_deleted':
-      discardMessageTTS(d.id, true);
       currentMessages = currentMessages.filter(m => m.id !== d.id);
       renderMessages();
       for (const c of conversations) {
@@ -595,7 +556,7 @@ function handleSync(msg) {
       handleTTSDone(d);
       break;
     case 'tts_merged':
-      handleTTSMerged(d);
+      if (d.msg_id && d.url) ttsMergedUrls.set(d.msg_id, d.url);
       break;
   }
 }
@@ -646,15 +607,7 @@ async function newConversation() {
 
 async function delConv(id) {
   if (!confirm('删除这个剧场对话？')) return;
-  const deletedMessageIds = id === currentConvId ? currentMessages.map(m => m.id) : [];
-  discardConversationTTS(id);
-  try {
-    await api('DELETE', `/api/theater/conversations/${id}`);
-  } catch (error) {
-    ttsDeletedConversations.delete(id);
-    throw error;
-  }
-  deletedMessageIds.forEach(msgId => discardMessageTTS(msgId, true));
+  await api('DELETE', `/api/theater/conversations/${id}`);
   conversations = conversations.filter(c => c.id !== id);
   renderConvList();
   if (id === currentConvId) {
@@ -704,7 +657,6 @@ function renderMessages() {
     html += '<button class="load-more-btn" onclick="loadOlderMessages()">加载更早的消息</button>';
   }
   for (const m of currentMessages) {
-    if (m.id && m.conv_id) ttsMessageConversations.set(m.id, m.conv_id);
     if (m.role === 'system') {
       html += `<div class="system-msg">${escHtml(m.content)}</div>`;
       continue;
@@ -756,7 +708,6 @@ function renderMessages() {
     </div>`;
   }
   el.innerHTML = html;
-  if (activeTTS) setTTSReplayButton(activeTTS.msgId, true);
 }
 
 function scrollBottom() {
@@ -808,7 +759,6 @@ async function saveEdit(id) {
 async function delMsg(id) {
   document.querySelectorAll('.msg-menu.show').forEach(m => m.classList.remove('show'));
   await api('DELETE', `/api/theater/messages/${id}`);
-  discardMessageTTS(id, true);
   currentMessages = currentMessages.filter(m => m.id !== id);
   renderMessages();
 }
@@ -829,7 +779,6 @@ async function send() {
     await newConversation();
   }
   if (isStreaming) return;
-  const requestConvId = currentConvId;
   isStreaming = true;
   $('sendBtn').disabled = true;
   input.value = '';
@@ -851,7 +800,7 @@ async function send() {
   renderPreview();
 
   try {
-    const res = await fetch(`/api/theater/conversations/${requestConvId}/send`, {
+    const res = await fetch(`/api/theater/conversations/${currentConvId}/send`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),
@@ -878,20 +827,12 @@ async function send() {
 
         if (data.type === 'start') {
           aiMsgId = data.id;
-          ttsMessageConversations.set(aiMsgId, requestConvId);
-          if (body.tts_enabled) ttsLiveMessages.add(aiMsgId);
-          if (ttsDeletedConversations.has(requestConvId)) {
-            discardMessageTTS(aiMsgId, true);
-            continue;
-          }
           // 添加占位 AI 消息 + 输入等待动画
-          if (currentConvId === requestConvId) {
-            currentMessages.push({
-              id: aiMsgId, conv_id: requestConvId, role: 'assistant',
-              content: '', created_at: Date.now()/1000, attachments: [], _streaming: true
-            });
-            renderMessages();
-          }
+          currentMessages.push({
+            id: aiMsgId, conv_id: currentConvId, role: 'assistant',
+            content: '', created_at: Date.now()/1000, attachments: [], _streaming: true
+          });
+          renderMessages();
           // 显示输入动画
           const row = document.querySelector(`.msg-row[data-id="${aiMsgId}"] .msg-bubbles`);
           if (row) {
@@ -944,15 +885,13 @@ async function send() {
 async function regenerateMsg() {
   document.querySelectorAll('.msg-menu.show').forEach(m => m.classList.remove('show'));
   if (!currentConvId || isStreaming) return;
-  const requestConvId = currentConvId;
-  const requestTtsEnabled = ttsEnabled;
   isStreaming = true;
   $('sendBtn').disabled = true;
   const ctx = parseInt($('contextSlider').value) || 20;
   const temp = parseFloat($('tempSlider').value);
 
   try {
-    const res = await fetch(`/api/theater/conversations/${requestConvId}/regenerate?context_limit=${ctx}&temperature=${temp}&tts_enabled=${requestTtsEnabled}&tts_voice=${encodeURIComponent(ttsVoice)}`, {
+    const res = await fetch(`/api/theater/conversations/${currentConvId}/regenerate?context_limit=${ctx}&temperature=${temp}&tts_enabled=${ttsEnabled}&tts_voice=${encodeURIComponent(ttsVoice)}`, {
       method: 'POST',
     });
     const reader = res.body.getReader();
@@ -975,19 +914,11 @@ async function regenerateMsg() {
 
         if (data.type === 'start') {
           aiMsgId = data.id;
-          ttsMessageConversations.set(aiMsgId, requestConvId);
-          if (requestTtsEnabled) ttsLiveMessages.add(aiMsgId);
-          if (ttsDeletedConversations.has(requestConvId)) {
-            discardMessageTTS(aiMsgId, true);
-            continue;
-          }
-          if (currentConvId === requestConvId) {
-            currentMessages.push({
-              id: aiMsgId, conv_id: requestConvId, role: 'assistant',
-              content: '', created_at: Date.now()/1000, attachments: [], _streaming: true
-            });
-            renderMessages();
-          }
+          currentMessages.push({
+            id: aiMsgId, conv_id: currentConvId, role: 'assistant',
+            content: '', created_at: Date.now()/1000, attachments: [], _streaming: true
+          });
+          renderMessages();
           const row = document.querySelector(`.msg-row[data-id="${aiMsgId}"] .msg-bubbles`);
           if (row) {
             row.innerHTML = `<div class="msg-bubble"><div class="typing-bubble">
@@ -1095,548 +1026,176 @@ function toggleConfig(e) {
 $('configPopup').addEventListener('click', e => e.stopPropagation());
 
 /* ── TTS 播放 ── */
-const TTSQueue = window.TheaterTTSQueue;
-
 function handleTTSChunk(d) {
   const msgId = d.msg_id;
   // 只播放小剧场自己的消息（tm_ 前缀），忽略主聊天的 TTS
-  if (!msgId || !msgId.startsWith('tm_')) return;
-  const convId = d.conv_id || ttsMessageConversations.get(msgId) || null;
-  if (convId) ttsMessageConversations.set(msgId, convId);
-  if (convId && ttsDeletedConversations.has(convId)) {
-    discardMessageTTS(msgId, true);
-    return;
-  }
-  if (ttsDeletedMessages.has(msgId) || ttsSuppressedMessages.has(msgId)) return;
-  ttsLiveMessages.add(msgId);
-
+  if (!msgId.startsWith('tm_')) return;
+  if (!ttsQueue.has(msgId)) ttsQueue.set(msgId, []);
+  upsertTTSChunk(ttsQueue.get(msgId), d.seq, d.url);
   if (manualReplay && manualReplay.msgId === msgId) {
-    TTSQueue.upsert(manualReplay.queue, d.seq, d.url);
-    if (!currentAudio) playManualReplayNext();
+    upsertTTSChunk(manualReplay.chunks, d.seq, d.url);
+    if (!ttsPlaying) playManualReplayNext();
     return;
   }
-
-  if (!ttsQueue.has(msgId)) ttsQueue.set(msgId, TTSQueue.createQueue());
-  TTSQueue.upsert(ttsQueue.get(msgId), d.seq, d.url);
-
-  if (activeTTS && activeTTS.msgId === msgId && activeTTS.mode === 'segments') {
-    if (!currentAudio) continueSegmentPlayback();
-  } else if (!activeTTS) {
-    playNextTTS();
-  }
+  if (!ttsPlaying) playNextTTS();
 }
 
 function handleTTSDone(d) {
   const msgId = d.msg_id;
-  if (!msgId || !msgId.startsWith('tm_')) return;
-  const convId = d.conv_id || ttsMessageConversations.get(msgId) || null;
-  if (convId) ttsMessageConversations.set(msgId, convId);
-  ttsLiveMessages.delete(msgId);
-  if (convId && ttsDeletedConversations.has(convId)) {
-    discardMessageTTS(msgId, true);
-    return;
+  if (!msgId.startsWith('tm_')) return;
+  if (ttsQueue.has(msgId)) {
+    const q = ttsQueue.get(msgId);
+    q._done = true;
   }
-  if (ttsDeletedMessages.has(msgId)) return;
-  if (ttsSuppressedMessages.has(msgId)) {
-    ttsSuppressedMessages.delete(msgId);
-    ttsQueue.delete(msgId);
-    if (manualReplay && manualReplay.msgId === msgId) manualReplay = null;
-    return;
-  }
-
   if (manualReplay && manualReplay.msgId === msgId) {
-    TTSQueue.markFinished(manualReplay.queue);
-    if (!currentAudio) playManualReplayNext();
+    manualReplay.done = true;
+    if (!ttsPlaying) playManualReplayNext();
     return;
   }
-
-  if (!ttsQueue.has(msgId)) ttsQueue.set(msgId, TTSQueue.createQueue());
-  TTSQueue.markFinished(ttsQueue.get(msgId));
-  if (activeTTS && activeTTS.msgId === msgId && activeTTS.mode === 'segments') {
-    if (!currentAudio) continueSegmentPlayback();
-  } else if (!activeTTS) {
-    playNextTTS();
-  }
+  if (!ttsPlaying) playNextTTS();
 }
 
-function handleTTSMerged(d) {
-  const msgId = d.msg_id;
-  if (!msgId || !msgId.startsWith('tm_') || !d.url) return;
-  const convId = d.conv_id || ttsMessageConversations.get(msgId) || null;
-  if (convId) ttsMessageConversations.set(msgId, convId);
-  if (convId && ttsDeletedConversations.has(convId)) {
-    discardMessageTTS(msgId, true);
-    return;
-  }
-  if (ttsDeletedMessages.has(msgId) || ttsSuppressedMessages.has(msgId)) return;
-  ttsMergedUrls.set(msgId, d.url);
-
-  if (!activeTTS || activeTTS.msgId !== msgId || activeTTS.mode !== 'segments') return;
-  activeTTS.pendingMergedUrl = d.url;
-  // 正在播的分段播完后无缝切换；恰好在等下一段时可立即接管。
-  if (!currentAudio) {
-    startMergedPlayback(msgId, d.url, activeTTS.elapsedBase, {
-      source: activeTTS.source,
-      fallback: segmentFallback(activeTTS),
-    });
-  }
+function upsertTTSChunk(chunks, seq, url) {
+  if (!chunks.find(c => c.seq === seq)) chunks.push({ seq, url });
+  chunks.sort((a, b) => a.seq - b.seq);
 }
 
-function showTopTTSPlayer() {
-  $('ttsTopPlayer').classList.add('show');
-  document.querySelector('.chat-area').classList.add('tts-player-open');
-}
-
-function hideTopTTSPlayer() {
-  $('ttsTopPlayer').classList.remove('show');
-  document.querySelector('.chat-area').classList.remove('tts-player-open');
-  $('ttsTopToggle').textContent = '▶';
-  $('ttsTopToggle').disabled = false;
-  $('ttsTopCurrent').textContent = '00:00';
-  $('ttsTopDuration').textContent = '合成中';
-  $('ttsTopSeek').value = 0;
-  $('ttsTopSeek').max = 0;
-  $('ttsTopSeek').disabled = true;
-}
-
-function setTTSReplayButton(msgId, playing) {
-  document.querySelectorAll('.tts-replay-btn.playing').forEach(btn => btn.classList.remove('playing'));
-  if (!playing || !msgId) return;
-  const btn = document.querySelector(`.msg-row[data-id="${msgId}"] .tts-replay-btn`);
-  if (btn) btn.classList.add('playing');
-}
-
-function updateTopTTSProgress() {
-  if (!activeTTS || !currentAudio) return;
-  if (activeTTS.mode === 'merged') {
-    const duration = currentAudio.duration;
-    $('ttsTopCurrent').textContent = TTSQueue.formatTime(currentAudio.currentTime);
-    if (Number.isFinite(duration) && duration > 0) {
-      $('ttsTopDuration').textContent = TTSQueue.formatTime(duration);
-      $('ttsTopSeek').max = duration;
-      $('ttsTopSeek').value = currentAudio.currentTime;
-      $('ttsTopSeek').disabled = false;
-    }
-  } else {
-    const current = activeTTS.elapsedBase + (Number.isFinite(currentAudio.currentTime) ? currentAudio.currentTime : 0);
-    $('ttsTopCurrent').textContent = TTSQueue.formatTime(current);
-  }
-}
-
-function toggleTopTTS() {
-  if (!currentAudio) return;
-  if (currentAudio.paused) {
-    currentAudio.play().catch(() => showToast('浏览器阻止了自动播放，请再点一次播放'));
-  } else {
-    currentAudio.pause();
-  }
-}
-
-function seekTopTTS(value) {
-  if (!currentAudio || !activeTTS || activeTTS.mode !== 'merged') return;
-  const duration = currentAudio.duration;
-  if (!Number.isFinite(duration) || duration <= 0) return;
-  const target = Math.max(0, Math.min(Number(value) || 0, duration));
-  currentAudio.currentTime = target;
-  updateTopTTSProgress();
-}
-
-function releaseCurrentAudio() {
+function stopTTSPlayback() {
   if (currentAudio) {
-    currentAudio.onloadedmetadata = null;
-    currentAudio.ontimeupdate = null;
-    currentAudio.onplay = null;
-    currentAudio.onpause = null;
-    currentAudio.onended = null;
-    currentAudio.onerror = null;
     currentAudio.pause();
     currentAudio.src = '';
     currentAudio = null;
   }
-}
-
-function resetTTSPlayback({ clearQueues = false } = {}) {
-  ttsPlaybackToken++;
-  releaseCurrentAudio();
   ttsPlaying = false;
   manualReplay = null;
-  activeTTS = null;
-  if (clearQueues) ttsQueue.clear();
-  setTTSReplayButton(null, false);
-  hideTopTTSPlayer();
-}
-
-function stopTTSPlayback() {
-  const suppressed = new Set(ttsQueue.keys());
-  if (activeTTS && activeTTS.msgId) suppressed.add(activeTTS.msgId);
-  if (manualReplay && manualReplay.msgId) suppressed.add(manualReplay.msgId);
-  for (const msgId of suppressed) {
-    if (!ttsDeletedMessages.has(msgId)) ttsSuppressedMessages.add(msgId);
-  }
-  pendingManualReplayMsgId = null;
-  resetTTSPlayback({ clearQueues: true });
-}
-
-function stopSelectedTTS(msgId) {
-  if (!msgId) return;
-  if (ttsLiveMessages.has(msgId) && !ttsDeletedMessages.has(msgId)) {
-    ttsSuppressedMessages.add(msgId);
-  }
-  if (pendingManualReplayMsgId === msgId) pendingManualReplayMsgId = null;
-  if ((activeTTS && activeTTS.msgId === msgId) || (manualReplay && manualReplay.msgId === msgId)) {
-    resetTTSPlayback({ clearQueues: false });
-  }
-  ttsQueue.delete(msgId);
-  playNextTTS();
-}
-
-function discardMessageTTS(msgId, deleted = false) {
-  if (!msgId) return;
-  if (deleted) {
-    ttsDeletedMessages.add(msgId);
-    ttsSuppressedMessages.delete(msgId);
-    ttsLiveMessages.delete(msgId);
-  }
-  if (pendingManualReplayMsgId === msgId) pendingManualReplayMsgId = null;
-  if ((activeTTS && activeTTS.msgId === msgId) || (manualReplay && manualReplay.msgId === msgId)) {
-    resetTTSPlayback({ clearQueues: false });
-  }
-  ttsQueue.delete(msgId);
-  ttsMergedUrls.delete(msgId);
-  ttsMessageConversations.delete(msgId);
-}
-
-function discardConversationTTS(convId) {
-  if (!convId) return;
-  ttsDeletedConversations.add(convId);
-  const messageIds = [];
-  for (const [msgId, messageConvId] of ttsMessageConversations) {
-    if (messageConvId === convId) messageIds.push(msgId);
-  }
-  if (activeTTS && activeTTS.convId === convId && !messageIds.includes(activeTTS.msgId)) {
-    messageIds.push(activeTTS.msgId);
-  }
-  if (pendingManualReplayMsgId && ttsMessageConversations.get(pendingManualReplayMsgId) === convId) {
-    messageIds.push(pendingManualReplayMsgId);
-  }
-  messageIds.forEach(msgId => discardMessageTTS(msgId, true));
+  ttsQueue.clear();
+  document.querySelectorAll('.tts-replay-btn.playing').forEach(btn => btn.classList.remove('playing'));
 }
 
 function playNextTTS() {
-  if (activeTTS || currentAudio) return;
-
-  for (const [msgId, queue] of ttsQueue) {
-    if (TTSQueue.isDrained(queue)) {
-      ttsQueue.delete(msgId);
-      continue;
-    }
-    // 队首消息没有精确的 nextSeq 时必须等待，不能越过它播放后面的消息。
-    if (!TTSQueue.peekNext(queue)) return;
-
-    activeTTS = {
-      msgId,
-      convId: ttsMessageConversations.get(msgId) || currentConvId,
-      mode: 'segments',
-      source: 'live',
-      queue,
-      elapsedBase: 0,
-      pendingMergedUrl: ttsMergedUrls.get(msgId) || null,
-    };
-    continueSegmentPlayback();
-    return;
-  }
-  ttsPlaying = false;
-}
-
-function segmentFallback(state) {
-  return {
-    queue: state.queue,
-    source: state.source,
-    elapsedBase: state.elapsedBase,
-    convId: state.convId,
-  };
-}
-
-function continueSegmentPlayback() {
-  if (!activeTTS || activeTTS.mode !== 'segments' || currentAudio) return;
-  const queue = activeTTS.queue;
-
-  if (activeTTS.pendingMergedUrl) {
-    startMergedPlayback(activeTTS.msgId, activeTTS.pendingMergedUrl, activeTTS.elapsedBase, {
-      source: activeTTS.source,
-      fallback: segmentFallback(activeTTS),
-    });
-    return;
-  }
-
-  const chunk = TTSQueue.peekNext(queue);
-  if (!chunk) {
-    if (TTSQueue.isDrained(queue)) finishTTSPlayback();
-    else {
-      ttsPlaying = false;
-      $('ttsTopToggle').textContent = '…';
-      $('ttsTopToggle').disabled = true;
-    }
-    return;
-  }
-
-  showTopTTSPlayer();
-  setTTSReplayButton(activeTTS.msgId, true);
-  $('ttsTopSeek').disabled = true;
-  $('ttsTopSeek').max = 0;
-  $('ttsTopSeek').value = 0;
-  $('ttsTopDuration').textContent = '合成中';
-  $('ttsTopCurrent').textContent = TTSQueue.formatTime(activeTTS.elapsedBase);
-  $('ttsTopToggle').disabled = false;
-
-  const token = ++ttsPlaybackToken;
-  const audio = new Audio(chunk.url);
-  audio.preload = 'auto';
-  currentAudio = audio;
-  ttsPlaying = true;
-
-  audio.ontimeupdate = updateTopTTSProgress;
-  audio.onplay = () => {
-    if (token !== ttsPlaybackToken) return;
-    $('ttsTopToggle').textContent = '⏸';
-    ttsPlaying = true;
-  };
-  audio.onpause = () => {
-    if (token !== ttsPlaybackToken) return;
-    $('ttsTopToggle').textContent = '▶';
-  };
-  audio.onended = () => finishSegment(chunk, token, true);
-  audio.onerror = () => finishSegment(chunk, token, false);
-  audio.play().catch(() => {
-    if (token !== ttsPlaybackToken) return;
-    $('ttsTopToggle').textContent = '▶';
-    showToast('点击顶部播放按钮继续播放');
-  });
-}
-
-function finishSegment(chunk, token, countDuration) {
-  if (token !== ttsPlaybackToken || !activeTTS || activeTTS.mode !== 'segments') return;
-  const audio = currentAudio;
-  if (countDuration && audio) {
-    const played = Number.isFinite(audio.duration) && audio.duration > 0
-      ? audio.duration
-      : (Number.isFinite(audio.currentTime) ? audio.currentTime : 0);
-    activeTTS.elapsedBase += played;
-  }
-  TTSQueue.advance(activeTTS.queue);
-  currentAudio = null;
-  ttsPlaying = false;
-
-  if (activeTTS.pendingMergedUrl) {
-    startMergedPlayback(activeTTS.msgId, activeTTS.pendingMergedUrl, activeTTS.elapsedBase, {
-      source: activeTTS.source,
-      fallback: segmentFallback(activeTTS),
-    });
-  } else {
-    continueSegmentPlayback();
-  }
-}
-
-function startMergedPlayback(msgId, url, startAt = 0, options = {}) {
-  const fallback = options.fallback || null;
-  const onMissing = options.onMissing || null;
-  const source = options.source || 'live';
-  const convId = (activeTTS && activeTTS.msgId === msgId && activeTTS.convId)
-    || (fallback && fallback.convId)
-    || ttsMessageConversations.get(msgId)
-    || currentConvId;
-  const token = ++ttsPlaybackToken;
-  releaseCurrentAudio();
-
-  activeTTS = { msgId, convId, mode: 'merged', source, url, fallback };
-  showTopTTSPlayer();
-  setTTSReplayButton(msgId, true);
-  $('ttsTopSeek').disabled = true;
-  $('ttsTopSeek').value = 0;
-  $('ttsTopSeek').max = 0;
-  $('ttsTopCurrent').textContent = TTSQueue.formatTime(startAt);
-  $('ttsTopDuration').textContent = '加载中';
-  $('ttsTopToggle').disabled = false;
-
-  const audio = new Audio(url);
-  audio.preload = 'metadata';
-  currentAudio = audio;
-  ttsPlaying = true;
-  let mergedStarted = false;
-
-  let mergedPlayRequested = false;
-  function requestMergedPlay() {
-    if (mergedPlayRequested) return;
-    mergedPlayRequested = true;
-    audio.play().catch(() => {
-      if (token !== ttsPlaybackToken) return;
-      $('ttsTopToggle').textContent = '▶';
-      showToast('点击顶部播放按钮继续播放');
-    });
-  }
-
-  audio.onloadedmetadata = () => {
-    if (token !== ttsPlaybackToken) return;
-    const duration = audio.duration;
-    if (Number.isFinite(duration) && duration > 0) {
-      const target = Math.max(0, Math.min(Number(startAt) || 0, Math.max(0, duration - 0.05)));
-      audio.currentTime = target;
-      $('ttsTopSeek').max = duration;
-      $('ttsTopSeek').value = target;
-      $('ttsTopSeek').disabled = false;
-      $('ttsTopDuration').textContent = TTSQueue.formatTime(duration);
-      $('ttsTopCurrent').textContent = TTSQueue.formatTime(target);
-    }
-  };
-  audio.ontimeupdate = updateTopTTSProgress;
-  audio.onplay = () => {
-    if (token !== ttsPlaybackToken) return;
-    mergedStarted = true;
-    $('ttsTopToggle').textContent = '⏸';
-    ttsPlaying = true;
-    // 合成音频已成功接管，后续不再回放同一消息的分段队列。
-    ttsQueue.delete(msgId);
-    if (manualReplay && manualReplay.msgId === msgId) manualReplay = null;
-    if (activeTTS) activeTTS.fallback = null;
-  };
-  audio.onpause = () => {
-    if (token !== ttsPlaybackToken) return;
-    $('ttsTopToggle').textContent = '▶';
-  };
-  audio.onended = () => {
-    if (token !== ttsPlaybackToken) return;
-    currentAudio = null;
-    finishTTSPlayback();
-  };
-  audio.onerror = () => {
-    if (token !== ttsPlaybackToken) return;
-    currentAudio = null;
-    ttsPlaying = false;
-    if (fallback && activeTTS && activeTTS.fallback) {
-      activeTTS = {
-        msgId,
-        convId: fallback.convId || ttsMessageConversations.get(msgId) || currentConvId,
-        mode: 'segments',
-        source: fallback.source,
-        queue: fallback.queue,
-        elapsedBase: fallback.elapsedBase,
-        pendingMergedUrl: null,
+  for (const [msgId, chunks] of ttsQueue) {
+    if (chunks._played === undefined) chunks._played = 0;
+    if (chunks._played < chunks.length) {
+      ttsPlaying = true;
+      const chunk = chunks[chunks._played];
+      chunks._played++;
+      const audio = new Audio(chunk.url);
+      currentAudio = audio;
+      // 高亮播放按钮
+      const btn = document.querySelector(`.msg-row[data-id="${msgId}"] .tts-replay-btn`);
+      if (btn) btn.classList.add('playing');
+      audio.onended = () => {
+        currentAudio = null;
+        if (btn) btn.classList.remove('playing');
+        playNextTTS();
       };
-      showToast('总音频加载失败，已继续分段播放');
-      continueSegmentPlayback();
-    } else if (onMissing && !mergedStarted) {
-      activeTTS = null;
-      $('ttsTopToggle').textContent = '…';
-      $('ttsTopToggle').disabled = true;
-      $('ttsTopDuration').textContent = '查找分段';
-      Promise.resolve(onMissing()).catch(() => {
-        showToast('暂无音频缓存');
-        finishTTSPlayback();
+      audio.onerror = () => {
+        currentAudio = null;
+        if (btn) btn.classList.remove('playing');
+        playNextTTS();
+      };
+      audio.play().catch(() => {
+        chunks._played = Math.max(0, chunks._played - 1);
+        ttsPlaying = false;
       });
-    } else {
-      showToast('音频加载失败');
-      finishTTSPlayback();
-    }
-  };
-  audio.load();
-  requestMergedPlay();
-}
-
-function finishTTSPlayback() {
-  const finished = activeTTS;
-  if (finished) {
-    ttsQueue.delete(finished.msgId);
-    if (manualReplay && manualReplay.msgId === finished.msgId) manualReplay = null;
-  }
-  releaseCurrentAudio();
-  activeTTS = null;
-  ttsPlaying = false;
-  setTTSReplayButton(null, false);
-  hideTopTTSPlayer();
-  if (pendingManualReplayMsgId) {
-    const pendingMsgId = pendingManualReplayMsgId;
-    pendingManualReplayMsgId = null;
-    const pendingConvId = ttsMessageConversations.get(pendingMsgId);
-    if (!ttsDeletedMessages.has(pendingMsgId)
-        && (!pendingConvId || !ttsDeletedConversations.has(pendingConvId))) {
-      replayTTS(pendingMsgId);
       return;
     }
+    if (chunks._done && chunks._played >= chunks.length) {
+      ttsQueue.delete(msgId);
+    }
   }
-  playNextTTS();
+  ttsPlaying = false;
 }
 
 async function replayTTS(msgId) {
-  if (ttsDeletedMessages.has(msgId)) return;
-  if (activeTTS && activeTTS.msgId === msgId) {
-    stopSelectedTTS(msgId);
-    return;
-  }
-  if (activeTTS || currentAudio) {
-    pendingManualReplayMsgId = msgId;
-    showToast('当前音频播放结束后继续');
+  const activeBtn = document.querySelector(`.msg-row[data-id="${msgId}"] .tts-replay-btn.playing`);
+  if (activeBtn && manualReplay && manualReplay.msgId === msgId) {
+    stopTTSPlayback();
     return;
   }
 
-  ttsSuppressedMessages.delete(msgId);
   const safeId = msgId.replace(/[^a-zA-Z0-9_\-]/g, '');
+  const chunks = [];
   const mergedUrl = ttsMergedUrls.get(msgId) || `/api/theater/tts/audio/${safeId}`;
-  resetTTSPlayback({ clearQueues: false });
-  startMergedPlayback(msgId, mergedUrl, 0, {
-    source: 'manual',
-    onMissing: () => replayTTSFromSegments(msgId),
-  });
-}
-
-async function replayTTSFromSegments(msgId) {
-  const lookupToken = ttsPlaybackToken;
-  const safeId = msgId.replace(/[^a-zA-Z0-9_\-]/g, '');
-  const queue = TTSQueue.createQueue();
+  let usingMerged = false;
   try {
-    const res = await fetch(`/api/theater/tts/segments/${safeId}`);
-    if (res.ok) {
-      const manifest = await res.json();
-      for (const chunk of manifest.segments || []) {
-        if (Number.isInteger(chunk.seq) && typeof chunk.url === 'string') {
-          TTSQueue.upsert(queue, chunk.seq, chunk.url);
-        }
-      }
+    const mergedRes = await fetch(mergedUrl, { method: 'HEAD' });
+    if (mergedRes.ok) {
+      chunks.push(mergedUrl);
+      usingMerged = true;
     }
   } catch(e) {}
 
-  const liveQueue = ttsQueue.get(msgId);
-  if (liveQueue) {
-    for (const chunk of liveQueue.chunks.values()) {
-      TTSQueue.upsert(queue, chunk.seq, chunk.url);
+  let misses = 0;
+  if (!chunks.length) {
+    for (let seq = 0; seq < 200; seq++) {
+      try {
+        const res = await fetch(`/api/theater/tts/audio/${safeId}_s${seq}`, { method: 'HEAD' });
+        if (res.ok) {
+          chunks.push(`/api/theater/tts/audio/${safeId}_s${seq}`);
+          misses = 0;
+        } else if (chunks.length > 0 && ++misses >= 8) {
+          break;
+        } else if (chunks.length === 0 && seq >= 8) {
+          break;
+        }
+      } catch(e) { break; }
     }
   }
-  const isLive = ttsLiveMessages.has(msgId);
-  if (!isLive) TTSQueue.markFinished(queue);
-  if (lookupToken !== ttsPlaybackToken) return;
-  if (!queue.chunks.size && !isLive) {
-    showToast('暂无音频缓存');
-    finishTTSPlayback();
-    return;
+  const liveQueue = ttsQueue.get(msgId);
+  if (liveQueue && !usingMerged) {
+    for (const chunk of liveQueue) {
+      if (!chunks.includes(chunk.url)) chunks.push(chunk.url);
+    }
   }
-
-  resetTTSPlayback({ clearQueues: false });
-  ttsQueue.delete(msgId);
-  manualReplay = { msgId, queue };
-  activeTTS = {
+  const isLive = !!liveQueue && !liveQueue._done;
+  if (!chunks.length && !isLive) { showToast('暂无音频缓存'); return; }
+  // 停止当前播放
+  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  ttsPlaying = false;
+  manualReplay = {
     msgId,
-    convId: ttsMessageConversations.get(msgId) || currentConvId,
-    mode: 'segments',
-    source: 'manual',
-    queue,
-    elapsedBase: 0,
-    pendingMergedUrl: null,
+    chunks: chunks.map((url, seq) => ({ seq, url })),
+    index: 0,
+    done: !isLive
   };
+  if (liveQueue && liveQueue._done) manualReplay.done = true;
   playManualReplayNext();
 }
 
 function playManualReplayNext() {
-  if (!manualReplay || !activeTTS || activeTTS.msgId !== manualReplay.msgId) return;
-  continueSegmentPlayback();
+  if (!manualReplay) return;
+  const { msgId, chunks } = manualReplay;
+  const btn = document.querySelector(`.msg-row[data-id="${msgId}"] .tts-replay-btn`);
+  if (manualReplay.index >= chunks.length) {
+    if (manualReplay.done) {
+      if (btn) btn.classList.remove('playing');
+      ttsPlaying = false;
+      manualReplay = null;
+    } else {
+      ttsPlaying = false;
+      if (btn) btn.classList.add('playing');
+    }
+    return;
+  }
+  ttsPlaying = true;
+  if (btn) btn.classList.add('playing');
+  const audio = new Audio(chunks[manualReplay.index++].url);
+  currentAudio = audio;
+  audio.onended = () => {
+    currentAudio = null;
+    ttsPlaying = false;
+    playManualReplayNext();
+  };
+  audio.onerror = () => {
+    currentAudio = null;
+    ttsPlaying = false;
+    playManualReplayNext();
+  };
+  audio.play().catch(() => {
+    manualReplay.index = Math.max(0, manualReplay.index - 1);
+    ttsPlaying = false;
+  });
 }
 
 /* ── 角色管理 ── */

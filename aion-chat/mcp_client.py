@@ -1,6 +1,6 @@
 """
 MCP 连接管理器：管理多个 MCP Server 的连接生命周期
-支持 Streamable HTTP（远程）和 stdio（本地进程）两种传输
+支持 Streamable HTTP（远程）、SSE、stdio（本地进程）和 raw_jsonrpc 四种传输
 """
 
 import json, logging
@@ -27,6 +27,13 @@ _DEFAULT_CONFIG = {
             "name": "AI小镇",
             "type": "http",
             "url": "https://aisay.top/chatroom/mcp",
+            "headers": {},
+            "enabled": True
+        },
+        {
+            "name": "CEDAR TOY",
+            "type": "http",
+            "url": "https://toy.cedarstar.org/streamable-http",
             "headers": {},
             "enabled": True
         }
@@ -100,6 +107,8 @@ class MCPManager:
             return await self._connect_sse(server_name, server_cfg)
         elif srv_type == "stdio":
             return await self._connect_stdio(server_name, server_cfg)
+        elif srv_type in {"raw_jsonrpc", "raw", "jsonrpc"}:
+            return await self._connect_raw_jsonrpc(server_name, server_cfg)
         else:
             raise ValueError(f"不支持的传输类型: {srv_type}")
 
@@ -181,10 +190,80 @@ class MCPManager:
         logger.info(f"[MCP] 已连接 {name} (stdio)，{len(tools)} 个工具可用")
         return tools
 
+    async def _connect_raw_jsonrpc(self, name: str, cfg: dict) -> list[dict]:
+        """连接自定义 JSON-RPC HTTP MCP Server（不使用标准 mcp SDK 的服务器）"""
+        url = cfg["url"]
+        headers = cfg.get("headers", {})
+        client = httpx.AsyncClient(timeout=30, headers=headers)
+
+        # 1. initialize
+        r = await client.post(url, json={
+            "jsonrpc": "2.0",
+            "method": "initialize",
+            "id": 1,
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "Aion", "version": "1.0"},
+            },
+        })
+        init_data = r.json()
+        if "error" in init_data:
+            await client.aclose()
+            raise RuntimeError(f"initialize 失败: {init_data['error']}")
+        logger.info(f"[MCP] {name} initialize OK: {init_data.get('result', {}).get('serverInfo', {})}")
+
+        # 2. notifications/initialized
+        await client.post(url, json={
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        })
+
+        # 3. tools/list
+        r = await client.post(url, json={
+            "jsonrpc": "2.0",
+            "method": "tools/list",
+            "id": 2,
+        })
+        tools_data = r.json()
+        if "error" in tools_data:
+            await client.aclose()
+            raise RuntimeError(f"tools/list 失败: {tools_data['error']}")
+
+        raw_tools = tools_data.get("result", {}).get("tools", [])
+        tools = [self._raw_tool_to_dict(t) for t in raw_tools]
+
+        self._connections[name] = {
+            "client": client,
+            "url": url,
+            "tools": tools,
+            "type": "raw_jsonrpc",
+            "req_id": 2,
+        }
+        logger.info(f"[MCP] 已连接 {name} (raw_jsonrpc)，{len(tools)} 个工具可用")
+        return tools
+
+    @staticmethod
+    def _raw_tool_to_dict(tool: dict) -> dict:
+        """将原始 dict 工具定义转为内部格式"""
+        return {
+            "name": tool.get("name", ""),
+            "description": tool.get("description", ""),
+            "input_schema": tool.get("inputSchema", {}),
+        }
+
     # ── 断开 ────────────────────────────────
     async def disconnect(self, server_name: str):
         conn = self._connections.pop(server_name, None)
         if not conn:
+            return
+        # raw_jsonrpc 连接：关闭 httpx client
+        if conn.get("type") == "raw_jsonrpc":
+            try:
+                await conn["client"].aclose()
+            except Exception as e:
+                logger.warning(f"[MCP] 关闭 raw_jsonrpc client 异常: {e}")
+            logger.info(f"[MCP] 已断开 {server_name} (raw_jsonrpc)")
             return
         try:
             await conn["session"].__aexit__(None, None, None)
@@ -201,8 +280,27 @@ class MCPManager:
         conn = self._connections.get(server_name)
         if not conn:
             raise RuntimeError(f"MCP Server {server_name} 未连接")
+
+        # raw_jsonrpc 连接：直接 HTTP POST
+        if conn.get("type") == "raw_jsonrpc":
+            r = await conn["client"].post(
+                conn["url"],
+                json={
+                    "jsonrpc": "2.0",
+                    "method": "tools/call",
+                    "id": conn.get("req_id", 100) + 1,
+                    "params": {"name": tool_name, "arguments": arguments},
+                },
+            )
+            conn["req_id"] = conn.get("req_id", 100) + 1
+            data = r.json()
+            if "error" in data:
+                raise RuntimeError(f"MCP 工具调用失败: {data['error']}")
+            result = data.get("result", {})
+            return result.get("content", [])
+
+        # 标准 MCP 连接
         result = await conn["session"].call_tool(tool_name, arguments)
-        # 将 result.content 序列化为可 JSON 化的格式
         contents = []
         for item in result.content:
             if hasattr(item, "text"):
@@ -233,6 +331,12 @@ class MCPManager:
     # ── 辅助 ────────────────────────────────
     @staticmethod
     def _tool_to_dict(tool) -> dict:
+        if isinstance(tool, dict):
+            return {
+                "name": tool.get("name", ""),
+                "description": tool.get("description", ""),
+                "input_schema": tool.get("inputSchema", tool.get("input_schema", {})),
+            }
         return {
             "name": tool.name,
             "description": getattr(tool, "description", "") or "",

@@ -193,7 +193,6 @@ def _idle_event_timeline_title(row, actor: str, shown_diary_ids: set[str], shown
         "seeky_interaction",
         "role_chat",
         "cam_check",
-        "web_roam",
         "wish_pool",
         "error",
     ):

@@ -8,7 +8,6 @@ import time
 from typing import Any, Optional
 
 from database import get_db
-from model_json import extract_json_object
 from ws import manager
 
 
@@ -57,9 +56,6 @@ def parse_diary_payload(raw: str) -> Optional[dict[str, Any]]:
     if not raw:
         return None
     text = raw.strip()
-    data = extract_json_object(text, predicate=_is_diary_payload)
-    if data is not None:
-        return data
     decoder = json.JSONDecoder(strict=False)
     # 兼容代码块、前后解释文字和多个候选片段；从每个左花括号尝试解析首个完整对象。
     for start, char in enumerate(text):

@@ -9,11 +9,10 @@
 - **摄像头**：OpenCV (`cv2`) DirectShow 后端后台线程采集 + ESP32-CAM HTTP 远程抓帧（双摄切换 + App 桥接模式）
 - **语音**：WebRTC VAD 语音检测 + 硬基流动 ASR (SenseVoiceSmall) + TTS (CosyVoice2) + 语音消息（按住录制）
 - **AI 接口**：硬基流动（OpenAI 兼容）、Google Gemini（REST API）、AiPro 中转站（OpenAI 兼容）、Gemini CLI（本地子进程调用，免费 OAuth 认证）、Codex CLI（本地子进程调用，Connor 专用）、Antigravity CLI（本地子进程调用，Google OAuth 认证，PowerShell Start-Transcript 捕获输出）
-- **AI 生图**：Gemini `gemini-3.1-flash-lite-image`（REST API generateContent，responseModalities=["IMAGE", "TEXT"]）
+- **AI 生图**：Gemini `gemini-3.1-flash-image-preview`（REST API generateContent，responseModalities=["IMAGE"]）
 - **AI 生成歌曲**：Gemini Lyria `lyria-3-pro-preview`（REST API generateContent，返回 audio inlineData，保存到 `data/songs/`）
-- **联网搜索/网页读取**：Tavily Search/Extract API（通过 httpx 调用），模型输出 `[WEB_SEARCH:...]` / `[WEB_EXTRACT:...]` 后由服务端清洗结果并回灌上下文
 - **Embedding**：Gemini `gemini-embedding-001`（3072维）或 OpenAI 兼容向量模型（如硅基流动 `Qwen/Qwen3-Embedding-8B` 4096维），余弦相似度检索，支持设置页自定义切换
-- **Android App**：Java，WebView + 前台推送服务（OkHttp 4.12.0 WebSocket）+ 原生录音桥 + 原生摄像头桥 + 原生视频录制桥（MediaCodec + MediaMuxer）+ 外链打开桥，compileSdk 34 / minSdk 24
+- **Android App**：Java，WebView + 前台推送服务（OkHttp 4.12.0 WebSocket）+ 原生录音桥 + 原生摄像头桥 + 原生视频录制桥（MediaCodec + MediaMuxer），compileSdk 34 / minSdk 24
 - **音乐**：pyncm（网易云音乐 API，搜索/歌曲详情/音频URL，支持 MUSIC_U Cookie VIP 登录 + 服务端代理推流）
 - **EPUB 解析**：ebooklib（EPUB 读取）+ BeautifulSoup4 / lxml（HTML 解析）
 - **基金监控**：akshare（A股/基金数据拉取）+ chinese-calendar（中国节假日/交易日判断）
@@ -26,7 +25,6 @@
 ```
 项目根目录/
 ├── 一键启动.bat                  # 双击启动服务（内含绝对路径，搬迁后需修改）
-├── 清理个人数据.bat              # 清理本机个人配置/缓存/Key，开源分发前可执行
 ├── 模型预设.txt                  # 模型列表参考
 ├── public/                       # 公共静态资源
 │   ├── BackGround.png
@@ -43,7 +41,7 @@
 ├── AionApp/                      # Android WebView 原生壳（Java，Android Studio 项目）
 │   ├── app/src/main/java/com/aion/chat/
 │   │   ├── LauncherActivity.java # 启动页：双地址选择（家庭WiFi / Tailscale）+ 记住选择 + 启动推送服务
-│   │   ├── WebViewActivity.java  # WebView 主页：全屏加载 chat.html，麦克风权限，前后台状态通知推送服务，AionExternal 外链打开桥
+│   │   ├── WebViewActivity.java  # WebView 主页：全屏加载 chat.html，麦克风权限，前后台状态通知推送服务
 │   │   ├── AudioBridge.java      # 原生录音桥：AudioRecord 16kHz → base64 → JS 回调，录制时同步转发 PCM 给 VideoBridge
 │   │   ├── CameraBridge.java     # 原生摄像头桥：legacy Camera API → NV21 字节旋转 → JPEG → JS 轮询（绕过 WebView HTTPS 限制），录制时转发帧给 VideoBridge
 │   │   ├── VideoBridge.java      # 原生视频录制桥：MediaCodec(H.264) + MediaCodec(AAC) + MediaMuxer → MP4，复用 CameraBridge/AudioBridge 的帧数据
@@ -74,20 +72,18 @@
     ├── song_gen.py                # AI 生成歌曲模块：Gemini Lyria、[SONG] 指令解析、歌词清理、歌曲保存
     ├── mcp_client.py              # MCP 连接管理器：管理多个 MCP Server 连接（HTTP/stdio）、工具发现、统一 call_tool 接口、转换 OpenAI tools 格式
     ├── context_builder.py          # 统一上下文构建：fetch_merged_timeline（合并私聊+群聊消息时间线）、render_merged_timeline（场景切换标记渲染）、build_ability_block、build_memory_blocks、strip_tool_commands
-    ├── web_search.py              # Tavily 搜索/网页读取封装：[WEB_SEARCH]/[WEB_EXTRACT] 解析、结果清洗、流式指令过滤、Key 可用性检查
-    ├── link_preview.py            # 链接预览卡片：URL 检测、网页 metadata 抽取、内网/本机地址保护、fallback 卡片
     ├── chatroom.py                # 聊天室核心逻辑：Connor-Codex 代理调用（HTTP+taskId轮询+images）、统一时间线上下文构建、统一记忆总结（Connor 1v1+群聊合并，独立锚点 connor_unified）、1h无消息自动总结、Connor 人设统一读取（chatroom_config 优先，persona.md 兑底）
     ├── routes/
     │   ├── __init__.py
     │   ├── book.py               # 阅读功能 API：书籍上传/列表/章节/进度/删除/图片/AI批注（Aion+Connor并行，单段+全章SSE）/用户高亮（框选多目标提问持久化CRUD）
     │   ├── theater.py            # 小剧场 API：独立对话CRUD、消息CRUD、角色CRUD、SSE流式回复（无记忆/系统能力注入）+ TTS
-    ├── chat.py               # 对话/消息 CRUD、send_message(SSE)、regenerate、cam-check-trigger、[MUSIC:xxx]/[SONG]...[/SONG]/[WEB_SEARCH:...]/[WEB_EXTRACT:...]/[ALARM:...]/[REMINDER:...]/[Monitor:...]/[TOY:x]/[查看动态:n]/[视频电话] 检测 + 链接预览附件
+    ├── chat.py               # 对话/消息 CRUD、send_message(SSE)、regenerate、cam-check-trigger、[MUSIC:xxx]/[SONG]...[/SONG]/[ALARM:...]/[REMINDER:...]/[Monitor:...]/[TOY:x]/[查看动态:n]/[视频电话] 检测
     │   ├── music.py              # 音乐搜索/详情/播放/代理推流 API（pyncm）
     │   ├── schedule.py           # 日程 CRUD API（列表/添加/删除）
     │   ├── cam.py                # 摄像头控制 + 监控日志 API + ESP32-CAM 画面源切换/桥接帧接收
     │   ├── location.py           # 定位 API：心跳上报、状态查询、POI搜索、配置管理、设置家位置
     │   ├── files.py              # 上传、聊天记录文件导出/管理
-    │   ├── settings.py           # 设置、世界书、模型列表、TTS 代理、Tavily Key、视频通话开关、AI生图开关、AI生成歌曲开关
+    │   ├── settings.py           # 设置、世界书、模型列表、TTS 代理、视频通话开关、AI生图开关、AI生成歌曲开关
     │   ├── memories.py           # 记忆库 CRUD + 手动总结触发 + 原文查看 + 锚点管理 API
     │   ├── heart_whispers.py     # 心语 API（列表查询 + 删除，旧版兼容保留）
     │   ├── moments.py            # 朋友圈 API（发布/删除/点赞点踩/评论/AI自动回复/未读红点）
@@ -101,7 +97,7 @@
     │   ├── playground.py         # 娱乐室 API：MCP Server 连接/断开、tool calling 循环、SSE 流式行动日志、经历总结归档
     │   ├── doudizhu.py           # 斗地主 API：发牌/叫地主/出牌校验/AI JSON 决策/结算/钱包联动/群聊战报
     │   └── wallpaper.py          # 动态壁纸 API：文件列表/配置读写/上传/删除
-    │   └── chatroom.py           # 聊天室 API：房间 CRUD、发消息(SSE)、AI 互聊(SSE)、记忆 CRUD、配置（connor_url/connor_name/connor_persona/TTS音色）、Connor 状态、总结记忆、图片/音频上传（/api/chatroom/upload，支持 image + audio MIME）+ 图片路径重写 + 语音附件预处理（转写注入+音频URL保留） + TTS流式合成（Aion/Connor独立音色） + 链接预览附件 + 聊天室内 [CAM_CHECK] 独立实现 + Connor 1v1 指令处理（[MUSIC:]/[WEB_SEARCH:]/[WEB_EXTRACT:]/[MEMORY:]/[TOY:]/[ALARM:] 等）+ 密语模式能力注入
+    │   └── chatroom.py           # 聊天室 API：房间 CRUD、发消息(SSE)、AI 互聊(SSE)、记忆 CRUD、配置（connor_url/connor_name/connor_persona/TTS音色）、Connor 状态、总结记忆、图片/音频上传（/api/chatroom/upload，支持 image + audio MIME）+ 图片路径重写 + 语音附件预处理（转写注入+音频URL保留） + TTS流式合成（Aion/Connor独立音色） + 聊天室内 [CAM_CHECK] 独立实现 + Connor 1v1 指令处理（[MUSIC:]/[MEMORY:]/[TOY:]/[ALARM:] 等）+ 密语模式能力注入
     ├── activity.py               # 设备活动日志：JSONL 存储、自动清理（保留最近 3 小时）、PC 前台窗口采集、PC 显示器电源状态/空闲检测、App 包名→中文名映射、10分钟窗口摘要、AI联动开关+Prompt摘要生成
     ├── phone_screen.py           # 手机屏幕监督：Android MediaProjection 截图上传缓存、最近截图读取、自动清理
     ├── music.py                  # pyncm 封装层（搜索/歌曲详情/音频URL/MUSIC_U Cookie 登录/匿名登录）
@@ -110,11 +106,11 @@
     ├── static/
     │   ├── home.html             # 手机风格主页 → /（应用图标网格 + Dock 栏）
     │   ├── chat.html             # 主聊天页 → /chat（含语音唤醒/TTS/BLE/音乐/系统日志/debug面板）
-    │   ├── chat.css              # 主聊天页样式（从 chat.html 拆分，含紧凑链接预览卡片）
-    │   ├── chat.js               # 主聊天页逻辑（从 chat.html 拆分，含链接预览卡片渲染与外链打开）
+    │   ├── chat.css              # 主聊天页样式（从 chat.html 拆分）
+    │   ├── chat.js               # 主聊天页逻辑（从 chat.html 拆分）
     │   ├── common.css            # 子页面共享样式（CSS变量/布局/组件/闹铃弹窗/toast）
     │   ├── common.js             # 子页面共享工具（api()/WS连接/闹铃弹窗/系统通知）
-    │   ├── settings.html         # 设置页 → /settings（API Key + Tavily Key + 哨兵模型 + 向量模型配置）
+    │   ├── settings.html         # 设置页 → /settings（API Key + 哨兵模型 + 向量模型配置）
     │   ├── worldbook.html        # 世界书页 → /worldbook（AI/用户人设编辑）
     │   ├── memory.html           # 记忆库页 → /memory（CRUD/搜索/总结/锚点/原文追溯）
     │   ├── diary.html            # 日记本页 → /diary（用户手写日记 + Aion/Connor自动总结日记 + 编辑/删除）
@@ -137,15 +133,15 @@
     │   ├── doudizhu.css           # 斗地主样式（桌面/手机自适应、手牌压叠、弃牌堆、结算弹窗）
     │   ├── doudizhu.js            # 斗地主前端逻辑（发牌预览、叫地主/出牌交互、AI回合推进、TTS/音效、昭告天下）
     │   ├── chatroom.html          # 聊天室页 → /chatroom（三人群聊 + Connor 私聊 + 房间管理 + 记忆库悬浮窗 + 图片/语音收发 + 拍照 + TTS设置 + 🎭人设统一管理面板 + 密语时刻面板）
-    │   ├── chatroom.css           # 聊天室样式（暖色三人气泡、头像、双换行拆分气泡、图片预览/查看器/内联图片、紧凑链接预览卡片、＋展开菜单、拍照全屏遮罩、语音录制浮层、橙色语音气泡+播放动画+转写小字、TTS滑块开关、群聊/私聊Tab样式、音乐卡片+播放器、密语面板+编辑器+胶囊样式）
-    │   ├── chatroom.js            # 聊天室前端逻辑（SSE流式、AI互聊、记忆CRUD、世界书人设继承、图片上传/粘贴/[[image:]]渲染、链接预览卡片渲染与外链打开、＋展开菜单（上传图片/拍照/语音消息/密语时刻）、拍照（getUserMedia+AionCamera原生桥+iframe穿透）、语音消息（按住说话+上滑取消+MediaRecorder/AionAudio原生桥+WAV转换+ASR转写+语音气泡渲染+播放）、TTS分段队列播放+音色配置持久化服务端+localStorage、侧栏群聊/私聊Tab筛选+自动日期命名、音乐卡片+在线播放器+自动播放、BLE密语控制系统+BroadcastChannel跨页同步+指令胶囊气泡）
+    │   ├── chatroom.css           # 聊天室样式（暖色三人气泡、头像、双换行拆分气泡、图片预览/查看器/内联图片、＋展开菜单、拍照全屏遮罩、语音录制浮层、橙色语音气泡+播放动画+转写小字、TTS滑块开关、群聊/私聊Tab样式、音乐卡片+播放器、密语面板+编辑器+胶囊样式）
+    │   ├── chatroom.js            # 聊天室前端逻辑（SSE流式、AI互聊、记忆CRUD、世界书人设继承、图片上传/粘贴/[[image:]]渲染、＋展开菜单（上传图片/拍照/语音消息/密语时刻）、拍照（getUserMedia+AionCamera原生桥+iframe穿透）、语音消息（按住说话+上滑取消+MediaRecorder/AionAudio原生桥+WAV转换+ASR转写+语音气泡渲染+播放）、TTS分段队列播放+音色配置持久化服务端+localStorage、侧栏群聊/私聊Tab筛选+自动日期命名、音乐卡片+在线播放器+自动播放、BLE密语控制系统+BroadcastChannel跨页同步+指令胶囊气泡）
     │   ├── wallpaper.html         # 动态壁纸页 → /wallpaper（全屏壁纸轮播+AI气泡，独立显示器使用）
     │   ├── video-call.js         # 视频通话模块：摄像头预览 + 按住录制视频 + ASR转写 + 来电/去电 UI
     │   ├── manifest.json         # PWA Web App Manifest（从 /manifest.json 提供）
     │   └── sw.js                 # PWA Service Worker（从 /sw.js 提供）
     └── data/                     # ★ 备份只需复制此文件夹
         ├── chat.db               # SQLite 数据库（聊天、记忆、朋友圈、日记本、礼物、钱包等核心表）
-        ├── settings.json         # API Key + Tavily Key + 哨兵/向量模型配置持久化（仅本机保存）
+        ├── settings.json         # API Key + 哨兵/向量模型配置持久化
         ├── worldbook.json        # 世界书（AI/用户人设+名称）
         ├── cam_config.json       # 摄像头监控配置（active_source/esp32_cam_url/本地摄像头/定时/静默时段）
         ├── chat_status.json      # 聊天状态摘要（供哨兵参考）
@@ -176,7 +172,7 @@
 |------|------|
 | `/` | home.html 手机风格主页（应用图标启动器） |
 | `/chat` | chat.html 主聊天页 |
-| `/settings` | settings.html 设置页（API Key + Tavily Key + 哨兵/向量模型配置） |
+| `/settings` | settings.html 设置页（API Key + 哨兵/向量模型配置） |
 | `/worldbook` | worldbook.html 世界书页 |
 | `/memory` | memory.html 记忆库页 |
 | `/diary` | diary.html 日记本页（用户手写 + AI 自动总结日记） |
@@ -247,20 +243,12 @@
 8. **图片/视频上传** — 多模态支持，Gemini 用 inline_data，硅基流动用 URL
 9. **语音消息** — 微信风格按住说话录音，松手发送。浏览器使用 MediaRecorder 录制 WebM，Android 使用原生 AudioBridge 录音。录音通过硅基流动 ASR 自动转写为文字，消息以语音气泡形式展示（显示时长 + 播放按钮），转写文本同时保存供记忆/上下文使用
 9. **聊天记录文件管理** — 自动导出 .md，文件管理器弹窗查看/下载/删除
-10. **API Key 管理** — 界面内设置面板，支持 Gemini + Gemini Free（哨兵+向量）+ 硅基流动 + 中转站 + Tavily 等 Key；个人 Key 仅保存到本机 `data/settings.json`，不写死进代码仓库，`清理个人数据.bat` 会一并清理
-10a. **链接预览卡片** — 用户或 AI 消息中出现 http/https 地址时，后端自动抽取标题、摘要、来源、图标/预览图并保存为 `link_preview` 附件；内网/本机地址不主动抓取，仅生成可点击 fallback 卡片
+10. **API Key 管理** — 界面内设置面板，支持 Gemini + Gemini Free（哨兵+向量）+ 硅基流动 + 中转站 四组 Key
 11. **手机适配** — 侧栏抽屉式展开，聊天气泡布局，触屏友好，`@media (max-width: 768px)` 单独优化紧凑间距
 62. **聊天头像** — 用户/AI 消息旁显示圆形头像（`public/UserIcon.png` / `public/AIIcon.png`），用户右侧、AI 左侧
 63. **多气泡拆分** — AI 回复中 `\n\n` 自动拆分为多个独立消息气泡，像微信连发效果，流式输出实时拆分
 64. **时间内联显示** — 消息时间显示在用户/AI 名字旁边，不再独占一行
 12. **当前时间注入** — 每次发消息/重新生成时，将准确时间拼接到 prompt 前缀最后一条 assistant 回复中
-
-### 联网搜索与网页读取
-12a. **Tavily 联网搜索** — 配置 Tavily API Key 且开启「联网搜索/网页读取」能力后，模型可输出 `[WEB_SEARCH:查询内容]` 主动搜索最新网页信息，后端返回已清洗的标题、摘要、来源 URL 和答案上下文
-12b. **网页读取** — 模型可输出 `[WEB_EXTRACT:完整URL]` 读取用户或 AI 分享的具体网页，适合“看一下这个链接内容”的场景；结果会作为下一轮上下文回灌给模型
-12c. **指令隐藏与 TTS 过滤** — `[WEB_SEARCH]` / `[WEB_EXTRACT]` 原始指令会从聊天气泡和 TTS 文本中剥离，用户只看到自然回复与可见的系统提示
-12d. **可见系统消息** — AI 使用搜索/网页读取时，会在聊天窗口插入一条 system 消息记录“发起了联网搜索/网页读取”，方便用户知道模型何时使用了外部信息
-12e. **主聊天 + 聊天室共用** — 主聊天和聊天室共用同一套 Tavily Key、能力开关、指令解析和结果回灌逻辑，两个 AI 参与方都可以按需调用
 
 ### Debug 透明度面板
 13. **Token 用量追踪** — Gemini usageMetadata + 硅基流动 usage，在 SSE 流中通过 debug 事件传回前端
@@ -403,7 +391,7 @@
 407. **前端指令过滤** — 流式输出时前端实时 strip `[SELFIE:xxx]` 和 `[DRAW:xxx]`，用户看不到原始指令
 408. **TTS 过滤** — TTS 合成时自动剥除 `[SELFIE:...]` 和 `[DRAW:...]` 内容，不会被语音朗读
 409. **开关控制** — 聊天配置面板中「AI 生图」开关控制 AI 是否具有生图能力（指令是否注入 prompt），关闭后 AI 不会尝试生图
-410. **Gemini API** — 使用 `gemini-3.1-flash-lite-image` 模型，REST `generateContent` 端点，`responseModalities: ["IMAGE", "TEXT"]`，120 秒超时
+410. **Gemini API** — 使用 `gemini-3.1-flash-image-preview` 模型，REST `generateContent` 端点，`responseModalities: ["IMAGE", "TEXT"]`，120 秒超时
 411. **三处统一** — send_message、regenerate、Core/语音/定时触发三套 `_bg_generate` 函数均支持生图指令检测和异步生图
 
 ### AI 生图工作流程
@@ -418,7 +406,7 @@
 【异步生图（_do_image_gen）】
   ├ SELFIE 模式：读取 public/生图锚点.jpg → base64 编码 → 作为 inlineData 附加到请求
   ├ DRAW 模式：仅发送文本 prompt
-  → POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite-image:generateContent
+  → POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:generateContent
     requestBody: { contents: [{parts: [...]}], generationConfig: {responseModalities: ["IMAGE", "TEXT"]} }
   → 解析 response → 提取 inlineData（base64 图片数据）
   → 保存到 data/uploads/img_gen_{timestamp}.{ext}
@@ -1148,8 +1136,7 @@
 108. **双地址启动页** — LauncherActivity 提供「家庭WiFi」和「Tailscale」两个地址入口，支持「记住选择」下次自动进入
 109. **原生录音桥 AudioBridge** — 绕过 WebView 中 `getUserMedia` 需要 HTTPS 的限制，使用 Android 原生 `AudioRecord`（16kHz, VOICE_RECOGNITION）录音，通过 `@JavascriptInterface` 将 base64 PCM 数据回调到 JS。视频录制期间自动转发 PCM 帧给 VideoBridge
 110. **原生视频录制桥 VideoBridge** — MediaCodec(H.264) + MediaCodec(AAC) + MediaMuxer 编码 MP4，复用 CameraBridge 的视频帧和 AudioBridge 的音频帧进行视频录制，录制期间摄像头预览不中断。JS 通过 `window.AionVideo` 接口控制录制（`startRecord`/`stopRecord`/`cancel`），`stopRecord` 返回 base64 编码的 MP4 数据
-111. **外链打开桥 AionExternal** — `WebViewActivity` 注入 `window.AionExternal.open(url)`，链接预览卡片、`target="_blank"` 和 `window.open` 可调用系统浏览器打开外部网站；同源页面仍留在 WebView 内
-112. **手势导航适配** — 兼容 Vivo X300 Pro 等全面屏手势导航，返回键弹出对话框（切换地址 / 退出 / 取消）
+111. **手势导航适配** — 兼容 Vivo X300 Pro 等全面屏手势导航，返回键弹出对话框（切换地址 / 退出 / 取消）
 
 ### Android 前台推送服务（AionPushService）
 115. **前台服务 + 独立 WebSocket** — `AionPushService` 作为 Android 前台服务运行，通过 OkHttp 维持独立于 WebView 的 WebSocket 长连接（`/ws`），不依赖页面生命周期
@@ -1347,7 +1334,7 @@
 ### 设置/世界书/状态
 | 端点 | 方法 | 说明 |
 |------|------|------|
-| `/api/settings` | GET/POST | 读取/保存设置（API Key、Tavily Key、模型配置、能力开关等） |
+| `/api/settings` | GET/POST | 读取/保存设置（API Key 等） |
 | `/api/worldbook` | GET/POST | 读取/保存世界书 |
 | `/api/chat_status` | GET | 获取当前聊天状态摘要 |
 | `/api/models` | GET | 可用模型列表 |
@@ -1459,7 +1446,6 @@
 | `cam_check` | Core 触发 [CAM_CHECK]，前端播放提示音+延迟触发 |
 | `cam_offline` | 摄像头未开启，前端显示提示 |
 | `music` | 音乐卡片数据：主推荐歌曲 + 候选列表 |
-| `web_search` | 联网搜索/网页读取触发状态：含 msg_id、kind、query/url，前端可显示搜索状态 |
 | `poi_search` | POI 搜索触发：含 msg_id + categories，前端显示蓝色搜索指示器 |
 | `toy_command` | 玩具控制指令：含 commands 数组 + msg_id |
 | `image_gen_start` | AI 生图开始：含 msg_id + prompt + is_selfie，前端显示橙色生图指示器 |
@@ -1480,7 +1466,6 @@
 | `voice_state` | 语音状态广播（开关/唤醒/聊天中/AI思考/挂断等） |
 | `cam_check` | [CAM_CHECK] 触发通知（SSE + WS 双通道） |
 | `music` | 音乐卡片数据广播（SSE + WS 双通道） |
-| `web_search` | 联网搜索/网页读取触发广播（SSE + WS 双通道） |
 | `debug` | Debug 数据广播（SSE + WS 双通道，语音发送时也能收到） |
 | `monitor_alert` | 定时监控触发，前端播放提示音，手机端弹高优先级通知 |
 | `chatroom_ai_status` | 聊天室异步后续动作状态，如 [CAM_CHECK] 获取画面、非视觉模型等待哨兵识图 |
@@ -1521,8 +1506,6 @@
 3. [系统能力] 合并能力提示 + 日程列表 + assistant 确认（不含时间）    ← 缓存命中
    - [MUSIC:歌曲名 歌手名]  — 点歌（始终可用）
    - [CAM_CHECK]            — 主动查看监控（仅摄像头开启时）
-   - [WEB_SEARCH:查询内容]   — 联网搜索最新网页信息（仅配置 Tavily Key 且联网搜索能力开启时）
-   - [WEB_EXTRACT:完整URL]   — 读取指定网页内容（仅配置 Tavily Key 且联网搜索能力开启时）
    - [POI_SEARCH:类型名]    — 搜索附近 POI（仅外出状态 + 定位开启时）
    - [ALARM:datetime|内容]  — 设置闹铃（始终可用）
    - [REMINDER:date|内容]  — 设置日程提醒（始终可用）
@@ -1551,10 +1534,6 @@
 - **半双工协调**：`ai_speaking` 标志由服务端 `tts_done` WebSocket 事件驱动（前端收到后调用 `notifyVoiceAiSpeaking(false)`），暂停录音期间持续 `stream.read()` 丢弃数据防止缓冲区溢出；voice.py 的 `_async_send` 在 HTTP POST body 中携带 `tts_enabled`/`tts_voice` 参数
 - **消息分页**：后端 `?limit=50&before=时间戳` 参数，前端 `loadOlderMessages()` 滚动到顶部自动加载，保持滚动位置
 - **SSE + WS 双通道**：cam_check 和 debug 事件同时写入 SSE 流和 WebSocket 广播，确保语音发送的消息（无 SSE 流读取端）也能被前端接收
-- **联网搜索架构**：`capabilities.py` 在 Tavily Key 可用且能力开关开启时注入 `[WEB_SEARCH:查询内容]` / `[WEB_EXTRACT:完整URL]`；`web_search.py` 统一调用 Tavily Search/Extract、清洗标题/摘要/URL/答案并记录 credits；`routes/chat.py` 与 `routes/chatroom.py` 负责剥离原始指令、插入可见 system 消息、广播 `web_search` 状态，并把搜索结果作为下一条上下文回灌给模型
-- **联网指令过滤**：`WebCommandStreamFilter` 会在流式输出阶段隐藏 `[WEB_SEARCH]` / `[WEB_EXTRACT]` 块，最终保存和 TTS 都使用剥离后的自然文本，避免把工具指令读出来
-- **链接预览架构**：`link_preview.py` 从消息文本中提取 http/https URL，读取 Open Graph/Twitter/title/description/favicon 等 metadata 后写入 `link_preview` 附件；私有 IP、本机地址、`.local` 等不主动抓取，只生成 fallback 卡片，避免误探测内网服务
-- **链接预览前端渲染**：`static/chat.js` 与 `static/chatroom.js` 将 `link_preview` 附件渲染成紧凑可点击卡片；浏览器端默认 `_blank` 打开，Android WebView 端优先调用 `AionExternal.open(url)` 交给系统浏览器
 - **文件导出**：消息变动自动同步到 `chats/{conv_id}.md`，含 YAML front matter，导出跳过 cam_* 角色
 - **监控定时器**：基于时间戳比较（`_next_capture_at`），非 sleep 阻塞，间隔修改即时生效
 - **摄像头 DirectShow + 验证机制**：所有 `cv2.VideoCapture` 使用 `CAP_DSHOW` 后端（Windows MSMF 后端对 USB 摄像头不稳定）；`_verify_camera()` 最多等 8 秒读到非垃圾帧（`frame.mean() > 5` 排除绿屏/黑屏）才算成功；`_capture_loop` 运行时也检测绿屏帧，连续 100 帧无效触发重连；重连逐个尝试 index 0-4 并验证，失败后 30 秒重试
@@ -1755,28 +1734,6 @@ python main.py
 | 长按返回键无效（Vivo X300 Pro 手势导航） | `onKeyLongPress` 不适用于手势导航的侧滑返回 | 改为 `onBackPressed` 弹出 AlertDialog |
 
 ## 更新日志
-
-### 2026-07-06 — Tavily 联网搜索 + 链接预览卡片
-
-**背景**：给聊天模型补充按需联网能力，并让聊天里出现的网页地址自动变成紧凑可点击的小卡片；同时处理 Android WebView 内外链打不开的问题。
-
-**改动内容**：
-1. **`web_search.py` + `capabilities.py` — 联网搜索/网页读取能力**
-   - 新增 Tavily Search/Extract 调用封装，支持 `[WEB_SEARCH:查询内容]` 和 `[WEB_EXTRACT:完整URL]`
-   - Tavily API Key 从设置页保存到本机 `data/settings.json`，仓库不内置个人 Key，清理个人数据脚本会一并移除
-   - 能力可通过现有能力开关关闭；未配置 Key 时不向模型注入联网指令
-   - 搜索触发后插入可见 system 消息，原始工具指令从聊天气泡和 TTS 文本中过滤
-2. **`routes/chat.py` / `routes/chatroom.py` — 主聊天与聊天室统一接入**
-   - 私聊、群聊、重新生成等路径统一检测联网指令
-   - 搜索结果作为下一条上下文回灌给模型，让模型基于清洗后的网页信息继续回复
-   - SSE/WebSocket 增加 `web_search` 状态事件，方便前端展示搜索中的反馈
-3. **`link_preview.py` + 前端渲染 — 链接小卡片**
-   - 消息中出现 http/https URL 时自动抽取标题、摘要、来源、图标/预览图，保存为 `link_preview` 附件
-   - 主聊天和聊天室都渲染为小尺寸卡片，点击可直接打开网页
-   - 本机/内网地址只生成 fallback 卡片，不主动抓取页面，避免误探测本地服务
-4. **`WebViewActivity.java` — Android 外链打开**
-   - 注入 `AionExternal.open(url)` 原生桥，支持链接卡片、`target="_blank"` 和 `window.open`
-   - 外部网站交给系统浏览器打开，同源页面继续留在 WebView 内
 
 ### 2026-06-15 — Gemini Lyria AI 生成歌曲接入
 

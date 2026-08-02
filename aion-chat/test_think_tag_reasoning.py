@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ai_providers import ThinkTagReasoningFilter, _apply_codex_usage_meta, extract_think_tag_reasoning
+from ai_providers import ThinkTagReasoningFilter, extract_think_tag_reasoning
 
 
 class ThinkTagReasoningTests(unittest.TestCase):
@@ -51,27 +51,6 @@ class ThinkTagReasoningTests(unittest.TestCase):
 
         self.assertEqual(visible, "Hi  there")
         self.assertEqual(meta.get("reasoning_content"), "secret")
-
-
-class CodexUsageMetaTests(unittest.TestCase):
-    def test_maps_codex_cli_usage_to_system_log_token_shape(self):
-        meta = {}
-
-        _apply_codex_usage_meta(
-            meta,
-            {
-                "input_tokens": 100,
-                "cached_input_tokens": 40,
-                "output_tokens": 25,
-                "reasoning_output_tokens": 7,
-            },
-        )
-
-        self.assertEqual(meta["prompt_tokens"], 100)
-        self.assertEqual(meta["completion_tokens"], 25)
-        self.assertEqual(meta["total_tokens"], 125)
-        self.assertEqual(meta["raw"]["prompt_tokens_details"]["cached_tokens"], 40)
-        self.assertEqual(meta["raw"]["completion_tokens_details"]["reasoning_tokens"], 7)
 
 
 if __name__ == "__main__":

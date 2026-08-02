@@ -288,27 +288,19 @@
 <script src="/static/theme.js?v=theme-20260606"></script>
 <script src="/static/common.js"></script>
 <script>
-const PAGE_SIZE = 50;
-const MOMENTS_SNAPSHOT_KEY = 'moments_page_snapshot_v2';
+const PAGE_SIZE = 20;
 let currentPage = 1;
 let totalItems = 0;
 let allMoments = [];
-let momentsNextCursor = null;
-let momentsHasMore = false;
-let momentsLoading = false;
 let nameMap = {};  // author → display name
 let pendingMomentAttachments = [];
 
 // ── 初始化 ──
 async function init() {
-  restoreMomentsSnapshot();
-  const momentsPromise = loadMoments(1, false);
-  // 名字、已读状态和朋友圈首屏互不依赖，弱网下并行完成。
+  // 获取名字映射
   try {
-    const [wb, crCfg] = await Promise.all([
-      api('GET', '/api/worldbook'),
-      api('GET', '/api/chatroom/config'),
-    ]);
+    const wb = await api('GET', '/api/worldbook');
+    const crCfg = await api('GET', '/api/chatroom/config');
     nameMap = {
       user: wb.user_name || '用户',
       aion: wb.ai_name || 'AI',
@@ -317,74 +309,28 @@ async function init() {
   } catch(e) {
     nameMap = { user: '用户', aion: 'AI', connor: 'Connor' };
   }
-  renderList();
 
   // 标记已读
-  api('POST', '/api/moments/mark-read').catch(() => {});
-  await momentsPromise;
+  try { await api('POST', '/api/moments/mark-read'); } catch(e) {}
+
+  loadMoments();
 }
 
 // ── 加载朋友圈 ──
 async function loadMoments(page = 1, append = false) {
-  if (momentsLoading) return;
-  momentsLoading = true;
   try {
-    const params = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) });
-    if (append && momentsNextCursor) params.set('before', String(momentsNextCursor));
-    const res = await api('GET', `/api/moments?${params}`);
+    const res = await api('GET', `/api/moments?page=${page}&page_size=${PAGE_SIZE}`);
     totalItems = res.total;
     if (append) {
-      for (const item of res.items || []) {
-        if (!allMoments.some(existing => existing.id === item.id)) allMoments.push(item);
-      }
+      allMoments = allMoments.concat(res.items);
     } else {
       allMoments = res.items;
     }
-    momentsNextCursor = res.next_cursor || null;
-    momentsHasMore = !!res.has_more;
     currentPage = page;
     renderList();
-    if (!append) saveMomentsSnapshot();
   } catch(e) {
     console.error('加载朋友圈失败:', e);
-  } finally {
-    momentsLoading = false;
   }
-}
-
-function momentsSnapshotBridge() {
-  try { return window.top?.AppSharedData || window.AppSharedData || null; }
-  catch(e) { return window.AppSharedData || null; }
-}
-
-function saveMomentsSnapshot() {
-  try {
-    const payload = JSON.stringify({
-      schema: 2,
-      savedAt: Date.now(),
-      items: allMoments.slice(0, PAGE_SIZE),
-      total: totalItems,
-      nextCursor: momentsNextCursor,
-      hasMore: momentsHasMore,
-    });
-    localStorage.setItem(MOMENTS_SNAPSHOT_KEY, payload);
-    if (payload.length < 900000) momentsSnapshotBridge()?.put?.(MOMENTS_SNAPSHOT_KEY, payload);
-  } catch(e) {}
-}
-
-function restoreMomentsSnapshot() {
-  try {
-    const raw = momentsSnapshotBridge()?.get?.(MOMENTS_SNAPSHOT_KEY)
-      || localStorage.getItem(MOMENTS_SNAPSHOT_KEY) || '';
-    const snapshot = JSON.parse(raw || 'null');
-    if (!snapshot || snapshot.schema !== 2 || !Array.isArray(snapshot.items)) return false;
-    allMoments = snapshot.items;
-    totalItems = Number(snapshot.total || snapshot.items.length);
-    momentsNextCursor = snapshot.nextCursor || null;
-    momentsHasMore = !!snapshot.hasMore;
-    renderList();
-    return true;
-  } catch(e) { return false; }
 }
 
 function getAuthorName(author) {
@@ -491,7 +437,7 @@ function renderList() {
     html += renderMomentCard(m);
   }
   html += `<div class="moments-stats">共 ${totalItems} 条动态</div>`;
-  if (momentsHasMore) {
+  if (allMoments.length < totalItems) {
     html += `<button class="load-more-btn" onclick="loadMoments(${currentPage+1}, true)">加载更多</button>`;
   }
   container.innerHTML = html;
@@ -611,7 +557,6 @@ async function publishMoment() {
     const m = await api('POST', '/api/moments', { content, attachments });
     prependMomentOnce(m);
     renderList();
-    saveMomentsSnapshot();
     closePublishModal();
   } catch(e) {
     showToast('发布失败');
@@ -628,7 +573,6 @@ async function deleteMoment(id) {
     allMoments = allMoments.filter(m => m.id !== id);
     totalItems--;
     renderList();
-    saveMomentsSnapshot();
   } catch(e) { showToast('删除失败'); }
 }
 
@@ -794,19 +738,11 @@ document.getElementById('publishInput').addEventListener('input', function() {
   this.style.height = Math.min(this.scrollHeight, 200) + 'px';
 });
 
-// ── WebSocket 实时推送；sync_event 断线补齐也走同一幂等处理 ──
+// ── WebSocket 实时推送 ──
 function handleMomentWsMessage(msg) {
   if (msg.type === 'moment_new' && msg.data) {
     // POST 返回和 WebSocket 广播可能先后到达；按 id 保证只插入一次。
     prependMomentOnce(msg.data);
-    renderList();
-  } else if (msg.type === 'moment_updated' && msg.data) {
-    prependMomentOnce(msg.data);
-    renderList();
-  } else if (msg.type === 'moment_deleted' && msg.data) {
-    const before = allMoments.length;
-    allMoments = allMoments.filter(m => m.id !== msg.data.id);
-    if (allMoments.length !== before) totalItems = Math.max(0, totalItems - 1);
     renderList();
   } else if (msg.type === 'moment_comment' && msg.data) {
     upsertMomentComment(msg.data);
@@ -834,21 +770,9 @@ function handleMomentWsMessage(msg) {
         .map(c => c.reply_to_id === deletedId ? { ...c, reply_to_id: null } : c);
       renderList();
     }
-  } else if (msg.type === 'sync_reset_required') {
-    loadMoments(1, false);
-    return;
-  } else {
-    return;
   }
-  saveMomentsSnapshot();
 }
 if (typeof connectCommonWS === 'function') connectCommonWS(handleMomentWsMessage);
-
-document.getElementById('momentsList').addEventListener('scroll', function() {
-  if (momentsHasMore && !momentsLoading && this.scrollTop + this.clientHeight >= this.scrollHeight - 160) {
-    loadMoments(currentPage + 1, true);
-  }
-});
 
 init();
 </script>

@@ -20,6 +20,10 @@
     <select class="pg-server-select" id="serverSelect">
       <option value="">选择服务器...</option>
     </select>
+    <select class="pg-persona-select" id="personaSelect" title="选择哪个AI出门">
+      <option value="aion">🤖 AI</option>
+      <option value="connor">🧩 第二AI</option>
+    </select>
     <button class="pg-manage-btn" id="manageBtn" onclick="toggleManagePanel()" title="管理服务器">⚙</button>
   </header>
 
@@ -76,6 +80,9 @@
 
   <!-- 输入栏 -->
   <div class="pg-input-bar">
+    <select class="pg-model-select" id="modelSelect" title="选择模型">
+      <option value="">自动</option>
+    </select>
     <input type="text" class="pg-input" id="instructionInput"
            placeholder="输入指令，比如「去逛逛，看看大家在聊什么」"
            onkeydown="if(event.key==='Enter')sendInstruction()">

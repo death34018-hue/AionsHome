@@ -3,8 +3,9 @@
 """
 
 import json
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import Response, FileResponse
 from pydantic import BaseModel, Field
 from typing import Any, Dict, Optional
@@ -39,7 +40,6 @@ class SettingsUpdate(BaseModel):
     siliconflow_key: Optional[str] = None
     gemini_free_key: Optional[str] = None
     aipro_key: Optional[str] = None
-    tavily_api_key: Optional[str] = None
     netease_music_u: Optional[str] = None
     sentinel_base_url: Optional[str] = None
     sentinel_api_key: Optional[str] = None
@@ -96,7 +96,6 @@ async def get_settings():
         "siliconflow_key": SETTINGS.get("siliconflow_key", ""),
         "gemini_free_key": SETTINGS.get("gemini_free_key", ""),
         "aipro_key": SETTINGS.get("aipro_key", ""),
-        "tavily_api_key": SETTINGS.get("tavily_api_key", ""),
         "netease_music_u": SETTINGS.get("netease_music_u", ""),
         "sentinel_base_url": SETTINGS.get("sentinel_base_url", ""),
         "sentinel_api_key": SETTINGS.get("sentinel_api_key", ""),
@@ -114,7 +113,6 @@ async def get_settings():
         "siliconflow_key_masked": mask(SETTINGS.get("siliconflow_key", "")),
         "gemini_free_key_masked": mask(SETTINGS.get("gemini_free_key", "")),
         "aipro_key_masked": mask(SETTINGS.get("aipro_key", "")),
-        "tavily_api_key_masked": mask(SETTINGS.get("tavily_api_key", "")),
         "netease_music_u_masked": mask(SETTINGS.get("netease_music_u", "")),
         "sentinel_api_key_masked": mask(SETTINGS.get("sentinel_api_key", "")),
         "embedding_api_key_masked": mask(SETTINGS.get("embedding_api_key", "")),
@@ -131,8 +129,6 @@ async def update_settings(body: SettingsUpdate):
         SETTINGS["gemini_free_key"] = body.gemini_free_key
     if body.aipro_key is not None:
         SETTINGS["aipro_key"] = body.aipro_key
-    if body.tavily_api_key is not None:
-        SETTINGS["tavily_api_key"] = body.tavily_api_key
     if body.sentinel_base_url is not None:
         SETTINGS["sentinel_base_url"] = body.sentinel_base_url
     if body.sentinel_api_key is not None:
@@ -232,111 +228,6 @@ async def update_song_gen_setting(body: SongGenToggle):
     SETTINGS["song_gen_enabled"] = body.enabled
     save_settings(SETTINGS)
     return {"ok": True, "song_gen_enabled": body.enabled}
-
-# ── 微信桥接设置 ─────────────────────────────────
-class WeChatBridgeSettingsUpdate(BaseModel):
-    enabled: Optional[bool] = None
-    transport: Optional[str] = None
-    webhook_url: Optional[str] = None
-    webhook_token: Optional[str] = None
-    inbound_token: Optional[str] = None
-    openclaw_home: Optional[str] = None
-    context_stale_seconds: Optional[int] = None
-
-
-class WeChatBridgeBindingCreate(BaseModel):
-    source_type: Optional[str] = None
-    source_id: Optional[str] = None
-    ttl_seconds: Optional[int] = None
-
-
-@router.get("/api/settings/wechat-bridge")
-async def get_wechat_bridge_setting():
-    from wechat_bridge import public_wechat_bindings
-
-    openclaw_accounts = []
-    openclaw_status_error = ""
-    try:
-        from openclaw_weixin import summarize_accounts
-
-        openclaw_accounts = summarize_accounts(SETTINGS.get("wechat_bridge_openclaw_home") or None)
-    except Exception as exc:
-        openclaw_status_error = str(exc)
-
-    pending = SETTINGS.get("wechat_bridge_pending_bindings")
-    if not isinstance(pending, dict):
-        pending = {}
-    return {
-        "wechat_bridge_enabled": SETTINGS.get("wechat_bridge_enabled", False),
-        "wechat_bridge_transport": SETTINGS.get("wechat_bridge_transport", "webhook"),
-        "wechat_bridge_webhook_url": SETTINGS.get("wechat_bridge_webhook_url", ""),
-        "wechat_bridge_webhook_token": SETTINGS.get("wechat_bridge_webhook_token", ""),
-        "wechat_bridge_inbound_token": SETTINGS.get("wechat_bridge_inbound_token", ""),
-        "wechat_bridge_openclaw_home": SETTINGS.get("wechat_bridge_openclaw_home", ""),
-        "wechat_bridge_context_stale_seconds": SETTINGS.get("wechat_bridge_context_stale_seconds", 15 * 60),
-        "wechat_bridge_last_send": SETTINGS.get("wechat_bridge_last_send"),
-        "openclaw_accounts": openclaw_accounts,
-        "openclaw_status_error": openclaw_status_error,
-        "bindings": public_wechat_bindings(settings=SETTINGS),
-        "pending_bindings": list(pending.values()),
-    }
-
-
-@router.put("/api/settings/wechat-bridge")
-async def update_wechat_bridge_setting(body: WeChatBridgeSettingsUpdate):
-    if body.enabled is not None:
-        SETTINGS["wechat_bridge_enabled"] = bool(body.enabled)
-    if body.transport is not None:
-        transport = body.transport.strip().lower()
-        if transport not in ("webhook", "openclaw"):
-            raise HTTPException(status_code=400, detail="transport must be webhook or openclaw")
-        SETTINGS["wechat_bridge_transport"] = transport
-    if body.webhook_url is not None:
-        SETTINGS["wechat_bridge_webhook_url"] = body.webhook_url.strip()
-    if body.webhook_token is not None:
-        SETTINGS["wechat_bridge_webhook_token"] = body.webhook_token.strip()
-    if body.inbound_token is not None:
-        SETTINGS["wechat_bridge_inbound_token"] = body.inbound_token.strip()
-    if body.openclaw_home is not None:
-        SETTINGS["wechat_bridge_openclaw_home"] = body.openclaw_home.strip()
-    if body.context_stale_seconds is not None:
-        SETTINGS["wechat_bridge_context_stale_seconds"] = max(60, int(body.context_stale_seconds))
-    save_settings(SETTINGS)
-    return {
-        "ok": True,
-        "wechat_bridge_enabled": SETTINGS.get("wechat_bridge_enabled", False),
-        "wechat_bridge_transport": SETTINGS.get("wechat_bridge_transport", "webhook"),
-        "wechat_bridge_webhook_url": SETTINGS.get("wechat_bridge_webhook_url", ""),
-    }
-
-
-@router.post("/api/settings/wechat-bridge/bindings")
-async def create_wechat_bridge_binding(body: WeChatBridgeBindingCreate):
-    from wechat_bridge import create_wechat_pending_binding, get_recorded_wechat_route
-
-    route = get_recorded_wechat_route()
-    source_type = (body.source_type or route.get("source_type") or "").strip()
-    source_id = (body.source_id or route.get("source_id") or "").strip()
-    if not source_type or not source_id:
-        raise HTTPException(status_code=400, detail="source_type and source_id are required when no recent WeChat route exists")
-
-    SETTINGS["wechat_bridge_enabled"] = True
-    SETTINGS["wechat_bridge_transport"] = "openclaw"
-    pending = create_wechat_pending_binding(
-        source_type=source_type,
-        source_id=source_id,
-        ttl_seconds=body.ttl_seconds or 10 * 60,
-        settings=SETTINGS,
-    )
-    save_settings(SETTINGS)
-    return {
-        "ok": True,
-        "code": pending["code"],
-        "source_type": pending["source_type"],
-        "source_id": pending["source_id"],
-        "expires_at": pending["expires_at"],
-        "instruction": f"Send this in WeChat: bind {pending['code']}",
-    }
 
 @router.get("/api/settings/gemini-cli-tools")
 async def get_gemini_cli_tools_setting():
@@ -505,3 +396,51 @@ async def tts_voice_list():
         return {"voices": voices}
     except Exception as e:
         return {"voices": [], "error": str(e)}
+
+# ── 微信桥接 ──────────────────────────────────────
+@router.get("/api/settings/wechat-bridge")
+async def get_wechat_bridge():
+    openclaw_home = SETTINGS.get("openclaw_home", "")
+    accounts_summary = []
+    status_error = None
+    try:
+        from openclaw_weixin import load_accounts, resolve_openclaw_home
+        home = resolve_openclaw_home(openclaw_home or None)
+        accounts = load_accounts(home)
+        for acc in accounts:
+            accounts_summary.append({
+                "account_id": acc.account_id,
+                "user_id": acc.user_id,
+                "has_token": bool(acc.token),
+                "known_contacts": len(acc.raw.get("contacts", []) if isinstance(acc.raw, dict) else []),
+            })
+    except Exception as e:
+        status_error = str(e)
+    return {
+        "wechat_bridge_enabled": SETTINGS.get("wechat_bridge_enabled", False),
+        "wechat_bridge_transport": SETTINGS.get("wechat_bridge_transport", ""),
+        "openclaw_home": openclaw_home or str(Path.home() / ".openclaw"),
+        "openclaw_accounts": accounts_summary,
+        "openclaw_status_error": status_error,
+    }
+
+class WeChatBridgeToggle(BaseModel):
+    enabled: bool
+    transport: str = "openclaw"
+    openclaw_home: str = ""
+
+@router.put("/api/settings/wechat-bridge")
+async def update_wechat_bridge(body: WeChatBridgeToggle):
+    SETTINGS["wechat_bridge_enabled"] = body.enabled
+    SETTINGS["wechat_bridge_transport"] = body.transport
+    if body.openclaw_home:
+        SETTINGS["openclaw_home"] = body.openclaw_home
+    save_settings(SETTINGS)
+    return await get_wechat_bridge()
+
+# ── 微信绑定码 ────────────────────────────────────
+@router.post("/api/settings/wechat-bridge/bindings")
+async def create_wechat_binding_code(source_type: str = "", source_id: str = ""):
+    from wechat_bridge import create_wechat_binding
+    code = create_wechat_binding(source_type=source_type or None, source_id=source_id or None)
+    return {"code": code, "instruction": f"Send this in WeChat: bind {code}"}

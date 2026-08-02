@@ -1,5 +1,5 @@
 """
-AI 生图模块：Gemini gemini-3.1-flash-lite-image 生成图片
+AI 生图模块：Gemini gemini-3.1-flash-image-preview 生成图片
 支持 SELFIE（带参考图）和 DRAW（纯文本）两种模式
 """
 
@@ -12,22 +12,14 @@ from config import get_key, UPLOADS_DIR, PUBLIC_DIR
 
 # 参考图位置（用于 SELFIE 模式）
 REFERENCE_IMAGE_PATH = PUBLIC_DIR / "生图锚点.jpg"
-SECONDARY_REFERENCE_IMAGE_PATH = PUBLIC_DIR / "2号机生图锚点.jpg"
-IMAGE_GEN_MODEL = "gemini-3.1-flash-lite-image"
+IMAGE_GEN_MODEL = "gemini-3.1-flash-image-preview"
 IMAGE_GEN_TIMEOUT = 120  # 生图超时秒数
 
 
-def _selfie_reference_path(source_identity: str = "") -> Path:
-    """Return the SELFIE anchor by stable internal actor identity, not display name."""
-    if str(source_identity or "").strip().lower() == "connor":
-        return SECONDARY_REFERENCE_IMAGE_PATH
-    return REFERENCE_IMAGE_PATH
-
-
-async def generate_image(prompt: str, is_selfie: bool = False, source_identity: str = "") -> str | None:
+async def generate_image(prompt: str, is_selfie: bool = False) -> str | None:
     """
     调用 Gemini 生图模型生成图片，保存到 uploads 目录，返回文件名。
-    is_selfie=True 时自动附带参考图。
+    is_selfie=True 时自动附带参考图（生图锚点.jpg）。
     失败返回 None。
     """
     api_key = get_key("gemini")
@@ -40,9 +32,8 @@ async def generate_image(prompt: str, is_selfie: bool = False, source_identity: 
 
     # SELFIE 模式：附带参考图
     if is_selfie:
-        reference_image_path = _selfie_reference_path(source_identity)
-        if reference_image_path.exists():
-            ref_bytes = reference_image_path.read_bytes()
+        if REFERENCE_IMAGE_PATH.exists():
+            ref_bytes = REFERENCE_IMAGE_PATH.read_bytes()
             ref_b64 = base64.b64encode(ref_bytes).decode("utf-8")
             parts.append({
                 "inlineData": {
@@ -50,9 +41,9 @@ async def generate_image(prompt: str, is_selfie: bool = False, source_identity: 
                     "data": ref_b64
                 }
             })
-            print(f"[image_gen] SELFIE 模式，已附带参考图: {reference_image_path}")
+            print(f"[image_gen] SELFIE 模式，已附带参考图: {REFERENCE_IMAGE_PATH}")
         else:
-            print(f"[image_gen] 参考图不存在: {reference_image_path}，降级为 DRAW 模式")
+            print(f"[image_gen] 参考图不存在: {REFERENCE_IMAGE_PATH}，降级为 DRAW 模式")
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{IMAGE_GEN_MODEL}:generateContent?key={api_key}"
 

@@ -44,7 +44,7 @@ def load_settings():
     if SETTINGS_PATH.exists():
         with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
-    keys = {"gemini_key": "", "siliconflow_key": "", "gemini_free_key": "", "aipro_key": ""}
+    keys = {"gemini_key": "", "siliconflow_key": "", "gemini_free_key": "", "aipro_key": "", "deepseek_key": ""}
     txt = BASE_DIR.parent / "所需要的API.txt"
     if txt.exists():
         with open(txt, "r", encoding="utf-8") as f:
@@ -69,6 +69,8 @@ def get_key(provider: str) -> str:
         return SETTINGS.get("gemini_free_key", "") or SETTINGS.get("gemini_key", "")
     if provider == "aipro":
         return SETTINGS.get("aipro_key", "")
+    if provider == "deepseek":
+        return SETTINGS.get("deepseek_key", "")
     return SETTINGS.get("siliconflow_key", "")
 
 def get_sentinel_config() -> dict:
@@ -204,13 +206,16 @@ BUILTIN_MODELS = {
     "硅基GLM-5.2":      {"provider": "siliconflow", "model": "zai-org/GLM-5.2", "vision": False},
     "硅基Kimi2.7":      {"provider": "siliconflow", "model": "moonshotai/Kimi-K2.7-Code", "vision": True},
     "硅基DS-v4":      {"provider": "siliconflow", "model": "deepseek-ai/DeepSeek-V4-Pro", "vision": False},
-    "官Gem3.6flash":  {"provider": "gemini", "model": "gemini-3.6-flash", "vision": True},
-    "官Gem3.1pro":  {"provider": "gemini", "model": "gemini-3.1-pro-preview", "vision": True},
-    # "Codex-5.5":            {"provider": "codex_cli",  "model": "gpt-5.5", "vision": True},
-    "Codex-Sol":      {"provider": "codex_cli",  "model": "gpt-5.6-sol", "vision": True},
-    # "Codex":          {"provider": "codex_cli",  "model": "gpt-5.6-terra", "vision": True},
-    # "Codex-Luna":     {"provider": "codex_cli",  "model": "gpt-5.6-luna", "vision": True},
-    # "CLI-3.1pro":       {"provider": "gemini_cli", "model": "gemini-3.1-pro-preview", "vision": True},
+    "硅基Nex-N2-Pro":      {"provider": "siliconflow", "model": "nex-agi/Nex-N2-Pro", "vision": True},
+    "官方Gemini3.5flash":  {"provider": "gemini", "model": "gemini-3.5-flash", "vision": True},
+    "官方Gemini3.1pro":  {"provider": "gemini", "model": "gemini-3.1-pro-preview", "vision": True},
+    # ChatGPT-auth Codex does not support some Codex-only defaults, so pin a
+    # model that works after account switches..
+    "Codex":            {"provider": "codex_cli",  "model": "gpt-5.5", "vision": True},
+    "CLI-3.1pro":       {"provider": "gemini_cli", "model": "gemini-3.1-pro-preview", "vision": True},
+    "DeepSeek-V3":      {"provider": "deepseek", "model": "deepseek-chat", "vision": False},
+    "DeepSeek-R1":      {"provider": "deepseek", "model": "deepseek-reasoner", "vision": False},
+    "DeepSeek-V4":      {"provider": "deepseek", "model": "deepseek-chat", "vision": False},
 }
 
 
@@ -245,12 +250,10 @@ def normalize_custom_model_routes(value) -> list[dict]:
                 model_id = _clean_text(raw_model)
                 model_key = model_id
                 vision = True
-                audio = False
             elif isinstance(raw_model, dict):
                 model_id = _clean_text(raw_model.get("model") or raw_model.get("model_id"))
                 model_key = _clean_text(raw_model.get("key") or raw_model.get("name") or model_id)
                 vision = bool(raw_model.get("vision", True))
-                audio = raw_model.get("audio") is True
             else:
                 continue
             if not model_id or not model_key:
@@ -262,7 +265,6 @@ def normalize_custom_model_routes(value) -> list[dict]:
                 "key": model_key,
                 "model": model_id,
                 "vision": vision,
-                "audio": audio,
             })
         if models:
             routes.append({
@@ -286,7 +288,6 @@ def refresh_custom_models() -> None:
                 "provider": CUSTOM_OPENAI_PROVIDER,
                 "model": item["model"],
                 "vision": bool(item.get("vision", True)),
-                "audio": item.get("audio") is True,
                 "base_url": route["base_url"],
                 "api_key": route.get("api_key", ""),
                 "route_id": route["id"],

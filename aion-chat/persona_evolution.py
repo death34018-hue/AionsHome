@@ -530,6 +530,84 @@ async def _call_actor_model(actor: str, messages: list[dict], model_key: str) ->
     return await simple_ai_call(messages, model_key, temperature=0.2)
 
 
+def _escape_content_quotes(json_text: str) -> str:
+    """转义 JSON 字符串值内部的中文/内容双引号，保留结构引号。"""
+    result = []
+    in_string = False
+    escaped = False
+    i = 0
+    while i < len(json_text):
+        ch = json_text[i]
+        if in_string:
+            if escaped:
+                result.append(ch)
+                escaped = False
+                i += 1
+                continue
+            if ch == '\\':
+                result.append(ch)
+                escaped = True
+                i += 1
+                continue
+            if ch == '"':
+                # 只有后跟 : , } ] 或空白+这些字符才是结构结束
+                after = json_text[i+1:i+20].lstrip()
+                if after and after[0] in ':,\n\r}]':
+                    result.append(ch)
+                    in_string = False
+                    i += 1
+                    continue
+                else:
+                    result.append('\\"')
+                    i += 1
+                    continue
+            if ch == '\n':
+                result.append('\\n')
+                i += 1
+                continue
+            result.append(ch)
+            i += 1
+            continue
+        result.append(ch)
+        if ch == '"':
+            in_string = True
+        i += 1
+    return ''.join(result)
+
+
+def _repair_unescaped_json_quotes(candidate: str, max_repairs: int = 64) -> dict | None:
+    """有限修复模型在 JSON 字符串正文中遗漏转义的双引号。"""
+    repaired = candidate
+    for _ in range(max_repairs + 1):
+        try:
+            data = json.loads(repaired, strict=False)
+            return data if isinstance(data, dict) else None
+        except json.JSONDecodeError as exc:
+            quote_pos = -1
+            if exc.msg == "Expecting ',' delimiter":
+                if exc.pos < len(repaired) and repaired[exc.pos] == '"':
+                    quote_pos = exc.pos
+                elif exc.pos > 0 and repaired[exc.pos - 1] == '"':
+                    quote_pos = exc.pos - 1
+            elif exc.msg in {
+                "Expecting property name enclosed in double quotes",
+                "Expecting value",
+            }:
+                cursor = exc.pos - 1
+                while cursor >= 0 and repaired[cursor].isspace():
+                    cursor -= 1
+                if cursor >= 0 and repaired[cursor] == ",":
+                    cursor -= 1
+                    while cursor >= 0 and repaired[cursor].isspace():
+                        cursor -= 1
+                    if cursor >= 0 and repaired[cursor] == '"':
+                        quote_pos = cursor
+            if quote_pos < 0:
+                return None
+            repaired = repaired[:quote_pos] + "\\" + repaired[quote_pos:]
+    return None
+
+
 def _extract_json(text: str) -> dict:
     raw = (text or "").strip()
     if raw.startswith("```"):
@@ -539,10 +617,31 @@ def _extract_json(text: str) -> dict:
     end = raw.rfind("}")
     if start >= 0 and end > start:
         raw = raw[start : end + 1]
-    parsed = json.loads(raw)
-    if not isinstance(parsed, dict):
-        raise ValueError("AI response is not a JSON object")
-    return parsed
+
+    # 先尝试直接解析
+    try:
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("AI response is not a JSON object")
+        return parsed
+    except json.JSONDecodeError:
+        pass
+
+    # 内容引号转义后重试（处理中文 "xxx" 等常见场景）
+    try:
+        escaped = _escape_content_quotes(raw)
+        parsed = json.loads(escaped)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    # 修复未转义引号后重试
+    repaired = _repair_unescaped_json_quotes(raw)
+    if repaired is not None:
+        return repaired
+
+    raise ValueError("AI response is not valid JSON even after repair")
 
 
 def _compile_ai_persona_sections(sections: dict, actor: str = ACTOR_MAIN_AI) -> str:

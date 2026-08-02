@@ -6,7 +6,7 @@ from config import BASE_DIR, PUBLIC_DIR
 
 def test_client_asset_manifest_is_content_addressed():
     manifest = get_client_asset_manifest()
-    assert manifest["schema"] == 2
+    assert manifest["schema"] == 1
     assert len(manifest["version"]) == 20
     assert "/static/chat.js" in manifest["files"]
     assert "/public/AIIcon.png" in manifest["files"]
@@ -16,12 +16,10 @@ def test_client_asset_manifest_is_content_addressed():
     assert manifest["files"]["/static/chat.js"]["sha256"] == expected
 
 
-def test_client_asset_manifest_excludes_large_user_content_but_includes_app_documents():
+def test_client_asset_manifest_excludes_large_or_navigable_content():
     manifest = get_client_asset_manifest()
     paths = set(manifest["files"])
     assert not any(path.startswith("/public/wallpaper/") for path in paths)
-    assert "/" in paths
-    assert "/memory" in paths
-    assert "/moments" in paths
+    assert not any(path.endswith(".html") for path in paths)
     assert all((PUBLIC_DIR / path.removeprefix("/public/")).is_file()
                for path in paths if path.startswith("/public/"))

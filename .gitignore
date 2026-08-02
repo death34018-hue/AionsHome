@@ -6,6 +6,21 @@ __pycache__/
 venv/
 *.egg-info/
 
+# ── 大文件 / 构建产物 ──
+vendor/
+public/
+AionApp/
+AionPet/
+Connor-Codex/vendor/
+Connor-Codex/node_modules/
+Connor-Codex/.venv/
+*.whl
+*.apk
+*.aab
+*.zip
+*.7z
+*.tar.gz
+
 # ── IDE ──
 .vscode/
 .idea/
@@ -38,6 +53,8 @@ aion-chat/data/home_assistant_aliases.json
 aion-chat/data/homeassistant-config/
 aion-chat/data/wallpaper_config.json
 aion-chat/data/ghost_forest/*.json
+aion-chat/data/desire_state.json
+aion-chat/data/doudizhu_state.json
 aion-chat/data/books/
 aion-chat/data/cert.pem
 aion-chat/data/key.pem

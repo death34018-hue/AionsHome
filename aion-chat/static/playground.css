@@ -69,15 +69,29 @@ body:not([data-theme="dark"]) .pg-back-btn:hover { background: rgba(0,0,0,0.05);
   outline: none;
   max-width: 180px;
 }
-body:not([data-theme="dark"]) .pg-server-select {
+.pg-persona-select {
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.08);
+  color: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+  max-width: 120px;
+}
+body:not([data-theme="dark"]) .pg-server-select,
+body:not([data-theme="dark"]) .pg-persona-select {
   background: rgba(0,0,0,0.04);
   border-color: rgba(0,0,0,0.12);
 }
-.pg-server-select option {
+.pg-server-select option,
+.pg-persona-select option {
   background: #1a1f3a;
   color: #e0e4f0;
 }
-body:not([data-theme="dark"]) .pg-server-select option {
+body:not([data-theme="dark"]) .pg-server-select option,
+body:not([data-theme="dark"]) .pg-persona-select option {
   background: #fff;
   color: #333;
 }
@@ -343,6 +357,18 @@ body:not([data-theme="dark"]) .pg-input-bar {
   font-size: 14px;
   outline: none;
   transition: border-color 0.2s;
+}
+.pg-model-select {
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06);
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+  max-width: 110px;
+  flex-shrink: 0;
 }
 body:not([data-theme="dark"]) .pg-input {
   background: rgba(0,0,0,0.04);

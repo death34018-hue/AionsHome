@@ -14,53 +14,16 @@ _LOCK = Lock()
 _CACHED_SIGNATURE: tuple[tuple[str, int, int], ...] | None = None
 _CACHED_MANIFEST: dict | None = None
 
-_DOCUMENT_ROUTES = {
-    "/": "home.html",
-    "/chat": "chat.html",
-    "/settings": "settings.html",
-    "/capabilities": "capabilities.html",
-    "/worldbook": "worldbook.html",
-    "/memory": "memory.html",
-    "/memory-compression": "memory-compression.html",
-    "/schedule": "schedule.html",
-    "/camera": "camera.html",
-    "/monitor-logs": "monitor-logs.html",
-    "/location": "location.html",
-    "/heart-whispers": "heart-whispers.html",
-    "/moments": "moments.html",
-    "/diary": "diary.html",
-    "/activity-logs": "activity-logs.html",
-    "/reading": "reading.html",
-    "/theater": "theater.html",
-    "/date-theater": "date_theater.html",
-    "/ghost-forest": "ghost-forest.html",
-    "/gift": "gift.html",
-    "/fund": "fund.html",
-    "/wallpaper": "wallpaper.html",
-    "/playground": "playground.html",
-    "/chatroom": "chatroom.html",
-    "/doudizhu": "doudizhu.html",
-    "/seeky": "seeky.html",
-    "/wishes": "wishes.html",
-    "/xhs-lite": "xhs-lite.html",
-    "/xhs-lite-logs": "xhs-lite-logs.html",
-    "/health": "health.html",
-    "/pet": "pet.html",
-}
-
 
 def _iter_client_assets():
     static_dir = BASE_DIR / "static"
-    for route, filename in _DOCUMENT_ROUTES.items():
-        path = static_dir / filename
-        if path.is_file():
-            yield route, path, "document"
     for path in static_dir.iterdir():
         if path.is_file() and path.suffix.lower() in {".js", ".css", ".json"}:
             yield "/static/" + path.name, path, "frontend"
 
-    # Wallpaper videos and user-authored HTML story pages remain excluded.
-    # App-owned navigable documents above are versioned explicitly by route.
+    # Wallpaper videos and HTML story pages are intentionally excluded. They
+    # are either large user-selected media or navigable documents, not shared
+    # UI assets. Everything else in public/ is safe to cache by content hash.
     for path in PUBLIC_DIR.rglob("*"):
         if not path.is_file() or path.suffix.lower() in {".html", ".htm"}:
             continue
@@ -107,7 +70,7 @@ def get_client_asset_manifest() -> dict:
         ).hexdigest()[:20]
         _CACHED_SIGNATURE = signature
         _CACHED_MANIFEST = {
-            "schema": 2,
+            "schema": 1,
             "version": version,
             "files": files,
         }

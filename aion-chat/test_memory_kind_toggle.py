@@ -87,18 +87,6 @@ class MemoryKindToggleFrontendTests(unittest.TestCase):
         self.assertNotIn("toggleChatroomMemoryKind('", chatroom_js)
         self.assertIn("memory_kind: nextKind", chatroom_js)
 
-    def test_main_memory_counts_use_server_kind_totals_not_loaded_page_length(self):
-        route_source = (ROOT / "routes" / "memories.py").read_text(encoding="utf-8")
-        main_html = (ROOT / "static" / "memory.html").read_text(encoding="utf-8")
-
-        self.assertIn('"kind_totals"', route_source)
-        self.assertIn('"daily"', route_source)
-        self.assertIn('"long_term"', route_source)
-        self.assertIn("let _memoryKindTotals", main_html)
-        self.assertIn("result.kind_totals", main_html)
-        self.assertIn("_memoryKindTotals[_memoryKindFilter]", main_html)
-        self.assertNotIn("${filterText} ${kindFiltered.length} 条", main_html)
-
 
 if __name__ == "__main__":
     unittest.main()

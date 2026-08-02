@@ -16,6 +16,7 @@ from config import load_worldbook, SETTINGS, get_key, MODELS
 from database import get_db
 from ws import manager
 from mcp_client import mcp_manager
+from chatroom import load_chatroom_config, get_chatroom_names
 
 logger = logging.getLogger("playground")
 
@@ -34,6 +35,7 @@ class RunRequest(BaseModel):
     instruction: str
     conv_id: Optional[str] = None
     model: str = ""  # 留空则用默认
+    persona: str = "aion"  # "aion" 或 "connor"，选哪个 AI 出门
 
 class AddServerRequest(BaseModel):
     name: str
@@ -169,6 +171,9 @@ async def _call_ai_with_tools(messages: list, tools: list, model_cfg: dict,
     if provider == "siliconflow":
         url = "https://api.siliconflow.cn/v1/chat/completions"
         headers = {"Authorization": f"Bearer {get_key('siliconflow')}", "Content-Type": "application/json"}
+    elif provider == "deepseek":
+        url = "https://api.deepseek.com/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {get_key('deepseek')}", "Content-Type": "application/json"}
     elif provider == "aipro":
         url = "https://vip.aipro.love/v1/chat/completions"
         headers = {"Authorization": f"Bearer {get_key('aipro')}", "Content-Type": "application/json"}
@@ -177,6 +182,9 @@ async def _call_ai_with_tools(messages: list, tools: list, model_cfg: dict,
         url = "https://vip.aipro.love/v1/chat/completions"
         headers = {"Authorization": f"Bearer {get_key('aipro')}", "Content-Type": "application/json"}
         model = model_cfg["model"]
+    elif provider == "custom_openai":
+        url = f"{model_cfg['base_url'].rstrip('/')}/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {model_cfg['api_key']}", "Content-Type": "application/json"}
     else:
         raise ValueError(f"不支持的 provider: {provider}")
 
@@ -216,12 +224,18 @@ async def _stream_ai_text(messages: list, model_cfg: dict, cancel_event: asyncio
     if provider == "siliconflow":
         url = "https://api.siliconflow.cn/v1/chat/completions"
         headers = {"Authorization": f"Bearer {get_key('siliconflow')}", "Content-Type": "application/json"}
+    elif provider == "deepseek":
+        url = "https://api.deepseek.com/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {get_key('deepseek')}", "Content-Type": "application/json"}
     elif provider == "aipro":
         url = "https://vip.aipro.love/v1/chat/completions"
         headers = {"Authorization": f"Bearer {get_key('aipro')}", "Content-Type": "application/json"}
     elif provider == "gemini":
         url = "https://vip.aipro.love/v1/chat/completions"
         headers = {"Authorization": f"Bearer {get_key('aipro')}", "Content-Type": "application/json"}
+    elif provider == "custom_openai":
+        url = f"{model_cfg['base_url'].rstrip('/')}/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {model_cfg['api_key']}", "Content-Type": "application/json"}
     else:
         raise ValueError(f"不支持的 provider: {provider}")
 
@@ -275,25 +289,26 @@ async def _get_recent_chat(conv_id: str | None, limit: int = 20) -> list[dict]:
     return [{"role": r["role"], "content": (r["content"] or "")[:300]} for r in reversed(rows)]
 
 
-# ── 获取近期记忆 ──
-async def _get_recent_memories(limit: int = 8) -> list[str]:
+# ── 获取近期记忆（按 persona 过滤）──
+async def _get_recent_memories(persona: str = "aion", limit: int = 8) -> list[str]:
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "SELECT content FROM memories ORDER BY created_at DESC LIMIT ?",
-            (limit,)
+            "SELECT content FROM memories WHERE persona = ? OR persona IS NULL "
+            "ORDER BY created_at DESC LIMIT ?",
+            (persona, limit)
         )
         rows = await cur.fetchall()
     return [r["content"] for r in rows]
 
 
 # ── 插入见闻消息到主聊天（作为 AI 自己的消息）──
-async def _insert_system_message(conv_id: str, server_name: str, brief: str):
+async def _insert_system_message(conv_id: str, server_name: str, brief: str, ai_name: str = "AI"):
     if not conv_id:
         return
     now = time.time()
     msg_id = f"msg_{int(now * 1000)}_pg"
-    content = f"🎮 我刚去{server_name}逛了一圈：\n\n{brief}"
+    content = f"🎮 【{ai_name}】去{server_name}逛了一圈：\n\n{brief}"
 
     async with get_db() as db:
         await db.execute(
@@ -311,13 +326,34 @@ async def _insert_system_message(conv_id: str, server_name: str, brief: str):
 def _get_model_cfg(model_key: str) -> dict:
     if model_key and model_key in MODELS:
         return MODELS[model_key]
-    # 默认使用一个支持 tool calling 的模型
-    for key in ["硅基GLM-5.1", "硅基GLM-5", "硅基Kimi2.6"]:
+    # 按优先级尝试不同 provider 的模型，避免单个 API 欠费卡死
+    fallback_order = [
+        "DeepSeek-V4",        # deepseek ✅
+        "DeepSeek-V3",        # deepseek
+        "硅基GLM-5.2",       # siliconflow
+        "官方Gemini3.5flash", # gemini → aipro
+        "硅基DS-v4",          # siliconflow
+        "硅基Kimi2.7",        # siliconflow
+    ]
+    for key in fallback_order:
         if key in MODELS:
             return MODELS[key]
-    # fallback
+    # 最终兜底
     first_key = next(iter(MODELS))
     return MODELS[first_key]
+
+
+# ── API: 列出可用 AI 人格 ──
+@router.get("/api/playground/personas")
+async def list_personas():
+    wb = load_worldbook()
+    cfg = load_chatroom_config()
+    return {
+        "personas": [
+            {"key": "aion", "name": wb.get("ai_name", "AI"), "emoji": "🤖"},
+            {"key": "connor", "name": cfg.get("connor_name", "第二AI"), "emoji": "🧩"},
+        ]
+    }
 
 
 # ── SSE 核心：执行指令 ──
@@ -327,6 +363,7 @@ async def run_instruction(req: RunRequest):
     instruction = req.instruction
     conv_id = req.conv_id
     model_cfg = _get_model_cfg(req.model)
+    persona = req.persona or "aion"
 
     if not mcp_manager.is_connected(server):
         return {"ok": False, "error": f"{server} 未连接"}
@@ -344,18 +381,24 @@ async def run_instruction(req: RunRequest):
 
             # 并行获取 近期对话 + 记忆 + 人设
             recent_chat_task = asyncio.create_task(_get_recent_chat(conv_id, 20))
-            memories_task = asyncio.create_task(_get_recent_memories(8))
+            memories_task = asyncio.create_task(_get_recent_memories(persona, 8))
 
             wb = load_worldbook()
+            chat_cfg = load_chatroom_config()
             recent_chat = await recent_chat_task
             memories = await memories_task
 
-            # 组装 system prompt — 用 user/assistant 对话对注入人设（与主聊天一致，防止漂移）
-            ai_name = wb.get("ai_name", "AI")
+            # ── 根据 persona 选择 AI 人设 ──
             user_name = wb.get("user_name", "用户")
-            ai_persona = wb.get("ai_persona", "")
             user_persona = wb.get("user_persona", "")
             system_prompt_text = wb.get("system_prompt", "") if wb.get("system_prompt_enabled", True) else ""
+
+            if persona == "connor":
+                ai_name = chat_cfg.get("connor_name", "第二AI")
+                ai_persona = chat_cfg.get("connor_persona", "")
+            else:
+                ai_name = wb.get("ai_name", "AI")
+                ai_persona = wb.get("ai_persona", "")
 
             # 核心身份 system prompt
             system_parts = []
@@ -379,11 +422,15 @@ async def run_instruction(req: RunRequest):
                 prefix.append({"role": "user", "content": f"[系统提示]\n{system_prompt_text}"})
                 prefix.append({"role": "assistant", "content": "收到，我会遵循这些规则。"})
 
-            # 注入近期对话上下文和记忆
+            # 注入近期对话上下文和记忆（标注每个 AI 的身份避免串话）
             if recent_chat:
-                chat_text = "\n".join(f"{'\u7528\u6237' if m['role']=='user' else 'AI'}: {m['content']}" for m in recent_chat)
-                prefix.append({"role": "user", "content": f"[最近对话记录]\n{chat_text}"})
-                prefix.append({"role": "assistant", "content": "收到，我记住了我们最近的对话内容。"})
+                chat_lines = []
+                for m in recent_chat:
+                    role_label = "用户" if m['role'] == 'user' else "AI"
+                    chat_lines.append(f"{role_label}: {m['content']}")
+                chat_text = "\n".join(chat_lines)
+                prefix.append({"role": "user", "content": f"[最近对话记录（你是{ai_name}，对话中标注'AI'的就是你或另一个AI的发言，请根据内容自行判断）]\n{chat_text}"})
+                prefix.append({"role": "assistant", "content": f"收到，我是{ai_name}，我记住了最近的对话内容。"})
             if memories:
                 mem_text = "\n".join(f"- {m}" for m in memories)
                 prefix.append({"role": "user", "content": f"[近期记忆]\n{mem_text}"})
@@ -400,7 +447,7 @@ async def run_instruction(req: RunRequest):
                 {"role": "user", "content": instruction},
             ]
 
-            max_rounds = 15  # 防止无限循环
+            max_rounds = 100  # 充足轮数，够玩 MCP 小游戏
             all_actions = []  # 记录所有行动
 
             for round_i in range(max_rounds):
@@ -479,15 +526,27 @@ async def run_instruction(req: RunRequest):
                         all_actions.append(f"AI说: {ai_content[:200]}")
                         mem_summary = ai_content  # 直接用 AI 的最终回复作为见闻
                     break
+            else:
+                # for 循环正常结束（没有 break）= 达到轮数上限，让 AI 做总结
+                yield _sse("status", f"已达 {max_rounds} 轮上限，正在生成总结...", log_events)
+                messages.append({"role": "user", "content": "你已经完成了多次探索操作。请用一段话总结你这次的见闻和收获，像是给用户发一条消息汇报。"})
+                try:
+                    final_result = await _call_ai_with_tools(messages, [], model_cfg, cancel_event)
+                    final_text = final_result.get("content", "")
+                    if final_text:
+                        yield _sse("text", final_text, log_events)
+                        mem_summary = final_text
+                except Exception as e:
+                    logger.warning(f"[Playground] 轮数上限总结失败: {e}")
 
             # ── 4. 后处理：插入见闻到主聊天 ──
             if mem_summary:
                 yield _sse("status", "正在写入见闻...", log_events)
-                await _insert_system_message(conv_id, server, mem_summary)
+                await _insert_system_message(conv_id, server, mem_summary, ai_name)
             elif all_actions:
                 # AI 没给最终文字回复（只调了工具），用简短总结
                 mem_summary = f"去{server}逛了一圈，做了{len(all_actions)}个操作"
-                await _insert_system_message(conv_id, server, mem_summary)
+                await _insert_system_message(conv_id, server, mem_summary, ai_name)
 
             yield _sse("done", "探索完成！", log_events)
 

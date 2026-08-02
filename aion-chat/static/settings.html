@@ -455,7 +455,7 @@ body[data-theme="light"] .ghost-btn {
       <summary>
         <div class="summary-title">
           <strong>🔑 API 与基础账号</strong>
-          <span>官方 Key、联网搜索、内置硅基模型、音乐 Cookie</span>
+          <span>官方 Key、内置硅基模型、音乐 Cookie</span>
         </div>
         <span class="summary-chevron">›</span>
       </summary>
@@ -471,10 +471,6 @@ body[data-theme="light"] .ghost-btn {
         <div class="field">
           <label class="form-label">硅基流动 API Key</label>
           <input class="form-input mono-input" type="text" id="sfKeyInput" placeholder="输入硅基流动 API Key..." autocomplete="off">
-        </div>
-        <div class="field">
-          <label class="form-label">Tavily API Key（联网搜索）</label>
-          <input class="form-input mono-input" type="text" id="tavilyApiKeyInput" placeholder="输入 Tavily API Key..." autocomplete="off">
         </div>
         <div class="field full">
           <label class="form-label">网易云 MUSIC_U Cookie（VIP 点歌）</label>
@@ -658,7 +654,7 @@ function makeRouteId() {
 }
 
 function newCustomModel() {
-  return { key: "", model: "", vision: true, audio: false };
+  return { key: "", model: "", vision: true };
 }
 
 function newCustomRoute() {
@@ -689,8 +685,7 @@ function normalizeRoutesForUi(routes, collapsedState) {
             return {
               key: model.key || model.name || model.model || "",
               model: model.model || model.model_id || "",
-              vision: model.vision !== false,
-              audio: model.audio === true
+              vision: model.vision !== false
             };
           })
         : [newCustomModel()]
@@ -716,10 +711,6 @@ function renderCustomRoutes() {
               '<label class="vision-toggle">' +
                 '<input type="checkbox" ' + (model.vision !== false ? "checked" : "") + ' onchange="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'vision\', this.checked)">' +
                 '可看图' +
-              '</label>' +
-              '<label class="vision-toggle">' +
-                '<input type="checkbox" ' + (model.audio === true ? "checked" : "") + ' onchange="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'audio\', this.checked)">' +
-                '可听音频' +
               '</label>' +
               '<button class="ghost-btn danger-btn model-delete" type="button" title="删除模型" onclick="removeCustomModel(' + routeIndex + ', ' + modelIndex + ')">×</button>' +
             '</div>' +
@@ -833,7 +824,7 @@ function collectCustomRoutes() {
       if (!key || !modelId) throw new Error("第 " + (routeIndex + 1) + " 条线路的第 " + (modelIndex + 1) + " 个模型需要同时填写显示名和模型 ID");
       if (seenModelKeys.has(key)) throw new Error("模型显示名重复：" + key);
       seenModelKeys.add(key);
-      models.push({ key: key, model: modelId, vision: model.vision !== false, audio: model.audio === true });
+      models.push({ key: key, model: modelId, vision: model.vision !== false });
     });
     if (!models.length) throw new Error("第 " + (routeIndex + 1) + " 条线路至少需要一个模型");
     routes.push({
@@ -858,7 +849,6 @@ function collectCustomRoutes() {
   $("embeddingApiKeyInput").value = s.embedding_api_key || "";
   $("embeddingModelInput").value = s.embedding_model || "";
   $("sfKeyInput").value = s.siliconflow_key || "";
-  $("tavilyApiKeyInput").value = s.tavily_api_key || "";
   $("neteaseMusicUInput").value = s.netease_music_u || "";
   $("luckinMcpEnabledInput").checked = !!s.luckin_mcp_enabled;
   $("luckinMcpTokenInput").value = s.luckin_mcp_token || "";
@@ -890,7 +880,6 @@ async function saveSettings() {
     embedding_api_key: $("embeddingApiKeyInput").value.trim(),
     embedding_model: $("embeddingModelInput").value.trim(),
     siliconflow_key: $("sfKeyInput").value.trim(),
-    tavily_api_key: $("tavilyApiKeyInput").value.trim(),
     netease_music_u: $("neteaseMusicUInput").value.trim(),
     luckin_mcp_enabled: $("luckinMcpEnabledInput").checked,
     luckin_mcp_token: $("luckinMcpTokenInput").value.trim(),

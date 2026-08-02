@@ -1,5 +1,4 @@
 import sys
-import base64
 import tempfile
 import unittest
 from pathlib import Path
@@ -120,40 +119,6 @@ class RelayProviderErrorPassthroughTests(unittest.IsolatedAsyncioTestCase):
             "temperature": 0.7,
             "max_tokens": 123,
         })
-
-    async def test_custom_openai_audio_capability_emits_input_audio(self):
-        response = FakeStreamResponse(status_code=200, lines=["data: [DONE]"])
-        cfg = {
-            "base_url": "https://relay.example/v1",
-            "api_key": "test-key",
-            "model": "unit-model",
-            "audio": True,
-        }
-        factory = fake_client_factory(response)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            audio_path = Path(tmpdir) / "voice.wav"
-            audio_bytes = b"RIFF-provider-audio"
-            audio_path.write_bytes(audio_bytes)
-            with (
-                patch("ai_providers._resolve_attachment_path", return_value=audio_path),
-                patch("ai_providers.httpx.AsyncClient", new=factory),
-            ):
-                chunks = [
-                    chunk
-                    async for chunk in call_custom_openai(
-                        [{"role": "user", "content": "transcript", "attachments": ["/uploads/voice.wav"]}],
-                        cfg,
-                    )
-                ]
-
-        self.assertEqual(chunks, [])
-        payload = factory.clients[0].calls[0][1]["json"]
-        audio_part = next(
-            part for part in payload["messages"][0]["content"]
-            if part.get("type") == "input_audio"
-        )
-        self.assertEqual(base64.b64decode(audio_part["input_audio"]["data"]), audio_bytes)
 
     async def test_builtin_aipro_accepts_sse_data_without_space(self):
         response = FakeStreamResponse(

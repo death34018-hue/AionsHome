@@ -1,5 +1,5 @@
 """
-Heart-rate classification and prompt helpers for wearable-device data.
+Heart-rate classification and prompt helpers for ring data.
 
 This module intentionally stays model-free: it classifies incoming heart-rate
 points, records low-cost server-side events, and builds compact summaries for
@@ -465,9 +465,7 @@ async def get_recent_heart_rates(db, limit: int = 8) -> list[dict]:
     cur = await db.execute(
         """
         SELECT id, device_name, heart_rate, measured_at, source, raw_json, created_at
-        FROM health_ring_heart_rates
-        WHERE source='mi_band_7'
-        ORDER BY measured_at DESC LIMIT ?
+        FROM health_ring_heart_rates ORDER BY measured_at DESC LIMIT ?
         """,
         (max(1, min(int(limit or 8), 20)),),
     )
@@ -513,7 +511,7 @@ async def build_heart_rate_summary_for_prompt(limit: int = 8) -> str:
     if stale:
         return (
             f"最近心率数据：{latest_hr} bpm（{_fmt_time(latest_at)}，{_fmt_age(age_seconds)}）。\n"
-            f"状态：数据已超过 {cfg['stale_minutes']} 分钟未更新，可能是穿戴设备没电、摘下或手机未同步；不要用它判断睡眠/清醒/运动。"
+            f"状态：数据已超过 {cfg['stale_minutes']} 分钟未更新，可能是戒指没电、摘下或手机未同步；不要用它判断睡眠/清醒/运动。"
         )
 
     chronological = list(reversed(records[: min(6, len(records))]))
@@ -521,16 +519,7 @@ async def build_heart_rate_summary_for_prompt(limit: int = 8) -> str:
     trend_delta = int(records[0]["heart_rate"]) - int(chronological[0]["heart_rate"])
     sign = "+" if trend_delta > 0 else ""
     event_text = "无"
-    fresh_events = []
-    for event in events:
-        try:
-            details = json.loads(event.get("details_json") or "{}")
-        except (TypeError, ValueError, json.JSONDecodeError):
-            details = {}
-        if details.get("source") != "mi_band_7":
-            continue
-        if now - float(event["created_at"]) <= 6 * 3600:
-            fresh_events.append(event)
+    fresh_events = [e for e in events if now - float(e["created_at"]) <= 6 * 3600]
     if fresh_events:
         event_text = "；".join(
             f"{event_label(e['event_type'])}：{e['summary']}" for e in fresh_events[:2]
@@ -547,7 +536,7 @@ async def build_heart_rate_summary_for_prompt(limit: int = 8) -> str:
 
 async def build_heart_rate_prompt_block(user_name: str = "用户") -> str:
     summary = await build_heart_rate_summary_for_prompt()
-    title = f"{user_name}最近心率摘要（穿戴设备数据，仅作辅助）"
+    title = f"{user_name}最近心率摘要（戒指数据，仅作辅助）"
     if not summary:
         summary = "（暂无可用心率数据）"
     return f"\n\n【{title}】\n{summary}"

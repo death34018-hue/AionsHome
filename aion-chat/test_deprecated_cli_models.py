@@ -95,12 +95,6 @@ class DeprecatedCliModelTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ModelResolutionTests(unittest.TestCase):
-    def test_codex_defaults_to_gpt_5_5_with_gpt_5_6_tiers_disabled(self):
-        self.assertEqual(config.BUILTIN_MODELS["Codex"]["provider"], "codex_cli")
-        self.assertEqual(config.BUILTIN_MODELS["Codex"]["model"], "gpt-5.5")
-        self.assertNotIn("Codex-Sol", config.BUILTIN_MODELS)
-        self.assertNotIn("Codex-Luna", config.BUILTIN_MODELS)
-
     def test_deprecated_cli_model_resolves_to_visible_model(self):
         resolved = config.resolve_model_key("CLI-3.1pro")
         self.assertNotEqual(resolved, "CLI-3.1pro")

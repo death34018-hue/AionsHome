@@ -10,8 +10,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#ff8359">
-<link rel="stylesheet" href="/static/chat.css?v=band-vibration-note-20260717">
-<link rel="stylesheet" href="/static/voice-call.css?v=voice-call-polish-20260704g">
+<link rel="stylesheet" href="/static/chat.css?v=date-summary-card-20260628">
 </head>
 <body data-theme="dark">
 
@@ -265,7 +264,6 @@
             <div class="plus-menu-item" onclick="closePlusMenu();$('fileInput').click()"><span class="pm-icon">📎</span>上传文件</div>
             <div class="plus-menu-item" onclick="closePlusMenu();openCamera()"><span class="pm-icon">📷</span>拍照</div>
             <div class="plus-menu-item" onclick="closePlusMenu();if(typeof videoCall!=='undefined')videoCall.userInitiate()"><span class="pm-icon">📹</span>视频通话</div>
-            <div class="plus-menu-item" onclick="closePlusMenu();if(window.VoiceCall)VoiceCall.openPrivate()"><span class="pm-icon">◉</span>语音通话</div>
             <div class="plus-menu-item" onclick="closePlusMenu();toggleVoiceMode()"><span class="pm-icon">🎤</span>语音消息</div>            <div class="plus-menu-item" onclick="closePlusMenu();openTransferDialog()"><span class="pm-icon">💰</span>转账</div>          </div>
         </div>
         <input type="file" id="fileInput" accept="image/*,video/*" multiple style="display:none" onchange="handleFileSelect(this)">
@@ -292,8 +290,7 @@
     <iframe id="subPageFrame" class="sub-page-frame" sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals" allow="autoplay"></iframe>
   </div>
 </div>
-<script src="/static/chat.js?v=band-vibration-note-20260717"></script>
-<script src="/static/voice-call.js?v=voice-call-polish-20260704g"></script>
+<script src="/static/chat.js?v=date-summary-card-20260628"></script>
 
 <!-- ── 转账弹窗 ── -->
 <div class="transfer-dialog-overlay" id="transferDialogOverlay" onclick="closeTransferDialog()">

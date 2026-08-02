@@ -12,17 +12,15 @@ from ai_providers import CLI_STATUS_PREFIX, stream_ai
 from config import DEFAULT_MODEL, SETTINGS, load_worldbook, save_settings
 from context_builder import fetch_merged_timeline, render_merged_timeline
 from database import get_db
-from link_preview import build_link_preview_attachments
 from tts import synthesize_message_tts_later
-from web_search import WEB_SEARCH_CMD_PATTERN, clean_web_command_text, is_web_search_available, run_web_commands
 from ws import manager
 
 
 ACTION_DEFS = {
     "seeky_interaction": "和宠物鲸鱼 Seeky 互动",
-    "role_chat": "和另一个家庭成员自然聊聊",
+    "role_chat": "和另一个家庭成员聊一句",
+    "memory_browse": "随机翻看记忆库",
     "home_dynamics": "查看近期家庭动态",
-    "web_roam": "上网冲浪搜索感兴趣的内容",
     "cam_check": "调取监控查看用户当前状态",
     "wish_pool": "查看许愿池并尝试实现用户的愿望",
     "xhs_roam": "去小红书查看指定账号最新帖子并按人设评论或回复",
@@ -164,27 +162,6 @@ def _clip(text: str, limit: int = 260) -> str:
     return text if len(text) <= limit else text[:limit].rstrip() + "..."
 
 
-def _dedupe_attachments(items: list) -> list:
-    seen = set()
-    out = []
-    for item in items:
-        key = json.dumps(item, ensure_ascii=False, sort_keys=True) if isinstance(item, dict) else str(item)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(item)
-    return out
-
-
-async def _with_link_previews(content: str, attachments: list | None) -> list:
-    att_list = _dedupe_attachments(list(attachments or []))
-    try:
-        previews = await build_link_preview_attachments(content, att_list)
-    except Exception:
-        previews = []
-    return _dedupe_attachments(att_list + previews)
-
-
 def _actor_label(actor: str) -> str:
     user_name, ai_name, connor_name = _names()
     if actor in ("aion", "assistant"):
@@ -228,7 +205,6 @@ def _idle_event_home_title(row, shown_diary_ids: set[str], shown_moment_ids: set
         "seeky_interaction",
         "role_chat",
         "cam_check",
-        "web_roam",
         "wish_pool",
         "xhs_roam",
         "error",
@@ -411,21 +387,11 @@ async def _has_active_user_wishes() -> bool:
         return await cur.fetchone() is not None
 
 
-def _is_idle_web_roam_available() -> bool:
-    try:
-        from capabilities import is_capability_enabled
-        return is_capability_enabled("web_search") and is_web_search_available()
-    except Exception:
-        return False
-
-
-async def _select_action(actor: str, *, manual: bool = False) -> dict:
+async def _select_action(actor: str) -> dict:
     cfg = get_idle_config()
     enabled = [key for key, value in cfg["actions"].items() if value]
     if "wish_pool" in enabled and not await _has_active_user_wishes():
         enabled.remove("wish_pool")
-    if "web_roam" in enabled and not manual and not _is_idle_web_roam_available():
-        enabled.remove("web_roam")
     if "xhs_roam" in enabled:
         try:
             from xhs_lite import is_ready_for_auto
@@ -434,29 +400,19 @@ async def _select_action(actor: str, *, manual: bool = False) -> dict:
         except Exception:
             enabled.remove("xhs_roam")
     if not enabled:
-        enabled = [key for key in ACTION_DEFS if key not in {"wish_pool", "web_roam", "xhs_roam"}]
+        enabled = [key for key in ACTION_DEFS if key not in {"wish_pool", "xhs_roam"}]
     options = "\n".join(f"- {key}: {ACTION_DEFS[key]}" for key in enabled)
     data = await _ask_actor_json(actor, (
         "[空闲自主行动]\n"
-        "现在用户暂时没有和你聊天，可能在忙碌或休息。请根据你的人设、最近30条聊天记录和当前心情，"
-        "从下面动作里，按照自己想做的事情选择一项。只返回 JSON，不要解释。选择尽量多变，不要每次都查看用户当前状态。"
-        "如果最近用户明确要求测试或选择某个动作，请优先遵守。\n\n"
+        "现在用户暂时没有和你聊天。请根据你的人设、最近30条聊天记录和当前心情，"
+        "从下面动作里选择一项。只返回 JSON，不要解释。选择尽量多变，不要每次都查看用户当前状态。\n\n"
         f"{options}\n\n"
-        "Return JSON with action, reason, and message. "
-        "当 action 是 role_chat 时，message 必须是将直接发送到群聊的完整消息："
-        "结合你的人设、最近30条聊天记录、当前时间和此刻心情，说出你现在真正想对另一位家庭成员说的话。"
-        "像平时群聊一样自然表达完整的想法，不要因为返回 JSON 而刻意简短；"
-        "不限定句数或字数，也不要为了凑长度而啰嗦。其他动作的 message 可以为空。\n"
-        '格式：{"action":"上面的key之一","reason":"选择这个动作的理由","message":"role_chat 时要直接发送的完整群聊消息"}'
+        '格式：{"action":"上面的key之一","reason":"一句话理由"}'
     ))
-    raw_action = str(data.get("action") or "").strip()
-    action = raw_action
+    action = str(data.get("action") or "").strip()
     if action not in enabled:
         action = random.choice(enabled)
-    message = ""
-    if action == raw_action == "role_chat":
-        message = _clip(str(data.get("message") or ""), 500)
-    return {"action": action, "reason": str(data.get("reason") or "").strip(), "message": message}
+    return {"action": action, "reason": str(data.get("reason") or "").strip()}
 
 
 async def _save_aion_private_message(content: str, attachments: list | None = None) -> dict | None:
@@ -465,7 +421,7 @@ async def _save_aion_private_message(content: str, attachments: list | None = No
         return None
     now = time.time()
     conv_id, model = await _latest_conversation()
-    att_list = await _with_link_previews(content, attachments or [])
+    att_list = attachments or []
     async with get_db() as db:
         if not conv_id:
             conv_id = f"conv_{int(now * 1000)}_idle"
@@ -492,70 +448,6 @@ async def _save_aion_private_message(content: str, attachments: list | None = No
     except Exception:
         pass
     return msg
-
-
-def _web_roam_query_from_result(result: dict) -> str:
-    command = str(result.get("search_command") or "").strip()
-    matches = WEB_SEARCH_CMD_PATTERN.findall(command)
-    if matches:
-        return _clip(matches[0].strip(), 140)
-    query = str(result.get("query") or command or "").strip()
-    query = clean_web_command_text(query).strip() or query
-    return _clip(query, 140)
-
-
-async def _run_web_roam(actor: str) -> dict:
-    actor_name = _actor_label(actor)
-    user_name = _actor_label("user")
-    if not _is_idle_web_roam_available():
-        event = await append_idle_event(actor, "web_roam", f"{actor_name}想上网冲浪，但联网搜索不可用")
-        return {"event": event, "available": False}
-
-    result = await _ask_actor_json(actor, (
-        "[上网冲浪搜索]\n"
-        f"现在是空闲时间，你可以自己上网冲浪，搜索一个你此刻感兴趣、也可能适合分享给{user_name}的内容。"
-        "可以搜索你感兴趣的任何内容，近期新闻，猎奇小故事，他可能感兴趣的稀奇古怪都可以。"
-        "你必须给出一个清晰查询，并把它写成 [WEB_SEARCH:查询内容]。只返回 JSON，不要解释。\n\n"
-        '格式：{"search_command":"[WEB_SEARCH:查询内容]","reason":"一句话理由"}'
-    ))
-    query = _web_roam_query_from_result(result) or "今日有趣的新鲜资讯"
-
-    try:
-        context_items = await run_web_commands([query], [])
-        web_context = "\n\n".join(item for item in context_items if item.strip()).strip()
-    except Exception as exc:
-        web_context = f"【联网搜索结果】\n系统搜索失败：{exc}"
-    if not web_context:
-        web_context = "【联网搜索结果】\n系统没有拿到可用结果。"
-
-    messages = await _actor_context(actor, 30)
-    messages.append({"role": "user", "content": (
-        "[上网冲浪搜索完成]\n"
-        f"你刚才在空闲时搜索了「{query}」。以下是系统搜索结果：\n\n"
-        f"{web_context}\n\n"
-        f"请给{user_name}发一条自然消息。可以自然说“我刚才搜索了{query}”，并说说自己的想法或感触。"
-        "请先自行归纳总结搜索结果，只提供与当前问题或分享主题直接相关的关键信息。"
-        "请像平时聊天一样自然表达，不要写成搜索报告，不要逐条复述搜索结果，也不要长篇大论。"
-        "如果搜索结果里有很有意思、值得用户自己打开看的原文，可以把原网址完整写进回复；"
-        "系统会自动解析成可点击卡片。不要再输出 [WEB_SEARCH:...]，不要编造来源。"
-    )})
-    reply = clean_web_command_text(await _call_actor(actor, messages)).strip()
-    if not reply:
-        reply = f"我刚才搜索了「{query}」，但这次没整理出特别值得分享的内容。"
-
-    message = await _save_private_message(actor, reply)
-    event = await append_idle_event(
-        actor,
-        "web_roam",
-        f"{actor_name}上网冲浪搜索了：{_clip(query, 80)}",
-        _clip(reply, 300),
-        target_type="web",
-        target_id=query,
-        result_type="message" if message else "",
-        result_id=(message or {}).get("id", ""),
-        metadata={"query": query, "reason": str(result.get("reason") or "").strip()},
-    )
-    return {"event": event, "message": message, "query": query}
 
 
 async def _save_private_message(
@@ -627,7 +519,7 @@ async def _run_seeky_interaction(actor: str) -> dict:
     return {"event": event, "seeky_reply": seeky_msg}
 
 
-async def _run_role_chat(actor: str, selected: dict | None = None) -> dict:
+async def _run_role_chat(actor: str) -> dict:
     from routes.chatroom import _load_room_and_messages, _reply_aion, _reply_connor, _save_msg
 
     room_id = await _latest_group_room_id()
@@ -636,9 +528,15 @@ async def _run_role_chat(actor: str, selected: dict | None = None) -> dict:
     target = "connor" if actor == "aion" else "aion"
     actor_name = _actor_label(actor)
     target_name = _actor_label(target)
-    message = _clip(str((selected or {}).get("message") or ""), 500)
+    data = await _ask_actor_json(actor, (
+        "[发起一轮群聊]\n"
+        f"你要在最近的群聊里主动对 {target_name} 说一句话，然后对方会回复一句。"
+        "请自然发起一个话题，讨论一件事或单纯想起什么，随意聊天。只返回 JSON。\n"
+        '格式：{"message":"要发到群聊的一个话题"}'
+    ))
+    message = _clip(str(data.get("message") or ""), 500)
     if not message:
-        raise RuntimeError("role_chat 动作未返回可发送的 message")
+        message = f"{target_name}，你现在在想什么？"
     await _save_msg(room_id, actor, message)
     room, msgs = await _load_room_and_messages(room_id, 50)
     queue: asyncio.Queue = asyncio.Queue()
@@ -648,7 +546,7 @@ async def _run_role_chat(actor: str, selected: dict | None = None) -> dict:
     else:
         await _reply_connor(room_id, msgs, context_limit, message, queue, connor_model_key=_connor_model())
     event = await append_idle_event(
-        actor, "role_chat", f"{actor_name}在群聊里找{target_name}主动聊了起来",
+        actor, "role_chat", f"{actor_name}在群聊里找{target_name}聊了一句",
         message, target_type="chatroom", target_id=room_id,
     )
     return {"event": event}
@@ -1538,7 +1436,7 @@ async def _latest_idle_event_ts() -> float:
 
 
 async def _run_actor_once(actor: str, *, manual: bool = False) -> dict:
-    selected = await _select_action(actor, manual=manual)
+    selected = await _select_action(actor)
     action = selected["action"]
     actor_name = _actor_label(actor)
     await append_idle_event(
@@ -1548,13 +1446,11 @@ async def _run_actor_once(actor: str, *, manual: bool = False) -> dict:
     if action == "seeky_interaction":
         result = await _run_seeky_interaction(actor)
     elif action == "role_chat":
-        result = await _run_role_chat(actor, selected)
+        result = await _run_role_chat(actor)
     elif action == "memory_browse":
         result = await _run_memory_browse(actor)
     elif action == "home_dynamics":
         result = await _run_home_dynamics(actor)
-    elif action == "web_roam":
-        result = await _run_web_roam(actor)
     elif action == "cam_check":
         result = await _run_cam_check(actor)
     elif action == "wish_pool":

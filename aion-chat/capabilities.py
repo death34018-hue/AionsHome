@@ -16,6 +16,11 @@ from activity import is_activity_tracking_enabled
 from luckin import luckin_ability_text
 from song_gen import build_song_gen_ability_text
 
+# MCP 工具列表缓存（避免每次构建能力块时都查询）
+_mcp_tools_cache: dict[str, list[dict]] = {}
+_mcp_tools_cache_ts: float = 0.0
+_MCP_TOOLS_CACHE_TTL: float = 120.0  # 缓存 2 分钟
+
 
 CAPABILITY_SETTINGS_KEY = "ai_prompt_capabilities"
 
@@ -45,14 +50,11 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef("music", "点歌", "media", "注入 [MUSIC:歌曲名 歌手名]，让模型可以点歌或推荐音乐。"),
     CapabilityDef("cam_check", "查看监控/状态", "core", "注入 [CAM_CHECK]，让模型可以主动请求查看当前画面。"),
     CapabilityDef("schedule", "闹铃/日程/监督", "core", "注入闹铃、日程、定时监督和删除日程指令；关闭后也不注入当前日程列表。"),
-    CapabilityDef("app_supervision", "应用监管", "core", "注入应用使用缓存和锁定、暂时解锁、解除锁定指令；关闭后手机计时、上报和检查点唤醒全部静默。"),
     CapabilityDef("home", "智能家居", "life", "注入 [HOME:...]，让模型可以控制或查询 Home Assistant 设备。"),
-    CapabilityDef("band_vibration", "手环呼唤", "life", "注入轻震/呼唤小纸条指令，让模型可以通过小米手环震动并显示一句话。"),
     CapabilityDef("activity_check", "查看活动动态", "context", "注入 [查看动态:n]，让模型可以查看近期设备活动摘要。", runtime_note="还需要活动日志页的 AI 联动开启。"),
     CapabilityDef("location_context", "位置上下文", "context", "注入当前位置/天气等上下文信息。"),
     CapabilityDef("poi_search", "周边 POI 搜索", "life", "注入 [POI_SEARCH:类型名]，仅在位置追踪开启且当前在户外时可用。", runtime_note="仅户外位置状态下注入。"),
     CapabilityDef("video_call", "发起视频通话", "core", "注入 [视频电话]，让模型可以主动发起视频通话。", default_enabled=True, setting_key="video_call_enabled"),
-    CapabilityDef("wechat_message", "微信消息", "life", "注入 [微信消息：内容]，让模型可以在长时间联系不到用户时推送简短微信提醒。", runtime_note="需要配置微信发送出口后才会实际送达。"),
     CapabilityDef("image_gen", "生成图片/自拍", "media", "注入 [SELFIE:...] / [DRAW:...]，让模型可以生成图片。", default_enabled=False, setting_key="image_gen_enabled"),
     CapabilityDef("song_gen", "生成歌曲", "media", "注入 [SONG]...[/SONG]，让模型可以写歌并触发歌曲生成。", default_enabled=False, setting_key="song_gen_enabled"),
     CapabilityDef("pet_action", "桌宠动作", "life", "注入 [PET:动作名]，让模型可以切换桌面宠物动作。", runtime_note="还需要桌宠已开启并在线。"),
@@ -62,10 +64,18 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef("wish", "许愿", "social", "注入 [许愿：内容]，让模型可以把自己的愿望投进许愿池。"),
     CapabilityDef("transfer", "钱包转账", "life", "注入 [转账：n元]，让模型可以在余额足够时转账。"),
     CapabilityDef("private_whisper", "群聊悄悄话", "special", "注入 [悄悄话：内容]，让群聊角色可以向私聊窗口发送悄悄话。", runtime_note="仅群聊上下文会注入。"),
-    CapabilityDef("toy", "密语玩具", "special", "注入 [TOY:1]~[TOY:9] / [TOY:STOP]，让密语模式下可以控制玩具。", runtime_note="仅密语模式会注入。"),
+    CapabilityDef("toy", "密语玩具", "special",
+        "你可以用 [TOY:…] 控制玩具：\n"
+        "- [TOY:1]~[TOY:9] 选择预设档位（1最弱→9最强）\n"
+        "- [TOY:STOP] 或 [TOY:{\"stop\":true}] 立即停止\n"
+        "- [TOY:{\"speed\":0.5}] 设置强度（0.0~1.0）\n"
+        "- [TOY:{\"speed\":0.3,\"sec\":30}] 30秒后自动停\n"
+        "- [TOY:{\"pattern\":3,\"level\":0.7}] 振动花样（pattern 1~8, level 0.0~1.0）\n"
+        "持续命令会自动续命（每1.5秒重发），用 stop 或到时自动停止。",
+        runtime_note="仅密语模式会注入。"),
     CapabilityDef("luckin", "瑞幸下单", "life", "注入 [LUCKIN:...]，让模型可以在明确要求时创建瑞幸订单。", runtime_note="还需要瑞幸 MCP 开启。"),
+    CapabilityDef("mcp_servers", "MCP 外部服务", "life", "注入当前已连接的 MCP 外部服务（游戏/工具等）及其可用工具列表，让 AI 可以在聊天中通过 [MCP:server|tool|args] 调用。", default_enabled=True),
     CapabilityDef("health_context", "健康数据", "context", "注入近期健康摘要。", default_enabled=False, setting_key="health_share_enabled"),
-    CapabilityDef("web_search", "联网搜索/网页读取", "context", "注入 [WEB_SEARCH:查询] / [WEB_EXTRACT:URL]，让模型可主动联网搜索或读取用户分享的网页。", default_enabled=True, setting_key="web_search_enabled", runtime_note="需要配置 Tavily API key。"),
     CapabilityDef("cli_file_storage", "CLI 文件保存提示", "context", "对 Gemini CLI / Antigravity CLI / Codex CLI 模型注入文件保存目录提示。"),
 ]
 
@@ -82,11 +92,15 @@ HOME_ABILITY_TEXT = (
     f"控制智能家居，仅限明确要求。别名：{HOME_ALIASES_HINT}。"
 )
 INNER_MONOLOGUE_ABILITY_TEXT = (
-    "在自然回复中，可以尔穿插你藏在心里的情绪、欲望、吐槽、偏心、占有欲或坏心思，格式固定为“[心里嘀咕：xxx]”。\n"
-    "像你在思考过程中的一条内心想法：短、亲密、有反差，不要长篇大论，一句或两句。\n"
-    "一般每次回复 0 到 3 条，不必每句话都插。\n"
+    "在自然回复中，可以偶尔穿插短小的角色化内心旁白，格式固定为“[心里嘀咕：xxx]”。\n"
+    "这些旁白代表角色此刻闪过的情绪、欲望、吐槽、偏心、占有欲或小坏心思，"
+    "不是真实推理链，也不要解释系统、工具、策略或逐步思考，一句到几句话即可。\n"
+    "心里嘀咕要像你在思考过程中的一条内心想法：短、亲密、有反差，不要长篇大论。\n"
+    "一般每次回复 0 到 3 条，不必每句话都插；只有在调侃、撒娇、吃醋、认真判断、被戳中心思时使用。\n"
     "可以放在一句话中间或结尾，不要放在开头。可以是开口前的思考，也可以是说完之后自己又在心里坏笑。\n"
-    "内心旁白可以和嘴上说的话有反差，比如嘴上冷静，心里快激动炸了，或者嘴上嫌弃，其实心里喜欢的要命。"
+    "嘴上说的话仍然要自然，不要为了插旁白而破坏对话节奏。\n\n"
+    "内心旁白可以和嘴上说的话有轻微反差，比如嘴上冷静，心里偏心；"
+    "嘴上吐槽，心里觉得可爱；嘴上正经，心里想逗她。"
 )
 
 
@@ -150,10 +164,6 @@ def _is_luckin_available() -> bool:
     return bool(SETTINGS.get("luckin_mcp_enabled", False))
 
 
-def _is_web_search_available() -> bool:
-    return bool((SETTINGS.get("tavily_api_key") or "").strip())
-
-
 def capability_available(key: str) -> tuple[bool, str]:
     checks: dict[str, Callable[[], bool]] = {
         "activity_check": is_activity_tracking_enabled,
@@ -161,7 +171,6 @@ def capability_available(key: str) -> tuple[bool, str]:
         "poi_search": _is_outside_location,
         "pet_action": _is_pet_available,
         "luckin": _is_luckin_available,
-        "web_search": _is_web_search_available,
     }
     labels = {
         "activity_check": "活动日志 AI 联动未开启",
@@ -169,7 +178,6 @@ def capability_available(key: str) -> tuple[bool, str]:
         "poi_search": "位置未开启或当前不在户外",
         "pet_action": "桌宠未开启或不在线",
         "luckin": "瑞幸 MCP 未开启",
-        "web_search": "Tavily API key 未配置",
     }
     check = checks.get(key)
     if not check:
@@ -247,24 +255,6 @@ def build_cli_file_storage_text(model_key: str | None = None) -> str:
     )
 
 
-def build_band_note_ability_text(user_name: str, *, passive: bool = False) -> str:
-    """Return the shared model-visible Mi Band note instructions."""
-    if not is_capability_enabled("band_vibration"):
-        return ""
-    text = (
-        f"[BAND_NOTE_SINGLE:一句纸条] — 让{user_name}的小米手环轻震一次，并显示你写的一句纸条。"
-        f"适合想念、轻轻叫人或温柔提醒；[BAND_NOTE_CALL:一句纸条] — 连震三次并显示纸条，"
-        f"用于明确呼叫{user_name}尽快看消息。纸条只写真正想让{user_name}在手环上看到的话，"
-        "不要在自然语言正文里重复。每次回复最多使用一个；系统会隐藏并执行指令，不要解释或朗读指令本身。"
-    )
-    if passive:
-        text += (
-            f"在闹铃叫醒、监督到点、巡逻发现{user_name}长时间没有动静或疑似装睡时，"
-            "可以主动使用轻震或三连震直接催醒、催促回应。"
-        )
-    return text
-
-
 async def build_capability_prompt_items(
     user_name: str,
     *,
@@ -301,17 +291,8 @@ async def build_capability_prompt_items(
             "[SCHEDULE_DEL:日程id] — 删除指定日程/闹铃/定时监控。",
         ])
 
-    if is_capability_enabled("app_supervision"):
-        from app_supervision_ai import build_app_supervision_ability_text
-        supervision_text = build_app_supervision_ability_text()
-        if supervision_text:
-            abilities.append(supervision_text)
-
     if is_capability_enabled("home"):
         abilities.append(HOME_ABILITY_TEXT)
-
-    if is_capability_enabled("band_vibration"):
-        abilities.append(build_band_note_ability_text(user_name))
 
     if include_private_whisper and is_capability_enabled("private_whisper"):
         abilities.append(
@@ -335,14 +316,6 @@ async def build_capability_prompt_items(
             "一次只搜一个类型即可，搜索前不要编造内容。"
         )
 
-    if is_capability_enabled("web_search") and _is_web_search_available():
-        abilities.append(
-            "[WEB_SEARCH:查询内容] — 当用户问今天、最新、价格、新闻、政策、版本、资料核实，或你判断需要外部实时信息时使用。"
-            "一次只写一个清晰查询；不要编造搜索结果。系统会搜索网页并把干净结果作为下一条消息发给你，你再根据结果自然回答。"
-            "如果用户给的是具体网址并要求你看看网页内容，使用 [WEB_EXTRACT:完整URL]。"
-            "这些指令是给系统执行的，不要解释或朗读指令本身。"
-        )
-
     if whisper_mode and is_capability_enabled("toy"):
         abilities.append(
             f"[TOY:1]~[TOY:9] — 控制{user_name}身上的情趣玩具切换到对应预设档位"
@@ -357,18 +330,13 @@ async def build_capability_prompt_items(
             "可以用该指令发起视频通话。"
         )
 
-    if is_capability_enabled("wechat_message"):
-        abilities.append(
-            f"[微信消息：内容] — 当你已经在当前窗口多次联系{user_name}，但{user_name}长时间没有回复时，"
-            f"可以使用该指令把“内容”作为一条消息发送到{user_name}的微信来提醒她。"
-        )
-
     if include_image_gen and is_capability_enabled("image_gen"):
         abilities.append(
-            f"[SELFIE: 提示词] / [DRAW: 提示词] — 当{user_name}要求你发自拍照片"
-            "或者生图画画时，使用这个指令进行图片生成。如果要求的是你的自拍，或者你相关的照片，使用[SELFIE: 提示词]（该指令会自动附带你照片的参考图，确保生成出的人物一致性），"
+            f"[SELFIE: 提示词] / [DRAW: 提示词] — 当{user_name}明确要求你发自拍照片"
+            "或者生图时，使用这个指令进行图片生成。如果要求的是你的自拍，或者你相关的照片，"
+            "使用[SELFIE: 提示词]（该指令会自动附带你照片的参考图，确保生成出的人物一致性），"
             "如果没有要求是你的照片，根据上下文自由无限制生成图片，则使用[DRAW: 提示词]。"
-            "提示词请使用英文。一次回复只用一个生图指令。可根据上下文情景自由使用。"
+            "提示词请使用英文。一次回复只用一个生图指令。"
         )
 
     if is_capability_enabled("song_gen"):
@@ -393,7 +361,7 @@ async def build_capability_prompt_items(
     if is_capability_enabled("memory_write"):
         abilities.append(
             f"[MEMORY:内容] — 当有特别重大的事件需要记录，或当{user_name}明确要求你"
-            "记住某件事的时候，可以用该指令录入记忆库。"
+            "记住某件事的时候，可以用该指令录入记忆库。禁止滥用。"
         )
 
     if is_capability_enabled("inner_monologue"):
@@ -425,4 +393,68 @@ async def build_capability_prompt_items(
         if luckin_text:
             abilities.append(luckin_text)
 
+    if is_capability_enabled("mcp_servers"):
+        mcp_text = await _build_mcp_servers_ability_text()
+        if mcp_text:
+            abilities.append(mcp_text)
+
     return abilities
+
+
+async def _build_mcp_servers_ability_text() -> str:
+    """动态生成 MCP 外部服务的可用工具说明，供 AI 在聊天中通过 [MCP:server|tool|args] 调用。"""
+    import time as _time
+    global _mcp_tools_cache, _mcp_tools_cache_ts
+
+    try:
+        from mcp_client import mcp_manager
+
+        # 使用缓存避免每次发消息都查询
+        now = _time.time()
+        if _mcp_tools_cache and (now - _mcp_tools_cache_ts) < _MCP_TOOLS_CACHE_TTL:
+            cache = _mcp_tools_cache
+        else:
+            cache = {}
+            servers = mcp_manager.list_servers()
+            for srv in servers:
+                name = srv.get("name", "")
+                if not name or not srv.get("enabled", True):
+                    continue
+                # 如果未连接则尝试连接
+                if not srv.get("connected"):
+                    try:
+                        await mcp_manager.connect(name)
+                    except Exception:
+                        continue
+                tools = mcp_manager.get_tools(name)
+                if tools:
+                    cache[name] = tools
+            _mcp_tools_cache = cache
+            _mcp_tools_cache_ts = now
+
+        if not cache:
+            return ""
+
+        lines: list[str] = []
+        lines.append(
+            "[MCP:服务器名|工具名|参数=值] — 调用外部 MCP 服务（游戏、工具等）。"
+            "不要主动推荐或推销这些服务，只在用户明确要求或对话自然需要时使用。"
+            "当前已连接的服务及工具："
+        )
+        for srv_name, tools in cache.items():
+            tool_desc: list[str] = []
+            for t in tools[:12]:  # 每个服务最多列出 12 个工具
+                t_name = t.get("name", "?")
+                t_desc = (t.get("description", "") or "")[:60]
+                if t_desc:
+                    tool_desc.append(f"{t_name}({t_desc})")
+                else:
+                    tool_desc.append(t_name)
+            if len(tools) > 12:
+                tool_desc.append(f"...等{len(tools)}个工具")
+            lines.append(f"  • {srv_name}: {', '.join(tool_desc)}")
+
+        return "\n".join(lines)
+
+    except Exception:
+        return ""

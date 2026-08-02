@@ -6,7 +6,7 @@ import json
 import re
 import time
 from datetime import date, datetime
-from typing import List, Optional
+from typing import Optional
 
 import aiosqlite
 from fastapi import APIRouter, Query
@@ -64,34 +64,12 @@ class RingSnapshot(BaseModel):
     raw: Optional[dict] = None
 
 
-class HeartRateSample(BaseModel):
+class RingHeartRate(BaseModel):
     device_name: str = ""
     heart_rate: int
     measured_at: Optional[float] = None
     source: str = ""
     raw: Optional[dict] = None
-
-
-class RingHeartRate(HeartRateSample):
-    """Legacy request name kept for the existing ring endpoint."""
-
-
-class MiBandActivitySample(BaseModel):
-    measured_at: float
-    raw_kind: int = 0
-    intensity: int = 0
-    steps: int = 0
-    heart_rate: int = 0
-    unknown: int = 0
-    sleep: int = 0
-    deep_sleep: int = 0
-    rem_sleep: int = 0
-    sleep_stage: str = ""
-
-
-class MiBandActivityBatch(BaseModel):
-    device_name: str = "Xiaomi Smart Band 7"
-    samples: List[MiBandActivitySample]
 
 
 class HeartConfigUpdate(BaseModel):
@@ -125,6 +103,20 @@ class PeriodEntry(BaseModel):
     end_date: str = ""
     flow: str = ""
     symptoms: str = ""
+    note: str = ""
+
+
+class ManualStepsBody(BaseModel):
+    date: str
+    steps: int
+    note: str = ""
+
+
+class SleepEntryBody(BaseModel):
+    date: str
+    sleep_start_time: str = ""
+    sleep_end_time: str = ""
+    total_min: int = 0
     note: str = ""
 
 
@@ -200,125 +192,6 @@ async def _recent_heart_rates(db, limit: int = 20):
     return [dict(r) for r in await cur.fetchall()]
 
 
-async def _recent_mi_band_heart_rates(db, limit: int = 20):
-    db.row_factory = aiosqlite.Row
-    cur = await db.execute(
-        "SELECT id, device_name, heart_rate, measured_at, source, raw_json, created_at "
-        "FROM health_ring_heart_rates WHERE source='mi_band_7' "
-        "ORDER BY measured_at DESC LIMIT ?",
-        (limit,),
-    )
-    return [dict(r) for r in await cur.fetchall()]
-
-
-async def build_mi_band_summary(db, now: Optional[float] = None):
-    current = time.time() if now is None else float(now)
-    local_now = datetime.fromtimestamp(current)
-    day_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-    db.row_factory = aiosqlite.Row
-    latest = await (await db.execute(
-        "SELECT device_name, measured_at, synced_at FROM health_miband_activity "
-        "WHERE source='mi_band_7' ORDER BY measured_at DESC LIMIT 1"
-    )).fetchone()
-    totals = await (await db.execute(
-        "SELECT COALESCE(SUM(steps),0) AS steps, "
-        "COALESCE(SUM(CASE WHEN steps > 0 THEN 1 ELSE 0 END),0) AS active_minutes "
-        "FROM health_miband_activity WHERE source='mi_band_7' AND measured_at>=? AND measured_at<?",
-        (day_start, day_start + 86400),
-    )).fetchone()
-    recent_activity = {
-        "activityDataThrough": latest["measured_at"] if latest else 0,
-        "recent30ActivityMinutes": 0,
-        "recent30Steps": 0,
-        "recent60ActivityMinutes": 0,
-        "recent60Steps": 0,
-    }
-    if latest:
-        latest_at = float(latest["measured_at"])
-        recent = await (await db.execute(
-            "SELECT "
-            "COALESCE(SUM(CASE WHEN measured_at>? AND steps>0 THEN 1 ELSE 0 END),0) AS active_30, "
-            "COALESCE(SUM(CASE WHEN measured_at>? THEN steps ELSE 0 END),0) AS steps_30, "
-            "COALESCE(SUM(CASE WHEN steps>0 THEN 1 ELSE 0 END),0) AS active_60, "
-            "COALESCE(SUM(steps),0) AS steps_60 "
-            "FROM health_miband_activity WHERE source='mi_band_7' "
-            "AND measured_at>? AND measured_at<=?",
-            (latest_at - 30 * 60, latest_at - 30 * 60, latest_at - 60 * 60, latest_at),
-        )).fetchone()
-        recent_activity.update({
-            "recent30ActivityMinutes": int(recent["active_30"]),
-            "recent30Steps": int(recent["steps_30"]),
-            "recent60ActivityMinutes": int(recent["active_60"]),
-            "recent60Steps": int(recent["steps_60"]),
-        })
-    latest_heart = await (await db.execute(
-        "SELECT heart_rate, measured_at FROM health_miband_activity "
-        "WHERE source='mi_band_7' AND heart_rate BETWEEN 20 AND 240 "
-        "ORDER BY measured_at DESC LIMIT 1"
-    )).fetchone()
-    sleep_rows = await (await db.execute(
-        "SELECT measured_at, sleep_stage FROM health_miband_activity "
-        "WHERE source='mi_band_7' AND sleep_stage IN ('light','deep','rem') "
-        "AND measured_at>=? ORDER BY measured_at ASC",
-        (current - 7 * 86400,),
-    )).fetchall()
-    segments = []
-    for row in sleep_rows:
-        if not segments or row["measured_at"] - segments[-1][-1]["measured_at"] > 600:
-            segments.append([])
-        segments[-1].append(row)
-    sleep_summary = None
-    if segments:
-        sessions = []
-        for segment in segments:
-            counts = {"light": 0, "deep": 0, "rem": 0}
-            for row in segment:
-                counts[row["sleep_stage"]] += 1
-            sessions.append({
-                "startAt": segment[0]["measured_at"],
-                "endAt": segment[-1]["measured_at"] + 60,
-                "totalMin": len(segment),
-                "deepMin": counts["deep"],
-                "lightMin": counts["light"],
-                "remMin": counts["rem"],
-            })
-        latest_sleep_date = datetime.fromtimestamp(sessions[-1]["endAt"] - 1).date()
-        day_sessions = [
-            session for session in sessions
-            if datetime.fromtimestamp(session["endAt"] - 1).date() == latest_sleep_date
-        ]
-        main_session = max(day_sessions, key=lambda session: session["totalMin"])
-        classified_sessions = []
-        for session in day_sessions:
-            classified_sessions.append({
-                "kind": "main" if session["totalMin"] >= 180 else "nap",
-                **session,
-            })
-        sleep_summary = {
-            "sleepDate": latest_sleep_date.isoformat(),
-            "kind": "main" if main_session["totalMin"] >= 180 else "nap",
-            "startAt": main_session["startAt"],
-            "endAt": main_session["endAt"],
-            "totalMin": sum(session["totalMin"] for session in day_sessions),
-            "deepMin": sum(session["deepMin"] for session in day_sessions),
-            "lightMin": sum(session["lightMin"] for session in day_sessions),
-            "remMin": sum(session["remMin"] for session in day_sessions),
-            "sessions": classified_sessions,
-        }
-    return {
-        "deviceName": latest["device_name"] if latest else "",
-        "lastSyncAt": latest["synced_at"] if latest else 0,
-        "latestSampleAt": latest["measured_at"] if latest else 0,
-        "todaySteps": int(totals["steps"] if totals else 0),
-        "activityMinutes": int(totals["active_minutes"] if totals else 0),
-        **recent_activity,
-        "latestHeartRate": int(latest_heart["heart_rate"]) if latest_heart else None,
-        "latestHeartRateAt": latest_heart["measured_at"] if latest_heart else 0,
-        "sleep": sleep_summary,
-        "recentHeartRates": await _recent_mi_band_heart_rates(db, 20),
-    }
-
-
 @router.get("/summary")
 async def get_health_summary():
     async with get_db() as db:
@@ -338,7 +211,16 @@ async def get_health_summary():
             "FROM health_period_entries ORDER BY start_date DESC LIMIT 24"
         )
         periods = [dict(r) for r in await cur.fetchall()]
-        mi_band = await build_mi_band_summary(db)
+        cur = await db.execute(
+            "SELECT date, steps, note, created_at, updated_at "
+            "FROM health_manual_steps ORDER BY date DESC LIMIT 90"
+        )
+        manual_steps = [dict(r) for r in await cur.fetchall()]
+        cur = await db.execute(
+            "SELECT id, date, sleep_start_time, sleep_end_time, total_min, note, created_at, updated_at "
+            "FROM health_sleep_entries ORDER BY date DESC LIMIT 90"
+        )
+        sleep_entries = [dict(r) for r in await cur.fetchall()]
     return {
         "ring": ring,
         "heartRates": heart_rates,
@@ -346,7 +228,8 @@ async def get_health_summary():
         "heartEvents": heart_events,
         "weights": weights,
         "periods": periods,
-        "miBand": mi_band,
+        "manualSteps": manual_steps,
+        "sleepEntries": sleep_entries,
     }
 
 
@@ -475,7 +358,8 @@ async def list_heart_events(limit: int = Query(20, ge=1, le=100)):
     return {"items": await get_heart_events(limit=limit)}
 
 
-async def _save_heart_rate_sample(body: HeartRateSample, default_source: str):
+@router.post("/ring/heart-rate")
+async def save_ring_heart_rate(body: RingHeartRate):
     if not _valid_heart_rate(body.heart_rate):
         return {"error": "心率数值不正确"}
     now = time.time()
@@ -487,14 +371,10 @@ async def _save_heart_rate_sample(body: HeartRateSample, default_source: str):
             device_name=body.device_name,
             heart_rate=body.heart_rate,
             measured_at=measured_at,
-            source=body.source or default_source,
+            source=body.source or "realtime",
             raw=body.raw,
         )
-        heart_events_created = (
-            await analyze_heart_rate_entry(db, entry)
-            if entry and entry.get("is_new")
-            else []
-        )
+        heart_events_created = await analyze_heart_rate_entry(db, entry)
         await db.execute(
             """
             INSERT INTO health_ring_latest (
@@ -531,101 +411,6 @@ async def _save_heart_rate_sample(body: HeartRateSample, default_source: str):
         for event in heart_events_created:
             await manager.broadcast({"type": "health_heart_event_created", "data": event})
     return {"ring": ring, "entry": entry, "items": heart_rates, "events": heart_events_created, "heartEvents": heart_events}
-
-
-@router.post("/heart-rate")
-async def save_heart_rate(body: HeartRateSample):
-    return await _save_heart_rate_sample(body, "wearable_realtime")
-
-
-@router.post("/mi-band/activity-batch")
-async def save_mi_band_activity_batch(body: MiBandActivityBatch):
-    now = time.time()
-    device_name = body.device_name.strip() or "Xiaomi Smart Band 7"
-    heart_events_created = []
-    async with get_db() as db:
-        for sample in body.samples:
-            stage = sample.sleep_stage if sample.sleep_stage in {"light", "deep", "rem"} else ""
-            await db.execute(
-                """
-                INSERT INTO health_miband_activity (
-                    source, measured_at, device_name, raw_kind, intensity, steps,
-                    heart_rate, unknown_value, sleep_value, deep_sleep_value,
-                    rem_sleep_value, sleep_stage, synced_at
-                ) VALUES ('mi_band_7',?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(source, measured_at) DO UPDATE SET
-                    device_name=excluded.device_name,
-                    raw_kind=excluded.raw_kind,
-                    intensity=excluded.intensity,
-                    steps=excluded.steps,
-                    heart_rate=excluded.heart_rate,
-                    unknown_value=excluded.unknown_value,
-                    sleep_value=excluded.sleep_value,
-                    deep_sleep_value=excluded.deep_sleep_value,
-                    rem_sleep_value=excluded.rem_sleep_value,
-                    sleep_stage=excluded.sleep_stage,
-                    synced_at=excluded.synced_at
-                """,
-                (
-                    float(sample.measured_at), device_name, int(sample.raw_kind),
-                    max(0, int(sample.intensity)), max(0, int(sample.steps)),
-                    int(sample.heart_rate), int(sample.unknown), int(sample.sleep),
-                    int(sample.deep_sleep), int(sample.rem_sleep), stage, now,
-                ),
-            )
-            if _valid_heart_rate(sample.heart_rate):
-                raw = {
-                    "raw_kind": sample.raw_kind,
-                    "intensity": sample.intensity,
-                    "steps": sample.steps,
-                    "unknown": sample.unknown,
-                    "sleep": sample.sleep,
-                    "deep_sleep": sample.deep_sleep,
-                    "rem_sleep": sample.rem_sleep,
-                }
-                if stage:
-                    raw["sleep_stage"] = stage
-                entry = await _insert_heart_rate(
-                    db, device_name=device_name, heart_rate=sample.heart_rate,
-                    measured_at=sample.measured_at, source="mi_band_7", raw=raw,
-                )
-                if entry and entry.get("is_new"):
-                    heart_events_created.extend(await analyze_heart_rate_entry(db, entry))
-        await db.execute(
-            "DELETE FROM health_miband_activity WHERE measured_at < ?",
-            (now - 45 * 86400,),
-        )
-        latest_heart = next(
-            (sample for sample in reversed(body.samples) if _valid_heart_rate(sample.heart_rate)),
-            None,
-        )
-        if latest_heart is not None:
-            await db.execute(
-                """
-                INSERT INTO health_ring_latest(id, device_name, heart_rate, measured_at, raw_json, synced_at)
-                VALUES(1,?,?,?,?,?)
-                ON CONFLICT(id) DO UPDATE SET
-                    device_name=excluded.device_name,
-                    heart_rate=excluded.heart_rate,
-                    measured_at=excluded.measured_at,
-                    raw_json=excluded.raw_json,
-                    synced_at=excluded.synced_at
-                """,
-                (device_name, latest_heart.heart_rate, latest_heart.measured_at, "{}", now),
-            )
-        await db.commit()
-        summary = await build_mi_band_summary(db, now=now)
-        heart_events = await get_heart_events(db, 20)
-    await manager.broadcast({"type": "health_mi_band_updated", "data": summary})
-    await manager.broadcast({"type": "health_ring_heart_rates_updated", "items": summary["recentHeartRates"]})
-    if heart_events_created:
-        await manager.broadcast({"type": "health_heart_events_updated", "items": heart_events})
-    return {"accepted": len(body.samples), "miBand": summary}
-
-
-@router.post("/ring/heart-rate")
-async def save_ring_heart_rate(body: RingHeartRate):
-    return await _save_heart_rate_sample(body, "realtime")
 
 
 @router.get("/weights")
@@ -758,5 +543,162 @@ async def upsert_period(body: PeriodEntry):
 async def delete_period(entry_id: str):
     async with get_db() as db:
         await db.execute("DELETE FROM health_period_entries WHERE id=?", (entry_id,))
+        await db.commit()
+    return {"ok": True}
+
+
+# ── 手动步数 ──
+
+@router.get("/manual-steps")
+async def list_manual_steps(
+    start: str = Query("", max_length=10),
+    end: str = Query("", max_length=10),
+    limit: int = Query(180, ge=1, le=1000),
+):
+    where = []
+    params: list[object] = []
+    if start and _valid_date(start):
+        where.append("date >= ?")
+        params.append(start)
+    if end and _valid_date(end):
+        where.append("date <= ?")
+        params.append(end)
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"SELECT date, steps, note, created_at, updated_at "
+            f"FROM health_manual_steps {where_sql} ORDER BY date DESC LIMIT ?",
+            [*params, limit],
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+    return {"items": rows}
+
+
+@router.post("/manual-steps")
+async def upsert_manual_steps(body: ManualStepsBody):
+    if not _valid_date(body.date):
+        return {"error": "日期格式不正确"}
+    if body.steps < 0 or body.steps > 200000:
+        return {"error": "步数数值不正确"}
+    now = time.time()
+    async with get_db() as db:
+        await db.execute(
+            """
+            INSERT INTO health_manual_steps (date, steps, note, created_at, updated_at)
+            VALUES (?,?,?,?,?)
+            ON CONFLICT(date) DO UPDATE SET
+                steps=excluded.steps,
+                note=excluded.note,
+                updated_at=excluded.updated_at
+            """,
+            (body.date, body.steps, body.note.strip()[:80], now, now),
+        )
+        await db.commit()
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT date, steps, note, created_at, updated_at FROM health_manual_steps WHERE date=?",
+            (body.date,),
+        )
+        row = dict(await cur.fetchone())
+    await manager.broadcast({"type": "health_manual_steps_updated", "data": row})
+    return row
+
+
+@router.delete("/manual-steps/{entry_date}")
+async def delete_manual_steps(entry_date: str):
+    if not _valid_date(entry_date):
+        return {"error": "日期格式不正确"}
+    async with get_db() as db:
+        await db.execute("DELETE FROM health_manual_steps WHERE date=?", (entry_date,))
+        await db.commit()
+    return {"ok": True}
+
+
+# ── 手动睡眠 ──
+
+@router.get("/sleep-entries")
+async def list_sleep_entries(
+    start: str = Query("", max_length=10),
+    end: str = Query("", max_length=10),
+    limit: int = Query(180, ge=1, le=1000),
+):
+    where = []
+    params: list[object] = []
+    if start and _valid_date(start):
+        where.append("date >= ?")
+        params.append(start)
+    if end and _valid_date(end):
+        where.append("date <= ?")
+        params.append(end)
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            f"SELECT id, date, sleep_start_time, sleep_end_time, total_min, note, created_at, updated_at "
+            f"FROM health_sleep_entries {where_sql} ORDER BY date DESC LIMIT ?",
+            [*params, limit],
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+    return {"items": rows}
+
+
+@router.post("/sleep-entries")
+async def upsert_sleep_entry(body: SleepEntryBody):
+    if not _valid_date(body.date):
+        return {"error": "日期格式不正确"}
+    if body.total_min < 0 or body.total_min > 1440:
+        return {"error": "睡眠时长不正确（0-1440分钟）"}
+    now = time.time()
+    entry_id = f"se_{int(now * 1000)}"
+    async with get_db() as db:
+        # 同一天只保留一条睡眠记录（按日期覆盖）
+        cur = await db.execute(
+            "SELECT id FROM health_sleep_entries WHERE date=? LIMIT 1",
+            (body.date,),
+        )
+        existing = await cur.fetchone()
+        if existing:
+            entry_id = existing[0]
+        await db.execute(
+            """
+            INSERT INTO health_sleep_entries
+                (id, date, sleep_start_time, sleep_end_time, total_min, note, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+                date=excluded.date,
+                sleep_start_time=excluded.sleep_start_time,
+                sleep_end_time=excluded.sleep_end_time,
+                total_min=excluded.total_min,
+                note=excluded.note,
+                updated_at=excluded.updated_at
+            """,
+            (
+                entry_id,
+                body.date,
+                body.sleep_start_time.strip()[:8],
+                body.sleep_end_time.strip()[:8],
+                body.total_min,
+                body.note.strip()[:80],
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, date, sleep_start_time, sleep_end_time, total_min, note, created_at, updated_at "
+            "FROM health_sleep_entries WHERE id=?",
+            (entry_id,),
+        )
+        row = dict(await cur.fetchone())
+    await manager.broadcast({"type": "health_sleep_entry_updated", "data": row})
+    return row
+
+
+@router.delete("/sleep-entries/{entry_id}")
+async def delete_sleep_entry(entry_id: str):
+    async with get_db() as db:
+        await db.execute("DELETE FROM health_sleep_entries WHERE id=?", (entry_id,))
         await db.commit()
     return {"ok": True}

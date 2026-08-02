@@ -17,43 +17,11 @@ let memSourceMemId = null;
 let memSourceMessages = [];
 let chatroomMemoryCache = [];
 let chatroomMemoryKindFilter = 'all';
-let chatroomMemoryKindMenuId = null;
 let chatroomDailyCompressReview = null;
-let _chatroomCompressionRequestBusy = false;
 let crMsgDebugData = {};
 let crSystemLogs = [];
 let crSysLogHasUnreadError = false;
 const CR_AMBIENT_LOCAL_ARMED_KEY = 'aion_chatroom_ambient_local_armed';
-const CR_TTS_VOICES_CACHE_KEY = 'chatroom_tts_voices_v1';
-const CR_SETTINGS_SNAPSHOT_PREFIX = 'chatroom_settings_snapshot_v2_';
-const CR_SYNC_SEQ_KEY = 'aion_sync_seq_v1:chatroom';
-let crSettingsDirtyAt = 0;
-let crSettingsLoadingRoomId = null;
-let crSyncReplayPromise = null;
-
-window.addEventListener('aion-client-update-ready', () => {
-  if (window.__aionClientUpdateScheduled) return;
-  window.__aionClientUpdateScheduled = true;
-  const reloadWhenIdle = () => {
-    const active = document.activeElement;
-    const editing = active && active.matches?.('input,textarea,select,[contenteditable="true"]');
-    const settingsDirty = document.getElementById('settingsOverlay')?.classList.contains('active')
-      && !!crSettingsDirtyAt;
-    if (isSending || isAiChatting || editing || settingsDirty || _ttsEngine?.playing) {
-      setTimeout(reloadWhenIdle, 1500);
-      return;
-    }
-    location.reload();
-  };
-  setTimeout(reloadWhenIdle, 800);
-});
-
-document.addEventListener('click', () => {
-  if (!chatroomMemoryKindMenuId) return;
-  chatroomMemoryKindMenuId = null;
-  renderChatroomMemories();
-});
-
 function crMakeAmbientClientId() {
   try {
     if (crypto?.randomUUID) return `ambient_${crypto.randomUUID()}`;
@@ -172,7 +140,6 @@ let crTtsAionVoice = '';
 let crTtsConnorVoice = '';
 const crSeenTTSChunks = new Set();
 const crSeenTTSDone = new Set();
-const crTtsMsgSenders = {};
 let crWs = null;
 let crTtsAcceptAfter = Date.now() / 1000;
 let crTtsPlaybackActiveAt = Date.now() / 1000;
@@ -229,45 +196,6 @@ function crReportAudioPlayFailure(label, err, audio) {
   try { toast(`语音播放失败：${reason}`); } catch(e) {}
 }
 
-function crRememberTTSMsgSender(msgId, sender) {
-  if (msgId && sender) crTtsMsgSenders[msgId] = sender;
-}
-
-function crSenderForTTSMsg(msgId) {
-  if (crTtsMsgSenders[msgId]) return crTtsMsgSenders[msgId];
-  const stored = crMessagesById[msgId]?.sender;
-  if (stored) return stored;
-  if (String(msgId || "").endsWith("_a")) return "aion";
-  if (String(msgId || "").endsWith("_c")) return "connor";
-  return currentRoom?.type === "connor_1v1" ? "connor" : "aion";
-}
-
-function crNotifyVoiceCallTTSStart(msgId, seq, item) {
-  if (!window.VoiceCall || !window.VoiceCall.handleTTSChunkStart) return;
-  const sender = crSenderForTTSMsg(msgId);
-  window.VoiceCall.handleTTSChunkStart({
-    surface: "chatroom",
-    msgId,
-    seq,
-    url: item?.url || item,
-    text: item?.text || "",
-    sender,
-    speakerName: crName(sender)
-  });
-}
-
-function crNotifyVoiceCallTTSChunkEnd(msgId) {
-  if (window.VoiceCall && window.VoiceCall.handleTTSChunkEnd) {
-    window.VoiceCall.handleTTSChunkEnd({ surface: "chatroom", msgId });
-  }
-}
-
-function crNotifyVoiceCallTTSEnd() {
-  if (window.VoiceCall && window.VoiceCall.handleTTSEnd) {
-    window.VoiceCall.handleTTSEnd({ surface: "chatroom" });
-  }
-}
-
 // TTS 播放引擎：Audio 使用本地对象（可靠播放），离开页面时移交给 parent（尽力续播）
 const _ttsEngine = (function() {
   // 在 parent 上预建一个 handoff audio，用于离开页面后续播当前片段
@@ -307,16 +235,14 @@ const _ttsEngine = (function() {
         const msgId = eng.playOrder[0];
         const q = eng.chunkQueues[msgId];
         if (!q) { eng.playOrder.shift(); continue; }
-        let item = q.chunks[q.nextPlay];
-        let url = item && typeof item === "object" ? item.url : item;
+        let url = q.chunks[q.nextPlay];
         if (url === undefined) {
           if (q.finished) {
             const maxSeq = Object.keys(q.chunks).length > 0 ? Math.max(...Object.keys(q.chunks).map(Number)) : -1;
             if (q.nextPlay > maxSeq) { eng.playOrder.shift(); delete eng.chunkQueues[msgId]; continue; }
             while (q.nextPlay <= maxSeq && q.chunks[q.nextPlay] === undefined) q.nextPlay++;
             if (q.nextPlay > maxSeq) { eng.playOrder.shift(); delete eng.chunkQueues[msgId]; continue; }
-            item = q.chunks[q.nextPlay];
-            url = item && typeof item === "object" ? item.url : item;
+            url = q.chunks[q.nextPlay];
           }
           if (url === undefined) {
             eng.playing = false;
@@ -325,56 +251,44 @@ const _ttsEngine = (function() {
           }
         }
         eng.playing = true;
-	        _stopRequested = false;
-	        clearResumeTimer();
-	        crAmbientPauseForTts();
-	        const myId = ++_cbId;
-	        const seq = q.nextPlay;
-	        let startNotified = false;
-	        const notifyStart = () => {
-	          if (startNotified) return;
-	          startNotified = true;
-	          crNotifyVoiceCallTTSStart(msgId, seq, item);
-	        };
-	        const advance = () => {
-	          if (myId !== _cbId) return; // 过时回调，忽略
-	          clearResumeTimer();
-	          _cbId++;
-	          eng.playing = false;
-	          q.nextPlay++;
-	          crNotifyVoiceCallTTSChunkEnd(msgId);
-	          eng._next();
-	        };
-	        eng.audio.src = url;
-	        eng.audio.onended = advance;
-	        eng.audio.onerror = advance;
-	        eng.audio.onplaying = () => {
-	          clearResumeTimer();
-	          notifyStart();
-	        };
+        _stopRequested = false;
+        clearResumeTimer();
+        crAmbientPauseForTts();
+        const myId = ++_cbId;
+        const advance = () => {
+          if (myId !== _cbId) return; // 过时回调，忽略
+          clearResumeTimer();
+          _cbId++;
+          eng.playing = false;
+          q.nextPlay++;
+          eng._next();
+        };
+        eng.audio.src = url;
+        eng.audio.onended = advance;
+        eng.audio.onerror = advance;
+        eng.audio.onplaying = clearResumeTimer;
         eng.audio.onpause = () => {
           if (myId !== _cbId || eng.audio.ended) return;
           scheduleResume();
         };
-	        eng.audio.play().then(notifyStart).catch((err) => {
+        eng.audio.play().catch((err) => {
           // 外部 App 抢占音频焦点时，play() 可能会短暂失败；保留当前分片，等待焦点恢复。
           crReportAudioPlayFailure('live chunk', err, eng.audio);
           scheduleResume();
         });
         return;
-	      }
-	      eng.playing = false;
-	      crAmbientResumeAfterTts();
-	      crNotifyVoiceCallTTSEnd();
-	    },
-	    enqueue(msgId, seq, url, text = "") {
-	      if (!eng.chunkQueues[msgId]) {
-	        eng.chunkQueues[msgId] = { nextPlay: 0, chunks: {}, finished: false };
-	        eng.playOrder.push(msgId);
-	      }
-	      eng.chunkQueues[msgId].chunks[seq] = { url, text: text || "" };
-	      if (!eng.playing) eng._next();
-	    },
+      }
+      eng.playing = false;
+      crAmbientResumeAfterTts();
+    },
+    enqueue(msgId, seq, url) {
+      if (!eng.chunkQueues[msgId]) {
+        eng.chunkQueues[msgId] = { nextPlay: 0, chunks: {}, finished: false };
+        eng.playOrder.push(msgId);
+      }
+      eng.chunkQueues[msgId].chunks[seq] = url;
+      if (!eng.playing) eng._next();
+    },
     finish(msgId) {
       const q = eng.chunkQueues[msgId];
       if (!q) return;
@@ -392,11 +306,10 @@ const _ttsEngine = (function() {
       _cbId++;
       _stopRequested = true;
       clearResumeTimer();
-	      eng.audio.pause(); eng.audio.src = '';
-	      eng.chunkQueues = {}; eng.playOrder = []; eng.playing = false;
-	      crAmbientResumeAfterTts(500);
-	      crNotifyVoiceCallTTSEnd();
-	    }
+      eng.audio.pause(); eng.audio.src = '';
+      eng.chunkQueues = {}; eng.playOrder = []; eng.playing = false;
+      crAmbientResumeAfterTts(500);
+    }
   };
 
   // 页面卸载时，把当前正在播放的音频移交到 parent audio 续播
@@ -480,6 +393,20 @@ let crMusicCards = {}; // { msgId: [{ id, name, artist, cover, audio_url }] }
 
 // ── 密语胶囊 ──
 function crToyLabel(cmd) {
+  if (typeof cmd === 'object') {
+    if (cmd.stop) return '❤️ 停止';
+    if (cmd.preset) return `❤️ ${CR_TOY_PNAMES[cmd.preset - 1] || ('档位'+cmd.preset)}`;
+    if (cmd.speed !== undefined || cmd.intensity !== undefined) {
+      const s = Math.round((cmd.speed ?? cmd.intensity) * 100);
+      const dur = cmd.sec || cmd.seconds || cmd.duration;
+      return '📳 ' + s + '%' + (dur ? ' (' + dur + 's)' : '');
+    }
+    if (cmd.pattern !== undefined) {
+      const lvl = cmd.level ? Math.round(cmd.level * 100) : 60;
+      return '🌀 花样' + cmd.pattern + ' ' + lvl + '%';
+    }
+    return '❤️ ' + JSON.stringify(cmd);
+  }
   const c = String(cmd || '').trim().toUpperCase();
   if (c === 'STOP' || c === '0') return '❤️ 停止';
   const n = parseInt(c);
@@ -496,22 +423,30 @@ function crToyCommandsFromAttachments(atts) {
 function renderToyAttachments(atts) {
   const commands = crToyCommandsFromAttachments(atts);
   if (!commands.length) return '';
-  return commands.map(cmd => `<div class="toy-capsule" data-toy-command="${esc(String(cmd))}">${esc(crToyLabel(cmd))}</div>`).join('');
+  return commands.map(cmd => {
+    const label = crToyLabel(cmd);
+    const dataCmd = typeof cmd === 'object' ? JSON.stringify(cmd) : String(cmd);
+    return `<div class="toy-capsule" data-toy-command="${esc(dataCmd)}">${esc(label)}</div>`;
+  }).join('');
 }
 
-function crShowToyCapsule(msgId, commands) {
+function crShowToyCapsule(msgId, commands, retryCount = 0) {
   if (!msgId || !commands || !commands.length) return;
   const row = document.querySelector(`[data-msg-id="${msgId}"]`) || document.getElementById(`streaming-${msgId}`);
-  if (!row) return;
+  if (!row) {
+    // DOM 还没渲染，最多重试 10 次（2 秒内）
+    if (retryCount < 10) setTimeout(() => crShowToyCapsule(msgId, commands, retryCount + 1), 200);
+    return;
+  }
   const msgContent = row.querySelector('.msg-content');
   if (!msgContent) return;
   commands.forEach(cmd => {
-    const c = String(cmd || '').trim().toUpperCase();
-    if (!c) return;
-    if (msgContent.querySelector(`.toy-capsule[data-toy-command="${c}"]`)) return;
+    const dataCmd = typeof cmd === 'object' ? JSON.stringify(cmd) : String(cmd || '').trim().toUpperCase();
+    if (!dataCmd) return;
+    if (msgContent.querySelector(`.toy-capsule[data-toy-command="${CSS.escape ? CSS.escape(dataCmd) : dataCmd}"]`)) return;
     const pill = document.createElement('div');
     pill.className = 'toy-capsule';
-    pill.dataset.toyCommand = c;
+    pill.dataset.toyCommand = dataCmd;
     pill.textContent = crToyLabel(cmd);
     msgContent.appendChild(pill);
   });
@@ -521,20 +456,20 @@ function crShowToyCapsule(msgId, commands) {
 function crHandleToyCommand(data) {
   if (!data || !data.commands || !data.commands.length) return;
   const msgId = data.msg_id || '';
-  const commands = data.commands.map(c => String(c || '').trim().toUpperCase()).filter(Boolean);
+  const commands = data.commands;
   if (!commands.length) return;
-  const key = `${msgId}:${commands.join('|')}`;
+  const key = `${msgId}:${JSON.stringify(commands)}`;
   const alreadyHandled = crHandledToyEvents.has(key);
   if (!alreadyHandled) {
     crHandledToyEvents.add(key);
     try {
       if (window.opener && window.opener.toyExecCmd) {
-        commands.forEach(c => window.opener.toyExecCmd(c));
+        commands.forEach(c => window.opener.toyExecCmd(typeof c === 'object' ? JSON.stringify(c) : String(c)));
       } else if (window.parent && window.parent !== window && window.parent.toyExecCmd) {
-        commands.forEach(c => window.parent.toyExecCmd(c));
+        commands.forEach(c => window.parent.toyExecCmd(typeof c === 'object' ? JSON.stringify(c) : String(c)));
       }
     } catch(e) {}
-    if (typeof toyExecCmd === 'function') commands.forEach(c => toyExecCmd(c));
+    if (typeof toyExecCmd === 'function') commands.forEach(c => toyExecCmd(typeof c === 'object' ? JSON.stringify(c) : String(c)));
   }
   crShowToyCapsule(msgId, commands);
 }
@@ -644,14 +579,13 @@ function crPlayMusicOnline(songId) {
   audio.play().catch(() => {});
 }
 
-function crEnqueueTTSChunk(msgId, seq, url, createdAt, targetClientId, text = "") {
-  const voiceCallActive = !!(window.VoiceCall && window.VoiceCall.isActive && window.VoiceCall.isActive());
-  if (!crTtsEnabled && !voiceCallActive) return;
+function crEnqueueTTSChunk(msgId, seq, url, createdAt, targetClientId) {
+  if (!crTtsEnabled) return;
   const key = `${msgId}:${seq}`;
   if (crSeenTTSChunks.has(key)) return;
   crSeenTTSChunks.add(key);
   if (!crShouldAcceptTTSMsg(msgId, createdAt, targetClientId)) return;
-  _ttsEngine.enqueue(msgId, seq, url, text);
+  _ttsEngine.enqueue(msgId, seq, url);
 }
 
 async function crPlayNextTTSChunk() {
@@ -669,57 +603,6 @@ function crFinishTTSForMsg(msgId, createdAt, targetClientId) {
   crSeenTTSDone.add(msgId);
   _ttsEngine.finish(msgId);
 }
-
-window.ChatroomVoiceCallAdapter = {
-  getDefaultSpeakerName() {
-    return currentRoom?.type === "connor_1v1" ? crName("connor") : crName("aion");
-  },
-  getSpeakerName(sender) {
-    return crName(sender || (currentRoom?.type === "connor_1v1" ? "connor" : "aion"));
-  },
-  speakerForMessage(msgId) {
-    return crSenderForTTSMsg(msgId);
-  },
-  async sendText(text) {
-    const content = String(text || "").trim();
-    if (!content) return;
-    if (!currentRoom) throw new Error("请先选择聊天室");
-    let waited = 0;
-    while ((isSending || isAiChatting || isReplyOnce) && waited < 10000) {
-      await new Promise(resolve => setTimeout(resolve, 200));
-      waited += 200;
-    }
-    if (isSending || isAiChatting || isReplyOnce) throw new Error("上一轮回复仍在进行");
-
-    isSending = true;
-    sendBtn.disabled = true;
-    playSend();
-    const localRow = appendMessage({ sender: "user", content, created_at: Date.now() / 1000, attachments: [] });
-    if (localRow) localRow.dataset.localEcho = "1";
-    try {
-      const resp = await fetch(`${API}/rooms/${currentRoom.id}/send`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          content,
-          model: chatroomModel,
-          connor_model: chatroomConnorModel,
-          attachments: [],
-          tts_enabled: true,
-          tts_aion_voice: crTtsAionVoice,
-          tts_connor_voice: crTtsConnorVoice,
-          whisper_mode: crWhisperMode
-        }),
-      });
-      await consumeChatroomSSE(resp);
-    } finally {
-      isSending = false;
-      sendBtn.disabled = false;
-      endStreamingBubble();
-      crRefocusComposerAfterSend();
-    }
-  }
-};
 
 function crStopTTS() {
   _ttsEngine.stop();
@@ -817,38 +700,27 @@ function onWhisperToggleChange() {
   crWhisperMode = !!document.getElementById('setWhisperMode')?.checked;
 }
 
-function crApplyTTSVoices(data) {
-  const aionSel = document.getElementById('setTtsAionVoice');
-  const connorSel = document.getElementById('setTtsConnorVoice');
-  if (!aionSel || !connorSel) return;
-  if (data?.voices && data.voices.length > 0) {
-    const opts = data.voices.map(v => ({ uri: v.uri, name: v.customName || v.uri || 'Unknown' }));
-    aionSel.innerHTML = opts.map(o =>
-      `<option value="${o.uri}" ${o.uri === crTtsAionVoice ? 'selected' : ''}>${o.name}</option>`
-    ).join('');
-    connorSel.innerHTML = opts.map(o =>
-      `<option value="${o.uri}" ${o.uri === crTtsConnorVoice ? 'selected' : ''}>${o.name}</option>`
-    ).join('');
-  } else if (!aionSel.options.length || !connorSel.options.length) {
-    aionSel.innerHTML = '<option value="">无可用音色</option>';
-    connorSel.innerHTML = '<option value="">无可用音色</option>';
-  }
-}
-
 async function crLoadTTSVoices() {
   try {
-    const cached = JSON.parse(localStorage.getItem(CR_TTS_VOICES_CACHE_KEY) || 'null');
-    if (cached?.data) crApplyTTSVoices(cached.data);
-  } catch(e) {}
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10000);
-    const resp = await fetch('/api/tts/voices', { signal: controller.signal });
-    clearTimeout(timer);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const resp = await fetch('/api/tts/voices');
     const data = await resp.json();
-    crApplyTTSVoices(data);
-    localStorage.setItem(CR_TTS_VOICES_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), data }));
+    const aionSel = document.getElementById('setTtsAionVoice');
+    const connorSel = document.getElementById('setTtsConnorVoice');
+    if (data.voices && data.voices.length > 0) {
+      const opts = data.voices.map(v => {
+        const name = v.customName || v.uri || 'Unknown';
+        return { uri: v.uri, name };
+      });
+      aionSel.innerHTML = opts.map(o =>
+        `<option value="${o.uri}" ${o.uri === crTtsAionVoice ? 'selected' : ''}>${o.name}</option>`
+      ).join('');
+      connorSel.innerHTML = opts.map(o =>
+        `<option value="${o.uri}" ${o.uri === crTtsConnorVoice ? 'selected' : ''}>${o.name}</option>`
+      ).join('');
+    } else {
+      aionSel.innerHTML = '<option value="">无可用音色</option>';
+      connorSel.innerHTML = '<option value="">无可用音色</option>';
+    }
   } catch(e) {
     console.error('加载TTS音色失败:', e);
   }
@@ -879,18 +751,6 @@ const chatSearchInput = document.getElementById('chatSearchInput');
 const chatSearchMeta = document.getElementById('chatSearchMeta');
 const chatSearchResults = document.getElementById('chatSearchResults');
 let chatSearchKeyword = '';
-
-function crShouldAutoFocusComposer() {
-  const isCoarsePointer = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
-  const hasTouch = (navigator.maxTouchPoints || 0) > 0;
-  const isNarrow = window.innerWidth <= 768;
-  return !(isCoarsePointer || hasTouch || isNarrow);
-}
-
-function crRefocusComposerAfterSend() {
-  if (!crShouldAutoFocusComposer()) return;
-  inputEl?.focus();
-}
 
 // ══════════════════════════════════════════════════
 //  工具函数
@@ -935,58 +795,16 @@ function resizeInput() {
   inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
 }
 
-let inputResizeFrame = null;
-
-function scheduleInputResize() {
-  if (inputResizeFrame !== null) return;
-  inputResizeFrame = requestAnimationFrame(() => {
-    inputResizeFrame = null;
-    resizeInput();
-  });
-}
-
-function cancelPendingInputResize() {
-  if (inputResizeFrame === null) return;
-  cancelAnimationFrame(inputResizeFrame);
-  inputResizeFrame = null;
-}
-
-window.addEventListener('pagehide', cancelPendingInputResize);
-
 // ══════════════════════════════════════════════════
 //  API 调用
 // ══════════════════════════════════════════════════
 
 async function api(path, opts = {}) {
-  const timeoutMs = Number(opts.timeoutMs || 15000);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const fetchOpts = { ...opts };
-  delete fetchOpts.timeoutMs;
-  try {
-    const resp = await fetch(API + path, {
-      ...fetchOpts,
-      headers: { 'Content-Type': 'application/json', ...(fetchOpts.headers || {}) },
-      signal: controller.signal,
-    });
-    const text = await resp.text();
-    let payload = null;
-    if (text) {
-      try { payload = JSON.parse(text); }
-      catch(e) { payload = { detail: text }; }
-    }
-    if (!resp.ok) {
-      const error = new Error(payload?.detail || payload?.error || `请求失败 (${resp.status})`);
-      error.status = resp.status;
-      throw error;
-    }
-    return payload;
-  } catch(e) {
-    if (e?.name === 'AbortError') throw new Error('网络响应超时，请稍后重试');
-    throw e;
-  } finally {
-    clearTimeout(timer);
-  }
+  const resp = await fetch(API + path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+  return resp.json();
 }
 
 function crAmbientSetLocalArmed(armed) {
@@ -2218,63 +2036,6 @@ async function loadMessages() {
   } catch(e) {}
 }
 
-async function refreshCurrentChatroomFromServer(options = {}) {
-  if (!currentRoom) return false;
-  const roomId = currentRoom.id;
-
-  try {
-    rooms = await api('/rooms');
-    const room = rooms.find(r => r.id === roomId);
-    if (currentRoom && currentRoom.id === roomId) {
-      if (room) {
-        currentRoom = room;
-        roomTitleEl.textContent = room.title;
-        if (activeTab !== room.type) switchTab(room.type);
-        else renderRoomList();
-        updateHeaderActions();
-      } else {
-        renderRoomList();
-      }
-    }
-  } catch(e) {
-    console.warn('[chatroom] refresh rooms failed:', e);
-  }
-
-  let msgs;
-  try {
-    msgs = await api(`/rooms/${roomId}/messages?limit=100`);
-  } catch(e) {
-    console.warn('[chatroom] refresh current room failed:', e);
-    return false;
-  }
-  if (!currentRoom || currentRoom.id !== roomId) return false;
-
-  if (msgs && msgs.length) {
-    oldestMsgTs = msgs[0].created_at;
-    noMoreMessages = msgs.length < 100;
-  } else {
-    oldestMsgTs = null;
-    noMoreMessages = true;
-  }
-  loadingOlder = false;
-  renderMessages(msgs);
-  if (options && options.scroll) scrollToBottom(true);
-
-  try {
-    const payload = JSON.stringify({ savedAt: Date.now(), messages: msgs });
-    if (payload.length < 900000) {
-      const snapshotKey = `chatroom_messages_snapshot_v1_${roomId}`;
-      localStorage.setItem(snapshotKey, payload);
-      try {
-        const bridge = window.top?.AppSharedData || window.AppSharedData;
-        bridge?.put?.(snapshotKey, payload);
-      } catch(e) {}
-    }
-  } catch(e) {}
-  return true;
-}
-window.refreshCurrentChatroomFromServer = refreshCurrentChatroomFromServer;
-
 async function loadOlderMessages() {
   if (!currentRoom || noMoreMessages || loadingOlder || !oldestMsgTs) return;
   loadingOlder = true;
@@ -2731,19 +2492,6 @@ function crRenderMessageItems(items, { sender, name, avatar, msgId, msg, fmt, is
   return htmlParts.join('');
 }
 
-function crBandVibrationNoteHtml(atts) {
-  const note = (Array.isArray(atts) ? atts : []).find(item =>
-    item && typeof item === 'object' && item.type === 'band_vibration'
-  );
-  if (!note) return '';
-  const fallback = note.note
-    ? `${note.pattern === 'call' ? '手环呼唤：' : '手环轻震：'}${note.note}`
-    : (note.pattern === 'call'
-      ? '手环震动：紧急呼叫！'
-      : '手环震动：轻轻想了你一下');
-  return `<div class="band-vibration-line">${esc(note.label || fallback)}</div>`;
-}
-
 function msgHTML(m) {
   const sender = m.sender || 'user';
 
@@ -2792,7 +2540,6 @@ function msgHTML(m) {
   // 渲染附件图片
   const toyHtml = renderToyAttachments(messageAttachments);
   const attHtml = renderAttachments(messageAttachments);
-  const bandVibrationHtml = crBandVibrationNoteHtml(messageAttachments);
 
   const msgId = m.id || '';
 
@@ -2804,7 +2551,6 @@ function msgHTML(m) {
           ${bubblesHtml}
           ${toyHtml}
           ${hasWishFulfillmentAtt || hasDateSummaryAtt ? '' : attHtml}
-          ${bandVibrationHtml}
         </div>
       </div>
       <div class="message-meta">${time}</div>
@@ -3035,7 +2781,7 @@ async function saveChatroomEdit(msgId) {
     isSending = false;
     sendBtn.disabled = false;
     endStreamingBubble();
-    crRefocusComposerAfterSend();
+    inputEl.focus();
   }
 }
 
@@ -3377,14 +3123,13 @@ composer.addEventListener('submit', async (e) => {
     isSending = false;
     sendBtn.disabled = false;
     endStreamingBubble();
-    crRefocusComposerAfterSend();
+    inputEl.focus();
   }
 });
 
 function handleSSE(data) {
   switch (data.type) {
     case 'aion_start':
-      crRememberTTSMsgSender(data.id, 'aion');
       appendTyping(crName('aion'));
       // 延迟创建流式气泡，等第一个 chunk 到达时再创建
       pendingStreamSender = 'aion';
@@ -3408,12 +3153,10 @@ function handleSSE(data) {
       if (data.message && data.message.content != null && streamingBubble) {
         streamingText = data.message.content;
       }
-      if (data.message?.id) crRememberTTSMsgSender(data.message.id, 'aion');
       endStreamingBubble(data.message);
       playRecv();
       break;
     case 'connor_start':
-      crRememberTTSMsgSender(data.id, 'connor');
       appendTyping(crName('connor'));
       pendingStreamSender = 'connor';
       pendingStreamId = data.id;
@@ -3436,7 +3179,6 @@ function handleSSE(data) {
       if (data.message && data.message.content != null && streamingBubble) {
         streamingText = data.message.content;
       }
-      if (data.message?.id) crRememberTTSMsgSender(data.message.id, 'connor');
       endStreamingBubble(data.message);
       // 如果 connor_done 带了 message 且没有流式气泡（兼容旧路径），追加消息
       if (data.message
@@ -3450,7 +3192,7 @@ function handleSSE(data) {
       appendAiChatStatus(`AI 互聊 第 ${data.round}/${data.total} 轮`);
       break;
     case 'tts_chunk':
-      crEnqueueTTSChunk(data.data.msg_id, data.data.seq, data.data.url, data.data.created_at, data.data.target_client_id, data.data.text);
+      crEnqueueTTSChunk(data.data.msg_id, data.data.seq, data.data.url, data.data.created_at, data.data.target_client_id);
       break;
     case 'tts_done':
       crFinishTTSForMsg(data.data.msg_id, data.data.created_at, data.data.target_client_id);
@@ -3459,13 +3201,7 @@ function handleSSE(data) {
       toast('错误: ' + data.content);
       break;
     case 'system_msg':
-      if (data.message) {
-        if (data.message.id) crMessagesById[data.message.id] = data.message;
-        if (data.message.id && data.message.sender) crRememberTTSMsgSender(data.message.id, data.message.sender);
-        if (!data.message.id || !messagesEl.querySelector(`[data-msg-id="${data.message.id}"]`)) {
-          appendMessage(data.message);
-        }
-      }
+      if (data.message) { appendMessage(data.message); }
       break;
     case 'memory_record':
       crShowMemoryRecordHint(data.msg_id, data.content);
@@ -3490,7 +3226,7 @@ function handleSSE(data) {
   }
 }
 
-inputEl.addEventListener('input', scheduleInputResize);
+inputEl.addEventListener('input', resizeInput);
 inputEl.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.isComposing) {
     // Shift+Enter 或 Ctrl+Enter 发送，Enter 换行
@@ -3576,113 +3312,55 @@ async function triggerReplyOnce(speaker) {
 //  设置
 // ══════════════════════════════════════════════════
 
-function crSettingsSnapshotBridge() {
-  try { return window.top?.AppSharedData || window.AppSharedData || null; }
-  catch(e) { return window.AppSharedData || null; }
-}
+async function openSettings() {
+  if (!currentRoom) { toast('请先选择一个房间'); return; }
 
-function crSettingsSnapshotKey(roomId) {
-  return `${CR_SETTINGS_SNAPSHOT_PREFIX}${roomId}`;
-}
-
-function crSaveSettingsSnapshot(room, config) {
-  if (!room?.id || !config) return;
-  try {
-    const key = crSettingsSnapshotKey(room.id);
-    const payload = JSON.stringify({ schema: 2, savedAt: Date.now(), room, config });
-    localStorage.setItem(key, payload);
-    if (payload.length < 900000) crSettingsSnapshotBridge()?.put?.(key, payload);
-  } catch(e) {}
-}
-
-function crLoadSettingsSnapshot(roomId) {
-  try {
-    const key = crSettingsSnapshotKey(roomId);
-    const raw = crSettingsSnapshotBridge()?.get?.(key) || localStorage.getItem(key) || '';
-    const snapshot = JSON.parse(raw || 'null');
-    return snapshot?.schema === 2 ? snapshot : null;
-  } catch(e) { return null; }
-}
-
-function crCurrentSettingsConfig() {
-  return {
-    ai_name: crAiName,
-    user_name: crUserName,
-    connor_name: crConnorName,
-    tts_enabled: crTtsEnabled,
-    tts_aion_voice: crTtsAionVoice,
-    tts_connor_voice: crTtsConnorVoice,
-    aion_model: chatroomModel,
-    connor_model: chatroomConnorModel,
-    reply_order: chatroomReplyOrder,
-    ambient_voice_enabled: crAmbientVoiceEnabled,
-    ambient_voice_wake_word: crAmbientWakeWord,
-    ambient_voice_stop_word: crAmbientStopWord,
-    ambient_voice_min_chars: crAmbientMinChars,
-    ambient_voice_interval_seconds: crAmbientIntervalSec,
-    ambient_voice_cooldown_seconds: crAmbientCooldownSec,
-  };
-}
-
-function crPopulateSettings(room, cfg = {}) {
-  if (!room) return;
-  applyChatroomNames(cfg);
-  if (cfg.tts_enabled !== undefined) crTtsEnabled = !!cfg.tts_enabled;
-  if (cfg.tts_aion_voice !== undefined) crTtsAionVoice = cfg.tts_aion_voice || '';
-  if (cfg.tts_connor_voice !== undefined) crTtsConnorVoice = cfg.tts_connor_voice || '';
+  // 先立即打开面板，再异步填充数据（提升感知速度）
   document.getElementById('setTtsEnabled').checked = crTtsEnabled;
-  if (document.getElementById('setTtsAionVoice')) document.getElementById('setTtsAionVoice').value = crTtsAionVoice;
-  if (document.getElementById('setTtsConnorVoice')) document.getElementById('setTtsConnorVoice').value = crTtsConnorVoice;
-  crApplyAmbientVoiceConfig({ ...crCurrentSettingsConfig(), ...cfg });
+  crAmbientUpdateToggleView();
+  document.getElementById('settingsOverlay').classList.add('active');
+  const ambientLoadStartedAt = Date.now();
+
+  // 三个请求并行发起，避免串行等待外部服务超时
+  const [room, cfg] = await Promise.all([
+    api(`/rooms/${currentRoom.id}`),
+    api('/config'),
+    crLoadTTSVoices(),
+  ]);
+  applyChatroomNames(cfg);
+  if (crAmbientLastUserToggleAt <= ambientLoadStartedAt) {
+    crApplyAmbientVoiceConfig(cfg);
+  } else {
+    crAmbientUpdateToggleView();
+    crAmbientUpdateBufferView();
+  }
 
   document.getElementById('setTitle').value = room.title || '';
   document.getElementById('setContextLimit').value = room.context_limit || room.context_minutes || 30;
   document.getElementById('setAiRounds').value = room.ai_chat_rounds || 1;
-  chatroomModel = cfg.aion_model || chatroomModel;
   chatroomConnorModel = cfg.connor_model || chatroomConnorModel || 'Codex';
   document.getElementById('setAionModel').innerHTML = renderModelOptions(chatroomModel);
   document.getElementById('setConnorModel').innerHTML = renderModelOptions(chatroomConnorModel);
   document.getElementById('setAionModel').value = chatroomModel || '';
   document.getElementById('setConnorModel').value = chatroomConnorModel || 'Codex';
 
-  document.getElementById('optAion').textContent = `${crAiName} 优先`;
-  document.getElementById('optConnor').textContent = `${crConnorName} 优先`;
-  chatroomReplyOrder = cfg.reply_order || chatroomReplyOrder || 'random';
-  document.getElementById('setReplyOrder').value = chatroomReplyOrder;
+  // 回复顺序选项：用世界书和配置中的名字
+  const aionName = crAiName;
+  const connorName = crConnorName;
+  document.getElementById('optAion').textContent = `${aionName} 优先`;
+  document.getElementById('optConnor').textContent = `${connorName} 优先`;
+  chatroomReplyOrder = cfg.reply_order || 'random';
+  document.getElementById('setReplyOrder').value = cfg.reply_order || 'random';
   updateHeaderActions();
 
+  // connor_1v1 隐藏群聊专属设置
   const isConnor1v1 = room.type === 'connor_1v1';
   document.getElementById('fieldAiRounds').style.display = isConnor1v1 ? 'none' : '';
   document.getElementById('fieldReplyOrder').style.display = isConnor1v1 ? 'none' : '';
   document.getElementById('fieldAionModel').style.display = isConnor1v1 ? 'none' : '';
 }
 
-async function openSettings() {
-  if (!currentRoom) { toast('请先选择一个房间'); return; }
-
-  const roomId = currentRoom.id;
-  const openStartedAt = Date.now();
-  crSettingsDirtyAt = 0;
-  crSettingsLoadingRoomId = roomId;
-  document.getElementById('settingsOverlay').classList.add('active');
-  const cached = crLoadSettingsSnapshot(roomId);
-  crPopulateSettings(cached?.room || currentRoom, cached?.config || crCurrentSettingsConfig());
-  crLoadTTSVoices(); // 音色慢也不阻塞主要设置。
-
-  try {
-    const result = await api(`/rooms/${roomId}/settings`, { timeoutMs: 10000 });
-    if (crSettingsLoadingRoomId !== roomId || currentRoom?.id !== roomId) return;
-    crSaveSettingsSnapshot(result.room, result.config);
-    if (!crSettingsDirtyAt || crSettingsDirtyAt <= openStartedAt) {
-      crPopulateSettings(result.room, result.config);
-    }
-  } catch(e) {
-    if (!cached) toast(e.message || '设置刷新失败，当前显示本地值');
-  }
-}
-
 function closeSettings() {
-  crSettingsLoadingRoomId = null;
   document.getElementById('settingsOverlay').classList.remove('active');
 }
 
@@ -3709,9 +3387,6 @@ let crPersonaEvolutionRuns = [];
 let crPersonaSelectedRunIndex = -1;
 let crPersonaEvolutionSaving = false;
 let crPersonaResizeBound = false;
-let crPersonaViewportWidth = window.innerWidth;
-const crPersonaResizeFrames = new WeakMap();
-const crPersonaTextareaMetrics = new WeakMap();
 
 function crPersonaFieldId(key) {
   return `personaSection_${key}`;
@@ -3728,51 +3403,26 @@ function crEstimatePersonaRows(text) {
 
 function crResizePersonaTextarea(el) {
   if (!el) return;
-  let metrics = crPersonaTextareaMetrics.get(el);
-  if (!metrics) {
-    const style = window.getComputedStyle(el);
-    metrics = {
-      lineHeight: parseFloat(style.lineHeight) || 19,
-      verticalPadding: (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0) + 2,
-    };
-    crPersonaTextareaMetrics.set(el, metrics);
-  }
+  const style = window.getComputedStyle(el);
+  const lineHeight = parseFloat(style.lineHeight) || 19;
+  const verticalPadding = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0) + 2;
   const estimatedRows = crEstimatePersonaRows(el.value);
-  const charCount = String(el.value || '').length;
+  const charCount = [...String(el.value || '')].length;
   const minRows = (charCount > 220 || estimatedRows > 12)
     ? 14
     : (charCount > 60 || estimatedRows > 5)
       ? 10
       : (charCount > 0 ? 5 : 4);
-  const minHeight = Math.round((metrics.lineHeight * minRows) + metrics.verticalPadding);
+  const minHeight = Math.round((lineHeight * minRows) + verticalPadding);
   const maxHeight = Math.max(220, Math.min(window.innerHeight * 0.56, 560));
   el.style.height = 'auto';
-  const scrollHeight = el.scrollHeight;
-  const nextHeight = Math.min(Math.max(scrollHeight, minHeight), maxHeight);
+  const nextHeight = Math.min(Math.max(el.scrollHeight, minHeight), maxHeight);
   el.style.height = `${nextHeight}px`;
-  el.style.overflowY = scrollHeight > maxHeight ? 'auto' : 'hidden';
-}
-
-function crSchedulePersonaTextareaResize(el) {
-  if (!el || crPersonaResizeFrames.has(el)) return;
-  const frame = requestAnimationFrame(() => {
-    crPersonaResizeFrames.delete(el);
-    crResizePersonaTextarea(el);
-  });
-  crPersonaResizeFrames.set(el, frame);
+  el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
 }
 
 function crResizePersonaTextareas(root = document) {
   root.querySelectorAll?.('.persona-page-body textarea').forEach(crResizePersonaTextarea);
-}
-
-function crHandlePersonaViewportResize() {
-  const nextWidth = window.innerWidth;
-  if (nextWidth === crPersonaViewportWidth) return;
-  crPersonaViewportWidth = nextWidth;
-  if (document.getElementById('personaOverlay')?.classList.contains('active')) {
-    crResizePersonaTextareas(document.getElementById('personaOverlay'));
-  }
 }
 
 function crPersonaSectionForHeading(heading) {
@@ -3867,11 +3517,15 @@ function crRenderPersonaSections() {
     sectionEl.addEventListener('toggle', () => crResizePersonaTextareas(sectionEl));
   });
   container.querySelectorAll('textarea').forEach(textarea => {
-    textarea.addEventListener('input', () => crSchedulePersonaTextareaResize(textarea));
+    textarea.addEventListener('input', () => crResizePersonaTextarea(textarea));
   });
-  document.getElementById('personaExtraText')?.addEventListener('input', event => crSchedulePersonaTextareaResize(event.currentTarget));
+  document.getElementById('personaExtraText')?.addEventListener('input', event => crResizePersonaTextarea(event.currentTarget));
   if (!crPersonaResizeBound) {
-    window.addEventListener('resize', crHandlePersonaViewportResize, { passive: true });
+    window.addEventListener('resize', () => {
+      if (document.getElementById('personaOverlay')?.classList.contains('active')) {
+        crResizePersonaTextareas(document.getElementById('personaOverlay'));
+      }
+    });
     crPersonaResizeBound = true;
   }
   document.getElementById('personaConnorName')?.addEventListener('input', crSyncPersonaNameLabels);
@@ -4222,67 +3876,49 @@ async function crSavePersona(options = {}) {
 
 async function saveSettings() {
   if (!currentRoom) return;
-  const roomId = currentRoom.id;
-  const btn = document.getElementById('saveSettingsBtn');
-  const oldText = btn?.textContent || '保存';
-  if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
-  const nextReplyOrder = document.getElementById('setReplyOrder').value || 'random';
-  const nextAionModel = document.getElementById('setAionModel')?.value || chatroomModel;
-  const nextConnorModel = document.getElementById('setConnorModel')?.value || chatroomConnorModel || 'Codex';
-  const ambient = crAmbientReadInputs();
-  const payload = {
+
+  // 保存房间设置
+  await api(`/rooms/${currentRoom.id}`, {
+    method: 'PUT',
+    body: JSON.stringify({
       title: document.getElementById('setTitle').value,
       context_limit: parseInt(document.getElementById('setContextLimit').value) || 30,
       ai_chat_rounds: parseInt(document.getElementById('setAiRounds').value) || 1,
-      aion_model: nextAionModel,
-      connor_model: nextConnorModel,
-      tts_enabled: !!document.getElementById('setTtsEnabled').checked,
+    }),
+  });
+
+  // 保存 Connor 配置
+  const nextReplyOrder = document.getElementById('setReplyOrder').value || 'random';
+  chatroomModel = document.getElementById('setAionModel')?.value || chatroomModel;
+  chatroomConnorModel = document.getElementById('setConnorModel')?.value || chatroomConnorModel || 'Codex';
+  await api('/config', {
+    method: 'PUT',
+    body: JSON.stringify({
+      aion_model: chatroomModel,
+      connor_model: chatroomConnorModel,
       tts_aion_voice: document.getElementById('setTtsAionVoice').value,
       tts_connor_voice: document.getElementById('setTtsConnorVoice').value,
       reply_order: nextReplyOrder,
-      ...ambient,
-  };
+    }),
+  });
+  await crSaveAmbientVoiceSettings({ silent: true, sync: false });
+  await loadMessages();
 
-  try {
-    let result;
-    try {
-      result = await api(`/rooms/${roomId}/settings`, {
-        method: 'PATCH', body: JSON.stringify(payload), timeoutMs: 15000,
-      });
-    } catch(saveError) {
-      if (saveError?.status && saveError.status < 500) throw saveError;
-      // 超时可能发生在服务器已落盘之后；只读核对避免误报失败。
-      const checked = await api(`/rooms/${roomId}/settings`, { timeoutMs: 8000 }).catch(() => null);
-      if (!checked || checked.config?.reply_order !== payload.reply_order || checked.room?.title !== payload.title) {
-        throw saveError;
-      }
-      result = { ok: true, ...checked };
-    }
+  // 同步本地变量
+  crTtsAionVoice = document.getElementById('setTtsAionVoice').value;
+  crTtsConnorVoice = document.getElementById('setTtsConnorVoice').value;
+  crTtsPlaybackActiveAt = Date.now() / 1000;
+  crSendTTSState();
+  chatroomReplyOrder = nextReplyOrder;
+  updateHeaderActions();
+  crAmbientSyncRunning();
 
-    chatroomModel = result.config?.aion_model || nextAionModel;
-    chatroomConnorModel = result.config?.connor_model || nextConnorModel;
-    crTtsEnabled = !!(result.config?.tts_enabled ?? payload.tts_enabled);
-    crTtsAionVoice = result.config?.tts_aion_voice ?? payload.tts_aion_voice;
-    crTtsConnorVoice = result.config?.tts_connor_voice ?? payload.tts_connor_voice;
-    chatroomReplyOrder = result.config?.reply_order || nextReplyOrder;
-    crApplyAmbientVoiceConfig(result.config || payload);
-    crTtsPlaybackActiveAt = Date.now() / 1000;
-    crSendTTSState();
-    updateHeaderActions();
-    crAmbientSyncRunning().catch(() => {});
-
-    currentRoom = { ...currentRoom, ...(result.room || {}), context_limit: result.room?.context_limit || payload.context_limit };
-    rooms = rooms.map(room => room.id === roomId ? { ...room, ...currentRoom } : room);
-    roomTitleEl.textContent = currentRoom.title;
-    renderRoomList();
-    crSaveSettingsSnapshot(currentRoom, result.config || payload);
-    closeSettings();
-    toast('已保存');
-  } catch(e) {
-    toast(`保存失败：${e.message || '网络异常'}`, 3500);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = oldText; }
-  }
+  // 刷新
+  currentRoom.title = document.getElementById('setTitle').value;
+  roomTitleEl.textContent = currentRoom.title;
+  await loadRooms();
+  closeSettings();
+  toast('已保存');
 }
 
 async function triggerDigest() {
@@ -4588,9 +4224,8 @@ function renderChatroomCompressionReview() {
   const messages = (chat.messages || []).filter(Boolean);
   const errors = (chat.errors || []).filter(Boolean);
   const warnings = chatroomCompressionWarnings();
-  const canApply = !_chatroomCompressionRequestBusy && chatroomDailyCompressReview.status === 'draft'
+  const canApply = chatroomDailyCompressReview.status === 'draft'
     && (dailyCount || importantCount || Number(chat.processed || 0));
-  const actionDisabled = _chatroomCompressionRequestBusy ? 'disabled' : '';
   el.style.display = 'block';
   el.innerHTML = `
     <div class="chatroom-compress-head">
@@ -4623,8 +4258,8 @@ function renderChatroomCompressionReview() {
       ${oldRowCount ? renderChatroomOldRows() : '<div class="mem-empty">没有旧日常会被处理</div>'}
     </details>
     <div class="chatroom-compress-actions">
-      <button class="chatroom-compress-discard" onclick="saveChatroomDailyCompressionDraft(false)" ${actionDisabled}>保存草稿</button>
-      <button class="chatroom-compress-discard" onclick="discardChatroomDailyCompressionDraft('${esc(chatroomDailyCompressReview.id)}')" ${actionDisabled}>废弃草稿</button>
+      <button class="chatroom-compress-discard" onclick="saveChatroomDailyCompressionDraft(false)">保存草稿</button>
+      <button class="chatroom-compress-discard" onclick="discardChatroomDailyCompressionDraft('${esc(chatroomDailyCompressReview.id)}')">废弃草稿</button>
       <button class="chatroom-compress-apply" onclick="applyChatroomDailyCompressionDraft('${esc(chatroomDailyCompressReview.id)}')" ${canApply ? '' : 'disabled'}>确认应用</button>
     </div>`;
 }
@@ -4635,37 +4270,19 @@ function setChatroomCompressionBusy(value) {
   if (btn) btn.disabled = value;
 }
 
-function startChatroomCompressionElapsedTimer(onTick) {
-  const startedAt = Date.now();
-  const tick = () => {
-    const seconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-    const minutes = Math.floor(seconds / 60);
-    const remainder = seconds % 60;
-    onTick(minutes ? `${minutes}分${remainder}秒` : `${remainder}秒`);
-  };
-  tick();
-  const timer = setInterval(tick, 1000);
-  return () => clearInterval(timer);
-}
-
 async function compressChatroomDailyMemories() {
   if (!currentRoom) return;
-  if (_chatroomCompressionRequestBusy) {
-    toast('压缩任务仍在处理中，请勿重复操作');
-    return;
-  }
   if (chatroomDailyCompressReview && chatroomDailyCompressReview.status === 'draft') {
     renderChatroomCompressionReview();
     toast('已经有一份聊天室压缩草稿，先确认应用或废弃它');
     return;
   }
   if (!confirm('将按 15-90 天、90-180 天、180-365 天、365 天以上分阶段生成聊天室压缩草稿；这一步不会修改记忆库。继续？')) return;
-  _chatroomCompressionRequestBusy = true;
   const btn = document.getElementById('chatroomCompressDailyBtn');
-  setChatroomCompressionBusy(true);
-  const stopElapsedTimer = startChatroomCompressionElapsedTimer(elapsed => {
-    if (btn) btn.textContent = `生成中，已等待 ${elapsed}`;
-  });
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '生成中...';
+  }
   toast('正在生成聊天室压缩草稿...');
   try {
     const result = await memoryCompressionApi('POST', '/api/memories/compress-daily', { target: 'chatroom', days: 15 });
@@ -4675,30 +4292,18 @@ async function compressChatroomDailyMemories() {
   } catch (err) {
     toast('生成压缩草稿失败: ' + err.message);
   } finally {
-    stopElapsedTimer();
-    _chatroomCompressionRequestBusy = false;
-    setChatroomCompressionBusy(false);
     if (btn) {
+      btn.disabled = false;
       btn.textContent = '🗜️ 压缩日常';
     }
-    if (chatroomDailyCompressReview) renderChatroomCompressionReview();
   }
 }
 
 async function applyChatroomDailyCompressionDraft(reviewId) {
   if (!reviewId) return;
-  if (_chatroomCompressionRequestBusy) return;
   const chat = chatroomDailyCompressReview?.counts?.chatroom || {};
   if (!confirm(`确认应用这份聊天室压缩草稿？将移除旧日常 ${Number(chat.processed || 0)} 条，并写入新日常 ${Number(chat.created_daily || 0)} 条、新长期重要 ${Number(chat.created_important || 0)} 条。`)) return;
-  _chatroomCompressionRequestBusy = true;
   setChatroomCompressionBusy(true);
-  const stopElapsedTimer = startChatroomCompressionElapsedTimer(elapsed => {
-    const applyBtn = document.querySelector('.chatroom-compress-apply');
-    if (applyBtn) {
-      applyBtn.disabled = true;
-      applyBtn.textContent = `应用中，已等待 ${elapsed}`;
-    }
-  });
   toast('正在保存并应用聊天室压缩草稿...');
   try {
     await saveChatroomDailyCompressionDraft(true);
@@ -4707,14 +4312,11 @@ async function applyChatroomDailyCompressionDraft(reviewId) {
     chatroomDailyCompressReview = null;
     renderChatroomCompressionReview();
     await loadMemories();
+    setChatroomCompressionBusy(false);
     toast(result.message || '聊天室压缩草稿已应用', 3000);
   } catch (err) {
     toast('应用压缩草稿失败: ' + err.message);
-  } finally {
-    stopElapsedTimer();
-    _chatroomCompressionRequestBusy = false;
     setChatroomCompressionBusy(false);
-    if (chatroomDailyCompressReview) renderChatroomCompressionReview();
   }
 }
 
@@ -4804,25 +4406,14 @@ function renderChatroomMemories(focusMemId = '') {
     const date = crFormatMemoryOccurrence(m);
     const kw = m.keywords ? `关键词: ${esc(m.keywords)}` : '';
     const hasSource = Number(m.source_count || 0) > 0;
-    const curKind = chatroomMemoryKind(m);
-    const kindLabel = m.memory_kind_label || (curKind === 'daily' ? '日常' : '长期重要');
-    const kindClass = curKind === 'daily' ? 'daily' : 'long-term';
-    const menuOpen = chatroomMemoryKindMenuId === m.id;
-    const kindMenu = menuOpen ? `<div class="mem-kind-menu" onclick="event.stopPropagation()">
-      <button class="${curKind === 'long_term' ? 'active' : ''}" onclick="selectChatroomMemoryKind('${m.id}','long_term',event)">长期重要</button>
-      <button class="${curKind === 'daily' ? 'active' : ''}" onclick="selectChatroomMemoryKind('${m.id}','daily',event)">日常</button>
-    </div>` : '';
+    const kindLabel = m.memory_kind_label || (chatroomMemoryKind(m) === 'daily' ? '日常' : '长期重要');
+    const kindClass = chatroomMemoryKind(m) === 'daily' ? 'daily' : 'long-term';
     const unresolved = Boolean(m.unresolved);
-    const importance = m.importance == null
-      ? ''
-      : `<span class="mem-importance" title="重要程度">${Number(m.importance).toFixed(1)}</span>`;
     return `
       <div class="mem-item${unresolved ? ' mem-unresolved' : ''}" data-id="${m.id}">
         <div class="mem-head">
-          <div class="mem-labels">
-            <div class="mem-kind-wrap"><button class="mem-kind ${kindClass}" onclick="openChatroomMemoryKindMenu('${m.id}', event)" title="点击选择标签" aria-label="选择记忆标签">${esc(kindLabel)}</button>${kindMenu}</div>
-            ${importance}
-          </div>
+          <span class="mem-kind ${kindClass}">${esc(kindLabel)}</span>
+          <div class="mem-content">${esc(m.content)}</div>
           <div class="mem-actions">
             <button class="mem-pin${unresolved ? ' active' : ''}" onclick="toggleChatroomMemoryUnresolved('${m.id}')" title="${unresolved ? '取消未完成标记' : '标记为未完成'}">📌</button>
             ${hasSource ? `<button onclick="viewMemSource('${m.id}')" title="查看原文">📜</button>` : ''}
@@ -4830,9 +4421,9 @@ function renderChatroomMemories(focusMemId = '') {
             <button class="del" onclick="deleteMemory('${m.id}')" title="删除">✕</button>
           </div>
         </div>
-        <div class="mem-content">${esc(m.content)}</div>
         <div class="mem-meta">
           ${date ? `<span>${esc(date)}</span>` : ''}
+          <span>重要度: ${m.importance}</span>
           ${kw ? `<span>${kw}</span>` : ''}
         </div>
       </div>`;
@@ -4938,47 +4529,6 @@ async function toggleChatroomMemoryUnresolved(memId) {
     renderChatroomMemories(memId);
   } catch (err) {
     toast('切换未完成状态失败: ' + err.message);
-  }
-}
-
-function openChatroomMemoryKindMenu(memId, event) {
-  if (event) {
-    event.preventDefault();
-    event.stopPropagation();
-  }
-  chatroomMemoryKindMenuId = chatroomMemoryKindMenuId === memId ? null : memId;
-  renderChatroomMemories(memId);
-}
-
-async function selectChatroomMemoryKind(memId, nextKind, event) {
-  if (event) {
-    event.preventDefault();
-    event.stopPropagation();
-  }
-  const mem = chatroomMemoryCache.find(item => item.id === memId);
-  if (!mem) return;
-  if (chatroomMemoryKind(mem) === nextKind) {
-    chatroomMemoryKindMenuId = null;
-    renderChatroomMemories(memId);
-    return;
-  }
-  const prevKind = mem.memory_kind;
-  const prevLabel = mem.memory_kind_label;
-  mem.memory_kind = nextKind;
-  mem.memory_kind_label = nextKind === 'daily' ? '日常' : '长期重要';
-  chatroomMemoryKindMenuId = null;
-  renderChatroomMemories(memId);
-  try {
-    const result = await api(`/memories/${memId}`, {
-      method: 'PUT',
-      body: JSON.stringify({ memory_kind: nextKind }),
-    });
-    if (result && result.error) throw new Error(result.error);
-  } catch (err) {
-    mem.memory_kind = prevKind;
-    mem.memory_kind_label = prevLabel;
-    renderChatroomMemories(memId);
-    toast('切换记忆标签失败: ' + err.message);
   }
 }
 
@@ -5109,11 +4659,6 @@ function closeMemSource() {
 document.getElementById('settingsOverlay').addEventListener('click', (e) => {
   if (e.target.id === 'settingsOverlay') closeSettings();
 });
-['input', 'change'].forEach(eventName => {
-  document.getElementById('settingsOverlay').addEventListener(eventName, e => {
-    if (e.isTrusted && e.target?.matches('input,select,textarea')) crSettingsDirtyAt = Date.now();
-  });
-});
 
 // ══════════════════════════════════════════════════
 //  Connor 状态
@@ -5165,111 +4710,6 @@ function renderEmptyChat() {
 //  WebSocket 实时同步
 // ══════════════════════════════════════════════════
 
-function crRememberSyncSeq(event) {
-  const seq = Number(event?.sync_seq || 0);
-  if (!seq) return;
-  const current = Number(localStorage.getItem(CR_SYNC_SEQ_KEY) || 0);
-  if (seq > current) localStorage.setItem(CR_SYNC_SEQ_KEY, String(seq));
-}
-
-function crApplySettingsSync(data) {
-  const cfg = data?.config || null;
-  const room = data?.room || null;
-  if (cfg) {
-    applyChatroomNames(cfg);
-    chatroomModel = cfg.aion_model || chatroomModel;
-    chatroomConnorModel = cfg.connor_model || chatroomConnorModel;
-    chatroomReplyOrder = cfg.reply_order || chatroomReplyOrder;
-    crTtsEnabled = !!(cfg.tts_enabled ?? crTtsEnabled);
-    crTtsAionVoice = cfg.tts_aion_voice ?? crTtsAionVoice;
-    crTtsConnorVoice = cfg.tts_connor_voice ?? crTtsConnorVoice;
-    crApplyAmbientVoiceConfig(cfg);
-    updateHeaderActions();
-  }
-  if (room?.id) {
-    rooms = rooms.map(item => item.id === room.id ? { ...item, ...room } : item);
-    if (currentRoom?.id === room.id) {
-      currentRoom = { ...currentRoom, ...room };
-      roomTitleEl.textContent = currentRoom.title;
-    }
-    crSaveSettingsSnapshot(room, cfg || crCurrentSettingsConfig());
-  } else if (currentRoom && cfg) {
-    crSaveSettingsSnapshot(currentRoom, cfg);
-  }
-  if (document.getElementById('settingsOverlay').classList.contains('active')
-      && !crSettingsDirtyAt
-      && (!data?.room_id || data.room_id === currentRoom?.id)) {
-    crPopulateSettings(room || currentRoom, cfg || crCurrentSettingsConfig());
-  }
-  renderRoomList();
-}
-
-function crApplyReplayedSyncEvent(event) {
-  // sync_event replay uses the same legacy event shape and remains idempotent.
-  if (!event?.type) return;
-  if (event.type === 'chatroom_settings_updated') {
-    crApplySettingsSync(event.data || {});
-    return;
-  }
-  if (event.type === 'chatroom_room_created' || event.type === 'chatroom_room_updated'
-      || event.type === 'chatroom_room_deleted') {
-    loadRooms();
-    return;
-  }
-  if (!currentRoom || event.data?.room_id !== currentRoom.id) return;
-  const data = event.data || {};
-  if (event.type === 'chatroom_msg_created') {
-    if (!messagesEl.querySelector(`[data-msg-id="${data.id}"]`) && !document.getElementById(`streaming-${data.id}`)) {
-      if (!reconcileLocalUserEcho(data)) appendMessage(data);
-    }
-  } else if (event.type === 'chatroom_msg_deleted') {
-    delete crMessagesById[data.id];
-    document.querySelector(`[data-msg-id="${data.id}"]`)?.remove();
-  } else if (event.type === 'chatroom_msg_updated') {
-    crMessagesById[data.id] = data;
-    const row = document.querySelector(`[data-msg-id="${data.id}"]`);
-    if (row) {
-      const div = document.createElement('div');
-      div.innerHTML = msgHTML(data);
-      row.replaceWith(div.firstElementChild);
-    }
-  }
-}
-
-async function crReconcileSyncEvents() {
-  if (crSyncReplayPromise) return crSyncReplayPromise;
-  crSyncReplayPromise = (async () => {
-    let after = Number(localStorage.getItem(CR_SYNC_SEQ_KEY) || 0);
-    for (let batch = 0; batch < 20; batch++) {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10000);
-      let response;
-      try {
-        response = await fetch(`/api/sync/changes?after=${after}&limit=200`, { signal: controller.signal });
-      } finally {
-        clearTimeout(timer);
-      }
-      if (!response.ok) throw new Error(`sync HTTP ${response.status}`);
-      const result = await response.json();
-      if (result.reset_required) {
-        if (currentRoom) refreshCurrentChatroomFromServer();
-        const latest = Number(result.latest_seq || 0);
-        localStorage.setItem(CR_SYNC_SEQ_KEY, String(latest));
-        break;
-      }
-      const events = Array.isArray(result.events) ? result.events : [];
-      events.forEach(event => {
-        crApplyReplayedSyncEvent(event);
-        crRememberSyncSeq(event);
-        after = Math.max(after, Number(event.sync_seq || 0));
-      });
-      if (!result.has_more || !events.length) break;
-    }
-  })().catch(e => console.warn('[chatroom sync] reconcile failed:', e))
-    .finally(() => { crSyncReplayPromise = null; });
-  return crSyncReplayPromise;
-}
-
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
@@ -5279,17 +4719,15 @@ function connectWS() {
     ws.send(JSON.stringify({ type: 'register_client', client_id: crAmbientClientId }));
     crSendTTSState();
     ws.send(JSON.stringify({ type: 'ping' }));
-    crReconcileSyncEvents();
   };
 
   ws.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data);
-      crRememberSyncSeq(data);
       if (data.type === 'pong') return;
 
       if (data.type === 'tts_chunk' && data.data) {
-        crEnqueueTTSChunk(data.data.msg_id, data.data.seq, data.data.url, data.data.created_at, data.data.target_client_id, data.data.text);
+        crEnqueueTTSChunk(data.data.msg_id, data.data.seq, data.data.url, data.data.created_at, data.data.target_client_id);
       }
 
       if (data.type === 'tts_done' && data.data) {
@@ -5318,7 +4756,6 @@ function connectWS() {
       if (data.type === 'chatroom_msg_created' && currentRoom) {
         const msg = data.data;
         if (msg.room_id === currentRoom.id) {
-          if (msg.id && msg.sender) crRememberTTSMsgSender(msg.id, msg.sender);
           // 避免重复：流式回复本身已有 streaming 行；异步跟进消息即使还在发送中也要显示。
           const existing = document.getElementById(`streaming-${msg.id}`);
           if (!existing && !messagesEl.querySelector(`[data-msg-id="${msg.id}"]`)) {
@@ -5360,22 +4797,14 @@ function connectWS() {
         }
       }
 
-      if (data.type === 'chatroom_settings_updated' && data.data) {
-        crApplySettingsSync(data.data);
-      }
-
       if (data.type === 'wish_updated' && data.data) {
         document.querySelectorAll('.wish-fulfill-card').forEach(card => {
           if (card.dataset.wishId === data.data.id) crApplyWishCardStatus(card, data.data.status || 'active');
         });
       }
 
-      if (data.type === 'chatroom_room_created' || data.type === 'chatroom_room_deleted') {
+      if (data.type === 'chatroom_room_created' || data.type === 'chatroom_room_deleted' || data.type === 'chatroom_room_updated') {
         loadRooms();
-      } else if (data.type === 'chatroom_room_updated' && data.data) {
-        rooms = rooms.map(room => room.id === data.data.id ? { ...room, ...data.data } : room);
-        if (currentRoom?.id === data.data.id) currentRoom = { ...currentRoom, ...data.data };
-        renderRoomList();
       }
 
       // 音乐广播（来自 WS broadcast）— 仅在非发送状态下处理（发送时 SSE 已处理）
@@ -5409,10 +4838,6 @@ function connectWS() {
   };
   ws.onerror = () => ws.close();
 }
-
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') crReconcileSyncEvents();
-});
 
 // ══════════════════════════════════════════════════
 //  图片上传 & 预览 & 查看器
@@ -5778,205 +5203,6 @@ function buildDateSummaryCard(item) {
   </div>`;
 }
 
-let imageLongPressTimer = null;
-let imageLongPressState = null;
-let imageLongPressSuppressClickUntil = 0;
-
-function imageInteractionAttrs() {
-  return 'onclick="return openImageFromElement(event, this)" oncontextmenu="showImageSaveMenu(this.src); return false;" onpointerdown="startImageLongPress(event, this.src)" onpointermove="moveImageLongPress(event)" onpointerup="cancelImageLongPress()" onpointerleave="cancelImageLongPress()" onpointercancel="cancelImageLongPress()" draggable="false"';
-}
-
-function bindImageSaveOnly(img, clickHandler) {
-  if (!img) return;
-  img.oncontextmenu = (event) => {
-    event.preventDefault();
-    showImageSaveMenu(img.src);
-    return false;
-  };
-  img.onpointerdown = (event) => startImageLongPress(event, img.src);
-  img.onpointermove = moveImageLongPress;
-  img.onpointerup = cancelImageLongPress;
-  img.onpointerleave = cancelImageLongPress;
-  img.onpointercancel = cancelImageLongPress;
-  img.onclick = (event) => {
-    event.stopPropagation();
-    if (Date.now() < imageLongPressSuppressClickUntil) {
-      event.preventDefault();
-      return false;
-    }
-    if (typeof clickHandler === 'function') clickHandler();
-    return false;
-  };
-  img.draggable = false;
-}
-
-function openImageFromElement(event, img) {
-  if (Date.now() < imageLongPressSuppressClickUntil) {
-    if (event) event.preventDefault();
-    return false;
-  }
-  openImageViewer(img.src);
-  return false;
-}
-
-function startImageLongPress(event, url) {
-  if (!url) return;
-  if (event.pointerType === 'mouse' && event.button !== 0) return;
-  cancelImageLongPress();
-  imageLongPressState = { x: event.clientX || 0, y: event.clientY || 0 };
-  imageLongPressTimer = setTimeout(() => {
-    imageLongPressTimer = null;
-    imageLongPressSuppressClickUntil = Date.now() + 700;
-    try { navigator.vibrate?.(12); } catch (e) {}
-    showImageSaveMenu(url);
-  }, 560);
-}
-
-function moveImageLongPress(event) {
-  if (!imageLongPressState) return;
-  const dx = Math.abs((event.clientX || 0) - imageLongPressState.x);
-  const dy = Math.abs((event.clientY || 0) - imageLongPressState.y);
-  if (dx > 12 || dy > 12) cancelImageLongPress();
-}
-
-function cancelImageLongPress() {
-  if (imageLongPressTimer) clearTimeout(imageLongPressTimer);
-  imageLongPressTimer = null;
-  imageLongPressState = null;
-}
-
-function closeImageSaveMenu() {
-  document.querySelector('.image-save-menu-overlay')?.remove();
-}
-
-function showImageSaveMenu(url) {
-  if (!url) return;
-  cancelImageLongPress();
-  closeImageSaveMenu();
-  const overlay = document.createElement('div');
-  overlay.className = 'image-save-menu-overlay';
-  const sheet = document.createElement('div');
-  sheet.className = 'image-save-menu';
-
-  const saveBtn = document.createElement('button');
-  saveBtn.type = 'button';
-  saveBtn.className = 'primary';
-  saveBtn.textContent = '保存图片';
-  saveBtn.addEventListener('click', () => {
-    closeImageSaveMenu();
-    saveImage(url);
-  });
-
-  const viewBtn = document.createElement('button');
-  viewBtn.type = 'button';
-  viewBtn.textContent = '查看大图';
-  viewBtn.addEventListener('click', () => {
-    closeImageSaveMenu();
-    openImageViewer(url);
-  });
-
-  const cancelBtn = document.createElement('button');
-  cancelBtn.type = 'button';
-  cancelBtn.textContent = '取消';
-  cancelBtn.addEventListener('click', closeImageSaveMenu);
-
-  sheet.append(saveBtn, viewBtn, cancelBtn);
-  overlay.appendChild(sheet);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) closeImageSaveMenu();
-  });
-  document.body.appendChild(overlay);
-  requestAnimationFrame(() => overlay.classList.add('active'));
-}
-
-function getImageSaverBridge() {
-  try {
-    if (typeof _getNativeBridge === 'function') return _getNativeBridge('AionImageSaver');
-  } catch (e) {}
-  try { if (window.AionImageSaver) return window.AionImageSaver; } catch (e) {}
-  try { if (window.parent && window.parent.AionImageSaver) return window.parent.AionImageSaver; } catch (e) {}
-  try { if (window.top && window.top.AionImageSaver) return window.top.AionImageSaver; } catch (e) {}
-  return null;
-}
-
-function saveImage(url) {
-  fetch(url)
-    .then(r => r.blob())
-    .then(blob => {
-      const saver = getImageSaverBridge();
-      if (saver) {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64 = reader.result.split(',')[1];
-          const filename = url.split('/').pop() || 'image.png';
-          saver.save(base64, filename);
-        };
-        reader.readAsDataURL(blob);
-        return;
-      }
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = url.split('/').pop() || 'image.png';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-    })
-    .catch(() => window.open(url, '_blank'));
-}
-
-function crSafeHttpUrl(value) {
-  try {
-    const url = new URL(value || '', window.location.href);
-    return (url.protocol === 'http:' || url.protocol === 'https:') ? url.href : '';
-  } catch (e) {
-    return '';
-  }
-}
-
-function crGetExternalLinkBridge() {
-  try { if (window.AionExternal) return window.AionExternal; } catch (e) {}
-  try { if (window.parent && window.parent.AionExternal) return window.parent.AionExternal; } catch (e) {}
-  try { if (window.top && window.top.AionExternal) return window.top.AionExternal; } catch (e) {}
-  return null;
-}
-
-function crOpenExternalLink(event, href) {
-  const url = crSafeHttpUrl(href);
-  if (!url) return true;
-  const bridge = crGetExternalLinkBridge();
-  if (!bridge || typeof bridge.open !== 'function') return true;
-  if (event && typeof event.preventDefault === 'function') event.preventDefault();
-  bridge.open(url);
-  return false;
-}
-
-function crBuildLinkPreviewCard(item) {
-  const href = crSafeHttpUrl(item?.url || '');
-  if (!href) return '';
-  let host = '';
-  try { host = new URL(href).hostname.replace(/^www\./, ''); } catch (e) {}
-  const title = esc(item.title || item.site_name || host || href);
-  const description = esc(item.description || '');
-  const source = esc(item.site_name || host || '网页链接');
-  const image = crSafeHttpUrl(item.image || '');
-  const favicon = crSafeHttpUrl(item.favicon || '');
-  const thumb = image
-    ? `<img class="link-preview-thumb-img" src="${esc(image)}" alt="" loading="lazy">`
-    : `<div class="link-preview-thumb-placeholder">URL</div>`;
-  const icon = favicon ? `<img class="link-preview-favicon" src="${esc(favicon)}" alt="" loading="lazy">` : '';
-  const hrefArg = crEscJsSingle(href);
-  return `<a class="link-preview-card" href="${esc(href)}" target="_blank" rel="noopener noreferrer" onclick="return crOpenExternalLink(event,'${hrefArg}')">
-    <span class="link-preview-thumb">${thumb}</span>
-    <span class="link-preview-body">
-      <span class="link-preview-title">${title}</span>
-      ${description ? `<span class="link-preview-desc">${description}</span>` : ''}
-      <span class="link-preview-source">${icon}${source}</span>
-    </span>
-  </a>`;
-}
-
 function renderAttachments(atts) {
   if (!atts || !atts.length) return '';
   let html = '';
@@ -5989,8 +5215,6 @@ function renderAttachments(atts) {
       html += buildLuckinPaymentCard(item);
     } else if (type === 'date_summary') {
       html += buildDateSummaryCard(item);
-    } else if (type === 'link_preview') {
-      html += crBuildLinkPreviewCard(item);
     } else if (type === 'wish_fulfillment') {
       wishHtml += crBuildWishFulfillmentCard(item);
     } else if (type === 'music') {
@@ -6013,7 +5237,7 @@ function renderAttachments(atts) {
       if (/\.(mp3|wav|m4a|aac|ogg)$/i.test(url)) {
         html += `<audio src="${esc(url)}" controls preload="metadata"></audio>`;
       } else {
-        html += `<img src="${esc(url)}" ${imageInteractionAttrs()}>`;
+        html += `<img src="${esc(url)}" onclick="openImageViewer(this.src)">`;
       }
     }
   });
@@ -6056,9 +5280,7 @@ function removeChatroomAttachment(i) {
 
 function openImageViewer(src) {
   const viewer = document.getElementById('imageViewer');
-  const viewerImg = document.getElementById('viewerImg');
-  viewerImg.src = src;
-  bindImageSaveOnly(document.getElementById('viewerImg'), closeImageViewer);
+  document.getElementById('viewerImg').src = src;
   viewer.classList.add('active');
 }
 
@@ -6164,7 +5386,7 @@ function escWithImages(str) {
     let imgUrl = match[1];
     if (imgUrl.startsWith('/uploads/')) imgUrl = '/cr-uploads/' + imgUrl.slice('/uploads/'.length);
     const safeUrl = esc(imgUrl);
-    result += `<img class="cr-inline-img" src="${safeUrl}" ${imageInteractionAttrs()} loading="lazy">`;
+    result += `<img class="cr-inline-img" src="${safeUrl}" onclick="openImageViewer(this.src)" loading="lazy">`;
     lastIdx = imgRe.lastIndex;
   }
   const tail = str.slice(lastIdx);
@@ -6613,18 +5835,30 @@ async function _crVoiceSend(audioBlob, duration) {
     isSending = false;
     sendBtn.disabled = false;
     endStreamingBubble();
-    crRefocusComposerAfterSend();
+    inputEl.focus();
   }
 }
 
 // ══════════════════════════════════════════════════
-//  密语时刻（BLE 玩具控制）
+//  密语时刻（BLE 玩具控制 · SVAKOM 协议）
+//  参考: https://github.com/vickyldr/svakom-ble-ai
 // ══════════════════════════════════════════════════
 
-const CR_TOY_SERVICE_UUID = 0xEE01, CR_TOY_WRITE_UUID = 0xEE03, CR_TOY_NOTIFY_UUID = 0xEE02;
+const CR_TOY_SERVICE_UUID = 0xFFE0, CR_TOY_WRITE_UUID = 0xFFE1, CR_TOY_NOTIFY_UUID = 0xFFE2;
 let crToyDevice = null, crToyServer = null, crToyWriteChar = null, crToyConnected = false;
 let crToyActivePreset = -1;
-let crToyPresets = [];
+let crToyKeepaliveTimer = null;
+let crToyCurrentCmdBytes = null;
+let crToyAutoStopUntil = 0;
+const CR_TOY_KEEPALIVE_MS = 1500;
+const CR_TOY_SCAN_NAME = "SL278H";
+const CR_TOY_CMD_HEADER = 0x55;
+const CR_TOY_CMD_SCALE = 0x04;
+const CR_TOY_CMD_VIBRATE = 0x03;
+
+const CR_TOY_PNAMES = ['微风轻拂','春水初生','暗流涌动','如梦似幻','情潮渐涨','烈焰焚身','极乐之巅','魂飞魄散','失控'];
+const CR_TOY_PICONS = ['🌸','💧','🌊','✨','🔥','💥','⚡','💀','🌀'];
+const CR_TOY_DEF_PRESETS = [28, 56, 85, 113, 141, 170, 198, 226, 255];
 
 // BLE 状态跨页面同步（BroadcastChannel）
 const crBleCh = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('toy_ble_state') : null;
@@ -6643,33 +5877,8 @@ const _origOnDisc = window.toyNativeBle.onDisconnected;
 window.toyNativeBle.onConnected = function() { crToyConnected = true; crToyUpdateUI(); crToyLog('已连接 ♡', 'wl-sys'); crBleNotify(true); if (_origOnConn) _origOnConn(); };
 window.toyNativeBle.onDisconnected = function() { crToyConnected = false; crToyUpdateUI(); crToyLog('断开', 'wl-err'); crBleNotify(false); if (_origOnDisc) _origOnDisc(); };
 
-const CR_TOY_MOTORS = [
-  { label:'震动', gearsSpec:'0001', modeSpec:'0002',
-    modes:[{id:1,name:'全身酥麻'},{id:2,name:'渐入佳境'},{id:3,name:'循序渐进'},{id:4,name:'欢呼雀跃'}] },
-  { label:'电流', gearsSpec:'0003', modeSpec:'0004',
-    modes:[{id:1,name:'温柔涟漪'},{id:2,name:'娇舌搅动'},{id:3,name:'风驰快感'},{id:4,name:'浪潮不断'}] },
-  { label:'吮吸', gearsSpec:'0007', modeSpec:'0008',
-    modes:[{id:1,name:'连绵不绝'},{id:2,name:'深海暗涌'},{id:3,name:'爆裂冲刺'},{id:4,name:'浪潮不断'}] },
-];
-const CR_TOY_PNAMES = ['微风轻拂','春水初生','暗流涌动','如梦似幻','情潮渐涨','烈焰焚身','极乐之巅','魂飞魄散','失控'];
-const CR_TOY_PICONS = ['🌸','💧','🌊','✨','🔥','💥','⚡','💀','🌀'];
-const CR_TOY_DEF_PRESETS = [
-  { motors:[{on:0,mode:1,speed:10},{on:0,mode:1,speed:0},{on:1,mode:1,speed:10}] },
-  { motors:[{on:0,mode:1,speed:20},{on:0,mode:1,speed:10},{on:1,mode:3,speed:20}] },
-  { motors:[{on:0,mode:2,speed:30},{on:0,mode:1,speed:20},{on:1,mode:2,speed:30}] },
-  { motors:[{on:0,mode:2,speed:45},{on:0,mode:2,speed:25},{on:1,mode:4,speed:40}] },
-  { motors:[{on:0,mode:3,speed:60},{on:1,mode:2,speed:20},{on:1,mode:2,speed:50}] },
-  { motors:[{on:1,mode:3,speed:10},{on:1,mode:3,speed:30},{on:1,mode:4,speed:60}] },
-  { motors:[{on:1,mode:2,speed:20},{on:1,mode:4,speed:40},{on:1,mode:4,speed:80}] },
-  { motors:[{on:1,mode:1,speed:30},{on:1,mode:3,speed:80},{on:1,mode:3,speed:100}] },
-  { motors:[{on:1,mode:4,speed:40},{on:1,mode:3,speed:90},{on:1,mode:3,speed:100}] },
-];
-
-function crToyLoadPresets() {
-  try { const s = localStorage.getItem('sosexy_presets_v3'); if (s) { crToyPresets = JSON.parse(s); return; } } catch(e) {}
-  crToyPresets = JSON.parse(JSON.stringify(CR_TOY_DEF_PRESETS));
-}
-function crToySavePresets() { localStorage.setItem('sosexy_presets_v3', JSON.stringify(crToyPresets)); }
+function crToyLoadPresets() {}
+function crToySavePresets() {}
 
 function crToyLog(msg, cls='') {
   const a = document.getElementById('crToyLogArea'); if (!a) return;
@@ -6678,65 +5887,102 @@ function crToyLog(msg, cls='') {
   a.appendChild(d); a.scrollTop = a.scrollHeight;
 }
 
-function crToyHexToBytes(h) { const b=[]; for(let i=0;i<h.length;i+=2) b.push(parseInt(h.substr(i,2),16)); return b; }
-function crToyToHex2(n) { return n.toString(16).padStart(2,'0'); }
-function crToyBuildDualCmd(s1,v1,s2,v2) { return '02'+s1+'11'+crToyToHex2(v1)+s2+'11'+crToyToHex2(v2); }
-function crToyBuildStopCmd() { return '03000111000003110000071100'; }
-function crToySleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+// ── SVAKOM 协议命令构建（7字节）──
+function crToyCmdScale(intensity) {
+  const v = Math.max(0, Math.min(255, intensity));
+  return new Uint8Array([CR_TOY_CMD_HEADER, CR_TOY_CMD_SCALE, 0, 0, v > 0 ? 1 : 0, v, 0xAA]);
+}
+function crToyCmdVibrate(mode, level) {
+  const m = Math.max(1, Math.min(8, mode));
+  const l = Math.max(1, Math.min(5, level));
+  return new Uint8Array([CR_TOY_CMD_HEADER, CR_TOY_CMD_VIBRATE, 0, 0, m, l, 0]);
+}
+function crToyCmdStop() { return crToyCmdScale(0); }
 
-async function crToySendData2(hexCmd) {
+async function crToySendCmd(bytes) {
+  if (!crToyWriteChar && !(window.AionBle && window.AionBle.isConnected())) { crToyLog('未连接', 'wl-err'); return; }
   if (window.AionBle && window.AionBle.isConnected()) {
-    crToyLog('→ ' + hexCmd, 'wl-send');
-    window.AionBle.sendData(hexCmd);
+    const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    crToyLog('→ ' + hex, 'wl-send');
+    window.AionBle.sendData(hex);
     return;
   }
-  if (!crToyWriteChar) { crToyLog('未连接','wl-err'); return; }
-  const full = '00' + hexCmd;
-  crToyLog('→ ' + hexCmd, 'wl-send');
-  const data = crToyHexToBytes(full), chunks = [];
-  for (let i = 0; i < data.length; i += 18) chunks.push(data.slice(i, i+18));
-  const rnd = Math.floor(Math.random() * 255), pkts = [];
-  for (let i = 0; i < chunks.length; i++) pkts.push([rnd, i+1, ...chunks[i]]);
-  if (chunks.length > 0 && chunks[chunks.length-1].length === 18) pkts.push([rnd, chunks.length+1]);
-  for (let i = 0; i < pkts.length; i++) {
-    const p = new Uint8Array(pkts[i]);
-    try {
-      if (crToyWriteChar.properties.write) await crToyWriteChar.writeValueWithResponse(p);
-      else await crToyWriteChar.writeValueWithoutResponse(p);
-    } catch(e) { crToyLog('写入失败:'+e.message,'wl-err'); return; }
-    if (pkts.length > 1 && i < pkts.length-1) await crToySleep(30);
-  }
-}
-
-async function crToyApplyPreset(p) {
-  for (let i = 0; i < 3; i++) {
-    const m = p.motors[i], mo = CR_TOY_MOTORS[i];
-    await crToySendData2(crToyBuildDualCmd(mo.modeSpec, m.mode||1, mo.gearsSpec, m.on ? m.speed : 0));
-    await crToySleep(80);
-  }
+  crToyLog('→ ' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' '), 'wl-send');
+  try {
+    if (crToyWriteChar.properties.write) await crToyWriteChar.writeValueWithResponse(bytes);
+    else await crToyWriteChar.writeValueWithoutResponse(bytes);
+  } catch(e) { crToyLog('写入失败:' + e.message, 'wl-err'); }
 }
 
 async function crToyActivatePreset(idx) {
   crToyActivePreset = idx; crToyRenderGrid();
-  const p = crToyPresets[idx];
-  crToyLog('⚡ ' + CR_TOY_PNAMES[idx], 'wl-sys');
-  await crToyApplyPreset(p);
+  const intensity = CR_TOY_DEF_PRESETS[idx];
+  crToyLog('⚡ ' + CR_TOY_PNAMES[idx] + ' (' + Math.round(intensity / 255 * 100) + '%)', 'wl-sys');
+  const cmd = crToyCmdScale(intensity);
+  await crToySendCmd(cmd);
+  crToyStartKeepalive(cmd);
 }
 
 function crToyStopAll() {
   crToyActivePreset = -1;
-  crToySendData2(crToyBuildStopCmd());
+  crToyStopKeepalive();
+  crToySendCmd(crToyCmdStop());
   crToyLog('⏹ 停止', 'wl-sys');
   crToyRenderGrid();
 }
 
-// AI 指令处理器（供 WS/SSE toy_command 事件调用）
+function crToyStartKeepalive(cmdBytes) {
+  crToyStopKeepalive();
+  crToyCurrentCmdBytes = cmdBytes;
+  crToyAutoStopUntil = 0;
+  if (!cmdBytes) return;
+  crToyKeepaliveTimer = setInterval(async () => {
+    if (crToyAutoStopUntil && Date.now() / 1000 >= crToyAutoStopUntil) { crToyStopAll(); return; }
+    if (crToyCurrentCmdBytes) await crToySendCmd(crToyCurrentCmdBytes);
+  }, CR_TOY_KEEPALIVE_MS);
+}
+function crToyStopKeepalive() {
+  if (crToyKeepaliveTimer) { clearInterval(crToyKeepaliveTimer); crToyKeepaliveTimer = null; }
+  crToyCurrentCmdBytes = null;
+  crToyAutoStopUntil = 0;
+}
+
 function toyExecCmd(cmd) {
-  cmd = cmd.trim().toUpperCase();
+  try { const obj = JSON.parse(String(cmd).trim()); if (obj && typeof obj === 'object') { crToyExecJsonCmd(obj); return; } } catch(e) {}
+  cmd = String(cmd).trim().toUpperCase();
   if (cmd === 'STOP' || cmd === '0') { crToyStopAll(); return; }
   const n = parseInt(cmd);
   if (n >= 1 && n <= 9) { crToyActivatePreset(n - 1); return; }
   crToyLog('无效指令:' + cmd, 'wl-err');
+}
+
+function crToyExecJsonCmd(obj) {
+  if (obj.stop) { crToyStopAll(); return; }
+  if (obj.preset) { const n = parseInt(obj.preset); if (n >= 1 && n <= 9) { crToyActivatePreset(n - 1); } return; }
+  const speed = obj.speed ?? obj.suck ?? obj.intensity;
+  if (speed !== undefined) {
+    const v = parseFloat(speed);
+    if (v <= 0) { crToyStopAll(); return; }
+    const cmd = crToyCmdScale(Math.round(v * 255));
+    crToyActivePreset = -1; crToyRenderGrid();
+    crToyLog('📳 强度 ' + Math.round(v * 100) + '%', 'wl-sys');
+    crToySendCmd(cmd); crToyStartKeepalive(cmd);
+    const dur = parseFloat(obj.sec || obj.seconds || obj.duration);
+    if (dur > 0) { crToyAutoStopUntil = Date.now() / 1000 + dur; crToyLog('⏱ ' + dur + '秒后自动停', 'wl-sys'); }
+    return;
+  }
+  if (obj.pattern !== undefined) {
+    const mode = parseInt(obj.pattern);
+    const level = Math.max(1, Math.min(5, Math.round(parseFloat(obj.level ?? 0.6) * 5)));
+    const cmd = crToyCmdVibrate(mode, level);
+    crToyActivePreset = -1; crToyRenderGrid();
+    crToyLog('🌀 花样 ' + mode + ' 档 ' + level, 'wl-sys');
+    crToySendCmd(cmd); crToyStartKeepalive(cmd);
+    const dur = parseFloat(obj.sec || obj.seconds || obj.duration);
+    if (dur > 0) { crToyAutoStopUntil = Date.now() / 1000 + dur; crToyLog('⏱ ' + dur + '秒后自动停', 'wl-sys'); }
+    return;
+  }
+  crToyLog('无效JSON: ' + JSON.stringify(obj), 'wl-err');
 }
 
 function crToyRenderGrid() {
@@ -6745,7 +5991,7 @@ function crToyRenderGrid() {
   for (let i = 0; i < 9; i++) {
     const d = document.createElement('div');
     d.className = 'whisper-p-btn' + (i === crToyActivePreset ? ' active' : '');
-    d.innerHTML = `<span class="wp-icon">${CR_TOY_PICONS[i]}</span><span class="wp-name">${CR_TOY_PNAMES[i]}</span><button class="wp-edit" onclick="event.stopPropagation();crToyOpenEditor(${i})">⚙</button>`;
+    d.innerHTML = `<span class="wp-icon">${CR_TOY_PICONS[i]}</span><span class="wp-name">${CR_TOY_PNAMES[i]}</span><span class="wp-speed">${Math.round(CR_TOY_DEF_PRESETS[i]/255*100)}%</span>`;
     d.onclick = () => { if (crToyConnected || (window.AionBle && window.AionBle.isConnected())) crToyActivatePreset(i); else crToyLog('请先连接','wl-err'); };
     g.appendChild(d);
   }
@@ -6764,7 +6010,7 @@ async function crToyToggleConnect() {
   if (!navigator.bluetooth) { crToyLog('此浏览器不支持 Web Bluetooth','wl-err'); return; }
   try {
     crToyLog('搜索中...', 'wl-sys');
-    crToyDevice = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'SOSEXY' }], optionalServices: [CR_TOY_SERVICE_UUID] });
+    crToyDevice = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [CR_TOY_SERVICE_UUID] });
     crToyLog(crToyDevice.name || '已找到设备', 'wl-sys');
     crToyDevice.addEventListener('gattserverdisconnected', () => { crToyConnected = false; crToyWriteChar = null; crToyUpdateUI(); crToyLog('断开','wl-err'); });
     crToyServer = await crToyDevice.gatt.connect();
@@ -6880,43 +6126,6 @@ function crOnWhisperModeChange() {
   crWhisperMode = document.getElementById('crWhisperModeToggle').checked;
   crToyLog(crWhisperMode ? '🔮 密语模式已开启' : '🔮 密语模式已关闭', 'wl-sys');
 }
-
-// ── 预设编辑器 ──
-function crToyOpenEditor(idx) {
-  const p = crToyPresets[idx];
-  let h = `<h3>${CR_TOY_PICONS[idx]} ${CR_TOY_PNAMES[idx]}</h3>`;
-  for (let mi = 0; mi < 3; mi++) {
-    const ms = p.motors[mi], mo = CR_TOY_MOTORS[mi];
-    h += `<div class="toy-me-block"><div class="toy-me-head"><span>${mo.label}</span>
-    <label class="toggle-switch" style="transform:scale(.8)"><input type="checkbox" id="crteo${mi}" ${ms.on?'checked':''}><span class="toggle-slider"></span></label>
-    </div><div class="toy-chip-row" id="crtem${mi}">
-    ${mo.modes.map(md => `<span class="toy-chip${md.id===ms.mode?' sel':''}" data-mid="${md.id}" onclick="crToyESel(${mi},${md.id})">${md.name}</span>`).join('')}
-    </div><div class="toy-ed-speed"><label>速度</label>
-    <input type="range" min="0" max="100" value="${ms.speed}" id="crtes${mi}" oninput="document.getElementById('crtev${mi}').textContent=this.value">
-    <span class="toy-ed-sv" id="crtev${mi}">${ms.speed}</span></div></div>`;
-  }
-  h += `<div class="toy-sheet-btns"><button class="toy-sb-cancel" onclick="crToyCloseEditor()">取消</button><button class="toy-sb-save" onclick="crToySaveEd(${idx})">保存</button></div>`;
-  document.getElementById('crToyEditContent').innerHTML = h;
-  document.getElementById('crToyEditorOverlay').classList.add('show');
-}
-
-function crToyESel(mi, mid) {
-  document.querySelectorAll(`#crtem${mi} .toy-chip`).forEach(c => c.classList.toggle('sel', parseInt(c.dataset.mid) === mid));
-}
-
-function crToySaveEd(idx) {
-  const p = crToyPresets[idx];
-  for (let mi = 0; mi < 3; mi++) {
-    p.motors[mi].on = document.getElementById(`crteo${mi}`).checked ? 1 : 0;
-    const sc = document.querySelector(`#crtem${mi} .toy-chip.sel`);
-    if (sc) p.motors[mi].mode = parseInt(sc.dataset.mid);
-    p.motors[mi].speed = parseInt(document.getElementById(`crtes${mi}`).value);
-  }
-  crToySavePresets(); crToyCloseEditor(); crToyRenderGrid();
-  crToyLog(`预设${idx+1}已保存`, 'wl-sys');
-}
-
-function crToyCloseEditor() { document.getElementById('crToyEditorOverlay').classList.remove('show'); }
 
 // ══════════════════════════════════════════════════
 //  初始化

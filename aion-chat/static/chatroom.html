@@ -10,8 +10,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#050923">
-<link rel="stylesheet" href="/static/chatroom.css?v=chatroom-mobile-focus-20260704-band-vibration-note-20260717-persona-mobile-performance-20260721">
-<link rel="stylesheet" href="/static/voice-call.css?v=voice-call-polish-20260704g">
+<link rel="stylesheet" href="/static/chatroom.css?v=date-summary-card-20260628">
 </head>
 <body>
   <div class="app">
@@ -88,7 +87,6 @@
           <div class="plus-menu" id="crPlusMenu">
             <div class="plus-menu-item" onclick="crClosePlusMenu();document.getElementById('fileInput').click()"><span class="pm-icon">🖼</span>上传图片</div>
             <div class="plus-menu-item" onclick="crClosePlusMenu();crOpenCamera()"><span class="pm-icon">📷</span>拍照</div>
-            <div class="plus-menu-item" onclick="crClosePlusMenu();if(window.VoiceCall)VoiceCall.openChatroom()"><span class="pm-icon">◉</span>语音通话</div>
             <div class="plus-menu-item" onclick="crClosePlusMenu();crToggleVoiceMode()"><span class="pm-icon">🎤</span>语音消息</div>
             <div class="plus-menu-item" onclick="crClosePlusMenu();crOpenWhisper()"><span class="pm-icon">💗</span>密语时刻</div>
             <div class="plus-menu-item" onclick="crClosePlusMenu();crOpenTransferDialog()"><span class="pm-icon">💰</span>转账</div>
@@ -197,7 +195,7 @@
             <div class="ambient-buffer-preview empty" id="crAmbientBufferPreview">暂无待检查片段</div>
           </div>
         </div>
-        <button class="save-btn" id="saveSettingsBtn" onclick="saveSettings()">保存</button>
+        <button class="save-btn" onclick="saveSettings()">保存</button>
       </div>
     </div>
   </div>
@@ -434,7 +432,6 @@
     </div>
   </div>
 
-  <script src="/static/chatroom.js?v=chatroom-mobile-focus-20260704-band-vibration-note-20260717-persona-mobile-performance-20260721-composer-mobile-performance-20260724"></script>
-  <script src="/static/voice-call.js?v=voice-call-polish-20260704g"></script>
+  <script src="/static/chatroom.js?v=date-summary-card-20260628"></script>
 </body>
 </html>

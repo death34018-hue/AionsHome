@@ -27,9 +27,6 @@ async def update_capability(key: str, body: CapabilityToggle):
         "type": "capability_config_changed",
         "data": item,
     })
-    if key == "app_supervision" and not item["enabled"]:
-        from app_supervision_ai import state_cache
-        state_cache.clear()
     if key == "health_context":
         await manager.broadcast({
             "type": "health_share_changed",

@@ -576,8 +576,8 @@ async def _update_chat_status_location(status: dict):
 async def _on_state_change(old_state: str, new_state: str, status: dict, cfg: dict):
     """位置状态发生变化时：更新 chat_status + 通知哨兵"""
     wb = load_worldbook()
-    user_name = (wb.get("user_name") or "你").strip() or "你"
-    ai_name = (wb.get("ai_name") or "AI").strip() or "AI"
+    user_name = wb.get("user_name", "你")
+    ai_name = wb.get("ai_name", "AI")
     now_str = time.strftime("%Y年%m月%d日 %H:%M:%S")
 
     # 1. 更新 chat_status
@@ -642,14 +642,8 @@ async def _notify_sentinel(old_state: str, new_state: str, status: dict, event_d
     )
 
     wb = load_worldbook()
-    user_name = (wb.get("user_name") or "你").strip() or "你"
-    ai_name = (wb.get("ai_name") or "AI").strip() or "AI"
-    connor_name = "AI"
-    try:
-        from chatroom import load_chatroom_config
-        connor_name = (load_chatroom_config().get("connor_name") or connor_name).strip() or connor_name
-    except Exception:
-        connor_name = (wb.get("connor_name") or connor_name).strip() or connor_name
+    user_name = wb.get("user_name", "你")
+    ai_name = wb.get("ai_name", "AI")
     now_str = time.strftime("%Y年%m月%d日 %H:%M:%S")
 
     scfg = get_sentinel_config()
@@ -679,7 +673,7 @@ async def _notify_sentinel(old_state: str, new_state: str, status: dict, event_d
             limit=10,
             user_name=user_name,
             ai_name=ai_name,
-            connor_name=connor_name,
+            connor_name=wb.get("connor_name", "Connor"),
         )
     except Exception:
         pass
@@ -773,8 +767,8 @@ async def _call_core_location(
     from context_builder import fetch_merged_timeline, render_merged_timeline
 
     wb = load_worldbook()
-    user_name = (wb.get("user_name") or "你").strip() or "你"
-    ai_name = (wb.get("ai_name") or "AI").strip() or "AI"
+    user_name = wb.get("user_name", "你")
+    ai_name = wb.get("ai_name", "AI")
 
     if last_user_ts is None:
         last_user_ts = await async_get_last_aion_timeline_user_msg_time()
@@ -804,7 +798,7 @@ async def _call_core_location(
         conv_id = conv["id"]
         model_key = conv["model"] or "gemini-3-flash"
 
-    from schedule import _new_background_meta, _process_background_reply_commands, schedule_mgr
+    from schedule import schedule_mgr
     target = schedule_mgr._resolve_target({"origin": "aion"})
     is_chatroom = target["type"] == "chatroom"
     if is_chatroom:
@@ -821,10 +815,10 @@ async def _call_core_location(
 
     prefix = []
     if wb.get("ai_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
+        prefix.append({"role": "user", "content": f"[系统设定 - AI人设]\n{wb['ai_persona']}"})
         prefix.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
     if wb.get("user_persona"):
-        prefix.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
+        prefix.append({"role": "user", "content": f"[系统设定 - 用户信息]\n{wb['user_persona']}"})
         prefix.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
 
     core_parts = [f"【位置变化通知】{event_desc}"]
@@ -857,7 +851,6 @@ async def _call_core_location(
 
     # 预生成 msg_id + TTS
     core_msg_id = f"msg_{int(time.time() * 1000)}_lr"
-    usage_meta = _new_background_meta()
     loc_tts = None
     if manager.any_tts_enabled():
         tts_voice = manager.get_tts_voice()
@@ -867,7 +860,7 @@ async def _call_core_location(
     full_text = ""
     try:
         _temp = SETTINGS.get("temperature")
-        async for chunk in stream_ai(messages, model_key, meta=usage_meta, temperature=_temp):
+        async for chunk in stream_ai(messages, model_key, temperature=_temp):
             if chunk.startswith(CLI_STATUS_PREFIX):
                 continue
             full_text += chunk
@@ -879,18 +872,10 @@ async def _call_core_location(
     if not full_text.strip():
         return
 
-    full_text = await _process_background_reply_commands(
-        full_text,
-        target=target,
-        conv_id=conv_id,
-        sender="aion",
-        ai_msg_id=core_msg_id,
-    )
-    reasoning_content = (usage_meta.get("reasoning_content") or "").strip()
     sys_content = f"检测到{user_name}的位置发生变化，拉响警报！"
     if is_chatroom:
         await schedule_mgr._save_to_chatroom(
-            target["room_id"], "aion", sys_content, full_text, core_msg_id, "[]", [], reasoning_content
+            target["room_id"], "aion", sys_content, full_text, core_msg_id, "[]", []
         )
         now2 = time.time()
     else:
@@ -917,8 +902,8 @@ async def _call_core_location(
         async with get_db() as db:
             now2 = time.time()
             await db.execute(
-                "INSERT INTO messages (id, conv_id, role, content, created_at, attachments, reasoning_content) VALUES (?,?,?,?,?,?,?)",
-                (core_msg_id, conv_id, "assistant", full_text, now2, "[]", reasoning_content),
+                "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
+                (core_msg_id, conv_id, "assistant", full_text, now2, "[]"),
             )
             await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now2, conv_id))
             await db.commit()
@@ -926,7 +911,6 @@ async def _call_core_location(
         core_msg = {
             "id": core_msg_id, "conv_id": conv_id, "role": "assistant",
             "content": full_text, "created_at": now2, "attachments": [],
-            "reasoning_content": reasoning_content,
         }
         await manager.broadcast({"type": "msg_created", "data": core_msg})
 

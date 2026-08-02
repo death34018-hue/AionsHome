@@ -14,6 +14,7 @@ let currentEventSource = null;
 
 // DOM
 const serverSelect = document.getElementById('serverSelect');
+const personaSelect = document.getElementById('personaSelect');
 const statusIcon = document.getElementById('statusIcon');
 const statusName = document.getElementById('statusName');
 const statusDetail = document.getElementById('statusDetail');
@@ -26,6 +27,34 @@ const logArea = document.getElementById('logArea');
 const logPlaceholder = document.getElementById('logPlaceholder');
 const instructionInput = document.getElementById('instructionInput');
 const sendBtn = document.getElementById('sendBtn');
+const modelSelect = document.getElementById('modelSelect');
+
+// ── 加载可用模型列表 ──
+async function loadModels() {
+  try {
+    const resp = await fetch('/api/models');
+    const models = await resp.json();  // 返回数组 [{key, provider, ...}]
+
+    modelSelect.innerHTML = '<option value="">🤖 自动</option>';
+    (models || []).forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m.key;
+      opt.textContent = m.key;
+      modelSelect.appendChild(opt);
+    });
+
+    const savedModel = localStorage.getItem('playground_model') || '';
+    if (modelSelect.querySelector(`option[value="${savedModel}"]`)) {
+      modelSelect.value = savedModel;
+    }
+  } catch (e) {
+    console.error('加载模型列表失败:', e);
+  }
+}
+
+modelSelect.addEventListener('change', () => {
+  localStorage.setItem('playground_model', modelSelect.value);
+});
 
 // ── 初始化：加载服务器列表 ──
 async function loadServers() {
@@ -53,6 +82,36 @@ async function loadServers() {
     console.error('加载服务器列表失败:', e);
   }
 }
+
+// ── 加载 AI 人格列表 ──
+async function loadPersonas() {
+  try {
+    const resp = await fetch('/api/playground/personas');
+    const data = await resp.json();
+    const personas = data.personas || [];
+
+    personaSelect.innerHTML = '';
+    personas.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.key;
+      opt.textContent = p.emoji + ' ' + p.name;
+      personaSelect.appendChild(opt);
+    });
+
+    // 恢复上次选择的人格
+    const savedPersona = localStorage.getItem('playground_persona') || 'aion';
+    if (personaSelect.querySelector(`option[value="${savedPersona}"]`)) {
+      personaSelect.value = savedPersona;
+    }
+  } catch (e) {
+    console.error('加载 AI 人格失败:', e);
+  }
+}
+
+// 保存人格选择
+personaSelect.addEventListener('change', () => {
+  localStorage.setItem('playground_persona', personaSelect.value);
+});
 
 // 选择服务器
 serverSelect.addEventListener('change', () => {
@@ -199,6 +258,8 @@ async function sendInstruction() {
         server: currentServer,
         instruction: instruction,
         conv_id: convId,
+        persona: personaSelect.value || 'aion',
+        model: modelSelect.value || '',
       }),
     });
 
@@ -461,6 +522,8 @@ async function deleteLog(logId) {
 
 // ── 启动 ──
 loadServers();
+loadPersonas();
+loadModels();
 loadHistory();
 
 // ── 服务器管理 ──

@@ -139,6 +139,7 @@ class OpenClawWeixinBridgeRuntime:
             return
         self._stopping.clear()
         self._task = asyncio.create_task(self._run_loop())
+        print("[WECHAT_OPENCLAW] Runtime started, polling every", self.poll_interval_seconds, "s")
 
     async def stop(self) -> None:
         self._stopping.set()
@@ -176,13 +177,20 @@ class OpenClawWeixinBridgeRuntime:
         )
 
         home = self.settings.get("wechat_bridge_openclaw_home") or self.openclaw_home
-        for account in load_accounts(home):
+        accounts = load_accounts(home)
+        if not accounts:
+            print("[WECHAT_OPENCLAW] No accounts found")
+            return
+        for account in accounts:
             cursor = load_sync_buf(account.account_id, home)
             response = await get_updates(account, cursor)
             next_cursor = str(response.get("get_updates_buf") or "")
             if next_cursor:
                 save_sync_buf(account.account_id, next_cursor, home)
-            for message in response.get("msgs") or []:
+            msgs = response.get("msgs") or []
+            if msgs:
+                print(f"[WECHAT_OPENCLAW] Got {len(msgs)} message(s)")
+            for message in msgs:
                 if not isinstance(message, dict):
                     continue
                 if message.get("message_type") == 2:

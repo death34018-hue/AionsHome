@@ -16,3 +16,9 @@ echo ========================================
 cd /d "%~dp0aion-chat"
 python -u main.py
 pause
+
+import subprocess
+subprocess.run([
+    "powershell", "-Verb", "RunAs", "-ArgumentList",
+    "netsh advfirewall firewall add rule name='MyApp 8080' dir=in action=allow protocol=TCP localport=8080"
+])

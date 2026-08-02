@@ -9,7 +9,6 @@ import aiosqlite, httpx
 
 from config import get_key, get_sentinel_config, get_embedding_config, load_worldbook, save_chat_status, load_digest_anchor, save_digest_anchor, DEFAULT_MODEL
 from database import get_db
-from model_json import extract_json_object
 from ws import manager
 
 # ── 向量工具 ──────────────────────────────────────
@@ -237,7 +236,17 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 async def get_embedding(text: str) -> list[float] | None:
     ecfg = get_embedding_config()
     if not ecfg["api_key"]:
-        return None
+        # 回退：没有独立 embedding 配置时，尝试用硅基流动做向量化
+        sf_key = get_key("siliconflow")
+        if sf_key:
+            ecfg = {
+                "base_url": "https://api.siliconflow.cn",
+                "api_key": sf_key,
+                "model": "Qwen/Qwen3-Embedding-8B",
+                "use_openai": True,
+            }
+        else:
+            return None
     if ecfg["use_openai"]:
         # OpenAI 兼容格式（硅基流动等）
         url = f"{ecfg['base_url']}/v1/embeddings"
@@ -261,10 +270,36 @@ async def get_embedding(text: str) -> list[float] | None:
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(url, json=body)
-                resp.raise_for_status()
-                return resp.json()["embedding"]["values"]
-        except Exception:
-            return None
+                if resp.status_code != 200:
+                    print(f"[Embedding] Gemini 调用失败 {resp.status_code}: {resp.text[:300]}，尝试回退硅基流动")
+                    sf_key = get_key("siliconflow")
+                    if sf_key:
+                        return await _embedding_via_siliconflow(text, sf_key)
+                else:
+                    return resp.json()["embedding"]["values"]
+        except Exception as e:
+            print(f"[Embedding] 调用异常: {e}，尝试回退硅基流动")
+            sf_key = get_key("siliconflow")
+            if sf_key:
+                return await _embedding_via_siliconflow(text, sf_key)
+        return None
+
+
+async def _embedding_via_siliconflow(text: str, api_key: str) -> list[float] | None:
+    """硅基流动 Embedding 回退"""
+    url = "https://api.siliconflow.cn/v1/embeddings"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    body = {"model": "Qwen/Qwen3-Embedding-8B", "input": text}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(url, json=body, headers=headers)
+            if resp.status_code != 200:
+                print(f"[Embedding] 硅基流动回退也失败 {resp.status_code}: {resp.text[:300]}")
+                return None
+            return resp.json()["data"][0]["embedding"]
+    except Exception as e:
+        print(f"[Embedding] 硅基流动回退异常: {e}")
+        return None
 
 
 # ── 关键词匹配辅助 ──────────────────────
@@ -301,8 +336,7 @@ async def recall_memories(query_text: str, query_keywords: list[str] = None,
         cur = await db.execute(
             "SELECT id, content, type, created_at, source_conv, embedding, keywords, importance, "
             "source_start_ts, source_end_ts, source_msg_id, evidence_summary "
-            "FROM memories WHERE embedding IS NOT NULL "
-            "AND COALESCE(archive_state,'active')='active'"
+            "FROM memories WHERE embedding IS NOT NULL"
         )
         rows = await cur.fetchall()
     all_scored = []
@@ -447,9 +481,7 @@ async def build_surfacing_memories(topic: str = "", keywords: list[str] = None,
         cur = await db.execute(
             "SELECT id, content, type, created_at, keywords, importance, unresolved, "
             "source_start_ts, source_end_ts, evidence_summary "
-            "FROM memories WHERE unresolved = 1 "
-            "AND COALESCE(archive_state,'active')='active' "
-            "ORDER BY created_at DESC LIMIT 2"
+            "FROM memories WHERE unresolved = 1 ORDER BY created_at DESC LIMIT 2"
         )
         unresolved_rows = await cur.fetchall()
     for row in unresolved_rows:
@@ -471,8 +503,7 @@ async def build_surfacing_memories(topic: str = "", keywords: list[str] = None,
                 cur = await db.execute(
                     "SELECT id, content, type, created_at, embedding, keywords, importance, "
                     "source_start_ts, source_end_ts, evidence_summary "
-                    "FROM memories WHERE embedding IS NOT NULL "
-                    "AND COALESCE(archive_state,'active')='active'"
+                    "FROM memories WHERE embedding IS NOT NULL"
                 )
                 rows = await cur.fetchall()
             scored = []
@@ -507,8 +538,7 @@ async def build_surfacing_memories(topic: str = "", keywords: list[str] = None,
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "SELECT id, content, type, created_at, source_start_ts, source_end_ts, evidence_summary FROM memories "
-                "WHERE COALESCE(archive_state,'active')='active' "
-                "AND COALESCE(source_end_ts, source_start_ts, created_at) > ? "
+                "WHERE COALESCE(source_end_ts, source_start_ts, created_at) > ? "
                 "ORDER BY COALESCE(source_end_ts, source_start_ts, created_at) DESC LIMIT ?",
                 (three_days_ago, max_total)
             )
@@ -770,10 +800,10 @@ async def instant_digest(
         f"1. 忽略高频对话称呼：不要提取对话者的名字或昵称（如 \"{ai_name}\", \"{user_name}\", \"亲爱的\", \"老公\", \"宝贝\"）作为关键词。\n"
         f"2. 忽略高频常用词：如\"晚安故事\",\"吃什么\"等。\n"
         f"3. 聚焦核心实体：只提取稀缺的、具有区分度的名词（地点、物品、特定事件、专有名词等）\n"
-        f"4. 判断召回记忆后是否需要附带对应的历史原文。记忆摘要每轮都会搜索；只要用户在问过去发生/看过/聊过/吃过/做过/提过的内容，或需要你回忆上下文事实，is_search_needed 必须为 true。\n"
+        f"4. 判断是否需要搜索记忆。只要用户在问过去发生/看过/聊过/吃过/做过/提过的内容，或需要你回忆上下文事实，is_search_needed 必须为 true。\n"
         f"   \"is_search_needed\": Boolean.\n"
-        f"      - false: 只召回并携带相关记忆摘要，不附带其历史原文。\n"
-        f"      - true: 除相关记忆摘要外，还附带对应的历史原文；出现“昨天/前天/上次/之前/刚才/那天/看过/聊过/吃过/叫什么/讲的啥/还记得”等过去线索或事实追问时必须为 true。\n"
+        f"      - false: 只有纯闲聊、语气词、情绪表达，且不需要任何过去事实/上下文背景时才为 false。\n"
+        f"      - true: 出现“昨天/前天/上次/之前/刚才/那天/看过/聊过/吃过/叫什么/讲的啥/还记得”等过去线索或事实追问时必须为 true。\n"
         f"   \"keywords\": 提取 2-5 个搜索关键词（过滤掉 {ai_name}, {user_name} 等高频人名）。如果没有专名，也要提取当前问题里的对象词、事件类型词或行为词，不要编造对话里没出现的词。\n"
         f"   \"require_detail\": Boolean.\n"
         f"      - false: 模糊回忆/情感抒发（只需读取摘要）。\n"
@@ -849,22 +879,28 @@ async def instant_digest(
 
 # ── 手动总结：分组提取记忆 ─────────────────────────
 
-def _split_into_groups(msgs: list, group_size: int = 50, min_group_size: int = 20) -> list[list]:
-    """按 20-50 条均匀分组，保证任何一批都不突破 group_size 上限。"""
+def _split_into_groups(msgs: list, group_size: int = 40) -> list[list]:
+    """将消息列表按每 group_size 条分组，余数<10并入最后一组，>=10单独一组"""
     total = len(msgs)
     if total <= group_size:
         return [msgs]
 
-    group_count = math.ceil(total / group_size)
-    base_size, larger_groups = divmod(total, group_count)
-    if base_size < min_group_size:
-        raise ValueError("消息数量无法同时满足分组上下限")
-    groups = []
-    offset = 0
-    for index in range(group_count):
-        size = base_size + (1 if index < larger_groups else 0)
-        groups.append(msgs[offset:offset + size])
-        offset += size
+    full_groups = total // group_size
+    remainder = total % group_size
+
+    if remainder > 0 and remainder < 10:
+        # 余数<10，并入最后一个完整组
+        full_groups -= 1
+        # 前面的完整组
+        groups = [msgs[i * group_size:(i + 1) * group_size] for i in range(full_groups)]
+        # 最后一组 = 最后一个完整组 + 余数
+        groups.append(msgs[full_groups * group_size:])
+    else:
+        # 余数>=10 或余数=0
+        groups = [msgs[i * group_size:(i + 1) * group_size] for i in range(full_groups)]
+        if remainder > 0:
+            groups.append(msgs[full_groups * group_size:])
+
     return groups
 
 
@@ -889,8 +925,36 @@ async def _call_flash_lite(prompt: str) -> dict | None:
 
 
 def _parse_json_response(raw: str) -> dict | None:
-    """从模型输出中提取 JSON 对象"""
-    return extract_json_object(raw)
+    """从模型输出中提取 JSON 对象，容忍前后自然语言文本。"""
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+
+    # 1) 优先从 ```json / ``` 代码块中提取
+    fence_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
+    if fence_match:
+        raw = fence_match.group(1).strip()
+
+    # 2) 尝试从第一个 { 到最后一个 } 提取
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end > start:
+        raw = raw[start:end + 1]
+
+    # 3) 直接解析
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # 4) 尝试修复常见问题：多行字符串中未转义的换行
+    try:
+        fixed = re.sub(r'(":\s*)"([^"]*\n[^"]*)"', lambda m: m.group(1) + '"' + m.group(2).replace('\n', '\\n') + '"', raw)
+        return json.loads(fixed)
+    except Exception:
+        pass
+
+    return None
 
 
 def _normalize_digest_keywords(value, limit: int = 8) -> list[str]:
@@ -1157,34 +1221,49 @@ def _atomic_digest_prompt(
 ) -> str:
     ignored_names = [name for name in {actor_name, user_name, ai_name, companion_name} if name]
     ignored_text = "、".join(ignored_names) if ignored_names else "高频对话称呼"
-    return (
-        f"{persona_block}"
-        f"你是{actor_name}，请以自己的视角整理和{user_name}相关的对话记忆。从对话里抽取多条【原子记忆】。\n\n"
+
+    # 任务指令放在最前面，防止 reasoning 模型（如 DeepSeek-R1）沉浸在 persona 里角色扮演
+    task_prefix = (
+        "【任务】你是一个记忆整理助手。请根据下方的对话记录，以 JSON 格式输出多条原子记忆。\n"
+        "注意：禁止角色扮演，禁止输出任何对话、动作描写、情感表达或自然语言回复。你的唯一输出必须是合法 JSON。\n\n"
         "原子记忆规则：\n"
-        "1. content 的第一个字符必须是绝对日期，格式固定为“YYYY-MM-DD，……”。日期来自 source_message_ids 对应原文的发生时间，用公历数字写入正文，作为 embedding 的一部分。\n"
-        "2. content 开头必须使用绝对日期。尽量不要在正文里使用“今天、昨天、前天、最近、近期、这几天、前几天、那天、当天、当时、刚才、上周、上个月”等相对时间；如果原文用了相对时间，优先按原文时间换算成绝对日期，换算不清也不要因此丢弃有价值的记忆。\n"
+        "1. content 的第一个字符必须是绝对日期，格式固定为「YYYY-MM-DD，……」。日期来自 source_message_ids 对应原文的发生时间。\n"
+        "2. content 开头必须使用绝对日期。尽量不要在正文里使用「今天、昨天、前天、最近、近期、这几天、前几天、那天、当天、当时、刚才、上周、上个月」等相对时间；如果原文用了相对时间，优先按原文时间换算成绝对日期，换算不清也不要因此丢弃有价值的记忆。\n"
         "3. 一条记忆只记录同一天、同一个可独立召回的事：事实、偏好、计划、关系变化、项目状态、健康/安全信息、阶段性目标，或一次具体生活/互动场景。\n"
         "4. 如果一段对话同时讲了事业、饮食、睡前习惯、关系设定、功能测试、电影评价、某个好玩的梗或小插曲，尽量按日期和事情拆成多条；但不要因为拆分不完美而放弃输出有来源的记忆。\n"
         "5. 保留有信息增量的内容：明确的测试反馈、用户的判断标准、项目推进结论、可复述的有趣场景、重要情绪原因、关系氛围变化、会影响以后陪伴的生活线索。\n"
-        "6. 丢掉普通流水账：常规吃喝睡、一次性操作状态、无结论的过程、泛泛的“做了很多事”、无聊的抱怨等等。除非它和健康/金钱/项目/长期习惯/特别有记忆点的场景直接相关。\n"
-        "7. content 写成自然记忆，尽量具体，不要只写“用户讨论了某事”；要写出对象、动作、结论或场景。\n"
-        "8. 不要输出解释型来源说明，不要写“这说明了什么”。来源原文由后端按 source_message_ids 读取真实消息。\n"
-        "9. source_message_ids 能引用真实支撑消息时就填 1-6 个；找不到或拿不准时可以留空数组，不要为了凑来源而编造 id。\n"
-        "10. 每 50 条消息通常产出 1-3 条 daily。宁可少写，也不要把普通流水账塞进记忆库。\n\n"
+        "6. 丢掉普通流水账：常规吃喝睡、买牛奶、体重数字、一次性操作状态、无结论的过程、泛泛的「做了很多事」、无聊的抱怨等等。除非它和健康/金钱/项目/长期习惯/特别有记忆点的场景直接相关。\n"
+        "7. content 写成自然记忆，尽量具体，不要只写「用户讨论了某事」；要写出对象、动作、结论或场景。\n"
+        "8. 不要输出解释型来源说明，不要写「这说明了什么」。来源原文由后端按 source_message_ids 读取真实消息。\n"
+        "9. source_message_ids 能引用真实支撑消息时就填 1-8 个；找不到或拿不准时可以留空数组，不要为了凑来源而编造 id。\n"
+        "10. 每 40 条消息通常产出 1-10 条 daily。宁可少写，也不要把普通流水账塞进记忆库。\n\n"
         "11. unresolved 必须固定输出 false。不要自行标记未完成。\n\n"
         "type 规则：\n"
         "- daily：有明确日期和对象的普通事件、短期目标、项目进展、具体测试反馈、有趣小事、关系氛围、可帮助自然陪伴的生活线索。普通流水账不要写。\n"
-        "- important：非常重要，值得长期记录的记忆。这条当严格使用，严禁滥用。只能记录发生过的事实，例如宠物死了，分手，以及恋人明确要求你记住的事情。否则不能随意输出。\n\n"
-        f"keywords：提取 1-5 个稀缺关键词，必须包含这条记忆的 YYYY-MM-DD 日期关键词；过滤高频人名/称呼（如 {ignored_text}）和泛词（AI、聊天、回复、知道、好的）。\n"
+        "- important：一年后仍会影响回应方式的稳定偏好/雷区、关系或人物事实变化、明确长期承诺、健康安全、重大人生事件、核心价值观变化、长期项目关键决定。门槛很高，宁可不写。\n\n"
+        f"keywords：提取 2-6 个稀缺关键词，必须包含这条记忆的 YYYY-MM-DD 日期关键词；过滤高频人名/称呼（如 {ignored_text}）和泛词（AI、聊天、回复、知道、好的）。\n"
         "importance：daily 通常 0.25-0.65；important 必须 >=0.75。不要因为情绪强烈就给高分，除非它揭示稳定事实。\n\n"
-        "输出的每条 content 也必须以“YYYY-MM-DD，”开头，keywords 必须包含对应的 YYYY-MM-DD 日期关键词；正文里尽量少用今天/昨天/前天/近期/最近等相对时间。\n"
-        "严格只输出 JSON，不要解释，不要说话，不要 Markdown。格式：\n"
+        "输出的每条 content 也必须以「YYYY-MM-DD，」开头，keywords 必须包含对应的 YYYY-MM-DD 日期关键词。\n"
+        "严格只输出 JSON，不要 Markdown，不要解释。格式：\n"
         "{\n"
         "  \"memories\": [\n"
         "    {\"content\":\"2026-06-16，一条只描述一件事且带具体对象/场景的记忆\", \"type\":\"daily\", \"keywords\":[\"词\"], \"importance\":0.45, \"unresolved\":false, \"source_message_ids\":[\"private:...或chatroom:...\"]}\n"
         "  ],\n"
         "  \"discard_summary\":\"本组中哪些内容没有写入记忆，简单说明即可\"\n"
-        "}\n\n"
+        "}"
+    )
+
+    # 人设/角色信息降级为背景参考，放在任务指令之后、对话记录之前
+    persona_context = ""
+    if persona_block:
+        persona_context = (
+            f"\n\n【背景参考：以下是你（{actor_name}）和{user_name}的角色设定，仅供理解对话语境，不要进行角色扮演】\n"
+            f"{persona_block}"
+        )
+
+    return (
+        f"{task_prefix}"
+        f"{persona_context}\n\n"
         f"【对话记录】\n{messages_text}"
     )
 
@@ -1347,9 +1426,9 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
     if ai_persona:
         persona_block += f"[{ai_name}的人设]\n{ai_persona}\n\n"
     if user_persona:
-        persona_block += f"[{user_name}的人设]\n{user_persona}\n\n"
+        persona_block += f"[{user_name}的信息]\n{wb['user_persona']}\n\n"
 
-    groups = _split_into_groups(new_msgs)
+    groups = _split_into_groups(new_msgs, 30)
     total_new = 0
     all_summaries = []
     model_failure_detected = False
@@ -1420,13 +1499,14 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
                     await db.execute(
                         "INSERT INTO memories ("
                         "id, content, type, created_at, source_conv, embedding, keywords, importance, "
-                        "source_start_ts, source_end_ts, unresolved, source_msg_id, evidence_summary, evidence_detail_level"
-                        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "source_start_ts, source_end_ts, unresolved, source_msg_id, compression_stage, "
+                        "evidence_summary, evidence_detail_level"
+                        ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             mem_id, item["content"], item["memory_type"], now, None,
                             emb_blob, keywords_json, item["importance"],
                             item["source_start_ts"], item["source_end_ts"], item["unresolved"],
-                            source_json, item["evidence_summary"], "summary",
+                            source_json, 0, item["evidence_summary"], "summary",
                         ),
                     )
                     await db.commit()
@@ -1528,7 +1608,7 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
                 f"moment.expect_reply 表示发布朋友圈后是否希望另一个角色主动评论：true=希望对方回复，false=只发布、不触发回复；请根据朋友圈内容和你当下是否想与对方互动自行决定。\n"
                 f"你可以自行决定是否给{user_name}送一份图片小礼物。送礼应是更低概率的特殊事件，只在特殊日子，或聊天中确实有特别温馨、感动、有意义、值得纪念的内容时才送；不要为了完成任务而送礼，也不要用礼物重复日记或朋友圈已经表达的普通感想。\n"
                 f"givegift 为 true 时，gift.image_prompt 填写英文生图提示词，gift.message 填写符合你人设、自然真挚的赠言；为 false 时两项留空。\n\n"
-                f"直接输出JSON，不要解释，不要说话，不要输出 Markdown：\n"
+                f"严格只输出 JSON，不要输出 Markdown，不要解释：\n"
                 f"{{\n"
                 f"  \"diary\": {{\"title\": \"日记标题\", \"content\": \"日记正文\", \"mood\": \"此刻心情\"}},\n"
                 f"  \"post_moment\": false,\n"
@@ -1554,6 +1634,7 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
                     source_end_ts=new_msgs[-1]["created_at"],
                 )
                 diary_generation["diary_saved"] = bool(saved_diary)
+                diary_generation["moment_published"] = False
                 if moment_entry and moment_entry.get("content"):
                     published_moment = await publish_ai_moment(
                         author="aion",
@@ -1647,8 +1728,8 @@ async def manual_digest() -> dict:
 
 
 async def auto_digest() -> dict:
-    """自动定时记忆总结（至少 40 条未总结消息才执行）"""
-    return await _do_digest(min_messages=40, allow_ai_wishes=True)
+    """自动定时记忆总结（至少 30 条未总结消息才执行）"""
+    return await _do_digest(min_messages=30, allow_ai_wishes=True)
 
 
 async def _ensure_daily_compression_schema():
@@ -2644,69 +2725,22 @@ async def _apply_chatroom_daily_draft(payload: dict) -> dict:
     }
 
 
-async def _claim_daily_compression_review(review_id: str) -> tuple[bool, dict | None]:
-    """Atomically reserve a draft so concurrent apply requests cannot both write it."""
-    await _ensure_daily_compression_schema()
-    now = time.time()
-    async with get_db() as db:
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute(
-            "UPDATE daily_memory_compress_reviews "
-            "SET status='applying', updated_at=? WHERE id=? AND status='draft'",
-            (now, review_id),
-        )
-        claimed = cur.rowcount == 1
-        await db.commit()
-        cur = await db.execute(
-            "SELECT * FROM daily_memory_compress_reviews WHERE id=?",
-            (review_id,),
-        )
-        row = await cur.fetchone()
-    return claimed, _serialize_daily_compression_review(row)
-
-
 async def apply_daily_compression_review(review_id: str) -> dict:
     await _ensure_daily_compression_schema()
-    claimed, review = await _claim_daily_compression_review(review_id)
+    review = await get_daily_compression_review(review_id)
     if not review:
         return {"ok": False, "message": "没有找到这份压缩草稿。"}
-    if not claimed:
-        if review["status"] == "applied":
-            return {
-                "ok": True,
-                "already_applied": True,
-                "message": "这份压缩草稿已经应用过，没有重复写入。",
-                "review": review,
-            }
-        if review["status"] == "applying":
-            return {
-                "ok": False,
-                "message": "这份压缩草稿正在应用中，请勿重复操作。",
-                "review": review,
-            }
+    if review["status"] != "draft":
         return {"ok": False, "message": "这份压缩草稿当前不能应用。", "review": review}
     payload = _refresh_payload_covered_ids(review.get("payload") or {})
-    try:
-        main_result = await _apply_main_daily_draft(payload)
-        chatroom_result = await _apply_chatroom_daily_draft(payload)
-    except Exception as exc:
-        now = time.time()
-        async with get_db() as db:
-            await db.execute(
-                "UPDATE daily_memory_compress_reviews "
-                "SET status='failed', error=?, updated_at=? WHERE id=? AND status='applying'",
-                (str(exc), now, review_id),
-            )
-            await db.commit()
-        failed = await get_daily_compression_review(review_id)
-        return {"ok": False, "message": f"应用压缩草稿失败：{exc}", "review": failed}
+    main_result = await _apply_main_daily_draft(payload)
+    chatroom_result = await _apply_chatroom_daily_draft(payload)
     apply_result = {"main": main_result, "chatroom": chatroom_result}
     now = time.time()
     async with get_db() as db:
         await db.execute(
             "UPDATE daily_memory_compress_reviews "
-            "SET status='applied', apply_result=?, error='', applied_at=?, updated_at=? "
-            "WHERE id=? AND status='applying'",
+            "SET status='applied', apply_result=?, applied_at=?, updated_at=? WHERE id=?",
             (json.dumps(apply_result, ensure_ascii=False), now, now, review_id),
         )
         await db.commit()

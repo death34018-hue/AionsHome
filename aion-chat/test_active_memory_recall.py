@@ -34,74 +34,24 @@ async def _empty_health(*args, **kwargs):
 
 
 class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
-    def test_recall_query_falls_back_to_latest_user_message_when_digest_has_no_clues(self):
-        query = context_builder._build_recall_query(
-            "",
-            [],
-            query_text="  last user message  ",
-            recent_messages=[],
-            status="",
-        )
+    async def test_aion_group_context_recalls_memory_even_when_digest_says_no_search(self):
+        captured_recall = {}
 
-        self.assertEqual(query, "last user message")
-
-    async def test_memory_blocks_recall_summary_without_search_signal(self):
-        recalled = _memory("main1", "always surfaced by vector recall")
-        digest = {
-            "is_search_needed": False,
-            "keywords": ["current"],
-            "require_detail": False,
-            "status": "",
-            "topic": "current topic",
-        }
-
-        with (
-            patch("context_builder.build_health_summary", new=_empty_health),
-            patch("context_builder.build_surfacing_memories", new=AsyncMock(return_value=([], set()))),
-            patch("context_builder.recall_memories", new=AsyncMock(return_value=([recalled], [recalled]))),
-        ):
-            result = await context_builder.build_memory_blocks(
-                "current user message",
-                recent_messages=[],
-                digest_result=digest,
+        async def fake_chatroom_recall(query, room_id="", scope="group", query_keywords=None, **kwargs):
+            captured_recall.update(
+                {
+                    "query": query,
+                    "room_id": room_id,
+                    "scope": scope,
+                    "query_keywords": query_keywords,
+                    "kwargs": kwargs,
+                }
             )
-
-        self.assertIn("always surfaced by vector recall", result["memory_block"])
-
-    async def test_search_signal_includes_recalled_memory_source_text(self):
-        recalled = _memory("main1", "memory with source")
-        recalled["source_start_ts"] = 1000.0
-        digest = {
-            "is_search_needed": True,
-            "keywords": ["past"],
-            "require_detail": False,
-            "status": "",
-            "topic": "past topic",
-        }
-        source_lookup = AsyncMock(return_value="historical source text")
-
-        with (
-            patch("context_builder.build_health_summary", new=_empty_health),
-            patch("context_builder.build_surfacing_memories", new=AsyncMock(return_value=([], set()))),
-            patch("context_builder.recall_memories", new=AsyncMock(return_value=([recalled], [recalled]))),
-            patch("context_builder.fetch_source_details", new=source_lookup),
-        ):
-            result = await context_builder.build_memory_blocks(
-                "what happened before",
-                recent_messages=[],
-                digest_result=digest,
-            )
-
-        source_lookup.assert_awaited_once()
-        self.assertIn("historical source text", result["memory_block"])
-
-    async def test_aion_group_context_recalls_only_main_memory(self):
-        chatroom_recall_called = False
-
-        async def forbidden_chatroom_recall(*args, **kwargs):
-            nonlocal chatroom_recall_called
-            chatroom_recall_called = True
-            return [_memory("companion1", "companion memory")]
+            return [
+                _memory("mem1", "memory alpha"),
+                _memory("mem2", "memory beta"),
+                _memory("mem3", "memory gamma"),
+            ]
 
         digest = {
             "is_search_needed": False,
@@ -125,18 +75,10 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
             patch("chatroom.load_worldbook", return_value={}),
             patch("chatroom.get_chatroom_names", return_value=("User", "MainAI", "Companion")),
             patch("chatroom.build_ability_block", new=AsyncMock(return_value="")),
-            patch("chatroom.recall_chatroom_memories", new=forbidden_chatroom_recall),
+            patch("chatroom.recall_chatroom_memories", new=fake_chatroom_recall),
             patch("context_builder.build_health_summary", new=_empty_health),
             patch("context_builder.build_surfacing_memories", new=AsyncMock(return_value=([], set()))),
-            patch(
-                "context_builder.recall_memories",
-                new=AsyncMock(
-                    return_value=(
-                        [_memory("main1", "main memory")],
-                        [_memory("main1", "main memory")],
-                    )
-                ),
-            ),
+            patch("context_builder.recall_memories", new=AsyncMock(return_value=([], []))),
         ]
         with ExitStack() as stack:
             for item in patches:
@@ -150,46 +92,10 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
             )
 
         prompt_text = "\n".join(str(m.get("content", "")) for m in history)
-        self.assertIn("main memory", prompt_text)
-        self.assertNotIn("companion memory", prompt_text)
-        self.assertFalse(chatroom_recall_called)
-        self.assertEqual(len(debug.get("recalled_memories") or []), 1)
-
-    async def test_companion_recall_filters_legacy_store_by_scope(self):
-        executed = {}
-
-        class Cursor:
-            async def fetchall(self):
-                return []
-
-        class Db:
-            row_factory = None
-
-            async def execute(self, sql, params=()):
-                executed["sql"] = sql
-                executed["params"] = params
-                return Cursor()
-
-        class DbContext:
-            async def __aenter__(self):
-                return Db()
-
-            async def __aexit__(self, exc_type, exc, tb):
-                return False
-
-        with (
-            patch("chatroom.get_embedding", new=AsyncMock(return_value=None)),
-            patch("chatroom.get_db", return_value=DbContext()),
-        ):
-            await chatroom.recall_chatroom_memories(
-                "query",
-                room_id="room1",
-                scope="connor",
-                min_results=3,
-            )
-
-        self.assertIn("scope = ?", executed["sql"])
-        self.assertEqual(executed["params"][0], "connor")
+        self.assertIn("memory alpha", prompt_text)
+        self.assertEqual(len(debug.get("recalled_memories") or []), 3)
+        self.assertEqual(captured_recall["kwargs"].get("top_k"), 5)
+        self.assertEqual(captured_recall["kwargs"].get("min_results"), 3)
 
     async def test_private_chat_regenerate_injects_recalled_memory_without_search_signal(self):
         captured = {}

@@ -30,26 +30,7 @@ let hasMoreMessages = false;   // 是否还有更早的消息可加载
 let loadingMore = false;       // 防止重复加载
 let _suppressScrollBottom = false; // 星标跳转时抑制自动滚底
 const MSG_PAGE_SIZE = 50;
-const PRIVATE_SYNC_SEQ_KEY = 'aion_sync_seq_v1:chat';
-let privateSyncReplayPromise = null;
 const $ = id => document.getElementById(id);
-
-window.addEventListener('aion-client-update-ready', () => {
-  if (window.__aionClientUpdateScheduled) return;
-  window.__aionClientUpdateScheduled = true;
-  const reloadWhenIdle = () => {
-    const active = document.activeElement;
-    const editing = active && (active.matches?.('input,textarea,select,[contenteditable="true"]')
-      || active.tagName === 'IFRAME');
-    if (sending || streamingAiId || editing || voiceInCall
-        || (typeof videoCall !== 'undefined' && videoCall.active)) {
-      setTimeout(reloadWhenIdle, 1500);
-      return;
-    }
-    location.reload();
-  };
-  setTimeout(reloadWhenIdle, 800);
-});
 
 // ── 收发消息音效 ──
 const sndSend = new Audio('/public/发送消息.mp3');
@@ -170,18 +151,6 @@ function renderMsgPart(p) {
     return `<div class="msg-bubble">${formatMsg(item.text)}</div>`;
   }).join('');
 }
-function renderBandVibrationNote(atts) {
-  const note = (Array.isArray(atts) ? atts : []).find(item =>
-    item && typeof item === 'object' && item.type === 'band_vibration'
-  );
-  if (!note) return '';
-  const fallback = note.note
-    ? `${note.pattern === 'call' ? '手环呼唤：' : '手环轻震：'}${note.note}`
-    : (note.pattern === 'call'
-      ? '手环震动：紧急呼叫！'
-      : '手环震动：轻轻想了你一下');
-  return `<div class="band-vibration-line">${escHtml(note.label || fallback)}</div>`;
-}
 function formatMsg(s) {
   // 先转义 HTML，再将 [[image:path]] 标记渲染为 <img>
   const escaped = escHtml(s);
@@ -209,7 +178,7 @@ function formatMsg(s) {
   while ((match = imgRe.exec(processed)) !== null) {
     result += processed.slice(lastIdx, match.index).replace(/\n/g, '<br>');
     const safeUrl = match[1];
-    result += `<img class="cr-inline-img" src="${safeUrl}" ${imageInteractionAttrs()} loading="lazy" style="max-width:100%;border-radius:8px;cursor:pointer;margin:4px 0">`;
+    result += `<img class="cr-inline-img" src="${safeUrl}" onclick="openImageViewer && openImageViewer(this.src)" loading="lazy" style="max-width:100%;border-radius:8px;cursor:pointer;margin:4px 0">`;
     lastIdx = imgRe.lastIndex;
   }
   result += processed.slice(lastIdx).replace(/\n/g, '<br>');
@@ -910,9 +879,6 @@ function stopLiveTTSQueue() {
   if (voiceInCall || (typeof videoCall !== 'undefined' && videoCall.active)) {
     notifyVoiceAiSpeaking(false);
   }
-  if (window.VoiceCall && window.VoiceCall.handleTTSEnd) {
-    window.VoiceCall.handleTTSEnd({ surface: "private" });
-  }
 }
 
 function suppressTTSMsg(msgId) {
@@ -958,10 +924,7 @@ function bumpTTSPlaybackState() {
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') refreshTTSPlaybackState();
-  else {
-    bumpTTSPlaybackState();
-    reconcilePrivateSync();
-  }
+  else bumpTTSPlaybackState();
 });
 window.addEventListener('pagehide', refreshTTSPlaybackState);
 window.addEventListener('pageshow', bumpTTSPlaybackState);
@@ -1012,87 +975,9 @@ async function refreshTTSVoices() {
   }
 }
 
-function privateVoiceCallSpeakerName() {
-  return (worldBook && worldBook.ai_name) || "AI";
-}
-
-window.PrivateVoiceCallAdapter = {
-  getDefaultSpeakerName() {
-    return privateVoiceCallSpeakerName();
-  },
-  getSpeakerName(sender) {
-    return sender === "user" ? ((worldBook && worldBook.user_name) || "用户") : privateVoiceCallSpeakerName();
-  },
-  speakerForMessage() {
-    return "assistant";
-  },
-  async sendText(text) {
-    const content = String(text || "").trim();
-    if (!content) return;
-    if (!currentConvId) {
-      const conv = await api("POST", "/api/conversations");
-      conversations.unshift(conv);
-      await selectConv(conv.id);
-    }
-    let waited = 0;
-    while (sending && waited < 10000) {
-      await new Promise(resolve => setTimeout(resolve, 200));
-      waited += 200;
-    }
-    if (sending) throw new Error("上一条消息仍在发送");
-
-    const input = $("input");
-    const ttsToggleEl = $("ttsToggle");
-    const previousText = input ? input.value : "";
-    const previousTtsEnabled = ttsEnabled;
-    ttsEnabled = true;
-    if (ttsToggleEl) ttsToggleEl.checked = true;
-    ttsPlaybackActiveAt = Date.now() / 1000;
-    _sendTTSState();
-    if (input) {
-      input.value = content;
-      autoResize(input);
-      _updateSendBtnState();
-    }
-    try {
-      await send();
-    } finally {
-      ttsEnabled = previousTtsEnabled;
-      if (ttsToggleEl) ttsToggleEl.checked = previousTtsEnabled;
-      ttsPlaybackActiveAt = Date.now() / 1000;
-      _sendTTSState();
-      if (input && !sending && input.value === content) {
-        input.value = previousText;
-        autoResize(input);
-        _updateSendBtnState();
-      }
-    }
-  }
-};
-
-function _notifyVoiceCallPrivateTTSStart(msgId, seq, item) {
-  if (!window.VoiceCall || !window.VoiceCall.handleTTSChunkStart) return;
-  window.VoiceCall.handleTTSChunkStart({
-    surface: "private",
-    msgId,
-    seq,
-    url: item?.url || item,
-    text: item?.text || "",
-    sender: "assistant",
-    speakerName: privateVoiceCallSpeakerName()
-  });
-}
-
-function _notifyVoiceCallPrivateTTSEnd() {
-  if (window.VoiceCall && window.VoiceCall.handleTTSEnd) {
-    window.VoiceCall.handleTTSEnd({ surface: "private" });
-  }
-}
-
-function enqueueTTSChunk(msgId, seq, url, createdAt, targetClientId, text = "") {
+function enqueueTTSChunk(msgId, seq, url, createdAt, targetClientId) {
   const isChatroomTTS = msgId.startsWith('cm_');
-  const voiceCallActive = !!(window.VoiceCall && window.VoiceCall.isActive && window.VoiceCall.isActive());
-  if (!isChatroomTTS && !ttsEnabled && !voiceCallActive && !(typeof videoCall !== 'undefined' && videoCall.active)) return;
+  if (!isChatroomTTS && !ttsEnabled && !(typeof videoCall !== 'undefined' && videoCall.active)) return;
   // 忽略小剧场的 TTS（tm_ 前缀），避免重复播放
   if (msgId.startsWith('tm_')) return;
   if (!shouldAcceptTTSMsg(msgId, createdAt, targetClientId)) return;
@@ -1100,7 +985,7 @@ function enqueueTTSChunk(msgId, seq, url, createdAt, targetClientId, text = "") 
     ttsChunkQueues[msgId] = { nextPlay: 0, chunks: {} };
     ttsPlayOrder.push(msgId);
   }
-  ttsChunkQueues[msgId].chunks[seq] = { url, text: text || "" };
+  ttsChunkQueues[msgId].chunks[seq] = url;
   // 通话中时通知语音模块 AI 开始说话
   if ((voiceInCall || (typeof videoCall !== 'undefined' && videoCall.active)) && !ttsPlaying) {
     notifyVoiceAiSpeaking(true);
@@ -1110,8 +995,7 @@ function enqueueTTSChunk(msgId, seq, url, createdAt, targetClientId, text = "") 
 
 async function playNextTTSChunk() {
   const hasChatroomTTS = ttsPlayOrder.some(id => id.startsWith('cm_'));
-  const voiceCallActive = !!(window.VoiceCall && window.VoiceCall.isActive && window.VoiceCall.isActive());
-  if (!hasChatroomTTS && !ttsEnabled && !voiceCallActive && !(typeof videoCall !== 'undefined' && videoCall.active)) { ttsPlaying = false; return; }
+  if (!hasChatroomTTS && !ttsEnabled && !(typeof videoCall !== 'undefined' && videoCall.active)) { ttsPlaying = false; return; }
 
   // 找到当前应该播放的 msgId
   while (ttsPlayOrder.length > 0) {
@@ -1120,8 +1004,7 @@ async function playNextTTSChunk() {
     if (!q) { ttsPlayOrder.shift(); continue; }
 
     const nextSeq = q.nextPlay;
-    let chunk = q.chunks[nextSeq];
-    let url = chunk && typeof chunk === "object" ? chunk.url : chunk;
+    let url = q.chunks[nextSeq];
     if (url === undefined) {
       // 如果该消息已标记完成且所有分段已播完，清理并继续下一条
       if (q.finished) {
@@ -1137,8 +1020,7 @@ async function playNextTTSChunk() {
           delete ttsChunkQueues[msgId];
           continue;
         }
-        chunk = q.chunks[q.nextPlay];
-        url = chunk && typeof chunk === "object" ? chunk.url : chunk;
+        url = q.chunks[q.nextPlay];
       }
       if (url === undefined) {
         // 下一个分段还没到，等待
@@ -1151,27 +1033,20 @@ async function playNextTTSChunk() {
     ttsPlaying = true;
     ttsManualStop = false;
     clearTTSResumeTimer();
-	    try {
-	      ttsAudio.src = url;
-	      _notifyVoiceCallPrivateTTSStart(msgId, q.nextPlay, chunk);
-	      ttsAudio.onended = () => {
-	        clearTTSResumeTimer();
-	        ttsPlaying = false;
-	        q.nextPlay++;
-	        if (window.VoiceCall && window.VoiceCall.handleTTSChunkEnd) {
-	          window.VoiceCall.handleTTSChunkEnd({ surface: "private", msgId });
-	        }
-	        playNextTTSChunk();
-	      };
-	      ttsAudio.onerror = () => {
-	        clearTTSResumeTimer();
-	        ttsPlaying = false;
-	        q.nextPlay++;
-	        if (window.VoiceCall && window.VoiceCall.handleTTSChunkEnd) {
-	          window.VoiceCall.handleTTSChunkEnd({ surface: "private", msgId });
-	        }
-	        playNextTTSChunk();
-	      };
+    try {
+      ttsAudio.src = url;
+      ttsAudio.onended = () => {
+        clearTTSResumeTimer();
+        ttsPlaying = false;
+        q.nextPlay++;
+        playNextTTSChunk();
+      };
+      ttsAudio.onerror = () => {
+        clearTTSResumeTimer();
+        ttsPlaying = false;
+        q.nextPlay++;
+        playNextTTSChunk();
+      };
       ttsAudio.onplaying = clearTTSResumeTimer;
       ttsAudio.onpause = () => {
         if (ttsAudio.ended) return;
@@ -1191,11 +1066,10 @@ async function playNextTTSChunk() {
 
   // 所有消息播完
   ttsPlaying = false;
-	  if (voiceInCall || (typeof videoCall !== 'undefined' && videoCall.active)) {
-	    notifyVoiceAiSpeaking(false);
-	  }
-	  _notifyVoiceCallPrivateTTSEnd();
-	}
+  if (voiceInCall || (typeof videoCall !== 'undefined' && videoCall.active)) {
+    notifyVoiceAiSpeaking(false);
+  }
+}
 
 function finishTTSForMsg(msgId, createdAt, targetClientId) {
   if (targetClientId && targetClientId !== _clientId) return;
@@ -1347,27 +1221,11 @@ function dismissAlarm() {
   if (_alarmQueue.length) setTimeout(_showNextAlarm, 300);
 }
 
-async function api(method, url, body, options = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Number(options.timeoutMs || 15000));
-  const opts = { method, headers: {"Content-Type": "application/json"}, signal: controller.signal };
-  if (body !== undefined && body !== null) opts.body = JSON.stringify(body);
-  try {
-    const res = await fetch(url, opts);
-    const text = await res.text();
-    let payload = null;
-    if (text) {
-      try { payload = JSON.parse(text); }
-      catch(e) { payload = { detail: text }; }
-    }
-    if (!res.ok) throw new Error(payload?.detail || payload?.error || `请求失败 (${res.status})`);
-    return payload;
-  } catch(e) {
-    if (e?.name === 'AbortError') throw new Error('网络响应超时，请稍后重试');
-    throw e;
-  } finally {
-    clearTimeout(timer);
-  }
+async function api(method, url, body) {
+  const opts = { method, headers: {"Content-Type": "application/json"} };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(url, opts);
+  return res.json();
 }
 
 function _dedupeMessagesById(messages) {
@@ -1421,52 +1279,14 @@ function setCurrentMessages(messages) {
 }
 
 // ── WebSocket 同步 ──
-function rememberPrivateSyncSeq(event) {
-  const seq = Number(event?.sync_seq || 0);
-  if (!seq) return;
-  const current = Number(localStorage.getItem(PRIVATE_SYNC_SEQ_KEY) || 0);
-  if (seq > current) localStorage.setItem(PRIVATE_SYNC_SEQ_KEY, String(seq));
-}
-
-async function reconcilePrivateSync() {
-  if (privateSyncReplayPromise) return privateSyncReplayPromise;
-  privateSyncReplayPromise = (async () => {
-    let after = Number(localStorage.getItem(PRIVATE_SYNC_SEQ_KEY) || 0);
-    for (let batch = 0; batch < 20; batch++) {
-      const result = await api('GET', `/api/sync/changes?after=${after}&limit=200`, null, { timeoutMs: 10000 });
-      if (result?.reset_required) {
-        await refreshCurrentConversationFromServer();
-        const latest = Number(result.latest_seq || 0);
-        localStorage.setItem(PRIVATE_SYNC_SEQ_KEY, String(latest));
-        break;
-      }
-      const events = Array.isArray(result?.events) ? result.events : [];
-      events.forEach(event => {
-        // Replayed sync_event messages share the live event shape and dedupe by ID.
-        handleSync(event);
-        rememberPrivateSyncSeq(event);
-        after = Math.max(after, Number(event.sync_seq || 0));
-      });
-      if (!result?.has_more || !events.length) break;
-    }
-  })().catch(e => console.warn('[chat sync] reconcile failed:', e))
-    .finally(() => { privateSyncReplayPromise = null; });
-  return privateSyncReplayPromise;
-}
-
 function connectWS() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   ws = new WebSocket(`${proto}//${location.host}/ws`);
   ws.onopen = () => {
     ws.send(JSON.stringify({type:'register_client',client_id:_clientId}));
     _sendTTSState();
-    reconcilePrivateSync();
   };
-  ws.onmessage = e => {
-    const event = JSON.parse(e.data);
-    rememberPrivateSyncSeq(event);
-    handleSync(event);
-  };
+  ws.onmessage = e => handleSync(JSON.parse(e.data));
   ws.onclose = () => setTimeout(connectWS, 2000);
 }
 
@@ -1629,7 +1449,7 @@ function handleSync(msg) {
     }
   } else if (type === "tts_chunk") {
     // 服务端流式 TTS 分段音频到达
-    enqueueTTSChunk(data.msg_id, data.seq, data.url, data.created_at, data.target_client_id, data.text);
+    enqueueTTSChunk(data.msg_id, data.seq, data.url, data.created_at, data.target_client_id);
   } else if (type === "tts_done") {
     // 服务端通知该消息的所有 TTS 分段已推送完毕
     finishTTSForMsg(data.msg_id, data.created_at, data.target_client_id);
@@ -1796,7 +1616,6 @@ function renderMessages() {
       ${m.reasoning_content ? `<button class="msg-feedback-btn msg-reasoning-btn" onclick="openMsgReasoning(event,'${m.id}')" title="查看思考过程">💭</button>` : ''}
     </span>` : '';
     const messageAttachments = withWishFallbackAttachments(m);
-    const bandVibrationHtml = renderBandVibrationNote(messageAttachments);
     const rawDisplayContent = isUser ? (m.content || '') : (m.content || '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
     const displayContent = stripWishFulfillmentMarker(rawDisplayContent).trim();
     const hasVoiceAtt = messageAttachments.some(a => typeof a === 'object' && (a.type === 'voice' || a.type === 'video_clip'));
@@ -1841,7 +1660,6 @@ function renderMessages() {
           <div class="msg-menu" id="menu_${m.id}">${actionsHtml}</div>
         </div>
         ${bubblesHtml}
-        ${bandVibrationHtml}
       </div>
     </div>`;
   }).join("");
@@ -2584,36 +2402,6 @@ async function selectConv(id) {
   closeSidebar();
 }
 
-async function refreshCurrentConversationFromServer(options = {}) {
-  if (!currentConvId) return false;
-  const convId = currentConvId;
-  try {
-    conversations = await api("GET", "/api/conversations");
-    renderConvList();
-    const conv = conversations.find(c => c.id === convId);
-    if (conv && currentConvId === convId) {
-      $("chatTitle").textContent = conv.title;
-      if ($("modelSelect")) $("modelSelect").value = conv.model;
-    }
-  } catch (e) {
-    console.warn('[chat] refresh conversations failed:', e);
-  }
-
-  try {
-    const msgs = await api("GET", `/api/conversations/${convId}/messages?limit=${MSG_PAGE_SIZE}`);
-    if (currentConvId !== convId) return false;
-    setCurrentMessages(msgs);
-    hasMoreMessages = msgs.length >= MSG_PAGE_SIZE;
-    renderMessages();
-    if (options && options.scroll) scrollBottom();
-    return true;
-  } catch (e) {
-    console.warn('[chat] refresh current conversation failed:', e);
-    return false;
-  }
-}
-window.refreshCurrentConversationFromServer = refreshCurrentConversationFromServer;
-
 async function loadOlderMessages() {
   if (!currentConvId || !hasMoreMessages || loadingMore) return;
   loadingMore = true;
@@ -2832,7 +2620,7 @@ async function _processSSEStream(res) {
             scrollBottom();
             if (data.cards && data.cards.length) playMusicOnline(data.cards[0].id);
           } else if (data.type === "toy_command") {
-            if (toyConnected) data.commands.forEach(c => toyExecCmd(c));
+            if (toyConnected) data.commands.forEach(c => toyExecCmd(typeof c === 'object' ? JSON.stringify(c) : c));
             showToyCapsule(data.msg_id, data.commands);
           } else if (data.type === "moment_new") {
             // 朋友圈动态不在聊天界面展示
@@ -3004,7 +2792,7 @@ async function saveEdit(id) {
             scrollBottom();
             if (data.cards && data.cards.length) playMusicOnline(data.cards[0].id);
           } else if (data.type === 'toy_command') {
-            if (toyConnected) data.commands.forEach(c => toyExecCmd(c));
+            if (toyConnected) data.commands.forEach(c => toyExecCmd(typeof c === 'object' ? JSON.stringify(c) : c));
             showToyCapsule(data.msg_id, data.commands);
           } else if (data.type === 'moment_new') {
             // 朋友圈动态不在聊天界面展示
@@ -3119,7 +2907,7 @@ async function regenerateMsg(aiMsgId) {
             scrollBottom();
             if (d.cards && d.cards.length) playMusicOnline(d.cards[0].id);
           } else if (d.type === "toy_command") {
-            if (toyConnected) d.commands.forEach(c => toyExecCmd(c));
+            if (toyConnected) d.commands.forEach(c => toyExecCmd(typeof c === 'object' ? JSON.stringify(c) : c));
             showToyCapsule(d.msg_id, d.commands);
           } else if (d.type === "moment_new") {
             // 朋友圈动态不在聊天界面展示
@@ -3321,124 +3109,6 @@ function handleSongGenStart(data) {
 }
 
 // ── 图片查看器（Lightbox） ──
-let imageLongPressTimer = null;
-let imageLongPressState = null;
-let imageLongPressSuppressClickUntil = 0;
-
-function imageInteractionAttrs() {
-  return 'onclick="return openImageFromElement(event, this)" oncontextmenu="showImageSaveMenu(this.src); return false;" onpointerdown="startImageLongPress(event, this.src)" onpointermove="moveImageLongPress(event)" onpointerup="cancelImageLongPress()" onpointerleave="cancelImageLongPress()" onpointercancel="cancelImageLongPress()" draggable="false"';
-}
-
-function bindImageSaveOnly(img, clickHandler) {
-  if (!img) return;
-  img.oncontextmenu = (event) => {
-    event.preventDefault();
-    showImageSaveMenu(img.src);
-    return false;
-  };
-  img.onpointerdown = (event) => startImageLongPress(event, img.src);
-  img.onpointermove = moveImageLongPress;
-  img.onpointerup = cancelImageLongPress;
-  img.onpointerleave = cancelImageLongPress;
-  img.onpointercancel = cancelImageLongPress;
-  img.onclick = (event) => {
-    event.stopPropagation();
-    if (Date.now() < imageLongPressSuppressClickUntil) {
-      event.preventDefault();
-      return false;
-    }
-    if (typeof clickHandler === 'function') clickHandler();
-    return false;
-  };
-  img.draggable = false;
-}
-
-function openImageFromElement(event, img) {
-  if (Date.now() < imageLongPressSuppressClickUntil) {
-    if (event) event.preventDefault();
-    return false;
-  }
-  openImageViewer(img.src);
-  return false;
-}
-
-function startImageLongPress(event, url) {
-  if (!url) return;
-  if (event.pointerType === 'mouse' && event.button !== 0) return;
-  cancelImageLongPress();
-  imageLongPressState = { x: event.clientX || 0, y: event.clientY || 0 };
-  imageLongPressTimer = setTimeout(() => {
-    imageLongPressTimer = null;
-    imageLongPressSuppressClickUntil = Date.now() + 700;
-    try { navigator.vibrate?.(12); } catch (e) {}
-    showImageSaveMenu(url);
-  }, 560);
-}
-
-function moveImageLongPress(event) {
-  if (!imageLongPressState) return;
-  const dx = Math.abs((event.clientX || 0) - imageLongPressState.x);
-  const dy = Math.abs((event.clientY || 0) - imageLongPressState.y);
-  if (dx > 12 || dy > 12) cancelImageLongPress();
-}
-
-function cancelImageLongPress() {
-  if (imageLongPressTimer) clearTimeout(imageLongPressTimer);
-  imageLongPressTimer = null;
-  imageLongPressState = null;
-}
-
-function closeImageSaveMenu() {
-  document.querySelector('.image-save-menu-overlay')?.remove();
-}
-
-function showImageSaveMenu(url) {
-  if (!url) return;
-  cancelImageLongPress();
-  closeImageSaveMenu();
-  const overlay = document.createElement('div');
-  overlay.className = 'image-save-menu-overlay';
-  const sheet = document.createElement('div');
-  sheet.className = 'image-save-menu';
-
-  const saveBtn = document.createElement('button');
-  saveBtn.type = 'button';
-  saveBtn.className = 'primary';
-  saveBtn.textContent = '保存图片';
-  saveBtn.addEventListener('click', () => {
-    closeImageSaveMenu();
-    saveImage(url);
-  });
-
-  const viewBtn = document.createElement('button');
-  viewBtn.type = 'button';
-  viewBtn.textContent = '查看大图';
-  viewBtn.addEventListener('click', () => {
-    closeImageSaveMenu();
-    openImageViewer(url);
-  });
-
-  const cancelBtn = document.createElement('button');
-  cancelBtn.type = 'button';
-  cancelBtn.textContent = '取消';
-  cancelBtn.addEventListener('click', closeImageSaveMenu);
-
-  sheet.append(saveBtn, viewBtn, cancelBtn);
-  overlay.appendChild(sheet);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) closeImageSaveMenu();
-  });
-  document.body.appendChild(overlay);
-  requestAnimationFrame(() => overlay.classList.add('active'));
-}
-
-function getImageSaverBridge() {
-  try { if (window.AionImageSaver) return window.AionImageSaver; } catch (e) {}
-  try { if (window.parent && window.parent.AionImageSaver) return window.parent.AionImageSaver; } catch (e) {}
-  try { if (window.top && window.top.AionImageSaver) return window.top.AionImageSaver; } catch (e) {}
-  return null;
-}
-
 function openImageViewer(url) {
   const overlay = document.createElement('div');
   overlay.className = 'image-viewer-overlay';
@@ -3450,7 +3120,6 @@ function openImageViewer(url) {
       <button onclick="this.closest('.image-viewer-overlay').remove()">关闭</button>
     </div>
   `;
-  bindImageSaveOnly(overlay.querySelector('img'), () => overlay.remove());
   overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
   document.body.appendChild(overlay);
   requestAnimationFrame(() => overlay.classList.add('active'));
@@ -3460,13 +3129,12 @@ function saveImage(url) {
     .then(r => r.blob())
     .then(blob => {
       // Android App: 通过原生桥接保存到相册
-      const saver = getImageSaverBridge();
-      if (saver) {
+      if (window.AionImageSaver) {
         const reader = new FileReader();
         reader.onloadend = () => {
           const base64 = reader.result.split(',')[1];
           const filename = url.split('/').pop() || 'image.png';
-          saver.save(base64, filename);
+          window.AionImageSaver.save(base64, filename);
         };
         reader.readAsDataURL(blob);
         return;
@@ -3954,57 +3622,6 @@ function buildDateSummaryCard(item) {
   </div>`;
 }
 
-function safeHttpUrl(value) {
-  try {
-    const url = new URL(value || '', window.location.href);
-    return (url.protocol === 'http:' || url.protocol === 'https:') ? url.href : '';
-  } catch (e) {
-    return '';
-  }
-}
-
-function getExternalLinkBridge() {
-  try { if (window.AionExternal) return window.AionExternal; } catch (e) {}
-  try { if (window.parent && window.parent.AionExternal) return window.parent.AionExternal; } catch (e) {}
-  try { if (window.top && window.top.AionExternal) return window.top.AionExternal; } catch (e) {}
-  return null;
-}
-
-function openExternalLink(event, href) {
-  const url = safeHttpUrl(href);
-  if (!url) return true;
-  const bridge = getExternalLinkBridge();
-  if (!bridge || typeof bridge.open !== 'function') return true;
-  if (event && typeof event.preventDefault === 'function') event.preventDefault();
-  bridge.open(url);
-  return false;
-}
-
-function buildLinkPreviewCard(item) {
-  const href = safeHttpUrl(item?.url || '');
-  if (!href) return '';
-  let host = '';
-  try { host = new URL(href).hostname.replace(/^www\./, ''); } catch (e) {}
-  const title = escHtml(item.title || item.site_name || host || href);
-  const description = escHtml(item.description || '');
-  const source = escHtml(item.site_name || host || '网页链接');
-  const image = safeHttpUrl(item.image || '');
-  const favicon = safeHttpUrl(item.favicon || '');
-  const thumb = image
-    ? `<img class="link-preview-thumb-img" src="${escHtml(image)}" alt="" loading="lazy">`
-    : `<div class="link-preview-thumb-placeholder">URL</div>`;
-  const icon = favicon ? `<img class="link-preview-favicon" src="${escHtml(favicon)}" alt="" loading="lazy">` : '';
-  const hrefArg = escJsSingle(href);
-  return `<a class="link-preview-card" href="${escHtml(href)}" target="_blank" rel="noopener noreferrer" onclick="return openExternalLink(event,'${hrefArg}')">
-    <span class="link-preview-thumb">${thumb}</span>
-    <span class="link-preview-body">
-      <span class="link-preview-title">${title}</span>
-      ${description ? `<span class="link-preview-desc">${description}</span>` : ''}
-      <span class="link-preview-source">${icon}${source}</span>
-    </span>
-  </a>`;
-}
-
 function renderAttachments(atts) {
   if (!atts || !atts.length) return '';
   let mediaHtml = '';
@@ -4017,8 +3634,6 @@ function renderAttachments(atts) {
       mediaHtml += buildLuckinPaymentCard(item);
     } else if (typeof item === 'object' && item.type === 'date_summary') {
       mediaHtml += buildDateSummaryCard(item);
-    } else if (typeof item === 'object' && item.type === 'link_preview') {
-      mediaHtml += buildLinkPreviewCard(item);
     } else if (typeof item === 'object' && item.type === 'wish_fulfillment') {
       wishHtml += buildWishFulfillmentCard(item);
     } else if (typeof item === 'object' && item.type === 'music') {
@@ -4058,7 +3673,7 @@ function renderAttachments(atts) {
       const url = typeof item === 'string' ? item : (item && item.url ? item.url : '');
       if (/\.(mp4|webm|mov)$/i.test(url)) mediaHtml += `<video src="${escHtml(url)}" controls preload="metadata"></video>`;
       else if (/\.(mp3|wav|m4a|aac|ogg)$/i.test(url)) mediaHtml += `<audio src="${escHtml(url)}" controls preload="metadata"></audio>`;
-      else if (url) mediaHtml += `<img src="${escHtml(url)}" ${imageInteractionAttrs()}>`;
+      else if (url) mediaHtml += `<img src="${escHtml(url)}" onclick="openImageViewer(this.src)">`;
     }
   });
   let html = '';
@@ -4756,15 +4371,24 @@ function sendSystemNotification(title, body) {
 })();
 
 // ══════════════════════════════════════════════════
-// ── 密语时刻：BLE 玩具控制 ──
-// ══════════════════════════════════════════════════
-const TOY_SERVICE_UUID = 0xEE01, TOY_WRITE_UUID = 0xEE03, TOY_NOTIFY_UUID = 0xEE02;
+// ── 密语时刻：BLE 玩具控制（SVAKOM 协议）──
+// 参考: https://github.com/vickyldr/svakom-ble-ai
+// 协议: [0x55, CMD, 0x00, 0x00, param1, param2, tail]
+// FFE0 服务 / FFE1 特征 = 控制通道（write-without-response）
+// AE00/AE01 = OTA 刷机口 ⚠️ 禁止写入！
+
+const TOY_SERVICE_UUID = 0xFFE0, TOY_WRITE_UUID = 0xFFE1, TOY_NOTIFY_UUID = 0xFFE2;
 let toyDevice = null, toyServer = null, toyWriteChar = null, toyConnected = false;
 let whisperMode = false;
 let toyActivePreset = -1;
+// ── 续命机制（每 1.5s 重发当前命令，防止设备超时自动停）──
+let toyKeepaliveTimer = null;
+let toyCurrentCmdBytes = null;    // 当前续命的 Uint8Array 命令
+let toyAutoStopUntil = 0;         // 自动停止时间戳（秒），0=不自动停
+const TOY_KEEPALIVE_MS = 1500;    // 续命间隔
+const TOY_SCAN_NAME = "SL278H";   // SVAKOM 设备名关键词
 
-// 原生 BLE 回调（Android APK 的 BleBridge.java 通过 evaluateJavascript 调用）
-// BLE 状态跨页面同步（BroadcastChannel）
+// 原生 BLE 回调（Android APK）
 const _bleCh = (typeof BroadcastChannel !== 'undefined') ? new BroadcastChannel('toy_ble_state') : null;
 function _bleNotify(connected) { if (_bleCh) _bleCh.postMessage({ connected }); }
 if (_bleCh) _bleCh.onmessage = function(ev) {
@@ -4781,35 +4405,19 @@ window.toyNativeBle = {
   onLog(msg)         { toyLog(msg, 'wl-sys'); }
 };
 
-const TOY_MOTORS = [
-  { label:'震动', gearsSpec:'0001', modeSpec:'0002',
-    modes:[{id:1,name:'全身酥麻'},{id:2,name:'渐入佳境'},{id:3,name:'循序渐进'},{id:4,name:'欢呼雀跃'}] },
-  { label:'电流', gearsSpec:'0003', modeSpec:'0004',
-    modes:[{id:1,name:'温柔涟漪'},{id:2,name:'娇舌搅动'},{id:3,name:'风驰快感'},{id:4,name:'浪潮不断'}] },
-  { label:'吮吸', gearsSpec:'0007', modeSpec:'0008',
-    modes:[{id:1,name:'连绵不绝'},{id:2,name:'深海暗涌'},{id:3,name:'爆裂冲刺'},{id:4,name:'浪潮不断'}] },
-];
+// ── SVAKOM 命令格式（7字节）──
+// 强度: [0x55, 0x04, 0x00, 0x00, 0x01, intensity(0-255), 0xAA]
+// 振动花样: [0x55, 0x03, 0x00, 0x00, mode(1-8), level(1-5), 0x00]
+// 停止: [0x55, 0x04, 0x00, 0x00, 0x00, 0x00, 0xAA]
+const TOY_CMD_HEADER = 0x55;
+const TOY_CMD_SCALE = 0x04;
+const TOY_CMD_VIBRATE = 0x03;
+
+// 预设名称和图标（9档强度）
 const TOY_PNAMES = ['微风轻拂','春水初生','暗流涌动','如梦似幻','情潮渐涨','烈焰焚身','极乐之巅','魂飞魄散','失控'];
 const TOY_PICONS = ['🌸','💧','🌊','✨','🔥','💥','⚡','💀','🌀'];
-const TOY_DEF_PRESETS = [
-  { motors:[{on:0,mode:1,speed:10},{on:0,mode:1,speed:0},{on:1,mode:1,speed:10}] },
-  { motors:[{on:0,mode:1,speed:20},{on:0,mode:1,speed:10},{on:1,mode:3,speed:20}] },
-  { motors:[{on:0,mode:2,speed:30},{on:0,mode:1,speed:20},{on:1,mode:2,speed:30}] },
-  { motors:[{on:0,mode:2,speed:45},{on:0,mode:2,speed:25},{on:1,mode:4,speed:40}] },
-  { motors:[{on:0,mode:3,speed:60},{on:1,mode:2,speed:20},{on:1,mode:2,speed:50}] },
-  { motors:[{on:1,mode:3,speed:10},{on:1,mode:3,speed:30},{on:1,mode:4,speed:60}] },
-  { motors:[{on:1,mode:2,speed:20},{on:1,mode:4,speed:40},{on:1,mode:4,speed:80}] },
-  { motors:[{on:1,mode:1,speed:30},{on:1,mode:3,speed:80},{on:1,mode:3,speed:100}] },
-  { motors:[{on:1,mode:4,speed:40},{on:1,mode:3,speed:90},{on:1,mode:3,speed:100}] },
-];
-
-let toyPresets = [];
-function toyLoadPresets() {
-  try { const s = localStorage.getItem('sosexy_presets_v3'); if (s) { toyPresets = JSON.parse(s); return; } } catch(e) {}
-  toyPresets = JSON.parse(JSON.stringify(TOY_DEF_PRESETS));
-}
-function toySavePresets() { localStorage.setItem('sosexy_presets_v3', JSON.stringify(toyPresets)); }
-
+// 9 档预设强度值（0-255）
+const TOY_DEF_PRESETS = [28, 56, 85, 113, 141, 170, 198, 226, 255];
 function toyLog(msg, cls='') {
   const a = $('toyLogArea'); if (!a) return;
   const d = document.createElement('div'); d.className = cls;
@@ -4817,80 +4425,142 @@ function toyLog(msg, cls='') {
   a.appendChild(d); a.scrollTop = a.scrollHeight;
 }
 
-function toyHexToBytes(h) { const b=[]; for(let i=0;i<h.length;i+=2) b.push(parseInt(h.substr(i,2),16)); return b; }
-function toyToHex2(n) { return n.toString(16).padStart(2,'0'); }
-function toyBuildDualCmd(s1,v1,s2,v2) { return '02'+s1+'11'+toyToHex2(v1)+s2+'11'+toyToHex2(v2); }
-function toyBuildStopCmd() { return '03000111000003110000071100'; }
-function toySleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+// ── SVAKOM 协议命令构建（7字节）──
+function toyCmdScale(intensity) {
+  const v = Math.max(0, Math.min(255, intensity));
+  return new Uint8Array([TOY_CMD_HEADER, TOY_CMD_SCALE, 0, 0, v > 0 ? 1 : 0, v, 0xAA]);
+}
+function toyCmdVibrate(mode, level) {
+  const m = Math.max(1, Math.min(8, mode));
+  const l = Math.max(1, Math.min(5, level));
+  return new Uint8Array([TOY_CMD_HEADER, TOY_CMD_VIBRATE, 0, 0, m, l, 0]);
+}
+function toyCmdStop() { return toyCmdScale(0); }
 
-async function toySendData2(hexCmd) {
-  // 原生 BLE 桥接（Android APK）
+async function toySendCmd(bytes) {
+  if (!toyWriteChar && !(window.AionBle && window.AionBle.isConnected())) { toyLog('未连接', 'wl-err'); return; }
   if (window.AionBle && window.AionBle.isConnected()) {
-    toyLog('→ ' + hexCmd, 'wl-send');
-    window.AionBle.sendData(hexCmd);
+    const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    toyLog('→ ' + hex, 'wl-send');
+    window.AionBle.sendData(hex);
     return;
   }
-  // Web Bluetooth（浏览器）
-  if (!toyWriteChar) { toyLog('未连接','wl-err'); return; }
-  const full = '00' + hexCmd;
-  toyLog('→ ' + hexCmd, 'wl-send');
-  const data = toyHexToBytes(full), chunks = [];
-  for (let i = 0; i < data.length; i += 18) chunks.push(data.slice(i, i+18));
-  const rnd = Math.floor(Math.random() * 255), pkts = [];
-  for (let i = 0; i < chunks.length; i++) pkts.push([rnd, i+1, ...chunks[i]]);
-  if (chunks.length > 0 && chunks[chunks.length-1].length === 18) pkts.push([rnd, chunks.length+1]);
-  for (let i = 0; i < pkts.length; i++) {
-    const p = new Uint8Array(pkts[i]);
-    try {
-      if (toyWriteChar.properties.write) await toyWriteChar.writeValueWithResponse(p);
-      else await toyWriteChar.writeValueWithoutResponse(p);
-    } catch(e) { toyLog('写入失败:'+e.message,'wl-err'); return; }
-    if (pkts.length > 1 && i < pkts.length-1) await toySleep(30);
-  }
+  toyLog('→ ' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' '), 'wl-send');
+  try {
+    if (toyWriteChar.properties.write) await toyWriteChar.writeValueWithResponse(bytes);
+    else await toyWriteChar.writeValueWithoutResponse(bytes);
+  } catch(e) { toyLog('写入失败:' + e.message, 'wl-err'); }
 }
 
-async function toyApplyPreset(p) {
-  for (let i = 0; i < 3; i++) {
-    const m = p.motors[i], mo = TOY_MOTORS[i];
-    await toySendData2(toyBuildDualCmd(mo.modeSpec, m.mode||1, mo.gearsSpec, m.on ? m.speed : 0));
-    await toySleep(80);
-  }
-}
+// ── 预设控制 ──
+function toyLoadPresets() {}
+function toySavePresets() {}
 
 async function toyActivatePreset(idx) {
   toyActivePreset = idx; toyRenderGrid();
-  const p = toyPresets[idx];
-  toyLog('⚡ ' + TOY_PNAMES[idx], 'wl-sys');
-  await toyApplyPreset(p);
+  const intensity = TOY_DEF_PRESETS[idx];
+  toyLog('⚡ ' + TOY_PNAMES[idx] + ' (' + Math.round(intensity / 255 * 100) + '%)', 'wl-sys');
+  const cmd = toyCmdScale(intensity);
+  await toySendCmd(cmd);
+  toyStartKeepalive(cmd);
 }
 
 function toyStopAll() {
   toyActivePreset = -1;
-  toySendData2(toyBuildStopCmd());
+  toyStopKeepalive();
+  toySendCmd(toyCmdStop());
   toyLog('⏹ 停止', 'wl-sys');
   toyRenderGrid();
 }
 
-// 处理 AI 发送的 [TOY:x] 指令
+// ── 续命机制（每 1.5s 重发命令，防止设备超时自动停）──
+function toyStartKeepalive(cmdBytes) {
+  toyStopKeepalive();
+  toyCurrentCmdBytes = cmdBytes;
+  toyAutoStopUntil = 0;
+  if (!cmdBytes) return;
+  toyKeepaliveTimer = setInterval(async () => {
+    if (toyAutoStopUntil && Date.now() / 1000 >= toyAutoStopUntil) { toyStopAll(); return; }
+    if (toyCurrentCmdBytes) await toySendCmd(toyCurrentCmdBytes);
+  }, TOY_KEEPALIVE_MS);
+}
+function toyStopKeepalive() {
+  if (toyKeepaliveTimer) { clearInterval(toyKeepaliveTimer); toyKeepaliveTimer = null; }
+  toyCurrentCmdBytes = null;
+  toyAutoStopUntil = 0;
+}
+
+// ── AI 指令处理（支持 [TOY:1]~[TOY:9]/[TOY:STOP] 和 JSON）──
 function toyExecCmd(cmd) {
-  cmd = cmd.trim().toUpperCase();
+  try { const obj = JSON.parse(String(cmd).trim()); if (obj && typeof obj === 'object') { toyExecJsonCmd(obj); return; } } catch(e) {}
+  cmd = String(cmd).trim().toUpperCase();
   if (cmd === 'STOP' || cmd === '0') { toyStopAll(); return; }
   const n = parseInt(cmd);
   if (n >= 1 && n <= 9) { toyActivatePreset(n - 1); return; }
   toyLog('无效指令:' + cmd, 'wl-err');
 }
 
+function toyExecJsonCmd(obj) {
+  if (obj.stop) { toyStopAll(); return; }
+  if (obj.preset) { const n = parseInt(obj.preset); if (n >= 1 && n <= 9) { toyActivatePreset(n - 1); } return; }
+  // speed / suck / intensity → 0~255
+  const speed = obj.speed ?? obj.suck ?? obj.intensity;
+  if (speed !== undefined) {
+    const v = parseFloat(speed);
+    if (v <= 0) { toyStopAll(); return; }
+    const cmd = toyCmdScale(Math.round(v * 255));
+    toyActivePreset = -1; toyRenderGrid();
+    toyLog('📳 强度 ' + Math.round(v * 100) + '%', 'wl-sys');
+    toySendCmd(cmd); toyStartKeepalive(cmd);
+    const dur = parseFloat(obj.sec || obj.seconds || obj.duration);
+    if (dur > 0) { toyAutoStopUntil = Date.now() / 1000 + dur; toyLog('⏱ ' + dur + '秒后自动停', 'wl-sys'); }
+    return;
+  }
+  // pattern 振动花样（仅震动棒响应）
+  if (obj.pattern !== undefined) {
+    const mode = parseInt(obj.pattern);
+    const level = Math.max(1, Math.min(5, Math.round(parseFloat(obj.level ?? 0.6) * 5)));
+    const cmd = toyCmdVibrate(mode, level);
+    toyActivePreset = -1; toyRenderGrid();
+    toyLog('🌀 花样 ' + mode + ' 档 ' + level, 'wl-sys');
+    toySendCmd(cmd); toyStartKeepalive(cmd);
+    const dur = parseFloat(obj.sec || obj.seconds || obj.duration);
+    if (dur > 0) { toyAutoStopUntil = Date.now() / 1000 + dur; toyLog('⏱ ' + dur + '秒后自动停', 'wl-sys'); }
+    return;
+  }
+  toyLog('无效JSON: ' + JSON.stringify(obj), 'wl-err');
+}
+
 function showToyCapsule(msgId, commands) {
   if (!msgId || !commands || !commands.length) return;
   const row = document.getElementById('m_' + msgId);
-  if (!row) return;
+  if (!row) {
+    // 消息 DOM 还没渲染出来，等 200ms 后重试（SSE 事件可能早于 DOM 插入）
+    setTimeout(() => showToyCapsule(msgId, commands), 200);
+    return;
+  }
   const msgBody = row.querySelector('.msg-body');
   if (!msgBody) return;
   commands.forEach(cmd => {
-    const c = cmd.trim().toUpperCase();
     let label;
-    if (c === 'STOP' || c === '0') label = '❤️ 停止';
-    else { const n = parseInt(c); label = (n >= 1 && n <= 9) ? `❤️ ${TOY_PNAMES[n-1]}` : `❤️ ${cmd}`; }
+    if (typeof cmd === 'object') {
+      if (cmd.stop) label = '❤️ 停止';
+      else if (cmd.preset) label = `❤️ ${TOY_PNAMES[cmd.preset - 1] || ('档位'+cmd.preset)}`;
+      else if (cmd.speed !== undefined || cmd.intensity !== undefined) {
+        const s = Math.round((cmd.speed ?? cmd.intensity) * 100);
+        const dur = cmd.sec || cmd.seconds || cmd.duration;
+        label = '📳 ' + s + '%' + (dur ? ' (' + dur + 's)' : '');
+      }
+      else if (cmd.pattern !== undefined) {
+        const lvl = cmd.level ? Math.round(cmd.level * 100) : 60;
+        label = '🌀 花样' + cmd.pattern + ' ' + lvl + '%';
+      }
+      else label = '❤️ ' + JSON.stringify(cmd);
+    } else {
+      const c = String(cmd).trim().toUpperCase();
+      if (c === 'STOP' || c === '0') label = '❤️ 停止';
+      else { const n = parseInt(c); label = (n >= 1 && n <= 9) ? `❤️ ${TOY_PNAMES[n-1]}` : `❤️ ${cmd}`; }
+    }
     const pill = document.createElement('div');
     pill.className = 'toy-capsule';
     pill.textContent = label;
@@ -4905,7 +4575,7 @@ function toyRenderGrid() {
   for (let i = 0; i < 9; i++) {
     const d = document.createElement('div');
     d.className = 'whisper-p-btn' + (i === toyActivePreset ? ' active' : '');
-    d.innerHTML = `<span class="wp-icon">${TOY_PICONS[i]}</span><span class="wp-name">${TOY_PNAMES[i]}</span><button class="wp-edit" onclick="event.stopPropagation();toyOpenEditor(${i})">⚙</button>`;
+    d.innerHTML = `<span class="wp-icon">${TOY_PICONS[i]}</span><span class="wp-name">${TOY_PNAMES[i]}</span><span class="wp-speed">${Math.round(TOY_DEF_PRESETS[i]/255*100)}%</span>`;
     d.onclick = () => { if (toyConnected) toyActivatePreset(i); else toyLog('请先连接','wl-err'); };
     g.appendChild(d);
   }
@@ -4919,7 +4589,7 @@ async function toyToggleConnect() {
   if (!navigator.bluetooth) { toyLog('此浏览器不支持 Web Bluetooth','wl-err'); return; }
   try {
     toyLog('搜索中...', 'wl-sys');
-    toyDevice = await navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'SOSEXY' }], optionalServices: [TOY_SERVICE_UUID] });
+    toyDevice = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [TOY_SERVICE_UUID] });
     toyLog(toyDevice.name || '已找到设备', 'wl-sys');
     toyDevice.addEventListener('gattserverdisconnected', () => { toyConnected = false; toyWriteChar = null; toyUpdateUI(); toyLog('断开','wl-err'); _bleNotify(false); });
     toyServer = await toyDevice.gatt.connect();
@@ -4968,59 +4638,6 @@ function openWhisper() {
   $('whisperModal').classList.add('show');
 }
 function closeWhisper() { $('whisperModal').classList.remove('show'); }
-
-// ── 预设编辑器 ──
-function toyOpenEditor(idx) {
-  const p = toyPresets[idx], isLoop = idx === 8;
-  let h = `<h3>${TOY_PICONS[idx]} ${TOY_PNAMES[idx]}</h3>`;
-  for (let mi = 0; mi < 3; mi++) {
-    const ms = p.motors[mi], mo = TOY_MOTORS[mi];
-    h += `<div class="toy-me-block"><div class="toy-me-head"><span>${mo.label}</span>
-    <label class="toggle-switch" style="transform:scale(.8)"><input type="checkbox" id="teo${mi}" ${ms.on?'checked':''}><span class="toggle-slider"></span></label>
-    </div><div class="toy-chip-row" id="tem${mi}">
-    ${mo.modes.map(md => `<span class="toy-chip${md.id===ms.mode?' sel':''}" data-mid="${md.id}" onclick="toyESel(${mi},${md.id})">${md.name}</span>`).join('')}
-    </div><div class="toy-ed-speed"><label>速度</label>
-    <input type="range" min="0" max="100" value="${ms.speed}" id="tes${mi}" oninput="document.getElementById('tev${mi}').textContent=this.value">
-    <span class="toy-ed-sv" id="tev${mi}">${ms.speed}</span></div></div>`;
-  }
-  if (isLoop) {
-    h += `<div style="margin-top:6px"><div class="toy-me-head"><span>🌀 循环步骤</span></div><div id="toyLsc"></div>
-    <button class="toy-add-step" onclick="toyAddLS()">+ 添加步骤</button></div>`;
-  }
-  h += `<div class="toy-sheet-btns"><button class="toy-sb-cancel" onclick="toyCloseEditor()">取消</button><button class="toy-sb-save" onclick="toySaveEd(${idx})">保存</button></div>`;
-  $('toyEditContent').innerHTML = h;
-  $('toyEditorOverlay').classList.add('show');
-  if (isLoop) { window._toyLS = JSON.parse(JSON.stringify(p.loopSteps || [])); toyRenderLS(); }
-}
-
-function toyESel(mi, mid) {
-  document.querySelectorAll(`#tem${mi} .toy-chip`).forEach(c => c.classList.toggle('sel', parseInt(c.dataset.mid) === mid));
-}
-
-function toyRenderLS() {
-  const c = $('toyLsc'); if (!c) return;
-  c.innerHTML = window._toyLS.map((s, i) => `<div class="toy-ls"><span class="sn">${i+1}</span>
-  <select onchange="window._toyLS[${i}].presetIdx=+this.value">${[0,1,2,3,4,5,6,7].map(j => `<option value="${j}"${s.presetIdx===j?' selected':''}>${j+1}.${TOY_PNAMES[j]}</option>`).join('')}</select>
-  <input type="number" min="1" max="60" value="${s.durationSec}" onchange="window._toyLS[${i}].durationSec=+this.value||3">s
-  <button class="del" onclick="window._toyLS.splice(${i},1);toyRenderLS()">×</button></div>`).join('');
-}
-
-function toyAddLS() { window._toyLS.push({ presetIdx: 0, durationSec: 3 }); toyRenderLS(); }
-
-function toySaveEd(idx) {
-  const p = toyPresets[idx];
-  for (let mi = 0; mi < 3; mi++) {
-    p.motors[mi].on = document.getElementById(`teo${mi}`).checked ? 1 : 0;
-    const sc = document.querySelector(`#tem${mi} .toy-chip.sel`);
-    if (sc) p.motors[mi].mode = parseInt(sc.dataset.mid);
-    p.motors[mi].speed = parseInt(document.getElementById(`tes${mi}`).value);
-  }
-  if (idx === 8) p.loopSteps = window._toyLS.filter(s => s.durationSec > 0);
-  toySavePresets(); toyCloseEditor(); toyRenderGrid();
-  toyLog(`预设${idx+1}已保存`, 'wl-sys');
-}
-
-function toyCloseEditor() { $('toyEditorOverlay').classList.remove('show'); }
 
 function onWhisperModeChange() {
   whisperMode = $('whisperModeToggle').checked;
@@ -5323,20 +4940,6 @@ function isPersistentSubPage(url) {
   return path === '/' || path === '/chatroom' || path === '/health';
 }
 
-function syncHealthRingPageVisibility() {
-  const overlay = $('subPageOverlay');
-  const visible = !!(overlay
-    && overlay.classList.contains('show')
-    && activeSubPageFrame
-    && subPagePath(currentSubPage) === '/health');
-  try {
-    if (window.AionRingBle
-        && typeof window.AionRingBle.setHealthPageVisible === 'function') {
-      window.AionRingBle.setHealthPageVisible(visible);
-    }
-  } catch(e) {}
-}
-
 function attachSubPageFrameLoad(frame) {
   frame.addEventListener('load', () => {
     if (frame !== activeSubPageFrame || !frame.src || frame.src === 'about:blank') return;
@@ -5388,7 +4991,6 @@ function openSubPage(url) {
   }
   $('subPageOverlay').classList.add('show');
   currentSubPage = url;
-  syncHealthRingPageVisibility();
 }
 function closeSubPage(skipReload = false) {
   const ov = $('subPageOverlay');
@@ -5402,11 +5004,14 @@ function closeSubPage(skipReload = false) {
   if (activeSubPageFrame) activeSubPageFrame.style.display = 'none';
   activeSubPageFrame = null;
   currentSubPage = null;
-  syncHealthRingPageVisibility();
   applyAionTheme(localStorage.getItem('aion_chat_theme') || document.body.dataset.theme || 'dark');
   // 回到聊天页后重新加载消息列表（拿到后台生成完成的新消息）
   if (!skipReload && currentConvId) {
-    refreshCurrentConversationFromServer();
+    api("GET", `/api/conversations/${currentConvId}/messages?limit=${MSG_PAGE_SIZE}`).then(msgs => {
+      setCurrentMessages(msgs);
+      hasMoreMessages = msgs.length >= MSG_PAGE_SIZE;
+      renderMessages();
+    });
   }
 }
 // 导航到 Home（从任何功能页返回 Home）

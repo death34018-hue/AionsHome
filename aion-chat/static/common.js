@@ -157,34 +157,11 @@ if (window.parent !== window) {
   });
 }
 
-async function api(method, url, body, options = {}) {
-  const controller = new AbortController();
-  const timeoutMs = Number(options.timeoutMs || 15000);
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const opts = { method, headers: {"Content-Type": "application/json"}, signal: controller.signal };
-  if (body !== undefined && body !== null) opts.body = JSON.stringify(body);
-  try {
-    const res = await fetch(url, opts);
-    const text = await res.text();
-    let payload = null;
-    if (text) {
-      try { payload = JSON.parse(text); }
-      catch(e) { payload = { detail: text }; }
-    }
-    if (!res.ok) {
-      const message = payload?.detail || payload?.error || `请求失败 (${res.status})`;
-      const error = new Error(typeof message === 'string' ? message : JSON.stringify(message));
-      error.status = res.status;
-      error.payload = payload;
-      throw error;
-    }
-    return payload;
-  } catch(e) {
-    if (e?.name === 'AbortError') throw new Error('网络响应超时，请稍后重试');
-    throw e;
-  } finally {
-    clearTimeout(timer);
-  }
+async function api(method, url, body) {
+  const opts = { method, headers: {"Content-Type": "application/json"} };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(url, opts);
+  return res.json();
 }
 
 function escHtml(s) {
@@ -213,49 +190,11 @@ function showToast(msg) {
 let _commonWs = null;
 let _wsHandlers = {};
 
-const COMMON_SYNC_SEQ_KEY = `aion_sync_seq_v1:${location.pathname}`;
-let _commonSyncPromise = null;
-
-function _commonRememberSyncSeq(msg) {
-  const seq = Number(msg?.sync_seq || 0);
-  if (!seq) return;
-  const current = Number(localStorage.getItem(COMMON_SYNC_SEQ_KEY) || 0);
-  if (seq > current) localStorage.setItem(COMMON_SYNC_SEQ_KEY, String(seq));
-}
-
-async function reconcileCommonSync(extraHandler) {
-  if (_commonSyncPromise) return _commonSyncPromise;
-  _commonSyncPromise = (async () => {
-    let after = Number(localStorage.getItem(COMMON_SYNC_SEQ_KEY) || 0);
-    for (let batch = 0; batch < 20; batch++) {
-      const result = await api('GET', `/api/sync/changes?after=${after}&limit=200`, null, { timeoutMs: 10000 });
-      if (result?.reset_required) {
-        if (extraHandler) extraHandler({ type: 'sync_reset_required', sync_event: true });
-        const latest = Number(result.latest_seq || 0);
-        localStorage.setItem(COMMON_SYNC_SEQ_KEY, String(latest));
-        return;
-      }
-      const events = Array.isArray(result?.events) ? result.events : [];
-      for (const event of events) {
-        if (extraHandler) extraHandler({ ...event, sync_event: true });
-        _commonRememberSyncSeq(event);
-        after = Math.max(after, Number(event.sync_seq || 0));
-      }
-      if (!result?.has_more || !events.length) break;
-    }
-  })().catch(e => {
-    console.warn('[sync] reconcile failed:', e);
-  }).finally(() => { _commonSyncPromise = null; });
-  return _commonSyncPromise;
-}
-
 function connectCommonWS(extraHandler) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   _commonWs = new WebSocket(`${proto}//${location.host}/ws`);
-  _commonWs.onopen = () => reconcileCommonSync(extraHandler);
   _commonWs.onmessage = e => {
     const msg = JSON.parse(e.data);
-    _commonRememberSyncSeq(msg);
     // 闹铃弹窗 — 全局
     if (msg.type === "schedule_alarm") {
       showAlarmPopup(msg.data);
@@ -280,14 +219,6 @@ function connectCommonWS(extraHandler) {
     if (extraHandler) extraHandler(msg);
   };
   _commonWs.onclose = () => setTimeout(() => connectCommonWS(extraHandler), 2000);
-  _commonWs.onerror = () => _commonWs.close();
-
-  if (!connectCommonWS._visibilityBound) {
-    connectCommonWS._visibilityBound = true;
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') reconcileCommonSync(extraHandler);
-    });
-  }
 }
 
 /* ── 闹铃弹窗 ── */
@@ -353,24 +284,6 @@ let _giftKnownIds = new Set(JSON.parse(localStorage.getItem('aion_gift_known_ids
 function _shouldShowCommonGiftPopup() {
   return document.body?.dataset?.giftPopup === 'enabled';
 }
-
-// Android activates a new, fully verified bundle first, then asks the page for
-// one idle reload. Focused editors postpone it instead of losing user input.
-window.addEventListener('aion-client-update-ready', () => {
-  if (window.__aionClientUpdateScheduled) return;
-  window.__aionClientUpdateScheduled = true;
-  const reloadWhenIdle = () => {
-    const active = document.activeElement;
-    const editing = active && (active.matches?.('input,textarea,select,[contenteditable="true"]')
-      || active.tagName === 'IFRAME');
-    if (editing || document.querySelector('.editing-focus,.show.active,.settings-overlay.active')) {
-      setTimeout(reloadWhenIdle, 1500);
-      return;
-    }
-    location.reload();
-  };
-  setTimeout(reloadWhenIdle, 800);
-});
 
 function _rememberGiftSeen(giftId) {
   if (!giftId) return;

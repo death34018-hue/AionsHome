@@ -4,7 +4,6 @@
 
 import aiosqlite
 from config import DB_PATH
-from message_dedup import ensure_message_ingress_dedupe_table
 
 
 async def init_db():
@@ -53,9 +52,6 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_ai_feedback ON messages(ai_feedback_updated_at)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC)")
-        await ensure_message_ingress_dedupe_table(db)
-        from app_supervision_ai import ensure_app_supervision_tables
-        await ensure_app_supervision_tables(db)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
@@ -77,12 +73,7 @@ async def init_db():
             ("compression_stage", "INTEGER DEFAULT 0"),
             ("evidence_summary", "TEXT DEFAULT ''"),
             ("evidence_detail_level", "TEXT DEFAULT 'summary'"),
-            ("archive_state", "TEXT DEFAULT 'active'"),
-            ("archived_at", "REAL"),
-            ("period_kind", "TEXT DEFAULT ''"),
-            ("period_start_ts", "REAL"),
-            ("period_end_ts", "REAL"),
-            ("compression_batch_id", "TEXT DEFAULT ''"),
+            ("persona", "TEXT DEFAULT 'aion'"),
         ]:
             try:
                 await db.execute(f"ALTER TABLE memories ADD COLUMN {col} {defn}")
@@ -125,62 +116,6 @@ async def init_db():
                 created_at REAL NOT NULL
             )
         """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS memory_compression_batches (
-                id TEXT PRIMARY KEY,
-                target TEXT NOT NULL,
-                level TEXT NOT NULL,
-                model_key TEXT NOT NULL,
-                status TEXT NOT NULL,
-                period_start_ts REAL,
-                period_end_ts REAL,
-                input_count INTEGER DEFAULT 0,
-                output_count INTEGER DEFAULT 0,
-                error TEXT DEFAULT '',
-                created_at REAL NOT NULL,
-                completed_at REAL
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS memory_compression_batch_inputs (
-                batch_id TEXT NOT NULL,
-                store TEXT NOT NULL,
-                memory_id TEXT NOT NULL,
-                PRIMARY KEY (batch_id, store, memory_id)
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS memory_compression_batch_outputs (
-                batch_id TEXT NOT NULL,
-                store TEXT NOT NULL,
-                memory_id TEXT NOT NULL,
-                PRIMARY KEY (batch_id, store, memory_id)
-            )
-        """)
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_memory_compression_inputs_memory "
-            "ON memory_compression_batch_inputs(store, memory_id)"
-        )
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS memory_compression_jobs (
-                id TEXT PRIMARY KEY,
-                target TEXT NOT NULL,
-                level TEXT NOT NULL,
-                model_key TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'queued',
-                progress_json TEXT NOT NULL DEFAULT '{}',
-                result_json TEXT NOT NULL DEFAULT '{}',
-                error TEXT DEFAULT '',
-                created_at REAL NOT NULL,
-                started_at REAL,
-                updated_at REAL NOT NULL,
-                completed_at REAL
-            )
-        """)
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_memory_compression_jobs_target "
-            "ON memory_compression_jobs(target, level, created_at DESC)"
-        )
         # ── 日程/闹铃表 ──
         await db.execute("""
             CREATE TABLE IF NOT EXISTS schedules (
@@ -653,18 +588,6 @@ async def init_db():
             await db.execute("ALTER TABLE chatroom_memories ADD COLUMN evidence_detail_level TEXT DEFAULT 'summary'")
         except:
             pass
-        for col, defn in [
-            ("archive_state", "TEXT DEFAULT 'active'"),
-            ("archived_at", "REAL"),
-            ("period_kind", "TEXT DEFAULT ''"),
-            ("period_start_ts", "REAL"),
-            ("period_end_ts", "REAL"),
-            ("compression_batch_id", "TEXT DEFAULT ''"),
-        ]:
-            try:
-                await db.execute(f"ALTER TABLE chatroom_memories ADD COLUMN {col} {defn}")
-            except:
-                pass
         await db.execute(
             "UPDATE chatroom_memories SET memory_kind='daily' "
             "WHERE (memory_kind IS NULL OR memory_kind='' OR memory_kind='long_term') "
@@ -801,53 +724,6 @@ async def init_db():
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_health_ring_heart_rates_measured ON health_ring_heart_rates(measured_at DESC)")
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS health_miband_activity (
-                source TEXT NOT NULL,
-                measured_at REAL NOT NULL,
-                device_name TEXT DEFAULT '',
-                raw_kind INTEGER NOT NULL DEFAULT 0,
-                intensity INTEGER NOT NULL DEFAULT 0,
-                steps INTEGER NOT NULL DEFAULT 0,
-                heart_rate INTEGER NOT NULL DEFAULT 0,
-                unknown_value INTEGER NOT NULL DEFAULT 0,
-                sleep_value INTEGER NOT NULL DEFAULT 0,
-                deep_sleep_value INTEGER NOT NULL DEFAULT 0,
-                rem_sleep_value INTEGER NOT NULL DEFAULT 0,
-                sleep_stage TEXT DEFAULT '',
-                synced_at REAL NOT NULL,
-                PRIMARY KEY (source, measured_at)
-            )
-        """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_health_miband_activity_measured ON health_miband_activity(measured_at DESC)")
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS health_miband_commands (
-                id TEXT PRIMARY KEY,
-                pattern TEXT NOT NULL CHECK (pattern IN ('single','call')),
-                source_type TEXT NOT NULL DEFAULT '',
-                source_id TEXT NOT NULL DEFAULT '',
-                source_msg_id TEXT NOT NULL DEFAULT '',
-                note TEXT NOT NULL DEFAULT '',
-                sender_name TEXT NOT NULL DEFAULT '',
-                created_at REAL NOT NULL,
-                expires_at REAL NOT NULL,
-                acknowledged_at REAL
-            )
-        """)
-        for col, definition in [
-            ("note", "TEXT NOT NULL DEFAULT ''"),
-            ("sender_name", "TEXT NOT NULL DEFAULT ''"),
-        ]:
-            try:
-                await db.execute(
-                    f"ALTER TABLE health_miband_commands ADD COLUMN {col} {definition}"
-                )
-            except Exception:
-                pass
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_health_miband_commands_pending "
-            "ON health_miband_commands(acknowledged_at, expires_at, created_at)"
-        )
-        await db.execute("""
             CREATE TABLE IF NOT EXISTS health_heart_config (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 sleep_low_max INTEGER NOT NULL DEFAULT 65,
@@ -918,26 +794,34 @@ async def init_db():
             )
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_health_period_start ON health_period_entries(start_date DESC)")
-        # ── 跨端增量同步事件 ──
-        # WebSocket 负责低延迟；此表负责设备休眠、断网或重连后的可靠补齐。
+
+        # ── 手动步数记录 ──
         await db.execute("""
-            CREATE TABLE IF NOT EXISTS sync_events (
-                seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_type TEXT NOT NULL,
-                entity_type TEXT NOT NULL DEFAULT '',
-                entity_id TEXT NOT NULL DEFAULT '',
-                payload TEXT NOT NULL DEFAULT '{}',
-                created_at REAL NOT NULL
-            )
-        """)
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_sync_events_created ON sync_events(created_at)")
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS runtime_state (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
+            CREATE TABLE IF NOT EXISTS health_manual_steps (
+                date TEXT PRIMARY KEY,
+                steps INTEGER NOT NULL,
+                note TEXT DEFAULT '',
+                created_at REAL NOT NULL,
                 updated_at REAL NOT NULL
             )
         """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_health_manual_steps_date ON health_manual_steps(date DESC)")
+
+        # ── 手动睡眠记录 ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS health_sleep_entries (
+                id TEXT PRIMARY KEY,
+                date TEXT NOT NULL,
+                sleep_start_time TEXT NOT NULL DEFAULT '',
+                sleep_end_time TEXT NOT NULL DEFAULT '',
+                total_min INTEGER NOT NULL DEFAULT 0,
+                note TEXT DEFAULT '',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_health_sleep_entries_date ON health_sleep_entries(date DESC)")
+
         await db.commit()
 
 
