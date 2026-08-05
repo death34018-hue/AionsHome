@@ -2566,9 +2566,9 @@ function renderMessages(msgs) {
   crApplySongGenIndicator();
 }
 
-function crMsgMenuHtml(sender, msgId) {
+function crMsgMenuHtml(sender, msgId, opts = {}) {
   if (!msgId) return '';
-  const actionHtml = sender === 'system'
+  const actionHtml = opts.deleteOnly || sender === 'system'
     ? ''
     : sender === 'user'
     ? `<button onclick="editChatroomMsg('${msgId}');closeMsgMenus()">\u7f16\u8f91</button>`
@@ -2602,7 +2602,7 @@ function crMsgFeedbackHtml(msg) {
 }
 
 function crMsgSenderLineHtml(sender, name, msgId, msg = null, opts = {}) {
-  const menuHtml = crMsgMenuHtml(sender, msgId);
+  const menuHtml = crMsgMenuHtml(sender, msgId, { deleteOnly: opts.deleteOnly });
   const feedbackHtml = crMsgFeedbackHtml(msg || { id: msgId, sender });
   const ttsHtml = opts.tts && sender !== 'user' && msgId
     ? `<button class="tts-replay-btn" onclick="crReplayTTS('${msgId}', this)" title="重听语音">🔊</button>`
@@ -2680,11 +2680,12 @@ function crMessageContentItems(raw, isUser = false) {
   return items;
 }
 
-function crBubbleUnitHtml({ sender, name, avatar, msgId, msg, html, showHeader, includeActions, preBubbleHtml = '' }) {
+function crBubbleUnitHtml({ sender, name, avatar, msgId, msg, html, showHeader, includeActions, deleteOnly = false, preBubbleHtml = '' }) {
   const senderLine = showHeader
     ? crMsgSenderLineHtml(sender, name, msgId, msg, {
         tts: includeActions,
         memory: includeActions && crMemoryRecordMsgIds.has(msgId),
+        deleteOnly,
       })
     : '';
   const emptyClass = String(html || '').trim() ? '' : ' empty-message';
@@ -2788,8 +2789,21 @@ function msgHTML(m) {
 
   // AI 消息使用 escWithImages 解析 [[image:...]] 和转账卡片，用户消息也渲染转账卡片
   const fmt = isUser ? escWithTransfer : escWithImages;
+  // 渲染附件图片、语音和结构化卡片
+  const toyHtml = renderToyAttachments(messageAttachments);
+  const attHtml = renderAttachments(messageAttachments);
+  const bandVibrationHtml = crBandVibrationNoteHtml(messageAttachments);
   let bubblesHtml = '';
-  if (!isVoiceOnly && !hasDateSummaryAtt && (!hasWishFulfillmentAtt || !isUser)) {
+  if (isVoiceOnly) {
+    bubblesHtml = `<div class="message-stack">${crBubbleUnitHtml({
+      sender, name, avatar, msgId: m.id || '', msg: m,
+      html: '',
+      showHeader: true,
+      includeActions: false,
+      deleteOnly: true,
+      preBubbleHtml: attHtml,
+    })}</div>`;
+  } else if (!hasDateSummaryAtt && (!hasWishFulfillmentAtt || !isUser)) {
     const items = crMessageContentItems(raw, isUser);
     bubblesHtml = items.length
       ? `<div class="message-stack">${crRenderMessageItems(items, { sender, name, avatar, msgId: m.id || '', msg: m, fmt, isUser })}</div>`
@@ -2801,11 +2815,6 @@ function msgHTML(m) {
         })}</div>`;
   }
 
-  // 渲染附件图片
-  const toyHtml = renderToyAttachments(messageAttachments);
-  const attHtml = renderAttachments(messageAttachments);
-  const bandVibrationHtml = crBandVibrationNoteHtml(messageAttachments);
-
   const msgId = m.id || '';
 
   return `
@@ -2815,7 +2824,7 @@ function msgHTML(m) {
           ${hasWishFulfillmentAtt || hasDateSummaryAtt ? attHtml : ''}
           ${bubblesHtml}
           ${toyHtml}
-          ${hasWishFulfillmentAtt || hasDateSummaryAtt ? '' : attHtml}
+          ${hasWishFulfillmentAtt || hasDateSummaryAtt || isVoiceOnly ? '' : attHtml}
           ${bandVibrationHtml}
         </div>
       </div>
@@ -6605,6 +6614,7 @@ async function _crVoiceSend(audioBlob, duration) {
       body: JSON.stringify({
         content: transcript || '',
         model: chatroomModel,
+        connor_model: chatroomConnorModel,
         attachments,
         voice_attachments: voiceAttachmentsFull,
         tts_enabled: crTtsEnabled,

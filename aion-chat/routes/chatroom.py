@@ -1453,7 +1453,24 @@ def _collect_last_user_images(msgs: list[dict]) -> list[dict]:
 
 
 def _resolve_connor_model(model_key: str | None = None) -> str:
-    return (model_key or load_chatroom_config().get("connor_model") or "Codex").strip() or "Codex"
+    requested = (model_key or "").strip()
+    if requested and (requested != "Codex" or requested in MODELS):
+        return requested
+
+    configured = (load_chatroom_config().get("connor_model") or "").strip()
+    if configured and configured in MODELS:
+        return configured
+    if configured and configured != "Codex":
+        return configured
+
+    for key, cfg in MODELS.items():
+        if cfg.get("provider") == "codex_cli":
+            return key
+    if requested:
+        return requested
+    if configured:
+        return configured
+    return "Codex"
 
 
 async def _stream_connor_model(messages: list[dict], model_key: str | None = None, meta: dict | None = None):
@@ -1778,7 +1795,7 @@ class MsgSend(BaseModel):
     content: str
     sender: str = "user"  # "user"
     model: str = DEFAULT_MODEL
-    connor_model: str = "Codex"
+    connor_model: Optional[str] = None
     attachments: list = []
     voice_attachments: list = []  # [{type:'voice', url, duration, transcript}]
     tts_enabled: bool = False
