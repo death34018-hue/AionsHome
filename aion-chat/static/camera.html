@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>摄像头监控 - Aion</title>
+<title>摄像头监控</title>
 <link rel="stylesheet" href="/static/common.css">
 <link rel="manifest" href="/manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -17,25 +17,59 @@
 .cam-zoom-badge { background:rgba(0,0,0,0.6); color:#fff; font-size:11px; padding:2px 8px; border-radius:10px; min-width:36px; text-align:center; pointer-events:none; }
 .cam-zoom-btn { width:30px; height:30px; border-radius:50%; border:1px solid rgba(255,255,255,0.25); background:rgba(0,0,0,0.5); color:#fff; font-size:16px; display:flex; align-items:center; justify-content:center; cursor:pointer; line-height:1; }
 .cam-zoom-btn:hover { background:rgba(255,255,255,0.15); }
-.cam-controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; }
-.cam-btn { padding:6px 14px; border:1px solid var(--border); border-radius:8px; background:var(--surface2); color:var(--text); font-size:13px; cursor:pointer; display:flex; align-items:center; gap:4px; }
+.page-content { overflow-x:hidden; padding-bottom:24px; }
+.cam-preview-container { box-shadow:0 10px 30px rgba(0,0,0,.16); }
+.cam-source-card, .cam-sentinel-card { width:100%; min-width:0; margin-top:12px; padding:14px; border:1px solid var(--border); border-radius:14px; background:var(--surface); box-shadow:0 5px 18px rgba(0,0,0,.05); box-sizing:border-box; }
+.cam-section-title { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.cam-section-title strong { font-size:14px; color:var(--text); }
+.cam-section-kicker { display:block; margin-top:2px; font-size:10px; font-weight:400; color:var(--text3); }
+.cam-controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:8px; min-width:0; }
+.cam-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin-top:12px; }
+.cam-btn { min-width:0; padding:9px 14px; border:1px solid var(--border); border-radius:10px; background:var(--surface2); color:var(--text); font-size:13px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:5px; }
 .cam-btn:hover { border-color:var(--text2); }
 .cam-btn.danger { background:var(--danger); border-color:var(--danger); color:#fff; }
 .cam-toggle-row { display:flex; align-items:center; justify-content:space-between; margin:6px 0; }
 .cam-toggle-label { font-size:13px; color:var(--text); }
-.cam-config-row { display:flex; align-items:center; gap:8px; margin:6px 0; }
+.cam-config-row { width:100%; min-width:0; display:flex; align-items:center; gap:8px; margin:6px 0; flex-wrap:wrap; }
 .cam-config-row label { font-size:12px; color:var(--text2); white-space:nowrap; min-width:50px; }
-.cam-config-row select, .cam-config-row input { background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:4px 6px; font-size:12px; outline:none; }
+.cam-config-row select, .cam-config-row input { min-width:0; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:7px 9px; font-size:12px; outline:none; }
 .cam-config-row input { width:60px; text-align:center; }
-.cam-config-row input[type="time"] { width:auto; min-width:90px; }
-.cam-status { font-size:11px; color:var(--text3); margin-top:8px; text-align:center; }
-.cam-source-tabs { display:flex; gap:0; margin-bottom:8px; border-radius:8px; overflow:hidden; border:1px solid var(--border); }
-.cam-source-tab { flex:1; padding:7px 0; text-align:center; font-size:13px; cursor:pointer; background:var(--surface2); color:var(--text2); border:none; transition:all .2s; }
+.cam-config-row input[type="time"] { width:100%; min-width:0; }
+.cam-status { width:100%; box-sizing:border-box; font-size:11px; color:var(--text2); margin-top:10px; padding:8px 12px; text-align:center; border-radius:10px; background:var(--surface2); }
+.cam-source-tabs { width:100%; min-width:0; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:0; margin-bottom:10px; border-radius:10px; overflow:hidden; border:1px solid var(--border); }
+.cam-source-tab { min-width:0; padding:9px 4px; text-align:center; font-size:12px; line-height:1.25; cursor:pointer; background:var(--surface2); color:var(--text2); border:none; transition:all .2s; overflow-wrap:anywhere; }
 .cam-source-tab.active { background:var(--accent,#ff8359); color:#fff; font-weight:600; }
 .cam-source-tab:not(.active):hover { background:var(--surface3,#eee); }
 .esp32-status-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-left:4px; vertical-align:middle; }
 .esp32-status-dot.online { background:#4caf50; }
 .esp32-status-dot.offline { background:#f44336; }
+.phone-camera-panel { width:100%; min-width:0; display:none; padding:10px; border:1px solid var(--border); border-radius:10px; background:var(--surface2); box-sizing:border-box; }
+.phone-camera-panel.active { display:block; }
+.phone-camera-note { font-size:11px; line-height:1.5; color:var(--text3); margin-top:5px; }
+.phone-arm-btn { flex:1; justify-content:center; padding:9px 14px; font-weight:600; }
+.phone-arm-btn.armed { background:var(--danger); border-color:var(--danger); color:#fff; }
+.cam-settings-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.cam-field { min-width:0; padding:10px; border-radius:10px; background:var(--surface2); }
+.cam-field-label { display:block; margin-bottom:7px; font-size:11px; color:var(--text3); }
+.cam-inline-inputs { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto; align-items:center; gap:6px; font-size:12px; color:var(--text2); }
+.cam-inline-inputs input { width:100%; min-width:0; box-sizing:border-box; }
+.cam-retention-input { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:7px; }
+.cam-retention-input input { width:100%; min-width:0; box-sizing:border-box; }
+.cam-wake-row { display:grid; grid-template-columns:minmax(0,1fr); gap:7px; margin-bottom:10px; }
+.cam-wake-row label { font-size:11px; color:var(--text3); }
+.cam-wake-row select { width:100%; min-width:0; box-sizing:border-box; padding:9px 10px; border:1px solid var(--border); border-radius:10px; background:var(--surface2); color:var(--text); font-size:13px; }
+.cam-smart-note { margin:-2px 0 10px; padding:8px 10px; border-radius:9px; background:rgba(255,131,89,.10); color:var(--text2); font-size:11px; line-height:1.5; }
+.cam-quiet-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; margin-top:10px; }
+.cam-quiet-times { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:center; gap:8px; margin-top:8px; }
+.cam-apply-btn { width:100%; margin-top:12px; background:var(--accent,#ff8359); border-color:var(--accent,#ff8359); color:#fff; font-weight:600; }
+@media (max-width:520px) {
+  .cam-source-card, .cam-sentinel-card { padding:12px; border-radius:12px; }
+  .cam-settings-grid { grid-template-columns:minmax(0,1fr); gap:8px; }
+  .cam-source-tab { font-size:11px; padding:9px 2px; }
+  .cam-config-row label { min-width:auto; }
+  #localCamRow select, #esp32CamRow input { flex:1 1 140px; }
+  .phone-camera-panel .cam-config-row select { flex:1 1 100px; }
+}
 </style>
 </head>
 <body>
@@ -55,10 +89,15 @@
         <button class="cam-zoom-btn" onclick="camZoomStep(0.5)" title="放大">+</button>
       </div>
     </div>
-    <div class="cam-controls">
+    <div class="cam-status" id="camStatus2">未连接</div>
+    <div class="cam-source-card">
+      <div class="cam-section-title">
+        <strong>画面来源<span class="cam-section-kicker">选择哨兵本次巡逻使用的摄像头</span></strong>
+      </div>
       <div class="cam-source-tabs">
         <button class="cam-source-tab active" id="srcTabLocal" onclick="switchSourceTab('local')">💻 本地摄像头</button>
         <button class="cam-source-tab" id="srcTabEsp32" onclick="switchSourceTab('esp32')">📡 ESP32-CAM<span class="esp32-status-dot offline" id="esp32Dot"></span></button>
+        <button class="cam-source-tab" id="srcTabPhone" onclick="switchSourceTab('phone')">📱 手机摄像头</button>
       </div>
       <div id="localCamRow" class="cam-config-row" style="margin:0">
         <label>摄像头</label>
@@ -73,47 +112,88 @@
       <div id="esp32BridgeStatus" style="display:none;font-size:11px;color:var(--text3);margin:2px 0">
         🔗 App 桥接模式（通过手机中转）
       </div>
-      <button class="cam-btn" id="camOpenBtn" onclick="camToggleOpen()">📷 开启摄像头</button>
-      <button class="cam-btn" onclick="camManualScreenshot()">📸 截图</button>
+      <div id="phoneCameraPanel" class="phone-camera-panel">
+        <div class="cam-config-row">
+          <label>镜头</label>
+          <select id="phoneFacing" onchange="phoneCameraSettingChanged()">
+            <option value="back">后置摄像头</option>
+            <option value="front">前置摄像头</option>
+          </select>
+          <label style="margin-left:8px">倍率</label>
+          <select id="phoneZoom" onchange="phoneCameraSettingChanged()"></select>
+        </div>
+        <div class="cam-controls">
+          <button class="cam-btn" onclick="phonePreviewNow()">📐 刷新预览</button>
+          <button class="cam-btn phone-arm-btn" id="phoneArmBtn" onclick="togglePhoneCameraArm()">开始外出监控</button>
+        </div>
+        <div class="phone-camera-note" id="phoneCameraNote">
+          预览只在本页打开时本地实时刷新，不会上传；离开本页或锁屏后会立即释放摄像头，监控事件触发时才拍摄并上传一张。
+        </div>
+      </div>
+      <div class="cam-actions">
+        <button class="cam-btn" id="camOpenBtn" onclick="camToggleOpen()">📷 开启摄像头</button>
+        <button class="cam-btn" onclick="camManualScreenshot()">📸 立即截图</button>
+      </div>
     </div>
-    <div style="margin-top:10px">
-      <div class="cam-toggle-row">
-        <span class="cam-toggle-label">定时截图 + AI分析</span>
+    <div class="cam-sentinel-card">
+      <div class="cam-section-title">
+        <strong>哨兵巡逻<span class="cam-section-kicker">定时观察、分析，并在需要时主动联系你</span></strong>
         <label class="toggle-switch">
           <input type="checkbox" id="camMonitorToggle2" onchange="camToggleMonitor2()">
           <span class="toggle-slider"></span>
         </label>
       </div>
-      <div class="cam-config-row">
-        <label>间隔</label>
-        <input type="number" id="camIntervalMin2" value="10" min="1" step="1" style="width:50px">
-        <span style="font-size:12px;color:var(--text2)">~</span>
-        <input type="number" id="camIntervalMax2" value="20" min="1" step="1" style="width:50px">
-        <span style="font-size:12px;color:var(--text2)">分钟</span>
-        <label style="margin-left:12px">保留</label>
-        <input type="number" id="camMaxKeep2" value="200" min="0" step="10">
-        <span style="font-size:12px;color:var(--text2)">张</span>
-        <button class="cam-btn" onclick="camApplyConfig()" style="margin-left:8px">应用</button>
+      <div class="cam-wake-row">
+        <label for="camWakeMode2">需要联系时唤醒谁</label>
+        <select id="camWakeMode2" onchange="camWakeModeChanged()">
+          <option value="aion" id="camWakeAionOption">主 AI</option>
+          <option value="connor" id="camWakeConnorOption">第二 AI</option>
+          <option value="smart">✨ 智能唤醒</option>
+        </select>
       </div>
-      <div class="cam-toggle-row">
-        <span class="cam-toggle-label">静默时段</span>
+      <div class="cam-smart-note" id="camSmartDispatchNote" style="display:none">
+        哨兵会根据事件、对话和近期互动，决定唤醒一位或两位。
+      </div>
+      <div class="cam-settings-grid">
+        <div class="cam-field">
+          <span class="cam-field-label">巡逻间隔</span>
+          <div class="cam-inline-inputs">
+            <input type="number" id="camIntervalMin2" value="10" min="1" step="1">
+            <span>至</span>
+            <input type="number" id="camIntervalMax2" value="20" min="1" step="1">
+            <span>分钟</span>
+          </div>
+        </div>
+        <div class="cam-field">
+          <span class="cam-field-label">截图保留</span>
+          <div class="cam-retention-input">
+            <input type="number" id="camMaxKeep2" value="200" min="0" step="10">
+            <span>张</span>
+          </div>
+        </div>
+      </div>
+      <div class="cam-quiet-row">
+        <div>
+          <span class="cam-toggle-label">静默时段</span>
+          <span class="cam-section-kicker">这段时间继续巡逻，但不主动唤醒</span>
+        </div>
         <label class="toggle-switch">
           <input type="checkbox" id="quietHoursToggle2" onchange="camApplyConfig()">
           <span class="toggle-slider"></span>
         </label>
       </div>
-      <div class="cam-config-row" id="quietHoursRange2" style="display:none">
-        <label>时段</label>
+      <div class="cam-quiet-times" id="quietHoursRange2" style="display:none">
         <input type="time" id="quietHoursStart2" value="00:00" onchange="camApplyConfig()">
-        <span style="font-size:12px;color:var(--text2)">至</span>
+        <span>至</span>
         <input type="time" id="quietHoursEnd2" value="09:00" onchange="camApplyConfig()">
       </div>
-      <div class="cam-status" id="camStatus2">未连接</div>
+      <button class="cam-btn cam-apply-btn" onclick="camApplyConfig()">保存巡逻设置</button>
     </div>
   </div>
 </div>
 <script src="/static/theme.js?v=theme-20260606"></script>
 <script src="/static/common.js"></script>
+<script src="/static/phone-camera-preview-policy.js?v=20260726"></script>
 <script>
 connectCommonWS();
 
@@ -123,6 +203,18 @@ let _camCropTimer = null;
 let _camBusy = false;
 let countdownTimer = null;
 let _activeSource = "local";
+let _phoneArmed = false;
+let _phoneCapabilities = {};
+let _phonePreviewRequestedAt = 0;
+let _phonePreviewStartedAt = 0;
+let _phonePreviewActive = false;
+let _phonePreviewRestartAt = 0;
+let _phonePreviewFailures = 0;
+let _phoneAppForeground = false;
+let _phoneEventCaptureActive = false;
+let _phoneSubPageVisible = false;
+let _lastServerPreviewAt = 0;
+const PHONE_CAMERA_CONFIG_KEY = "phone_camera_preview_config_v1";
 
 (async function init() {
   await syncCamModalState();
@@ -130,6 +222,46 @@ let _activeSource = "local";
   startCamPreview();
   initCamGestures();
 })();
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    stopPhonePreview();
+    stopCamPreview();
+  } else {
+    startCamPreview();
+    reconcilePhonePreview();
+  }
+});
+window.addEventListener("pagehide", stopPhonePreview);
+window.addEventListener("beforeunload", stopPhonePreview);
+window.onAionAppForegroundChanged = function(active) {
+  _phoneAppForeground = !!active;
+  if (!_phoneAppForeground) {
+    stopPhonePreview();
+    stopCamPreview();
+  } else {
+    startCamPreview();
+    reconcilePhonePreview();
+  }
+};
+window.onAionPhoneCameraCaptureState = function(active) {
+  _phoneEventCaptureActive = !!active;
+  if (_phoneEventCaptureActive) stopPhonePreview();
+  else reconcilePhonePreview();
+  refreshFrame();
+};
+window.onAionSubPageVisibilityChanged = function(visible) {
+  _phoneSubPageVisible = !!visible;
+  document.documentElement.dataset.aionSubPageVisible =
+    _phoneSubPageVisible ? "1" : "0";
+  if (!_phoneSubPageVisible) {
+    stopPhonePreview();
+    stopCamPreview();
+  } else {
+    startCamPreview();
+    reconcilePhonePreview();
+  }
+};
 
 async function syncCamModalState() {
   try {
@@ -141,6 +273,10 @@ async function syncCamModalState() {
     $("camIntervalMin2").value = status.auto_interval_min;
     $("camIntervalMax2").value = status.auto_interval_max;
     $("camMaxKeep2").value = status.max_screenshots;
+    $("camWakeAionOption").textContent = status.ai_name || "主 AI";
+    $("camWakeConnorOption").textContent = status.connor_name || "第二 AI";
+    $("camWakeMode2").value = status.wake_mode || "aion";
+    updateSmartDispatchNote();
     $("quietHoursToggle2").checked = status.quiet_hours_enabled || false;
     $("quietHoursStart2").value = status.quiet_hours_start || "00:00";
     $("quietHoursEnd2").value = status.quiet_hours_end || "09:00";
@@ -149,8 +285,13 @@ async function syncCamModalState() {
     $("camOpenBtn").className = status.camera_open ? "cam-btn danger" : "cam-btn";
     const bridgeEl = $("esp32BridgeStatus");
     if (bridgeEl) bridgeEl.style.display = (status.esp32_bridge_active && _activeSource === "esp32") ? "" : "none";
+    updatePhoneArmState(status.phone_camera || {});
     updateCamStatusText(status);
     if (_activeSource === "local") await camRefreshList2();
+    if (_activeSource === "phone") {
+      loadPhoneCameraCapabilities(status.phone_camera || {});
+      phonePreviewNow();
+    }
     esp32CheckOnline();
     startCountdown();
   } catch(e) {
@@ -175,11 +316,17 @@ function startCountdown() { stopCountdown(); updateCountdown(); countdownTimer =
 function stopCountdown() { if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; } }
 async function updateCountdown() { try { const s = await api("GET","/api/cam/status"); updateCamStatusText(s); } catch(e){} }
 
-function startCamPreview() { stopCamPreview(); refreshFrame(); camPreviewTimer = setInterval(refreshFrame, 1000); }
+function startCamPreview() { stopCamPreview(); refreshFrame(); camPreviewTimer = setInterval(refreshFrame, 150); }
 function stopCamPreview() { if (camPreviewTimer) { clearInterval(camPreviewTimer); camPreviewTimer = null; } }
 
 function refreshFrame() {
   const img = $("camPreviewImg"), noSig = $("camNoSignal"), overlay = $("camZoomOverlay");
+  if (_activeSource === "phone") {
+    refreshPhonePreview(img, noSig, overlay);
+    return;
+  }
+  if (Date.now() - _lastServerPreviewAt < 900) return;
+  _lastServerPreviewAt = Date.now();
   const newImg = new Image();
   newImg.onload = () => { img.src = newImg.src; img.style.display = "block"; noSig.style.display = "none"; if(overlay) overlay.style.display = "flex"; };
   newImg.onerror = () => { img.style.display = "none"; noSig.style.display = ""; noSig.textContent = "未开启摄像头"; if(overlay) overlay.style.display = "none"; };
@@ -231,6 +378,10 @@ async function camToggleOpen() {
 }
 
 async function camManualScreenshot() {
+  if (_activeSource === "phone") {
+    showToast("手机模式只在三类监控事件触发时上传照片");
+    return;
+  }
   const res = await api("POST", "/api/cam/screenshot");
   if (res.error) { alert(res.error); return; }
   showToast("📸 截图已保存");
@@ -253,17 +404,293 @@ async function camApplyConfig() {
   $("quietHoursRange2").style.display = quietEnabled ? "" : "none";
   await api("PUT", "/api/cam/config", {
     auto_interval_min: intervalMin, auto_interval_max: intervalMax, max_screenshots: maxKeep,
-    quiet_hours_enabled: quietEnabled, quiet_hours_start: $("quietHoursStart2").value || "00:00", quiet_hours_end: $("quietHoursEnd2").value || "09:00"
+    quiet_hours_enabled: quietEnabled, quiet_hours_start: $("quietHoursStart2").value || "00:00", quiet_hours_end: $("quietHoursEnd2").value || "09:00",
+    wake_mode: $("camWakeMode2").value
   });
+}
+
+function updateSmartDispatchNote() {
+  $("camSmartDispatchNote").style.display =
+    $("camWakeMode2").value === "smart" ? "" : "none";
+}
+
+async function camWakeModeChanged() {
+  updateSmartDispatchNote();
+  await camApplyConfig();
+}
+
+// ── 手机摄像头：本页低频预览，锁屏后仅事件触发单张拍摄 ─────────────
+function phoneBridge() {
+  return window.AionPhoneCamera || null;
+}
+
+function loadSavedPhoneCameraConfig() {
+  try {
+    const raw = window.AppSharedData
+      ? window.AppSharedData.get(PHONE_CAMERA_CONFIG_KEY)
+      : localStorage.getItem(PHONE_CAMERA_CONFIG_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch(e) {
+    return {};
+  }
+}
+
+function savePhoneCameraConfig() {
+  const value = JSON.stringify({
+    facing: $("phoneFacing").value,
+    zoom: parseFloat($("phoneZoom").value) || 1
+  });
+  try {
+    if (window.AppSharedData) window.AppSharedData.put(PHONE_CAMERA_CONFIG_KEY, value);
+    else localStorage.setItem(PHONE_CAMERA_CONFIG_KEY, value);
+  } catch(e) {}
+}
+
+function updatePhoneArmState(status) {
+  _phoneArmed = !!status.armed;
+  const btn = $("phoneArmBtn");
+  if (!btn) return;
+  btn.textContent = _phoneArmed ? "停止外出监控" : "开始外出监控";
+  btn.className = "cam-btn phone-arm-btn" + (_phoneArmed ? " armed" : "");
+  $("phoneCameraNote").textContent = _phoneArmed
+    ? "外出监控已开始。本页仍可本地预览和调整；离开本页或锁屏后释放预览，仅在三类监控事件触发时拍摄并上传一张。"
+    : "预览只在本页打开时本地显示，不上传服务器；离开本页会立即释放摄像头。";
+}
+
+function loadPhoneCameraCapabilities(serverStatus = {}) {
+  let capabilities = serverStatus.capabilities || {};
+  const bridge = phoneBridge();
+  if (bridge) {
+    try { capabilities = JSON.parse(bridge.getCapabilities() || "{}"); } catch(e) {}
+  }
+  _phoneCapabilities = capabilities || {};
+  const chosen = PhoneCameraPreviewPolicy.chooseConfig(
+    _phoneCapabilities,
+    loadSavedPhoneCameraConfig(),
+    serverStatus
+  );
+  $("phoneFacing").value = chosen.facing;
+  rebuildPhoneZoomOptions(chosen.zoom);
+  savePhoneCameraConfig();
+  if (!bridge) {
+    $("phoneCameraNote").textContent = "请在 Android App 内打开这个页面，浏览器无法调用手机锁屏摄像头。";
+  }
+}
+
+function rebuildPhoneZoomOptions(preferred) {
+  const capability = _phoneCapabilities[$("phoneFacing").value] || {};
+  let presets = Array.isArray(capability.presets) ? capability.presets.slice() : [1, 2];
+  const min = Number(capability.minZoom || 1);
+  const max = Number(capability.maxZoom || Math.max(2, min));
+  if (!presets.length) presets = [min, 1, 2].filter(v => v >= min && v <= max);
+  const requested = Number(preferred || $("phoneZoom").value || presets[0] || 1);
+  const selected = presets.reduce((best, value) =>
+    Math.abs(Number(value)-requested) < Math.abs(Number(best)-requested) ? value : best,
+    presets[0] || 1);
+  $("phoneZoom").innerHTML = presets.map(value => {
+    const zoom = Number(value);
+    return `<option value="${zoom}" ${Math.abs(zoom-selected)<0.01?"selected":""}>${zoom.toFixed(1)}×</option>`;
+  }).join("");
+}
+
+function phoneCameraSettingChanged() {
+  rebuildPhoneZoomOptions();
+  savePhoneCameraConfig();
+  stopPhonePreview();
+  const bridge = phoneBridge();
+  if (_phoneArmed && bridge) {
+    const facing = $("phoneFacing").value;
+    const zoom = parseFloat($("phoneZoom").value) || 1;
+    if (bridge.arm(facing, zoom)) {
+      showToast("镜头设置已同步，外出监控保持开启");
+    }
+  }
+  _phonePreviewRequestedAt = 0;
+  reconcilePhonePreview();
+}
+
+function phonePreviewDemanded() {
+  return PhoneCameraPreviewPolicy.shouldPreview({
+    pageVisible: !document.hidden && _phoneSubPageVisible,
+    appForeground: _phoneAppForeground,
+    source: _activeSource,
+    eventCaptureActive: _phoneEventCaptureActive
+  });
+}
+
+function stopPhonePreview() {
+  const bridge = phoneBridge();
+  if (bridge && typeof bridge.setPreviewVisible === "function") {
+    try { bridge.setPreviewVisible(false); } catch(e) {}
+  }
+  if (!_phonePreviewActive && !_phonePreviewStartedAt && !_phonePreviewRequestedAt) return;
+  if (window.AionCamera) {
+    try { window.AionCamera.stop(); } catch(e) {}
+  }
+  if (bridge && typeof bridge.stopPreview === "function") {
+    try { bridge.stopPreview(); } catch(e) {}
+  }
+  _phonePreviewStartedAt = 0;
+  _phonePreviewRequestedAt = 0;
+  _phonePreviewActive = false;
+}
+
+function reconcilePhonePreview() {
+  if (!phonePreviewDemanded()) {
+    stopPhonePreview();
+    return;
+  }
+  const bridge = phoneBridge();
+  if (bridge && typeof bridge.setPreviewVisible === "function") {
+    try { bridge.setPreviewVisible(true); } catch(e) {}
+  }
+  phonePreviewNow();
+}
+
+function schedulePhonePreviewRestart() {
+  const delays = [250, 500, 1000, 2000, 3000];
+  const index = Math.min(_phonePreviewFailures, delays.length - 1);
+  _phonePreviewRestartAt = Date.now() + delays[index];
+  _phonePreviewFailures++;
+}
+
+function phonePreviewNow() {
+  if (!phonePreviewDemanded()) return;
+  const bridge = phoneBridge();
+  if (!bridge) return;
+  const now = Date.now();
+  if (now < _phonePreviewRestartAt) return;
+  const facing = $("phoneFacing").value;
+  const zoom = parseFloat($("phoneZoom").value) || 1;
+  const smoothPreview = window.AionCamera
+    && typeof window.AionCamera.setZoom === "function";
+  try {
+    if (zoom >= 1 && smoothPreview) {
+      const legacyFacing = facing === "front" ? "user" : "environment";
+      const running = window.AionCamera.isRunning();
+      const stale = running && PhoneCameraPreviewPolicy.isStale({
+        running,
+        lastFrameAt: Number(window.AionCamera.getLastFrameAt?.() || 0),
+        startedAt: _phonePreviewStartedAt,
+        now,
+        graceMs: 2500
+      });
+      if (stale) {
+        window.AionCamera.stop();
+        schedulePhonePreviewRestart();
+        $("camNoSignal").textContent = "摄像头画面已中断，正在自动恢复…";
+        return;
+      }
+      if (!window.AionCamera.isRunning()
+          || window.AionCamera.getFacing() !== legacyFacing) {
+        if (!window.AionCamera.start(legacyFacing)) {
+          schedulePhonePreviewRestart();
+          $("camNoSignal").textContent = "摄像头正被其他应用使用，返回后会自动恢复";
+          return;
+        }
+        _phonePreviewStartedAt = now;
+      }
+      window.AionCamera.setZoom(zoom);
+      _phonePreviewActive = true;
+    } else {
+      if (window.AionCamera && window.AionCamera.isRunning()) window.AionCamera.stop();
+      if (now - _phonePreviewRequestedAt < 1200) return;
+      if (!bridge.requestPreview(facing, zoom)) {
+        schedulePhonePreviewRestart();
+        return;
+      }
+      _phonePreviewActive = true;
+    }
+    _phonePreviewRequestedAt = now;
+    $("camNoSignal").textContent = "正在获取手机预览…";
+  } catch(e) {
+    schedulePhonePreviewRestart();
+    $("camNoSignal").textContent = "手机预览启动失败";
+  }
+}
+
+function refreshPhonePreview(img, noSig, overlay) {
+  overlay.style.display = "none";
+  if (!phonePreviewDemanded()) {
+    img.style.display = "none";
+    noSig.style.display = "";
+    noSig.textContent = _phoneEventCaptureActive
+      ? "正在为监控事件拍照…"
+      : "手机预览已暂停";
+    return;
+  }
+  const bridge = phoneBridge();
+  if (!bridge) {
+    img.style.display = "none";
+    noSig.style.display = "";
+    noSig.textContent = "请在 Android App 内预览";
+    return;
+  }
+  try {
+    phonePreviewNow();
+    const zoom = parseFloat($("phoneZoom").value) || 1;
+    const smoothPreview = window.AionCamera
+      && typeof window.AionCamera.setZoom === "function";
+    const frame = zoom >= 1 && smoothPreview
+      ? window.AionCamera.getFrame()
+      : bridge.getPreviewFrame();
+    if (frame) {
+      img.src = "data:image/jpeg;base64," + frame;
+      img.style.display = "block";
+      noSig.style.display = "none";
+      _phonePreviewFailures = 0;
+      _phonePreviewRestartAt = 0;
+    } else {
+      img.style.display = "none";
+      noSig.style.display = "";
+    }
+    if ((!smoothPreview || zoom < 1)
+        && Date.now() - _phonePreviewRequestedAt > 1200) phonePreviewNow();
+  } catch(e) {
+    img.style.display = "none";
+    noSig.style.display = "";
+    noSig.textContent = "读取手机预览失败";
+  }
+}
+
+async function togglePhoneCameraArm() {
+  const bridge = phoneBridge();
+  if (!bridge) {
+    showToast("请在 Android App 内开启外出监控");
+    return;
+  }
+  if (_phoneArmed) {
+    bridge.disarm();
+    updatePhoneArmState({ armed:false });
+    showToast("外出监控已停止");
+    setTimeout(syncCamModalState, 600);
+    return;
+  }
+  const facing = $("phoneFacing").value;
+  const zoom = parseFloat($("phoneZoom").value) || 1;
+  savePhoneCameraConfig();
+  if (!bridge.arm(facing, zoom)) {
+    showToast("没有摄像头权限，请先在系统设置中允许");
+    return;
+  }
+  updatePhoneArmState({ armed:true });
+  showToast("外出监控已开始，本页可继续预览调整");
+  reconcilePhonePreview();
+  setTimeout(syncCamModalState, 900);
 }
 
 // ── ESP32-CAM 画面源切换 ───────────────────────────
 function updateSourceTabs(source) {
+  if (source !== "phone") stopPhonePreview();
   _activeSource = source;
   $("srcTabLocal").className = "cam-source-tab" + (source === "local" ? " active" : "");
   $("srcTabEsp32").className = "cam-source-tab" + (source === "esp32" ? " active" : "");
+  $("srcTabPhone").className = "cam-source-tab" + (source === "phone" ? " active" : "");
   $("localCamRow").style.display = source === "local" ? "" : "none";
   $("esp32CamRow").style.display = source === "esp32" ? "" : "none";
+  $("phoneCameraPanel").className = "phone-camera-panel" + (source === "phone" ? " active" : "");
+  $("camOpenBtn").style.display = source === "phone" ? "none" : "";
+  if (source === "phone") reconcilePhonePreview();
 }
 
 async function switchSourceTab(source) {
@@ -279,6 +706,10 @@ async function switchSourceTab(source) {
     }
     const res = await api("POST", "/api/cam/source", payload);
     if (!res.ok) showToast(res.message || "切换失败");
+    if (source === "phone") {
+      loadPhoneCameraCapabilities(res.phone_camera || {});
+      phonePreviewNow();
+    }
     await syncCamModalState();
   } catch(e) {
     showToast("切换失败");

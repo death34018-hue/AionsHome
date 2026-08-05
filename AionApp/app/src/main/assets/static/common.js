@@ -119,8 +119,11 @@ function connectCommonWS(extraHandler) {
     }
     // 监控提示音 — 全局
     if (msg.type === "monitor_alert") {
-      const audio = new Audio('/public/AionMonitoralart.mp3');
-      audio.play().catch(() => {});
+      const data = msg.data || {};
+      if (!data.phone_camera_native_capture) {
+        const audio = new Audio('/public/AionMonitoralart.mp3');
+        audio.play().catch(() => {});
+      }
       sendSystemNotification('📷 监控提醒', msg.data?.content || '哨兵监控即将分析');
       return;
     }

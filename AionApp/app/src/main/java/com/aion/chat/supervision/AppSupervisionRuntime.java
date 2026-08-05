@@ -17,9 +17,12 @@ import java.util.HashSet;
 import java.util.Set;
 
 public final class AppSupervisionRuntime {
+    public static final String DEVICE_EMERGENCY_TARGET_ID = "__device__";
     private static final Set<String> PROTECTED_PACKAGES = new HashSet<>(Arrays.asList(
             "com.aion.chat", "com.android.systemui", "com.android.settings",
-            "com.android.phone", "com.android.dialer", "com.google.android.dialer"));
+            "com.android.phone", "com.android.dialer", "com.google.android.dialer",
+            "com.android.server.telecom", "com.android.incallui",
+            "com.google.android.incallui"));
     private static final long LOCK_GUARD_INTERVAL_MS = 2_000L;
     public interface Scheduler {
         long elapsedRealtime();
@@ -49,11 +52,13 @@ public final class AppSupervisionRuntime {
 
     private final Context context;
     private final AppSupervisionEngine engine;
+    private final DeviceLockState deviceLockState = new DeviceLockState();
     private final AppSupervisionStore store;
     private final ForegroundAppDetector detector;
     private final AccessibilityRecoveryController recovery;
     private final AppSupervisionOverlay overlay;
     private final Scheduler scheduler;
+    private final CheckpointDeadlineScheduler checkpointDeadlineScheduler;
     private final String bootId;
     private final EmergencyUnlockGate emergencyGate;
 
@@ -63,10 +68,13 @@ public final class AppSupervisionRuntime {
     private boolean persistenceScheduled;
     private String currentForegroundPackage = "";
     private String scheduledTemporaryUnlockCommandId = "";
+    private String scheduledDeviceStateKey = "";
     private RecoveryState lastLoggedRecoveryState;
     private SyncListener syncListener;
-    private long calibrationGeneration;
     private String activeLockGuardKey = "";
+    private boolean aionsHomeActivityResumed;
+    private boolean aionsHomeForeground;
+    private long foregroundGeneration;
 
     AppSupervisionRuntime(Context context, AppSupervisionEngine engine,
             AppSupervisionStore store, ForegroundAppDetector detector,
@@ -83,10 +91,18 @@ public final class AppSupervisionRuntime {
         this.recovery = recovery;
         this.overlay = overlay;
         this.scheduler = scheduler;
+        this.checkpointDeadlineScheduler = context == null
+                ? CheckpointDeadlineScheduler.forTests(scheduler)
+                : CheckpointDeadlineScheduler.production();
         this.bootId = context == null ? "test-boot" : readBootId(context);
         this.emergencyGate = new EmergencyUnlockGate(
                 new EmergencyUnlockGate.LockController() {
                     @Override public boolean isLocked(String groupId) {
+                        if (DEVICE_EMERGENCY_TARGET_ID.equals(groupId)) {
+                            return AppSupervisionRuntime.this.deviceLockState.effectiveState(
+                                    AppSupervisionRuntime.this.scheduler.elapsedRealtime())
+                                    == EffectiveState.LOCKED;
+                        }
                         return AppSupervisionRuntime.this.engine.effectiveState(
                                 groupId, AppSupervisionRuntime.this.scheduler.elapsedRealtime())
                                 == EffectiveState.LOCKED;
@@ -94,10 +110,22 @@ public final class AppSupervisionRuntime {
 
                     @Override public void removeLock(String groupId) {
                         SupervisionTime now = AppSupervisionRuntime.this.now();
-                        AppSupervisionRuntime.this.engine.removeLock(
-                                groupId,
-                                "emergency-" + now.getElapsedMs(),
-                                now);
+                        if (DEVICE_EMERGENCY_TARGET_ID.equals(groupId)) {
+                            AppSupervisionRuntime.this.deviceLockState.removeLock();
+                            AppGroup foreground =
+                                    AppSupervisionRuntime.this.engine.groupForPackage(
+                                            AppSupervisionRuntime.this
+                                                    .currentForegroundPackage);
+                            AppSupervisionRuntime.this.evaluateOverlay(
+                                    AppSupervisionRuntime.this.currentForegroundPackage,
+                                    foreground,
+                                    now);
+                        } else {
+                            AppSupervisionRuntime.this.engine.removeLock(
+                                    groupId,
+                                    "emergency-" + now.getElapsedMs(),
+                                    now);
+                        }
                         AppSupervisionRuntime.this.persistRuntime();
                     }
                 },
@@ -171,10 +199,19 @@ public final class AppSupervisionRuntime {
         }
     }
 
-    public void onPackageForeground(String packageName) {
+    public synchronized void onPackageForeground(String packageName) {
         if (packageName == null || packageName.trim().isEmpty()) {
             return;
         }
+        String ownPackage = context == null ? "com.aion.chat" : context.getPackageName();
+        if (packageName.equals(ownPackage)) {
+            aionsHomeForeground = true;
+        } else if (aionsHomeActivityResumed) {
+            return;
+        } else {
+            aionsHomeForeground = false;
+        }
+        foregroundGeneration++;
         SupervisionTime now = now();
         AppGroup previousGroup = engine.groupForPackage(currentForegroundPackage);
         if (!packageName.equals(currentForegroundPackage)) {
@@ -187,11 +224,11 @@ public final class AppSupervisionRuntime {
         String previousGroupId = monitoredGroupId(previousGroup);
         String nextGroupId = monitoredGroupId(group);
         if (!sameGroup(previousGroupId, nextGroupId)) {
-            calibrationGeneration++;
+            checkpointDeadlineScheduler.cancel();
             if (previousGroupId != null) notifySync("exit", previousGroupId, 0L);
             if (nextGroupId != null) {
                 notifySync("enter", nextGroupId, 0L);
-                scheduleCalibration(nextGroupId, calibrationGeneration);
+                scheduleCheckpointDeadline(nextGroupId);
             }
         }
         recovery.onForegroundPackage(packageName, group != null && group.isMonitored());
@@ -204,14 +241,28 @@ public final class AppSupervisionRuntime {
         evaluateOverlay(packageName, group, now);
     }
 
-    public void onScreenOff() {
+    public synchronized void onAionsHomeForegroundChanged(boolean resumed) {
+        aionsHomeActivityResumed = resumed;
+        foregroundGeneration++;
+        if (resumed) {
+            aionsHomeForeground = true;
+            onPackageForeground(
+                    context == null ? "com.aion.chat" : context.getPackageName());
+        }
+    }
+
+    public synchronized void onScreenOff() {
         screenReady = false;
         AppGroup closingGroup = engine.groupForPackage(currentForegroundPackage);
         String closingGroupId = monitoredGroupId(closingGroup);
         currentForegroundPackage = "";
-        calibrationGeneration++;
+        checkpointDeadlineScheduler.cancel();
         activeLockGuardKey = "";
         scheduledTemporaryUnlockCommandId = "";
+        scheduledDeviceStateKey = "";
+        aionsHomeActivityResumed = false;
+        aionsHomeForeground = false;
+        foregroundGeneration++;
         SupervisionTime now = now();
         List<EngineEvent> events = engine.onScreenOff(now.getElapsedMs(), now.getWallMs());
         detector.stop();
@@ -227,11 +278,11 @@ public final class AppSupervisionRuntime {
         if (closingGroupId != null) notifySync("screen_off", closingGroupId, 0L);
     }
 
-    public void onScreenOn() {
+    public synchronized void onScreenOn() {
         screenReady = false;
     }
 
-    public void onUserPresent() {
+    public synchronized void onUserPresent() {
         screenReady = true;
         recovery.onUserPresent();
         settleIdleRounds();
@@ -244,8 +295,15 @@ public final class AppSupervisionRuntime {
         }
     }
 
-    public void reconcileForegroundOnce() {
-        if (screenReady) detector.pollOnce(this::onPackageForeground);
+    public synchronized void reconcileForegroundOnce() {
+        if (!screenReady) return;
+        long generation = foregroundGeneration;
+        detector.pollOnce(packageName -> {
+            synchronized (AppSupervisionRuntime.this) {
+                if (generation != foregroundGeneration) return;
+            }
+            onPackageForeground(packageName);
+        });
     }
 
     public boolean isScreenReady() {
@@ -287,6 +345,12 @@ public final class AppSupervisionRuntime {
             groups.put(item);
         }
         out.put("groups", groups);
+        DeviceLockState.Snapshot device = deviceSnapshot();
+        JSONObject deviceJson = new JSONObject();
+        deviceJson.put("effectiveState", device.getEffectiveState().name());
+        deviceJson.put("lock", directiveJson(device.getLock()));
+        deviceJson.put("temporaryUnlock", directiveJson(device.getTemporaryUnlock()));
+        out.put("deviceLock", deviceJson);
         return out;
     }
 
@@ -305,6 +369,10 @@ public final class AppSupervisionRuntime {
         return emergencyGate;
     }
 
+    public synchronized DeviceLockState.Snapshot deviceSnapshot() {
+        return deviceLockState.snapshot(scheduler.elapsedRealtime());
+    }
+
     public synchronized void upsertGroup(AppGroup group) {
         for (String packageName : group.getPackageNames()) {
             if (isProtectedPackage(packageName)) {
@@ -313,6 +381,7 @@ public final class AppSupervisionRuntime {
         }
         engine.upsertGroup(group);
         persistConfig();
+        rescheduleCheckpointDeadline();
         if (engine.isFeatureEnabled()) notifySync("config", group.getGroupId(), 0L);
     }
 
@@ -320,6 +389,7 @@ public final class AppSupervisionRuntime {
         engine.removeGroup(groupId, scheduler.elapsedRealtime());
         persistConfig();
         persistRuntime();
+        rescheduleCheckpointDeadline();
         if (engine.isFeatureEnabled()) notifySync("config", groupId, 0L);
     }
 
@@ -331,13 +401,14 @@ public final class AppSupervisionRuntime {
         engine.setFeatureEnabled(enabled);
         persistConfig();
         persistRuntime();
-        calibrationGeneration++;
+        rescheduleCheckpointDeadline();
         if (enabled) notifySync("config", "", 0L);
     }
 
     public synchronized void clearRound(String groupId) {
         engine.clearRound(groupId);
         persistRuntime();
+        rescheduleCheckpointDeadline();
         if (engine.isFeatureEnabled()) notifySync("clear", groupId, 0L);
     }
 
@@ -350,6 +421,20 @@ public final class AppSupervisionRuntime {
         persistRuntime();
     }
 
+    public synchronized void checkpointWatchdog() {
+        if (!screenReady || !engine.isFeatureEnabled()) return;
+        AppGroup foreground = engine.groupForPackage(currentForegroundPackage);
+        String groupId = monitoredGroupId(foreground);
+        if (groupId == null) return;
+        Long delayMs = engine.nextCheckpointDelayMs(
+                groupId, scheduler.elapsedRealtime());
+        if (delayMs != null && delayMs == 0L) {
+            onCheckpointDeadline(groupId);
+        } else {
+            rescheduleCheckpointDeadline();
+        }
+    }
+
     public synchronized void setRoleLabels(Map<String, String> labels) {
         overlay.setRoleLabels(labels);
     }
@@ -358,6 +443,7 @@ public final class AppSupervisionRuntime {
             String message, String commandId) {
         engine.setLock(groupId, minutes, roleId, message, commandId, now());
         persistRuntime();
+        rescheduleCheckpointDeadline();
         if (engine.isFeatureEnabled()) notifySync("lock_change", groupId, 0L);
     }
 
@@ -384,39 +470,76 @@ public final class AppSupervisionRuntime {
         if (!engine.isFeatureEnabled()) {
             return new CommandResult(false, "feature_disabled");
         }
-        AppGroup group = engine.group(groupId);
-        if (group == null) {
-            return new CommandResult(false, "unknown_group");
-        }
         if (commandId == null || commandId.trim().isEmpty()) {
             return new CommandResult(false, "missing_command_id");
         }
+        boolean deviceAction = "device_lock".equals(action)
+                || "device_temp_unlock".equals(action)
+                || "device_unlock".equals(action);
+        String normalizedGroupId = groupId == null ? "" : groupId.trim();
+        if (deviceAction && !normalizedGroupId.isEmpty()) {
+            return new CommandResult(false, "device_group_must_be_empty");
+        }
+        AppGroup group = deviceAction ? null : engine.group(normalizedGroupId);
+        if (!deviceAction && group == null) {
+            return new CommandResult(false, "unknown_group");
+        }
         SupervisionTime commandTime = now();
-        AppGroupState.Snapshot before = engine.snapshot(groupId, commandTime.getElapsedMs());
         try {
-            if ("lock".equals(action)) {
+            if ("device_lock".equals(action)) {
+                DeviceLockState.Snapshot before =
+                        deviceLockState.snapshot(commandTime.getElapsedMs());
                 if (before.getLock() != null
                         && commandId.equals(before.getLock().getCommandId())) {
                     return new CommandResult(true, "duplicate");
                 }
-                engine.setLock(groupId, clampMinutes(minutes), roleId, message,
-                        commandId, commandTime);
-            } else if ("temp_unlock".equals(action)) {
+                deviceLockState.setLock(TimedDirective.create(
+                        commandTime.getElapsedMs(), commandTime.getWallMs(),
+                        clampMinutes(minutes), roleId, message, commandId));
+            } else if ("device_temp_unlock".equals(action)) {
+                DeviceLockState.Snapshot before =
+                        deviceLockState.snapshot(commandTime.getElapsedMs());
                 if (before.getTemporaryUnlock() != null
                         && commandId.equals(before.getTemporaryUnlock().getCommandId())) {
                     return new CommandResult(true, "duplicate");
                 }
-                engine.setTemporaryUnlock(groupId, clampMinutes(minutes), roleId,
+                deviceLockState.setTemporaryUnlock(TimedDirective.create(
+                        commandTime.getElapsedMs(), commandTime.getWallMs(),
+                        clampMinutes(minutes), roleId, message, commandId));
+            } else if ("device_unlock".equals(action)) {
+                deviceLockState.removeLock();
+            } else if ("lock".equals(action)) {
+                AppGroupState.Snapshot before =
+                        engine.snapshot(normalizedGroupId, commandTime.getElapsedMs());
+                if (before.getLock() != null
+                        && commandId.equals(before.getLock().getCommandId())) {
+                    return new CommandResult(true, "duplicate");
+                }
+                engine.setLock(normalizedGroupId, clampMinutes(minutes), roleId, message,
+                        commandId, commandTime);
+            } else if ("temp_unlock".equals(action)) {
+                AppGroupState.Snapshot before =
+                        engine.snapshot(normalizedGroupId, commandTime.getElapsedMs());
+                if (before.getTemporaryUnlock() != null
+                        && commandId.equals(before.getTemporaryUnlock().getCommandId())) {
+                    return new CommandResult(true, "duplicate");
+                }
+                engine.setTemporaryUnlock(normalizedGroupId, clampMinutes(minutes), roleId,
                         message, commandId, commandTime);
             } else if ("unlock".equals(action)) {
-                engine.removeLock(groupId, commandId, commandTime);
+                engine.removeLock(normalizedGroupId, commandId, commandTime);
             } else {
                 return new CommandResult(false, "unknown_action");
             }
             persistRuntime();
-            notifySync("lock_change", groupId, 0L);
+            rescheduleCheckpointDeadline();
+            notifySync("lock_change", normalizedGroupId, 0L);
             AppGroup foreground = engine.groupForPackage(currentForegroundPackage);
-            if (foreground != null && groupId.equals(foreground.getGroupId())) {
+            if (deviceAction) {
+                foregroundGeneration++;
+                evaluateOverlay(currentForegroundPackage, foreground, commandTime);
+            } else if (foreground != null
+                    && normalizedGroupId.equals(foreground.getGroupId())) {
                 evaluateOverlay(currentForegroundPackage, foreground, commandTime);
             }
             return new CommandResult(true, "");
@@ -506,27 +629,72 @@ public final class AppSupervisionRuntime {
     }
 
     private void evaluateOverlay(String packageName, AppGroup group, SupervisionTime now) {
-        if (group == null) {
+        AppGroupState.Snapshot appSnapshot = group == null ? null : engine.snapshot(
+                group.getGroupId(), now.getElapsedMs());
+        EffectiveState appState = group == null ? EffectiveState.NORMAL
+                : engine.effectiveState(group.getGroupId(), now.getElapsedMs());
+        DeviceLockState.Snapshot deviceSnapshot =
+                deviceLockState.snapshot(now.getElapsedMs());
+        SupervisionOverlayDecision.Mode mode = SupervisionOverlayDecision.decide(
+                SupervisionOverlayDecision.Input.builder(
+                                context == null ? "com.aion.chat" : context.getPackageName())
+                        .foregroundPackage(packageName)
+                        .aionsHomeForeground(aionsHomeForeground)
+                        .deviceState(deviceSnapshot.getEffectiveState())
+                        .appState(appState)
+                        .build());
+        scheduleDeviceStateTransition(deviceSnapshot, now);
+        if (mode == SupervisionOverlayDecision.Mode.DEVICE_LOCK) {
             activeLockGuardKey = "";
-            overlay.evaluate(packageName, EffectiveState.NORMAL, null, null, now);
-            return;
-        }
-        AppGroupState.Snapshot snapshot = engine.snapshot(
-                group.getGroupId(), now.getElapsedMs());
-        EffectiveState effectiveState = engine.effectiveState(
-                group.getGroupId(), now.getElapsedMs());
-        overlay.evaluate(packageName, effectiveState, group, snapshot, now);
-        if (effectiveState == EffectiveState.LOCKED && snapshot.getLock() != null
-                && screenReady) {
-            startLockGuard(packageName, group, snapshot.getLock());
+            overlay.evaluateDevice(deviceSnapshot.getLock(), now);
+        } else if (mode == SupervisionOverlayDecision.Mode.APP_LOCK) {
+            overlay.evaluate(packageName, appState, group, appSnapshot, now);
+        } else if (appState == EffectiveState.TEMPORARILY_UNLOCKED
+                && group != null && appSnapshot != null) {
+            overlay.evaluate(packageName, appState, group, appSnapshot, now);
         } else {
             activeLockGuardKey = "";
+            overlay.hide();
         }
-        if (effectiveState == EffectiveState.TEMPORARILY_UNLOCKED
-                && snapshot.getTemporaryUnlock() != null) {
+        if (mode == SupervisionOverlayDecision.Mode.APP_LOCK
+                && appSnapshot != null && appSnapshot.getLock() != null
+                && screenReady) {
+            startLockGuard(packageName, group, appSnapshot.getLock());
+        }
+        if (appState == EffectiveState.TEMPORARILY_UNLOCKED
+                && appSnapshot != null && appSnapshot.getTemporaryUnlock() != null) {
             scheduleTemporaryUnlockExpiry(
-                    packageName, group.getGroupId(), snapshot.getTemporaryUnlock(), now);
+                    packageName, group.getGroupId(),
+                    appSnapshot.getTemporaryUnlock(), now);
         }
+    }
+
+    private void scheduleDeviceStateTransition(
+            DeviceLockState.Snapshot snapshot, SupervisionTime now) {
+        TimedDirective next = snapshot.getEffectiveState()
+                == EffectiveState.TEMPORARILY_UNLOCKED
+                ? snapshot.getTemporaryUnlock()
+                : snapshot.getEffectiveState() == EffectiveState.LOCKED
+                        ? snapshot.getLock() : null;
+        if (next == null) {
+            scheduledDeviceStateKey = "";
+            return;
+        }
+        String key = snapshot.getEffectiveState().name() + "|" + next.getCommandId()
+                + "|" + next.getDeadlineElapsedMs();
+        if (key.equals(scheduledDeviceStateKey)) return;
+        scheduledDeviceStateKey = key;
+        long delayMs = Math.max(0L,
+                next.getDeadlineElapsedMs() - now.getElapsedMs());
+        scheduler.schedule(() -> {
+            synchronized (AppSupervisionRuntime.this) {
+                if (!key.equals(scheduledDeviceStateKey)) return;
+                scheduledDeviceStateKey = "";
+                AppGroup foreground =
+                        engine.groupForPackage(currentForegroundPackage);
+                evaluateOverlay(currentForegroundPackage, foreground, now());
+            }
+        }, delayMs);
     }
 
     private void startLockGuard(String packageName, AppGroup group,
@@ -608,21 +776,38 @@ public final class AppSupervisionRuntime {
         }, 60_000L);
     }
 
-    private void scheduleCalibration(String groupId, long generation) {
-        scheduler.schedule(() -> {
-            if (!screenReady || generation != calibrationGeneration
-                    || !engine.isFeatureEnabled()) return;
-            AppGroup foreground = engine.groupForPackage(currentForegroundPackage);
-            if (foreground == null || !foreground.isMonitored()
-                    || !groupId.equals(foreground.getGroupId())) return;
-            SupervisionTime tick = now();
-            List<EngineEvent> events = engine.onUsageTick(
-                    tick.getElapsedMs(), tick.getWallMs());
-            if (!events.isEmpty()) recordEngineEvents(events);
-            persistRuntime();
-            notifySync("calibration", groupId, 0L);
-            scheduleCalibration(groupId, generation);
-        }, 10L * 60L * 1000L);
+    private void rescheduleCheckpointDeadline() {
+        AppGroup foreground = engine.groupForPackage(currentForegroundPackage);
+        String groupId = monitoredGroupId(foreground);
+        if (!screenReady || groupId == null) {
+            checkpointDeadlineScheduler.cancel();
+            return;
+        }
+        scheduleCheckpointDeadline(groupId);
+    }
+
+    private void scheduleCheckpointDeadline(String groupId) {
+        Long delayMs = engine.nextCheckpointDelayMs(
+                groupId, scheduler.elapsedRealtime());
+        if (delayMs == null) {
+            checkpointDeadlineScheduler.cancel();
+            return;
+        }
+        checkpointDeadlineScheduler.replace(
+                () -> onCheckpointDeadline(groupId), delayMs);
+    }
+
+    private synchronized void onCheckpointDeadline(String groupId) {
+        if (!screenReady || !engine.isFeatureEnabled()) return;
+        AppGroup foreground = engine.groupForPackage(currentForegroundPackage);
+        if (foreground == null || !foreground.isMonitored()
+                || !groupId.equals(foreground.getGroupId())) return;
+        SupervisionTime tick = now();
+        List<EngineEvent> events = engine.onUsageTick(
+                tick.getElapsedMs(), tick.getWallMs());
+        if (!events.isEmpty()) recordEngineEvents(events);
+        persistRuntime();
+        scheduleCheckpointDeadline(groupId);
     }
 
     private String monitoredGroupId(AppGroup group) {
@@ -653,7 +838,12 @@ public final class AppSupervisionRuntime {
                     snapshot.getTemporaryUnlock()));
         }
         store.saveBootScopedState(
-                bootId, new AppSupervisionStore.RuntimeSnapshot(values));
+                bootId, new AppSupervisionStore.RuntimeSnapshot(
+                        values,
+                        new AppSupervisionStore.PersistedDeviceState(
+                                deviceLockState.snapshot(nowElapsedMs).getLock(),
+                                deviceLockState.snapshot(nowElapsedMs)
+                                        .getTemporaryUnlock())));
     }
 
     private void persistConfig() {
@@ -663,6 +853,9 @@ public final class AppSupervisionRuntime {
 
     private void restoreRuntime() {
         AppSupervisionStore.RuntimeSnapshot persisted = store.loadBootScopedState(bootId);
+        deviceLockState.restore(
+                persisted.getDeviceState().getLock(),
+                persisted.getDeviceState().getTemporaryUnlock());
         for (Map.Entry<String, AppSupervisionStore.PersistedGroupState> entry
                 : persisted.getStates().entrySet()) {
             AppSupervisionStore.PersistedGroupState value = entry.getValue();
@@ -683,6 +876,7 @@ public final class AppSupervisionRuntime {
 
     private void shutdown() {
         stopDetectorIfRunning();
+        checkpointDeadlineScheduler.shutdown();
         scheduler.cancelAll();
         overlay.hide();
         persistRuntime();

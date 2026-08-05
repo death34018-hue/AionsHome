@@ -196,6 +196,56 @@ class TriggeredMessageReasoningTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(args[0], "room_test")
         self.assertEqual(args[-1], "hidden location reasoning")
 
+    async def test_location_wakeup_discards_unvalidated_partial_when_stream_breaks(self):
+        statements = []
+
+        def fake_get_db():
+            return RecordingDbContext(statements, ConversationDb)
+
+        async def interrupted_stream(messages, model_key, meta=None, temperature=None):
+            yield "前半段正文。"
+            raise RuntimeError("peer closed connection")
+
+        class FakeScheduleManager:
+            def __init__(self):
+                self._save_to_chatroom = AsyncMock()
+
+            def _resolve_target(self, payload):
+                return {"type": "chatroom", "room_id": "room_test"}
+
+        fake_schedule_mgr = FakeScheduleManager()
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("location.get_db", new=fake_get_db))
+            stack.enter_context(patch("location.load_worldbook", return_value={
+                "ai_name": "Airi",
+                "user_name": "User",
+                "ai_persona": "kind companion",
+                "user_persona": "likes clear answers",
+            }))
+            stack.enter_context(patch("location.format_location_for_prompt", return_value="当前位置：家附近"))
+            stack.enter_context(patch.object(location_module.manager, "any_tts_enabled", return_value=False))
+            stack.enter_context(patch.object(location_module.manager, "broadcast", new=AsyncMock()))
+            stack.enter_context(patch("camera.append_monitor_log"))
+            stack.enter_context(patch("memory.recall_memories", new=AsyncMock(return_value=([], []))))
+            stack.enter_context(patch("context_builder.fetch_merged_timeline", new=AsyncMock(return_value=[])))
+            stack.enter_context(patch("context_builder.render_merged_timeline", return_value=[]))
+            stack.enter_context(patch("ai_providers.stream_ai", new=interrupted_stream))
+            stack.enter_context(patch("schedule.schedule_mgr", new=fake_schedule_mgr))
+
+            await location_module._call_core_location(
+                "到家",
+                {},
+                "位置变化",
+                cached_logs=[],
+                last_user_ts=0,
+            )
+
+        fake_schedule_mgr._save_to_chatroom.assert_awaited_once()
+        reply_text = fake_schedule_mgr._save_to_chatroom.await_args.args[3]
+        self.assertEqual(reply_text, "[回复连接中断，已自动停止生成。]")
+        self.assertNotIn("peer closed", reply_text)
+
 
 if __name__ == "__main__":
     unittest.main()

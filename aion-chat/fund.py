@@ -22,6 +22,7 @@ from database import get_db
 from ws import manager
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
 from tts import TTSStreamer
+from web_search import WebCommandStreamFilter
 
 log = logging.getLogger("fund")
 
@@ -370,18 +371,31 @@ async def run_fund_analysis(manual: bool = False):
         if tts_voice:
             fund_tts = TTSStreamer(ai_msg_id, tts_voice, manager)
 
-    full_text = ""
-    try:
-        _temp = SETTINGS.get("temperature")
+    from schedule import _consume_background_stream
+
+    fund_command_filter = WebCommandStreamFilter()
+    _temp = SETTINGS.get("temperature")
+
+    async def content_stream():
         async for chunk in stream_ai(messages, model_key, temperature=_temp):
             if chunk.startswith(CLI_STATUS_PREFIX):
                 continue
-            full_text += chunk
-            if fund_tts:
-                fund_tts.feed(chunk)
-    except Exception as e:
-        full_text = f"[基金分析回复失败] {e}"
-        log.error("基金分析 AI 调用失败: %s", e)
+            yield chunk
+
+    stream_result = await _consume_background_stream(
+        content_stream(),
+        fund_command_filter,
+        fund_tts,
+    )
+    full_text = stream_result.committed_text
+    if stream_result.stop_reason:
+        log.error(
+            "基金分析 AI 流已停止 (%s): %s",
+            stream_result.stop_reason,
+            stream_result.diagnostic_error or "",
+        )
+    if stream_result.notice:
+        full_text = f"{full_text}\n\n[{stream_result.notice}]".strip()
 
     if not full_text.strip():
         return {"ok": False, "reason": "AI 返回空"}

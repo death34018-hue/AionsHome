@@ -116,6 +116,18 @@ async def process_wechat_outbound_commands(
         sender=sender,
         source_msg_id=source_msg_id,
     )
+    from config import SETTINGS
+    from wechat_mode import active_wechat_modes_for_route
+
+    if active_wechat_modes_for_route(
+        SETTINGS,
+        route["source_type"],
+        route["source_id"],
+    ):
+        visible_parts = [cleaned, *messages]
+        visible_text = "\n".join(part for part in visible_parts if part)
+        return _clean_text_after_command_removal(visible_text), messages
+
     if record_route:
         await _maybe_await(record_route(route))
 

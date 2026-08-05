@@ -177,7 +177,6 @@
     <div class="digest-status" id="digestStatus" style="display:none"></div>
     <div class="btn-row memory-actions-row">
       <a class="btn-digest" href="/memory-compression" style="background:#7a4f91">🧠 记忆压缩</a>
-      <button class="btn-digest" id="compressDailyBtn" onclick="compressDailyMemories()" style="background:#6a4c93">🗜️ 生成压缩草稿</button>
       <button class="btn-digest" id="digestBtn" onclick="triggerDigest()">📝 总结新记忆</button>
       <button class="btn-digest" id="rebuildBtn" onclick="rebuildEmbeddings()" style="background:#1565c0">🔄 重建向量索引</button>
     </div>
@@ -380,6 +379,7 @@ async function loadMemories(options = {}) {
     const params = new URLSearchParams({ limit: String(MEMORY_PAGE_SIZE) });
     if (append && _memoryNextCursor) params.set("before", String(_memoryNextCursor));
     if (query) params.set("q", query);
+    params.set("kind", _memoryKindFilter);
     const result = await api("GET", `/api/memories?${params}`);
     if (requestId !== _memoryRequestId) return;
     const items = Array.isArray(result) ? result : (result.items || []);
@@ -421,7 +421,7 @@ function setMemoryKindFilter(kind) {
     btn.classList.toggle("active", active);
     btn.setAttribute("aria-selected", active ? "true" : "false");
   });
-  renderMemories();
+  loadMemories({ reset: true });
 }
 
 function renderMemories() {

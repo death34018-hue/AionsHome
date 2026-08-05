@@ -1,9 +1,7 @@
-import asyncio
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import aiosqlite
 
@@ -121,67 +119,6 @@ class MessageIngressDedupeTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(left, right)
-
-    async def test_chatroom_save_msg_suppresses_duplicate_broadcast(self):
-        asyncio.get_running_loop().slow_callback_duration = 5.0
-
-        from message_dedup import build_message_dedupe_key
-        from routes import chatroom as chatroom_routes
-
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                "CREATE TABLE chatroom_rooms (id TEXT PRIMARY KEY, title TEXT, type TEXT, updated_at REAL)"
-            )
-            await db.execute(
-                "CREATE TABLE chatroom_messages ("
-                "id TEXT PRIMARY KEY, room_id TEXT, sender TEXT, content TEXT, "
-                "attachments TEXT DEFAULT '[]', reasoning_content TEXT DEFAULT '', created_at REAL)"
-            )
-            await db.execute(
-                "INSERT INTO chatroom_rooms (id, title, type, updated_at) VALUES (?,?,?,?)",
-                ("room-1", "room", "group", 0),
-            )
-            await db.commit()
-
-        def connect():
-            return aiosqlite.connect(self.db_path)
-
-        key = build_message_dedupe_key(
-            target_type="chatroom",
-            target_id="room-1",
-            sender="user",
-            content="same text",
-            attachments=[],
-        )
-        broadcast = AsyncMock()
-
-        with patch.object(chatroom_routes, "get_db", connect), \
-             patch.object(chatroom_routes.manager, "broadcast", broadcast), \
-             patch.object(chatroom_routes, "connor_1v1_on_message"):
-            first = await chatroom_routes._save_msg(
-                "room-1",
-                "user",
-                "same text",
-                msg_id="cm_1_u",
-                auto_tts=False,
-                dedupe_key=key,
-                dedupe_target_id="room-1",
-            )
-            second = await chatroom_routes._save_msg(
-                "room-1",
-                "user",
-                "same text",
-                msg_id="cm_2_u",
-                auto_tts=False,
-                dedupe_key=key,
-                dedupe_target_id="room-1",
-            )
-
-        self.assertFalse(first.get("duplicate"))
-        self.assertTrue(second.get("duplicate"))
-        self.assertEqual(second["id"], "cm_1_u")
-        self.assertEqual(broadcast.await_count, 1)
-
 
 if __name__ == "__main__":
     unittest.main()

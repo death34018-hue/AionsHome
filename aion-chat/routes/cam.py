@@ -9,8 +9,14 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional
 
-from config import SCREENSHOTS_DIR, MONITOR_LOGS_DIR, save_cam_config
+from config import (
+    SCREENSHOTS_DIR,
+    MONITOR_LOGS_DIR,
+    normalize_camera_wake_mode,
+    save_cam_config,
+)
 from camera import cam, detect_cameras, read_monitor_logs
+from phone_camera import phone_camera
 
 router = APIRouter()
 
@@ -24,6 +30,7 @@ class CamConfigUpdate(BaseModel):
     quiet_hours_start: Optional[str] = None
     quiet_hours_end: Optional[str] = None
     esp32_cam_url: Optional[str] = None
+    wake_mode: Optional[str] = None
 
 @router.get("/api/cam/cameras")
 async def list_cameras():
@@ -39,6 +46,12 @@ async def cam_status():
     remaining = 0
     if cam.monitoring and cam._next_capture_at > 0:
         remaining = max(0, cam._next_capture_at - time.time())
+    phone_status = phone_camera.status()
+    try:
+        from chatroom import get_chatroom_names
+        _, ai_name, connor_name = get_chatroom_names()
+    except Exception:
+        ai_name, connor_name = "AI", "第二AI"
     return {
         "camera_open": cam.running,
         "monitoring": cam.monitoring,
@@ -46,6 +59,7 @@ async def cam_status():
         "active_source": cam.cfg.get("active_source", "local"),
         "esp32_cam_url": cam.cfg.get("esp32_cam_url", ""),
         "esp32_bridge_active": cam._esp32_bridge_active,
+        "phone_camera": phone_status,
         "auto_interval_min": cam.cfg.get("auto_interval_min", 10),
         "auto_interval_max": cam.cfg.get("auto_interval_max", 20),
         "max_screenshots": cam.cfg["max_screenshots"],
@@ -54,6 +68,9 @@ async def cam_status():
         "quiet_hours_end": cam.cfg.get("quiet_hours_end", "09:00"),
         "is_quiet_hours": cam._is_quiet_hours(),
         "next_capture_in": round(remaining),
+        "wake_mode": normalize_camera_wake_mode(cam.cfg.get("wake_mode")),
+        "ai_name": ai_name,
+        "connor_name": connor_name,
     }
 
 @router.post("/api/cam/open")
@@ -113,6 +130,8 @@ async def update_cam_config(body: CamConfigUpdate):
         cam.cfg["quiet_hours_end"] = body.quiet_hours_end
     if body.esp32_cam_url is not None:
         cam.cfg["esp32_cam_url"] = body.esp32_cam_url.strip()
+    if body.wake_mode is not None:
+        cam.cfg["wake_mode"] = normalize_camera_wake_mode(body.wake_mode)
     save_cam_config(cam.cfg)
     return {"ok": True}
 
@@ -160,13 +179,13 @@ async def get_today_logs():
 
 # ── ESP32-CAM 画面源切换 ─────────────────────────
 class SourceSwitch(BaseModel):
-    source: str          # "local" | "esp32"
+    source: str          # "local" | "esp32" | "phone"
     esp32_url: Optional[str] = None
 
 @router.post("/api/cam/source")
 async def switch_cam_source(body: SourceSwitch):
-    if body.source not in ("local", "esp32"):
-        return {"ok": False, "message": "source 只能是 local 或 esp32"}
+    if body.source not in ("local", "esp32", "phone"):
+        return {"ok": False, "message": "source 只能是 local、esp32 或 phone"}
     loop = asyncio.get_event_loop()
     ok = await loop.run_in_executor(None, lambda: cam.switch_source(body.source, body.esp32_url))
     return {

@@ -10,6 +10,12 @@ import httpx
 import tempfile
 
 from config import get_key, MODELS, UPLOADS_DIR, CODEX_UPLOADS_DIR, SETTINGS, get_sentinel_config, DATA_DIR, resolve_model_key, is_model_deprecated
+from codex_app_server import (
+    CodexAppServerEvent,
+    build_codex_app_server_command,
+    stream_codex_app_server,
+)
+from stream_safety import StreamActivity
 
 # CLI 状态前缀：yield 此前缀的 chunk 会被 _bg_generate 拦截为状态事件，不送入 TTS 和正文
 CLI_STATUS_PREFIX = "\x00CLI_STATUS:"
@@ -1771,32 +1777,61 @@ def _build_codex_chat_command(
     if disabled_skills:
         overrides.append(_build_disabled_skills_override(disabled_skills))
 
-    cmd = [node, script]
-    if model:
-        cmd.extend(["-m", model])
-    for override in overrides:
-        cmd.extend(["-c", override])
-    cmd.extend([
-        "--ask-for-approval",
-        "never",
-        "--sandbox",
-        "read-only",
-        "-C",
-        workspace,
-        "exec",
-        "--json",
-        "--skip-git-repo-check",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "--ephemeral",
-        "--color",
-        "never",
-    ])
-    for image_path in image_paths or ():
-        # 使用等号形式，避免 Codex CLI 的可变长 --image 参数吞掉后面的 stdin 标记。
-        cmd.append(f"--image={_normalized_path(image_path)}")
-    cmd.append("-")
-    return cmd
+    return build_codex_app_server_command(node, script, overrides)
+
+
+_CODEX_REASONING_SUMMARIES = {"auto", "concise", "detailed", "none"}
+_CODEX_SEMAPHORE_LOOP = None
+_CODEX_SEMAPHORE_LIMIT = 0
+_CODEX_SEMAPHORE: asyncio.Semaphore | None = None
+
+
+def _codex_reasoning_summary(settings: dict | None = None) -> str:
+    value = str((settings if settings is not None else SETTINGS).get(
+        "codex_reasoning_summary", "auto"
+    ) or "auto").strip().lower()
+    return value if value in _CODEX_REASONING_SUMMARIES else "auto"
+
+
+def _codex_max_concurrency(settings: dict | None = None) -> int:
+    raw = (settings if settings is not None else SETTINGS).get(
+        "codex_max_concurrent_requests", 2
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = 2
+    return min(8, max(1, value))
+
+
+def _codex_semaphore() -> asyncio.Semaphore:
+    global _CODEX_SEMAPHORE_LOOP, _CODEX_SEMAPHORE_LIMIT, _CODEX_SEMAPHORE
+    loop = asyncio.get_running_loop()
+    limit = _codex_max_concurrency()
+    if (
+        _CODEX_SEMAPHORE is None
+        or _CODEX_SEMAPHORE_LOOP is not loop
+        or _CODEX_SEMAPHORE_LIMIT != limit
+    ):
+        _CODEX_SEMAPHORE_LOOP = loop
+        _CODEX_SEMAPHORE_LIMIT = limit
+        _CODEX_SEMAPHORE = asyncio.Semaphore(limit)
+    return _CODEX_SEMAPHORE
+
+
+def _normalize_codex_app_server_usage(usage: dict | None) -> dict:
+    usage = usage or {}
+    return {
+        "input_tokens": usage.get("inputTokens", usage.get("input_tokens", 0)),
+        "cached_input_tokens": usage.get(
+            "cachedInputTokens", usage.get("cached_input_tokens", 0)
+        ),
+        "output_tokens": usage.get("outputTokens", usage.get("output_tokens", 0)),
+        "reasoning_output_tokens": usage.get(
+            "reasoningOutputTokens", usage.get("reasoning_output_tokens", 0)
+        ),
+        "total_tokens": usage.get("totalTokens", usage.get("total_tokens", 0)),
+    }
 
 
 def _usage_int(value) -> int:
@@ -1840,7 +1875,7 @@ def _apply_codex_usage_meta(meta: dict | None, usage: dict | None) -> None:
 
 async def call_codex_cli(messages: list, model: str, meta: dict | None = None,
                          temperature: float | None = None, max_tokens: int | None = None):
-    """通过 Codex CLI 子进程调用，--json 模式逐行读取 JSONL 事件"""
+    """通过请求级 Codex App Server 会话增量返回正文与可读推理摘要。"""
     image_paths = _collect_cli_image_paths(messages)
     prompt = _build_cli_prompt(messages, include_image_refs=False)
 
@@ -1863,75 +1898,31 @@ async def call_codex_cli(messages: list, model: str, meta: dict | None = None,
 
     try:
         env = _build_codex_chat_environment()
-        proc = await _spawn_cli_process(cmd, prompt, env)
-
-        last_agent_text = ""
-        line_buf = ""
-        while True:
-            chunk = await proc.stdout.read(64 * 1024)
-            if not chunk:
-                break
-            line_buf += chunk.decode("utf-8", errors="replace")
-            while "\n" in line_buf:
-                line, line_buf = line_buf.split("\n", 1)
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                etype = event.get("type", "")
-                item = event.get("item", {})
-                item_type = item.get("type", "")
-
-                # 实时状态事件 → yield 状态标记（不会进入正文/TTS）
-                if etype == "item.started":
-                    if item_type == "web_search":
-                        yield f"{CLI_STATUS_PREFIX}🔍 正在联网搜索…"
-                    elif item_type == "command_execution":
-                        cmd_str = item.get("command", "")
-                        short_cmd = cmd_str[:60] + ("…" if len(cmd_str) > 60 else "") if cmd_str else ""
-                        yield f"{CLI_STATUS_PREFIX}⚙️ 正在执行命令{'：' + short_cmd if short_cmd else '…'}"
-                elif etype == "item.completed":
-                    if item_type == "web_search":
-                        query = item.get("query", "")
-                        yield f"{CLI_STATUS_PREFIX}🔍 搜索完成{'：' + query[:50] if query else ''}"
-                    elif item_type == "command_execution":
-                        status = item.get("status", "")
-                        label = "✅ 命令完成" if status == "completed" else "❌ 命令失败"
-                        yield f"{CLI_STATUS_PREFIX}{label}"
-                    elif item_type == "agent_message":
-                        last_agent_text = item.get("text", "")
-                elif etype == "turn.completed":
-                    usage = event.get("usage", {})
-                    _apply_codex_usage_meta(meta, usage)
-        if line_buf.strip():
-            try:
-                event = json.loads(line_buf.strip())
-            except json.JSONDecodeError:
-                event = None
-            if event:
-                etype = event.get("type", "")
-                item = event.get("item", {})
-                item_type = item.get("type", "")
-                if etype == "item.completed" and item_type == "agent_message":
-                    last_agent_text = item.get("text", "")
-                elif etype == "turn.completed":
-                    usage = event.get("usage", {})
-                    _apply_codex_usage_meta(meta, usage)
-
-        await proc.wait()
-
-        if last_agent_text:
-            yield last_agent_text
-        elif proc.returncode and proc.returncode != 0:
-            stderr_out = await proc.stderr.read()
-            err = stderr_out.decode("utf-8", errors="replace").strip()
-            yield f"[CodexCLI错误 code={proc.returncode}] {err[:500]}"
-        else:
-            yield "[CodexCLI错误] 未收到回复"
+        async with _codex_semaphore():
+            async for event in stream_codex_app_server(
+                cmd,
+                env=env,
+                cwd=_CODEX_WORKSPACE,
+                model=model,
+                prompt=prompt,
+                image_paths=list(image_paths),
+                reasoning_summary=_codex_reasoning_summary(),
+            ):
+                if event.kind == "text_delta" and event.text:
+                    yield event.text
+                elif event.kind == "reasoning_delta" and event.text:
+                    if meta is not None:
+                        current = str(meta.get("reasoning_content") or "")
+                        meta["reasoning_content"] = current + event.text
+                    yield StreamActivity()
+                elif event.kind == "usage":
+                    _apply_codex_usage_meta(
+                        meta,
+                        _normalize_codex_app_server_usage(event.usage),
+                    )
+                    yield StreamActivity()
+                elif event.kind == "activity":
+                    yield StreamActivity()
     except FileNotFoundError:
         yield "[CodexCLI错误] 无法启动 Codex CLI 进程"
     except Exception as e:
@@ -2176,6 +2167,9 @@ async def stream_ai(messages: list, model_key: str, meta: dict | None = None, te
     async for chunk in _raw_chunks():
         if cancel_event and cancel_event.is_set():
             return
+        if isinstance(chunk, StreamActivity):
+            yield chunk
+            continue
         if isinstance(chunk, str) and chunk.startswith(CLI_STATUS_PREFIX):
             yield chunk
             continue

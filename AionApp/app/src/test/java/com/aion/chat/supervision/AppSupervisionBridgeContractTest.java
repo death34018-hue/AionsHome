@@ -96,6 +96,23 @@ public class AppSupervisionBridgeContractTest {
                 .getJSONObject(0).getString("effectiveState"));
     }
 
+    @Test
+    public void snapshotExposesWholeDeviceLockState() throws Exception {
+        AppSupervisionRuntime runtime = runtime(new AppSupervisionOverlay());
+        long future = runtime.elapsedRealtime() + 1_800_000_000_000L;
+        assertTrue(runtime.applyAiCommand(
+                "device_lock", "", 20, "aion", "整机休息",
+                "device-bridge", future).isSuccess());
+
+        JSONObject snapshot = new JSONObject(
+                new AppSupervisionBridge(null, runtime).getSnapshot());
+
+        assertEquals("LOCKED",
+                snapshot.getJSONObject("deviceLock").getString("effectiveState"));
+        assertEquals("device-bridge", snapshot.getJSONObject("deviceLock")
+                .getJSONObject("lock").getString("commandId"));
+    }
+
     private static void assertMethod(String name, Class<?>... parameterTypes)
             throws Exception {
         Method method = AppSupervisionBridge.class.getMethod(name, parameterTypes);
@@ -107,6 +124,10 @@ public class AppSupervisionBridgeContractTest {
     }
 
     private static AppSupervisionBridge harness(AppSupervisionOverlay overlay) {
+        return new AppSupervisionBridge(null, runtime(overlay));
+    }
+
+    private static AppSupervisionRuntime runtime(AppSupervisionOverlay overlay) {
         AppGroup group = AppGroup.create(
                 "group-1", "示例应用", Collections.singletonList("com.example.main"), true,
                 SupervisionPolicy.of(
@@ -124,7 +145,7 @@ public class AppSupervisionBridgeContractTest {
                 new AccessibilityRecoveryController(),
                 overlay,
                 new TestScheduler());
-        return new AppSupervisionBridge(null, runtime);
+        return runtime;
     }
 
     private static final class RecordingOverlay extends AppSupervisionOverlay {}

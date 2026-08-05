@@ -83,7 +83,27 @@
         android:layout_height="wrap_content"
         android:textSize="12sp"
         android:textColor="#666666"
-        android:layout_marginBottom="32dp" />
+        android:layout_marginBottom="24dp" />
+
+    <Button
+        android:id="@+id/btnHomecoming"
+        android:layout_width="280dp"
+        android:layout_height="wrap_content"
+        android:text="🏠  归巢模式"
+        android:textSize="16sp"
+        android:textColor="#ffffff"
+        android:backgroundTint="#704838"
+        android:padding="16dp"
+        android:layout_marginBottom="4dp" />
+
+    <TextView
+        android:id="@+id/tvHomecomingHint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="家庭服务器不可用时使用"
+        android:textSize="12sp"
+        android:textColor="#777777"
+        android:layout_marginBottom="24dp" />
 
     <!-- 记住选择 -->
     <CheckBox

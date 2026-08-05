@@ -1473,7 +1473,10 @@ function connectWS() {
 function handleSync(msg) {
   const { type, data } = msg;
 
-  if (type === "conv_created") {
+  if (type === "hug_pillow_command") {
+    window.HugPillowAI?.handleCommandEvent(data);
+    return;
+  } else if (type === "conv_created") {
     if (!conversations.find(c => c.id === data.id)) {
       conversations.unshift(data);
       renderConvList();
@@ -1612,8 +1615,10 @@ function handleSync(msg) {
     showAlarmPopup(data);
   } else if (type === "monitor_alert") {
     // 定时监控即将触发，播放提示音
-    const audio = new Audio('/public/AionMonitoralart.mp3');
-    audio.play().catch(() => {});
+    if (!data.phone_camera_native_capture) {
+      const audio = new Audio('/public/AionMonitoralart.mp3');
+      audio.play().catch(() => {});
+    }
     const body = data.origin_name
       ? `【${data.origin_name}】设定的监督：${data.content || '哨兵监控即将分析'}`
       : (data.content || '哨兵监控即将分析');
@@ -1770,6 +1775,15 @@ function renderMessages() {
     if (m.role === "system") {
       const afterMsgId = systemNoticeAfterMsgId(m);
       const afterAttr = afterMsgId ? ` data-after-msg-id="${escHtml(afterMsgId)}"` : "";
+      const snapshotHtml = window.MonitorCameraSnapshot
+        ? window.MonitorCameraSnapshot.renderMonitorCameraSnapshot(
+            m.attachments,
+            {
+              escapeHtml: escHtml,
+              imageAttrs: imageInteractionAttrs(),
+            },
+          )
+        : "";
       return `
       <div class="msg-row system" id="m_${m.id}" data-msg-id="${m.id}"${afterAttr}>
         <div class="system-notice">
@@ -1779,6 +1793,7 @@ function renderMessages() {
             <button onclick="delMsg('${m.id}');closeMsgMenus()">删除</button>
           </div>
         </div>
+        ${snapshotHtml}
       </div>`;
     }
 
@@ -5293,6 +5308,29 @@ function syncSubPageMode(url) {
 const persistentSubPageFrames = new Map();
 const transientSubPageFrame = $('subPageFrame');
 let activeSubPageFrame = null;
+let _aionAppForeground = false;
+let _aionPhoneCameraCaptureActive = false;
+
+function notifySubPageLifecycle(frame, visible) {
+  if (!frame || !frame.contentWindow) return;
+  frame.dataset.aionSubPageVisible = visible ? '1' : '0';
+  try {
+    frame.contentWindow.onAionSubPageVisibilityChanged?.(!!visible);
+    frame.contentWindow.onAionAppForegroundChanged?.(_aionAppForeground);
+    frame.contentWindow.onAionPhoneCameraCaptureState?.(
+      _aionPhoneCameraCaptureActive);
+  } catch(e) {}
+}
+
+window.onAionAppForegroundChanged = function(active) {
+  _aionAppForeground = !!active;
+  notifySubPageLifecycle(activeSubPageFrame, !!activeSubPageFrame);
+};
+
+window.onAionPhoneCameraCaptureState = function(active) {
+  _aionPhoneCameraCaptureActive = !!active;
+  notifySubPageLifecycle(activeSubPageFrame, !!activeSubPageFrame);
+};
 
 function subPagePath(url) {
   try { return new URL(url, location.origin).pathname; } catch(e) { return url || ''; }
@@ -5340,6 +5378,7 @@ function syncHealthRingPageVisibility() {
 function attachSubPageFrameLoad(frame) {
   frame.addEventListener('load', () => {
     if (frame !== activeSubPageFrame || !frame.src || frame.src === 'about:blank') return;
+    notifySubPageLifecycle(frame, true);
     requestAnimationFrame(() => {
       try { syncSubPageMode(frame.contentWindow.location.href); }
       catch(e) { syncSubPageMode(frame.src); }
@@ -5351,7 +5390,7 @@ function attachSubPageFrameLoad(frame) {
 function getSubPageFrame(url) {
   const path = subPagePath(url);
   if (!isPersistentSubPage(path)) {
-    transientSubPageFrame.src = url;
+    transientSubPageFrame.dataset.pendingSrc = url;
     return transientSubPageFrame;
   }
   let frame = persistentSubPageFrames.get(path);
@@ -5364,9 +5403,9 @@ function getSubPageFrame(url) {
     attachSubPageFrameLoad(frame);
     $('subPageFrames').appendChild(frame);
     persistentSubPageFrames.set(path, frame);
-    frame.src = url;
+    frame.dataset.pendingSrc = url;
   } else if (shouldNavigatePersistentSubPage(frame, url)) {
-    frame.src = url;
+    frame.dataset.pendingSrc = url;
   }
   return frame;
 }
@@ -5377,10 +5416,19 @@ function openSubPage(url) {
   closeSidebar();
   syncSubPageMode(url);
   const frame = getSubPageFrame(url);
+  if (activeSubPageFrame && activeSubPageFrame !== frame) {
+    notifySubPageLifecycle(activeSubPageFrame, false);
+  }
   document.querySelectorAll('.sub-page-frame').forEach(item => {
     item.style.display = item === frame ? 'block' : 'none';
   });
   activeSubPageFrame = frame;
+  if (frame.dataset.pendingSrc) {
+    const pendingSrc = frame.dataset.pendingSrc;
+    delete frame.dataset.pendingSrc;
+    frame.src = pendingSrc;
+  }
+  notifySubPageLifecycle(frame, true);
   if (subPagePath(url) === '/') {
     try {
       frame.contentDocument?.getElementById('screen')?.classList.remove('navigating');
@@ -5396,6 +5444,7 @@ function closeSubPage(skipReload = false) {
   ov.classList.remove('show');
   ov.classList.remove('home-subpage');
   ov.classList.remove('immersive-subpage');
+  notifySubPageLifecycle(activeSubPageFrame, false);
   if (activeSubPageFrame === transientSubPageFrame) {
     transientSubPageFrame.src = 'about:blank';
   }

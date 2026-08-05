@@ -73,6 +73,36 @@ public class AppSupervisionStoreTest {
     }
 
     @Test
+    public void runtimeRoundTripPreservesDeviceLockIndependentlyFromGroups() {
+        MemoryBackend backend = new MemoryBackend();
+        AppSupervisionStore store = new AppSupervisionStore(backend);
+        TimedDirective deviceLock = TimedDirective.create(
+                20_000L, 1_800_000_000_000L, 45,
+                "role-second", "整机休息", "cmd-device-lock");
+        TimedDirective deviceTemporaryUnlock = TimedDirective.create(
+                30_000L, 1_800_000_010_000L, 10,
+                "role-main", "临时处理消息", "cmd-device-temporary");
+        AppSupervisionStore.PersistedDeviceState deviceState =
+                new AppSupervisionStore.PersistedDeviceState(
+                        deviceLock, deviceTemporaryUnlock);
+
+        store.saveBootScopedState(
+                "boot-a",
+                new AppSupervisionStore.RuntimeSnapshot(
+                        Collections.<String, AppSupervisionStore.PersistedGroupState>
+                                emptyMap(),
+                        deviceState));
+        AppSupervisionStore.RuntimeSnapshot loaded =
+                store.loadBootScopedState("boot-a");
+
+        assertEquals("cmd-device-lock",
+                loaded.getDeviceState().getLock().getCommandId());
+        assertEquals("cmd-device-temporary",
+                loaded.getDeviceState().getTemporaryUnlock().getCommandId());
+        assertTrue(loaded.getStates().isEmpty());
+    }
+
+    @Test
     public void changedBootIdDropsRuntimeButRetainsConfiguration() {
         MemoryBackend backend = new MemoryBackend();
         AppSupervisionStore store = new AppSupervisionStore(backend);
@@ -89,6 +119,8 @@ public class AppSupervisionStoreTest {
         AppSupervisionStore.RuntimeSnapshot afterReboot = store.loadBootScopedState("boot-b");
 
         assertTrue(afterReboot.getStates().isEmpty());
+        assertNull(afterReboot.getDeviceState().getLock());
+        assertNull(afterReboot.getDeviceState().getTemporaryUnlock());
         assertEquals(1, store.loadConfig().getGroups().size());
         assertEquals("", backend.getString("runtime_json", ""));
     }

@@ -46,6 +46,7 @@ import androidx.core.content.ContextCompat;
 
 import com.aion.chat.supervision.AppSupervisionBridge;
 import com.aion.chat.supervision.AppSupervisionRuntime;
+import com.aion.chat.infrared.HugPillowInfraredBridge;
 import androidx.core.view.WindowCompat;
 
 /**
@@ -54,7 +55,8 @@ import androidx.core.view.WindowCompat;
  * - 自动授予麦克风权限（给 Web 端 getUserMedia 用）
  * - 支持文件上传（图片/视频选择）
  */
-public class WebViewActivity extends AppCompatActivity {
+public class WebViewActivity extends AppCompatActivity
+        implements PhoneCameraPreviewCoordinator.Client {
 
     private static final int REQ_AUDIO = 1001;
     private static final int REQ_CAMERA = 1002;
@@ -64,9 +66,12 @@ public class WebViewActivity extends AppCompatActivity {
     private SharedJsonStore sharedJsonStore;
     private AionRingBleBridge ringBleBridge;
     private AionMiBandBleBridge miBandBleBridge;
+    private CameraBridge cameraBridge;
+    private PhoneCameraBridge phoneCameraBridge;
     private String targetUrl;
     private boolean initialPageLoadStarted = false;
     private boolean pageLoaded = false;
+    private boolean activityResumed = false;
     private boolean permissionsRequested = false;
     private int retryCount = 0;
     private static final int MAX_RETRY = 5;
@@ -125,6 +130,27 @@ public class WebViewActivity extends AppCompatActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        SharedPreferences launchPrefs =
+                getSharedPreferences("aion_prefs", MODE_PRIVATE);
+        String launchUrl = WebViewLaunchPolicy.resolveUrl(
+                getIntent().getStringExtra("url"),
+                launchPrefs.getBoolean("auto_connect", false),
+                launchPrefs.getString(
+                        "saved_url", "http://192.168.xx.xxx:8080/chat"));
+        if (launchUrl == null) {
+            Intent launcherIntent = new Intent(this, LauncherActivity.class);
+            launcherIntent.putExtra(
+                    LauncherActivity.EXTRA_FORCE_ADDRESS_PICKER, true);
+            startActivity(launcherIntent);
+            finish();
+            return;
+        }
+        targetUrl = ConnectionEndpoint.normalizePageUrl(launchUrl);
+        if (targetUrl == null || targetUrl.isEmpty()) {
+            targetUrl = "http://192.168.xx.xxx:8080/chat";
+        }
+        startPushService(targetUrl);
 
         // WebView 始终 edge-to-edge；子页面的状态栏避让由 chat.html 的 iframe 浮层处理
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
@@ -235,8 +261,15 @@ public class WebViewActivity extends AppCompatActivity {
         webView.addJavascriptInterface(audioBridge, "AionAudio");
 
         // 原生摄像头桥接（绕过 getUserMedia 的 HTTPS 限制）
-        CameraBridge cameraBridge = new CameraBridge(webView);
+        cameraBridge = new CameraBridge(webView);
         webView.addJavascriptInterface(cameraBridge, "AionCamera");
+        phoneCameraBridge = new PhoneCameraBridge(this);
+        webView.addJavascriptInterface(phoneCameraBridge, "AionPhoneCamera");
+        PhoneCameraPreviewCoordinator.shared().register(this);
+
+        webView.addJavascriptInterface(
+                new HugPillowInfraredBridge(this),
+                "AionInfrared");
 
         // 原生视频录制桥接（复用摄像头+麦克风帧，MediaCodec+MediaMuxer 编码 MP4）
         VideoBridge videoBridge = new VideoBridge(webView, getCacheDir());
@@ -357,7 +390,11 @@ public class WebViewActivity extends AppCompatActivity {
                     } else if ("switch".equals(host)) {
                         SharedPreferences prefs = getSharedPreferences("aion_prefs", MODE_PRIVATE);
                         prefs.edit().putBoolean("auto_connect", false).apply();
-                        startActivity(new Intent(WebViewActivity.this, LauncherActivity.class));
+                        Intent launcherIntent =
+                                new Intent(WebViewActivity.this, LauncherActivity.class);
+                        launcherIntent.putExtra(
+                                LauncherActivity.EXTRA_FORCE_ADDRESS_PICKER, true);
+                        startActivity(launcherIntent);
                         finish();
                     }
                     return true;
@@ -408,6 +445,10 @@ public class WebViewActivity extends AppCompatActivity {
                     }
                     notifyCloudflareAuthReady(url);
                     runForegroundResumeSync();
+                    if (activityResumed) {
+                        view.evaluateJavascript(
+                                "window.onAionAppForegroundChanged?.(true)", null);
+                    }
                     notifyClientUpdateReady();
                 }
             }
@@ -523,10 +564,6 @@ public class WebViewActivity extends AppCompatActivity {
         });
 
         // 加载目标 URL
-        targetUrl = ConnectionEndpoint.normalizePageUrl(getIntent().getStringExtra("url"));
-        if (targetUrl == null || targetUrl.isEmpty()) {
-            targetUrl = "http://192.168.xx.xxx:8080/chat";
-        }
         // Cached active documents render immediately. Version discovery and
         // staging happen in the background and never hold the first frame.
         loadTargetUrlOnce();
@@ -833,7 +870,10 @@ public class WebViewActivity extends AppCompatActivity {
             .setPositiveButton("切换地址", (d, w) -> {
                 SharedPreferences prefs = getSharedPreferences("aion_prefs", MODE_PRIVATE);
                 prefs.edit().putBoolean("auto_connect", false).apply();
-                startActivity(new Intent(this, LauncherActivity.class));
+                Intent launcherIntent = new Intent(this, LauncherActivity.class);
+                launcherIntent.putExtra(
+                        LauncherActivity.EXTRA_FORCE_ADDRESS_PICKER, true);
+                startActivity(launcherIntent);
                 finish();
             })
             .setNegativeButton("退出", (d, w) -> finish())
@@ -844,6 +884,10 @@ public class WebViewActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        AppSupervisionRuntime runtime = AppSupervisionRuntime.get();
+        if (runtime != null) runtime.onAionsHomeForegroundChanged(true);
+        activityResumed = true;
+        setNativeCameraForeground(true);
         // 告诉推送服务：前台已打开，不需要弹通知
         notifyServiceForeground(true);
         if (ringBleBridge != null) {
@@ -852,6 +896,8 @@ public class WebViewActivity extends AppCompatActivity {
         // 回到前台：重连 WebSocket（如需要），并补拉当前会话，避免 WebView 后台冻结漏消息。
         if (webView != null && pageLoaded) {
             webView.evaluateJavascript(ForegroundResumeSyncScript.build(), null);
+            webView.evaluateJavascript(
+                    "window.onAionAppForegroundChanged?.(true)", null);
         }
         maybeRefreshClientAssets(false);
     }
@@ -859,11 +905,62 @@ public class WebViewActivity extends AppCompatActivity {
     @Override
     protected void onPause() {
         super.onPause();
+        AppSupervisionRuntime runtime = AppSupervisionRuntime.get();
+        if (runtime != null) runtime.onAionsHomeForegroundChanged(false);
+        activityResumed = false;
+        setNativeCameraForeground(false);
+        if (webView != null) {
+            webView.evaluateJavascript(
+                    "window.onAionAppForegroundChanged?.(false)", null);
+        }
+        releasePhoneCameraPreview();
         if (ringBleBridge != null) {
             ringBleBridge.releaseForBackgroundSync();
         }
         // 告诉推送服务：前台已关闭，需要弹通知
         notifyServiceForeground(false);
+    }
+
+    @Override
+    public void pauseForEvent(Runnable released) {
+        runOnUiThread(() -> {
+            try {
+                releasePhoneCameraMonitorPreview();
+                if (webView != null) {
+                    webView.evaluateJavascript(
+                            "window.onAionPhoneCameraCaptureState?.(true)", null);
+                }
+            } finally {
+                released.run();
+            }
+        });
+    }
+
+    @Override
+    public void resumeAfterEvent() {
+        runOnUiThread(() -> {
+            if (webView != null) {
+                webView.evaluateJavascript(
+                        "window.onAionPhoneCameraCaptureState?.(false)", null);
+            }
+        });
+    }
+
+    private void releasePhoneCameraPreview() {
+        if (cameraBridge != null) cameraBridge.stop();
+        if (phoneCameraBridge != null) phoneCameraBridge.pausePreview();
+    }
+
+    private void setNativeCameraForeground(boolean foreground) {
+        if (cameraBridge != null) cameraBridge.setAppForeground(foreground);
+        if (phoneCameraBridge != null) {
+            phoneCameraBridge.setAppForeground(foreground);
+        }
+    }
+
+    private void releasePhoneCameraMonitorPreview() {
+        if (phoneCameraBridge == null || !phoneCameraBridge.isPreviewVisible()) return;
+        releasePhoneCameraPreview();
     }
 
     private void runForegroundResumeSync() {
@@ -878,6 +975,16 @@ public class WebViewActivity extends AppCompatActivity {
         intent.putExtra("active", active);
         if (targetUrl != null) intent.putExtra("url", targetUrl);
         startService(intent);
+    }
+
+    private void startPushService(String url) {
+        Intent serviceIntent = new Intent(this, AionPushService.class);
+        serviceIntent.putExtra("url", url);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent);
+        } else {
+            startService(serviceIntent);
+        }
     }
 
     private void notifyCloudflareAuthReady(String pageUrl) {
@@ -975,6 +1082,13 @@ public class WebViewActivity extends AppCompatActivity {
     @Override
     protected void onDestroy() {
         mainHandler.removeCallbacksAndMessages(null);
+        PhoneCameraPreviewCoordinator.shared().unregister(this);
+        releasePhoneCameraPreview();
+        if (phoneCameraBridge != null) {
+            phoneCameraBridge.close();
+            phoneCameraBridge = null;
+        }
+        cameraBridge = null;
         if (ringBleBridge != null) {
             ringBleBridge.close();
             ringBleBridge = null;

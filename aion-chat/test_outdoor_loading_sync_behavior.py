@@ -91,16 +91,17 @@ class MemoryPaginationBehaviorTests(unittest.IsolatedAsyncioTestCase):
                     id TEXT PRIMARY KEY, content TEXT, type TEXT, created_at REAL,
                     source_conv TEXT, keywords TEXT, importance REAL,
                     source_start_ts REAL, source_end_ts REAL, unresolved INTEGER,
-                    source_msg_id TEXT, evidence_summary TEXT, evidence_detail_level TEXT
+                    source_msg_id TEXT, evidence_summary TEXT, evidence_detail_level TEXT,
+                    archive_state TEXT
                 )
             """)
             await db.execute("CREATE TABLE messages (id TEXT, role TEXT, created_at REAL)")
             await db.execute("CREATE TABLE chatroom_messages (id TEXT, sender TEXT, created_at REAL)")
             for i in range(55):
                 await db.execute(
-                    "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO memories VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (f"m{i}", f"memory {i}", "event", float(i + 1), None, "[]", 0.5,
-                     None, None, 0, None, "", "summary"),
+                     None, None, 0, None, "", "summary", "active"),
                 )
             await db.commit()
 

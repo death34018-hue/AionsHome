@@ -28,12 +28,19 @@ class StateGroup(BaseModel):
     temporaryUnlock: dict | None = None
 
 
+class StateDeviceLock(BaseModel):
+    effectiveState: str = "NORMAL"
+    lock: dict | None = None
+    temporaryUnlock: dict | None = None
+
+
 class StateReport(BaseModel):
     eventId: str = ""
     eventType: str = "snapshot"
     triggerGroupId: str = ""
     checkpointMinutes: int = Field(default=0, ge=0, le=120)
     groups: list[StateGroup] = Field(default_factory=list)
+    deviceLock: StateDeviceLock | None = None
 
 
 class CommandAck(BaseModel):
@@ -65,6 +72,8 @@ async def report_state(body: StateReport):
         "eventType": body.eventType,
         "groups": [group.model_dump() for group in body.groups],
     }
+    if body.deviceLock is not None:
+        snapshot["deviceLock"] = body.deviceLock.model_dump()
     supervision_state_cache.replace_snapshot(snapshot)
     checkpoint_accepted = False
     if body.eventType == "checkpoint":

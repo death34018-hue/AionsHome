@@ -160,6 +160,14 @@
         <div id="activeLockList" class="lock-list"></div>
       </section>
 
+      <section id="deviceLockStatus" class="card">
+        <div class="section-head">
+          <div><h2>整机专注</h2><p>由 AI 决定是否开启；本应用与来电始终可用。</p></div>
+          <span id="deviceLockBadge" class="badge">正常</span>
+        </div>
+        <div id="deviceLockDetails" class="notice">当前没有整机锁定。</div>
+      </section>
+
       <section class="card">
         <div class="section-head">
           <div><h2>受管应用</h2><p id="runtimeStatus">读取手机状态…</p></div>
@@ -196,7 +204,7 @@
       <details id="emergencyPanel" class="card debug-panel">
         <summary><strong>紧急解锁</strong><span>通常无需使用</span></summary>
         <div class="grid debug-panel-body">
-          <div class="field"><label for="emergencyGroup">已锁定应用组</label><select id="emergencyGroup"></select></div>
+          <div class="field"><label for="emergencyGroup">锁定目标</label><select id="emergencyGroup"></select></div>
           <button id="holdButton" class="hold">按住 8 秒开始</button>
           <div class="progress"><span id="holdProgress"></span></div>
           <div class="field"><label for="emergencyReason">确认理由</label><textarea id="emergencyReason" placeholder="完成长按后填写" disabled></textarea></div>
@@ -280,16 +288,31 @@
 
     function render() {
       const snap = state.snapshot || { groups: [], logs: [] };
+      const device = snap.deviceLock || { effectiveState: 'NORMAL', lock: null, temporaryUnlock: null };
       $('statusDot').className = `status-dot ${snap.recoveryState === 'ACTIVE' ? 'ok' : 'warn'}`;
       $('runtimeStatus').textContent = `${snap.featureEnabled ? '监管已启用' : '监管已暂停'} · ${snap.recoveryState || 'UNKNOWN'}`;
       $('featureEnabled').checked = Boolean(snap.featureEnabled);
 
       const active = snap.groups.filter(group => group.effectiveState === 'LOCKED' || group.effectiveState === 'TEMPORARILY_UNLOCKED');
-      $('activeLocks').classList.toggle('hidden', active.length === 0);
-      $('activeLockList').innerHTML = active.map(group => {
+      const deviceActive = device.effectiveState === 'LOCKED' || device.effectiveState === 'TEMPORARILY_UNLOCKED';
+      $('activeLocks').classList.toggle('hidden', active.length === 0 && !deviceActive);
+      const deviceActiveHtml = deviceActive ? (() => {
+        const directive = device.effectiveState === 'TEMPORARILY_UNLOCKED' ? device.temporaryUnlock : device.lock;
+        return `<div class="active-lock"><strong>整机专注</strong><span>${device.effectiveState === 'LOCKED' ? '🔒 已锁定' : '临时解锁中'} · ${escapeHtml(roleLabel(directive?.roleId))}</span><br><small>${escapeHtml(directive?.message || '')}</small></div>`;
+      })() : '';
+      $('activeLockList').innerHTML = deviceActiveHtml + active.map(group => {
         const directive = group.effectiveState === 'TEMPORARILY_UNLOCKED' ? group.temporaryUnlock : group.lock;
         return `<div class="active-lock"><strong>${escapeHtml(group.displayName)}</strong><span>${group.effectiveState === 'LOCKED' ? '🔒 已锁定' : '临时解锁中'} · ${escapeHtml(roleLabel(directive?.roleId))}</span><br><small>${escapeHtml(directive?.message || '')}</small></div>`;
       }).join('');
+
+      const deviceDirective = device.effectiveState === 'TEMPORARILY_UNLOCKED'
+        ? device.temporaryUnlock : device.lock;
+      $('deviceLockBadge').className = `badge ${device.effectiveState === 'LOCKED' ? 'locked' : device.effectiveState === 'TEMPORARILY_UNLOCKED' ? 'temp' : ''}`;
+      $('deviceLockBadge').textContent = device.effectiveState === 'LOCKED'
+        ? '锁定中' : device.effectiveState === 'TEMPORARILY_UNLOCKED' ? '临时解锁' : '正常';
+      $('deviceLockDetails').innerHTML = deviceActive
+        ? `负责角色：<strong>${escapeHtml(roleLabel(deviceDirective?.roleId))}</strong><br>剩余时间：<strong>${formatDuration(Math.max(0, (deviceDirective?.deadlineWallMs || 0) - Date.now()))}</strong><br>${escapeHtml(deviceDirective?.message || '')}`
+        : '当前没有整机锁定。';
 
       $('managedGroups').innerHTML = snap.groups.length ? snap.groups.map(group => {
         const next = (group.checkpointsMinutes || []).map(v => v * 60000).find(v => v > group.roundUsageMs);
@@ -299,7 +322,9 @@
 
       const groupOptions = snap.groups.map(group => `<option value="${escapeHtml(group.groupId)}">${escapeHtml(group.displayName)}</option>`).join('');
       $('debugGroup').innerHTML = groupOptions;
-      const lockedOptions = active.filter(group => group.lock).map(group => `<option value="${escapeHtml(group.groupId)}">${escapeHtml(group.displayName)}</option>`).join('');
+      const deviceOption = device.lock && device.lock.deadlineWallMs > Date.now()
+        ? '<option value="__device__">整机专注</option>' : '';
+      const lockedOptions = deviceOption + active.filter(group => group.lock).map(group => `<option value="${escapeHtml(group.groupId)}">${escapeHtml(group.displayName)}</option>`).join('');
       $('emergencyGroup').innerHTML = lockedOptions || '<option value="">当前没有锁定</option>';
       $('diagnostics').textContent = snap.logs?.length ? JSON.stringify(snap.logs, null, 2) : '暂无记录';
       bindGroupActions();

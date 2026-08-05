@@ -179,15 +179,31 @@ async function forceSync() {
   btn.disabled = true;
   btn.textContent = "⏳ 同步中...";
   try {
-    const r = await api("POST", "/api/location/force-sync");
-    if (r.ok) {
-      btn.textContent = "✅ 已同步";
-      const s = await api("GET", "/api/location/status");
-      updateLocPanelStatus(s);
-      renderLocPois(s.nearby_pois || {});
-    } else {
-      btn.textContent = "❌ " + (r.error || "同步失败");
+    const before = await api("GET", "/api/location/status");
+    const previousUpdatedAt = Number(before.updated_at) || 0;
+    const requested = await api("POST", "/api/location/request-phone-sync");
+    if (!requested || requested.ok !== true) {
+      throw new Error((requested && requested.error) || "同步请求失败");
     }
+
+    const deadline = Date.now() + 15000;
+    let syncedStatus = null;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const status = await api("GET", "/api/location/status");
+      if ((Number(status.updated_at) || 0) > previousUpdatedAt) {
+        syncedStatus = status;
+        break;
+      }
+    }
+
+    if (!syncedStatus) {
+      throw new Error("手机未响应或定位失败");
+    }
+
+    updateLocPanelStatus(syncedStatus);
+    renderLocPois(syncedStatus.nearby_pois || {});
+    btn.textContent = "✅ 已同步";
   } catch(e) {
     btn.textContent = "❌ " + e.message;
   }

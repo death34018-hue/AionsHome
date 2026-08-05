@@ -39,12 +39,14 @@ _DOCUMENT_ROUTES = {
     "/wallpaper": "wallpaper.html",
     "/playground": "playground.html",
     "/chatroom": "chatroom.html",
+    "/english-corner": "english-corner.html",
     "/doudizhu": "doudizhu.html",
     "/seeky": "seeky.html",
     "/wishes": "wishes.html",
     "/xhs-lite": "xhs-lite.html",
     "/xhs-lite-logs": "xhs-lite-logs.html",
     "/health": "health.html",
+    "/hug": "hug.html",
     "/pet": "pet.html",
 }
 

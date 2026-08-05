@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>归巢模式</title>
+  <link rel="stylesheet" href="homecoming.css">
+</head>
+<body>
+  <main class="shell">
+    <section id="readinessCard" class="readiness-card">
+      <p class="eyebrow">手机本地灾备</p>
+      <h1 id="title">归巢模式</h1>
+      <p id="status" class="status">正在读取本地快照…</p>
+      <div id="summary" class="summary"></div>
+      <p id="warning" class="warning"></p>
+      <div id="inactiveActions" class="actions">
+        <button id="enter" class="primary">进入归巢</button>
+        <button id="cancel">取消</button>
+      </div>
+    </section>
+
+    <section id="chatShell" class="app-shell hidden">
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">归巢中 · 数据保存在本机</p>
+          <button id="conversationPicker" class="conversation-picker"
+                  aria-expanded="false" aria-controls="conversationMenu">
+            <span id="chatTitle">当前会话</span><span aria-hidden="true">⌄</span>
+          </button>
+        </div>
+        <span class="local-dot" title="手机本地运行"></span>
+      </header>
+
+      <div id="conversationMenu" class="conversation-menu hidden">
+        <button data-timeline="main_private">主伴侣私聊</button>
+        <button data-timeline="companion_private">第二伴侣私聊</button>
+        <button data-timeline="group">三人聊天</button>
+      </div>
+
+      <div class="page-host">
+        <section id="chatPage" class="app-page active" data-page-panel="chat">
+          <section id="messages" class="messages" aria-live="polite"></section>
+          <p id="mediaState" class="media-state"></p>
+          <div class="composer-tools">
+            <button id="pickImage" aria-label="从相册选择图片">图片</button>
+            <button id="captureImage" aria-label="使用手机摄像头拍照">拍照</button>
+            <button id="stopReply">停止</button>
+          </div>
+          <div class="composer-row">
+            <textarea id="composer" rows="2" placeholder="输入消息"></textarea>
+            <button id="send" class="primary">发送</button>
+          </div>
+        </section>
+
+        <section id="memoryPanel" class="app-page" data-page-panel="memory">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">两套记忆独立保存</p>
+              <h2>记忆</h2>
+            </div>
+            <button id="summarizeMemories" class="compact-action">总结新增聊天</button>
+          </div>
+          <select id="memoryOwner" aria-label="记忆所属伴侣"></select>
+          <div class="composer-row memory-compose">
+            <input id="memoryText" placeholder="手动新增记忆">
+            <button id="addMemory">新增</button>
+          </div>
+          <section id="memoryList" class="content-list"></section>
+        </section>
+
+        <section id="schedulePage" class="app-page" data-page-panel="schedule">
+          <div class="segmented">
+            <button id="scheduleTab" class="active">日程</button>
+            <button id="supervisionTab">监督</button>
+          </div>
+          <div id="schedulePanel" class="subpage active">
+            <p id="scheduleExactness" class="media-state"></p>
+            <div class="schedule-form">
+              <select id="scheduleType" aria-label="日程类型">
+                <option value="alarm">闹铃</option>
+                <option value="reminder">提醒</option>
+                <option value="monitor">定时监控</option>
+              </select>
+              <input id="scheduleTime" type="datetime-local" aria-label="触发时间">
+              <input id="scheduleContent" maxlength="2000" placeholder="内容">
+              <select id="scheduleOwner" aria-label="执行伴侣"></select>
+              <select id="scheduleTimeline" aria-label="投递会话">
+                <option value="main_private">主伴侣私聊</option>
+                <option value="companion_private">第二伴侣私聊</option>
+                <option value="group">三人聊天</option>
+              </select>
+              <button id="addSchedule" class="primary">新增日程</button>
+            </div>
+            <section id="scheduleList" class="content-list"></section>
+          </div>
+          <div id="supervisionPanel" class="subpage">
+            <p id="supervisionReadiness" class="media-state"></p>
+            <p class="checkpoint">这里只显示手机当前状态，不提供配置或控制入口。</p>
+            <section id="supervisionList" class="content-list"></section>
+          </div>
+        </section>
+
+        <section id="settingsPage" class="app-page" data-page-panel="settings">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">归巢独立配置</p>
+              <h2>设置</h2>
+            </div>
+          </div>
+          <label class="field">
+            <span>配置对象</span>
+            <select id="settingsOwner"></select>
+          </label>
+          <label class="field">
+            <span>云线路</span>
+            <select id="routeSelect"></select>
+          </label>
+          <label class="field">
+            <span>模型</span>
+            <select id="modelSelect"></select>
+          </label>
+          <label class="toggle-row">
+            <span>TTS 语音</span>
+            <input id="ttsEnabled" type="checkbox">
+          </label>
+          <button id="return" class="danger-outline">返回正常模式</button>
+        </section>
+      </div>
+
+      <nav class="bottom-nav" aria-label="归巢页面">
+        <button data-page="chat" class="active"><span>聊</span><small>聊天</small></button>
+        <button data-page="memory"><span>忆</span><small>记忆</small></button>
+        <button data-page="schedule"><span>程</span><small>日程</small></button>
+        <button data-page="settings"><span>设</span><small>设置</small></button>
+      </nav>
+    </section>
+
+    <aside id="returnPanel" class="return-panel hidden">
+      <div class="section-header">
+        <div>
+          <p class="eyebrow">手动返回</p>
+          <h2>回传归巢数据</h2>
+        </div>
+        <button id="closeReturnPanel">继续使用归巢</button>
+      </div>
+      <ol id="returnPhases" class="return-phases">
+        <li data-return-phase="freezing">冻结本地新增内容</li>
+        <li data-return-phase="building">生成不可变回归包</li>
+        <li data-return-phase="uploading">上传到服务器隔离区</li>
+        <li data-return-phase="planning">预演并检查冲突</li>
+        <li data-return-phase="applying">小批量写入并核验回执</li>
+      </ol>
+      <p id="returnStatus" class="status"></p>
+      <section id="returnCounts" class="summary"></section>
+      <p id="returnFailure" class="warning"></p>
+      <div class="actions">
+        <button id="startReturnSync" class="primary">开始回传并返回</button>
+        <button id="retryReturnSync" class="primary hidden">手动重试</button>
+        <button id="returnWithoutSync" class="danger hidden">保留数据，直接返回正常模式</button>
+      </div>
+      <p class="checkpoint">回传失败不会自动重试；直接返回也会保留本机回归包，之后可再次手动回传。</p>
+    </aside>
+  </main>
+  <script src="homecoming.js"></script>
+</body>
+</html>

@@ -24,7 +24,7 @@ from capabilities import (
 from app_supervision_ai import APP_COMMAND_PATTERN
 from memory import (
     instant_digest, recall_memories, build_surfacing_memories,
-    fetch_source_details, _memory_line_with_evidence,
+    fetch_source_details, format_recalled_memories_for_prompt,
 )
 
 # ── 工具指令正则（供调用方做后处理用，集中定义） ──
@@ -403,8 +403,16 @@ async def build_memory_blocks(
 
     # 背景记忆
     if surfaced:
-        unresolved_lines = [f"📌 {_memory_line_with_evidence(m)[2:]}（还没做/还没去）" for m in surfaced if m.get("unresolved")]
-        normal_lines = [_memory_line_with_evidence(m) for m in surfaced if not m.get("unresolved")]
+        unresolved_lines = [
+            f"📌 {format_recalled_memories_for_prompt([m])[2:]}（还没做/还没去）"
+            for m in surfaced
+            if m.get("unresolved")
+        ]
+        normal_lines = [
+            format_recalled_memories_for_prompt([m])
+            for m in surfaced
+            if not m.get("unresolved")
+        ]
         mem_text = "\n".join(unresolved_lines + normal_lines)
         time_block += f"\n\n[背景记忆]\n以下是你记得的近期事件和需要关注的事项，在对话中如果有关联可以自然提起：\n{mem_text}"
 
@@ -424,7 +432,7 @@ async def build_memory_blocks(
             recalled = recalled[:8]
 
     if recalled:
-        mem_lines = "\n".join([_memory_line_with_evidence(m, 200) for m in recalled])
+        mem_lines = format_recalled_memories_for_prompt(recalled, limit=200)
         memory_block = f"[相关记忆]\n你脑海中与当前话题相关的记忆：\n{mem_lines}"
         if is_search_needed or digest_result.get("require_detail"):
             detail_text = ""
@@ -521,63 +529,128 @@ def _sanitize_timeline_content(content: str) -> str:
     return cleaned.strip()
 
 
-async def fetch_merged_timeline(
+def _is_model_visible_timeline_message(message: dict) -> bool:
+    """Return whether render_merged_timeline can retain this transcript row."""
+    if message.get("sender") != "system":
+        return True
+    attachments = _parse_timeline_attachments(message.get("attachments", []))
+    explicitly_model_visible = any(
+        isinstance(attachment, dict)
+        and attachment.get("type") == "system_model_context"
+        for attachment in attachments
+    )
+    if explicitly_model_visible:
+        return True
+    content = _sanitize_timeline_content(message.get("content", ""))
+    return any(keyword in content for keyword in SYSTEM_MSG_CONTEXT_KEYWORDS)
+
+
+def _merged_timeline_sources(
     who: str,
-    limit: int,
     *,
     conv_id: str = None,
     room_id: str = None,
+    since_ts: float = None,
+    until_ts: float = None,
+) -> list[tuple[str, str, str, list[str], list]]:
+    """Return the visible timeline sources and their bound filter parameters."""
+    sources = []
+
+    if who == "aion":
+        conditions = ["role IN ('user','assistant','system')"]
+        params = []
+        if conv_id:
+            conditions.append("conv_id=?")
+            params.append(conv_id)
+        if since_ts is not None:
+            conditions.append("created_at >= ?")
+            params.append(since_ts)
+        if until_ts is not None:
+            conditions.append("created_at <= ?")
+            params.append(until_ts)
+        sources.append((
+            "private", "role", "FROM messages", conditions, params,
+        ))
+    elif who == "connor":
+        conditions = ["r.type = 'connor_1v1'"]
+        params = []
+        if since_ts is not None:
+            conditions.append("m.created_at >= ?")
+            params.append(since_ts)
+        if until_ts is not None:
+            conditions.append("m.created_at <= ?")
+            params.append(until_ts)
+        sources.append((
+            "private", "m.sender", "FROM chatroom_messages m "
+            "JOIN chatroom_rooms r ON r.id = m.room_id", conditions, params,
+        ))
+
+    conditions = ["r.type = 'group'"]
+    params = []
+    if room_id:
+        conditions.append("m.room_id=?")
+        params.append(room_id)
+    if since_ts is not None:
+        conditions.append("m.created_at >= ?")
+        params.append(since_ts)
+    if until_ts is not None:
+        conditions.append("m.created_at <= ?")
+        params.append(until_ts)
+    sources.append((
+        "group", "m.sender", "FROM chatroom_messages m "
+        "JOIN chatroom_rooms r ON r.id = m.room_id", conditions, params,
+    ))
+    return sources
+
+
+async def _load_model_visible_merged_timeline(
+    who: str,
+    *,
+    conv_id: str = None,
+    room_id: str = None,
+    since_ts: float = None,
+    until_ts: float = None,
 ) -> list[dict]:
-    """
-    从私聊和群聊同时获取消息，按时间排序合并为统一时间线。
-
-    Args:
-        who: "aion" — 看到 Aion 私聊 + 群聊；"connor" — 看到 Connor 1v1 + 群聊
-        limit: 返回的最大消息总数
-        conv_id: Aion 私聊的 conv_id（可选，为 None 时自动取最近会话）
-        room_id: 群聊房间 ID（可选，为 None 时自动取最近群聊房间）
-
-    Returns:
-        按 created_at 升序排列的消息列表，每条包含:
-        source ("private"/"group"), sender, content, created_at, attachments
-    """
-    # Private chat respects conv_id when provided; group chat remains shared.
+    """Load one bounded, model-visible merged transcript without limiting it."""
     results = []
 
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
+        source_filters = {
+            source: (conditions, params)
+            for source, _, _, conditions, params in _merged_timeline_sources(
+                who,
+                conv_id=conv_id,
+                room_id=room_id,
+                since_ts=since_ts,
+                until_ts=until_ts,
+            )
+        }
 
         # ── 私聊消息 ──
         if who == "aion":
-            if conv_id:
-                cur = await db.execute(
-                    "SELECT role AS sender, content, created_at, attachments "
-                    "FROM messages "
-                    "WHERE conv_id=? AND role IN ('user','assistant','system') "
-                    "ORDER BY created_at DESC LIMIT ?",
-                    (conv_id, limit),
-                )
-            else:
-                cur = await db.execute(
-                    "SELECT role AS sender, content, created_at, attachments "
-                    "FROM messages "
-                    "WHERE role IN ('user','assistant','system') "
-                    "ORDER BY created_at DESC LIMIT ?",
-                    (limit,),
-                )
+            private_conditions, private_params = source_filters["private"]
+            cur = await db.execute(
+                "SELECT role AS sender, content, created_at, attachments "
+                "FROM messages "
+                f"WHERE {' AND '.join(private_conditions)} "
+                "ORDER BY created_at",
+                private_params,
+            )
             for r in await cur.fetchall():
                 d = dict(r)
                 d["source"] = "private"
                 results.append(d)
 
         elif who == "connor":
+            private_conditions, private_params = source_filters["private"]
             cur = await db.execute(
                 "SELECT m.sender, m.content, m.created_at, m.attachments "
                 "FROM chatroom_messages m "
                 "JOIN chatroom_rooms r ON r.id = m.room_id "
-                "WHERE r.type = 'connor_1v1' "
-                "ORDER BY m.created_at DESC LIMIT ?",
-                (limit,),
+                f"WHERE {' AND '.join(private_conditions)} "
+                "ORDER BY m.created_at",
+                private_params,
             )
             for r in await cur.fetchall():
                 d = dict(r)
@@ -585,22 +658,78 @@ async def fetch_merged_timeline(
                 results.append(d)
 
         # ── 群聊消息 ──
+        group_conditions, group_params = source_filters["group"]
         cur = await db.execute(
             "SELECT m.sender, m.content, m.created_at, m.attachments "
             "FROM chatroom_messages m "
             "JOIN chatroom_rooms r ON r.id = m.room_id "
-            "WHERE r.type = 'group' "
-            "ORDER BY m.created_at DESC LIMIT ?",
-            (limit,),
+            f"WHERE {' AND '.join(group_conditions)} "
+            "ORDER BY m.created_at",
+            group_params,
         )
         for r in await cur.fetchall():
             d = dict(r)
             d["source"] = "group"
             results.append(d)
 
-    # 按时间升序，取最近 N 条
     results.sort(key=lambda x: x["created_at"])
-    return results[-limit:] if len(results) > limit else results
+    return [
+        message
+        for message in results
+        if _is_model_visible_timeline_message(message)
+    ]
+
+
+async def fetch_merged_timeline(
+    who: str,
+    limit: int,
+    *,
+    conv_id: str = None,
+    room_id: str = None,
+    since_ts: float = None,
+    until_ts: float = None,
+) -> list[dict]:
+    """
+    从私聊和群聊同时获取最近的模型可见消息，按时间升序返回。
+
+    System-message eligibility is applied before the global latest-N limit,
+    and since/until bounds describe one stable learning-day snapshot.
+    """
+    normalized_limit = max(0, int(limit))
+    if normalized_limit == 0:
+        return []
+    results = await _load_model_visible_merged_timeline(
+        who,
+        conv_id=conv_id,
+        room_id=room_id,
+        since_ts=since_ts,
+        until_ts=until_ts,
+    )
+    return (
+        results[-normalized_limit:]
+        if len(results) > normalized_limit
+        else results
+    )
+
+
+async def count_merged_timeline(
+    who: str,
+    *,
+    conv_id: str = None,
+    room_id: str = None,
+    since_ts: float = None,
+    until_ts: float = None,
+) -> int:
+    """Count the same bounded, model-visible rows fetch_merged_timeline uses."""
+    return len(
+        await _load_model_visible_merged_timeline(
+            who,
+            conv_id=conv_id,
+            room_id=room_id,
+            since_ts=since_ts,
+            until_ts=until_ts,
+        )
+    )
 
 
 def render_merged_timeline(
@@ -619,6 +748,11 @@ def render_merged_timeline(
 
     返回 [{"role": ..., "content": ..., "attachments": ...}]
     """
+    merged = [
+        message
+        for message in merged
+        if _is_model_visible_timeline_message(message)
+    ]
     if not merged:
         return []
 
@@ -667,15 +801,6 @@ def render_merged_timeline(
 
         # ── 说话人映射：所有历史记录都作为 user 侧 transcript 提供，避免多 assistant 污染输出格式 ──
         if sender == "system":
-            explicitly_model_visible = any(
-                isinstance(attachment, dict)
-                and attachment.get("type") == "system_model_context"
-                for attachment in message_attachments
-            )
-            if not explicitly_model_visible and not any(
-                kw in content for kw in SYSTEM_MSG_CONTEXT_KEYWORDS
-            ):
-                continue
             speaker = "系统事件"
         elif sender == "user":
             speaker = user_name

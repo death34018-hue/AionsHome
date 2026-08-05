@@ -1198,6 +1198,7 @@ body[data-theme="light"] .link-preview-card:hover {
 .system-event-msg {
   position: relative;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 4px;
@@ -1210,6 +1211,12 @@ body[data-theme="light"] .link-preview-card:hover {
   margin: 4px auto;
   user-select: none;
   -webkit-user-select: none;
+}
+.system-event-line {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
 }
 .system-event-text {
   display: block;
@@ -1238,6 +1245,53 @@ body[data-theme="light"] .link-preview-card:hover {
   right: 0;
   transform: none;
   top: calc(100% + 2px);
+}
+.monitor-camera-snapshot {
+  width: min(160px, 52vw);
+  margin-top: 5px;
+  color: var(--text3);
+  font-size: 12px;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.monitor-camera-snapshot summary {
+  box-sizing: border-box;
+  width: 100%;
+  cursor: pointer;
+  list-style: none;
+  padding: 4px 8px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.10);
+  text-align: center;
+  white-space: nowrap;
+}
+.monitor-camera-snapshot summary::-webkit-details-marker { display: none; }
+.monitor-camera-snapshot summary::after { content: " ▾"; }
+.monitor-camera-snapshot[open] summary::after { content: " ▴"; }
+.monitor-camera-snapshot-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 6px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(0,0,0,0.18);
+}
+.monitor-camera-snapshot-frame img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 160px;
+  max-height: 120px;
+  object-fit: contain;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body[data-theme="light"] .monitor-camera-snapshot summary {
+  background: rgba(0,0,0,0.04);
+  border-color: rgba(0,0,0,0.08);
 }
 
 .cr-syslog-overlay {

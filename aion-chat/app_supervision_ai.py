@@ -16,7 +16,16 @@ from capabilities import is_capability_enabled
 
 
 APP_COMMAND_PATTERN = re.compile(
+    r"\[(?:APP_(?:LOCK|TEMP_UNLOCK|UNLOCK)\s*:\s*[^\]]*"
+    r"|DEVICE_(?:LOCK|TEMP_UNLOCK|UNLOCK)(?:\s*:\s*[^\]]*)?)\]",
+    re.IGNORECASE,
+)
+APP_DIRECTIVE_PATTERN = re.compile(
     r"\[APP_(LOCK|TEMP_UNLOCK|UNLOCK)\s*:\s*([^\]]*)\]",
+    re.IGNORECASE,
+)
+DEVICE_DIRECTIVE_PATTERN = re.compile(
+    r"\[DEVICE_(LOCK|TEMP_UNLOCK|UNLOCK)(?:\s*:\s*([^\]]*))?\]",
     re.IGNORECASE,
 )
 
@@ -295,10 +304,24 @@ def format_app_supervision_result_message(
         "lock": "锁定",
         "temp_unlock": "暂时解锁",
         "unlock": "解锁",
+        "device_lock": "锁定",
+        "device_temp_unlock": "暂时解锁",
+        "device_unlock": "解锁",
     }
     verb = verbs.get(action, "处理")
+    if str(action).startswith("device_"):
+        group_name = "手机"
     if success:
-        duration = f" {int(command['minutes'])} 分钟" if action in {"lock", "temp_unlock"} else ""
+        duration = (
+            f" {int(command['minutes'])} 分钟"
+            if action in {
+                "lock",
+                "temp_unlock",
+                "device_lock",
+                "device_temp_unlock",
+            }
+            else ""
+        )
         return f"【{role_name}】{verb}了{group_name}{duration}"
     clean_reason = str(reason or "手机拒绝执行").strip()
     return f"【{role_name}】未能{verb}{group_name}：{clean_reason}"
@@ -316,26 +339,62 @@ def parse_app_supervision_command(
     selected: dict | None = None
     if enabled:
         for match in APP_COMMAND_PATTERN.finditer(source):
-            action = match.group(1).upper()
-            fields = [part.strip() for part in match.group(2).split("|")]
+            raw_directive = match.group(0)
+            app_match = APP_DIRECTIVE_PATTERN.fullmatch(raw_directive)
+            if app_match:
+                action = app_match.group(1).upper()
+                fields = [part.strip() for part in app_match.group(2).split("|")]
+                if action == "UNLOCK":
+                    if len(fields) == 1 and fields[0] in valid_ids:
+                        selected = {"action": "unlock", "groupId": fields[0]}
+                        break
+                    continue
+                if len(fields) != 3 or fields[0] not in valid_ids:
+                    continue
+                try:
+                    minutes = int(fields[1])
+                except (TypeError, ValueError):
+                    continue
+                if str(minutes) != fields[1] or not 1 <= minutes <= 120:
+                    continue
+                selected = {
+                    "action": "lock" if action == "LOCK" else "temp_unlock",
+                    "groupId": fields[0],
+                    "minutes": minutes,
+                    "message": fields[2],
+                }
+                break
+
+            device_match = DEVICE_DIRECTIVE_PATTERN.fullmatch(raw_directive)
+            if not device_match:
+                continue
+            action = device_match.group(1).upper()
+            payload = device_match.group(2)
             if action == "UNLOCK":
-                if len(fields) == 1 and fields[0] in valid_ids:
-                    selected = {"action": "unlock", "groupId": fields[0]}
+                if payload is None:
+                    selected = {"action": "device_unlock", "groupId": ""}
                     break
                 continue
-            if len(fields) != 3 or fields[0] not in valid_ids:
+            if payload is None:
+                continue
+            fields = [part.strip() for part in payload.split("|")]
+            if len(fields) != 2:
                 continue
             try:
-                minutes = int(fields[1])
+                minutes = int(fields[0])
             except (TypeError, ValueError):
                 continue
-            if str(minutes) != fields[1] or not 1 <= minutes <= 120:
+            if str(minutes) != fields[0] or not 1 <= minutes <= 120:
                 continue
             selected = {
-                "action": "lock" if action == "LOCK" else "temp_unlock",
-                "groupId": fields[0],
+                "action": (
+                    "device_lock"
+                    if action == "LOCK"
+                    else "device_temp_unlock"
+                ),
+                "groupId": "",
                 "minutes": minutes,
-                "message": fields[2],
+                "message": fields[1],
             }
             break
     cleaned = APP_COMMAND_PATTERN.sub("", source).strip()
@@ -362,16 +421,41 @@ def build_app_supervision_ability_text(
         "[APP_LOCK:groupId|分钟|锁屏提示] — 锁定应用组。",
         "[APP_TEMP_UNLOCK:groupId|分钟|解锁说明] — 暂时解锁应用组。",
         "[APP_UNLOCK:groupId] — 解除应用组锁定。",
-        "每条回复最多使用一条应用监管指令；分钟必须是 1–120 的整数。",
+        "[DEVICE_LOCK:分钟|锁屏提示] — 锁定整台手机的普通应用。",
+        "[DEVICE_TEMP_UNLOCK:分钟|解锁说明] — 暂时解除整机锁定。",
+        "[DEVICE_UNLOCK] — 解除整机锁定。",
+        "每条回复最多使用一条监管指令；分钟必须是 1–120 的整数。",
         "你可以操作任意应用组。只使用下方稳定 groupId，不要使用包名或猜测缩写。",
+        "当用户绕开单个应用锁，连续切换多个娱乐应用时，可以直接使用整机锁定。"
+        "整机锁定仍允许本应用、来电、通话和紧急呼叫。",
     ]
 
     groups = [item for item in snapshot.get("groups", []) if isinstance(item, dict)]
-    if not groups:
+    device = snapshot.get("deviceLock")
+    device = device if isinstance(device, dict) else None
+    if not groups and not device:
         lines.append("当前还没有手机上报的应用监管状态。")
         return "\n".join(lines)
 
     lines.append(f"当前缓存状态（快照于 {age_seconds} 秒前收到）：")
+    if device:
+        state = str(device.get("effectiveState") or "NORMAL")
+        directive = (
+            device.get("temporaryUnlock")
+            if state == "TEMPORARILY_UNLOCKED"
+            else device.get("lock")
+        )
+        directive = directive if isinstance(directive, dict) else {}
+        role_id = str(directive.get("roleId") or "未指定")
+        message = str(directive.get("message") or "").strip()
+        deadline_wall_ms = float(directive.get("deadlineWallMs") or 0)
+        remaining_ms = max(0.0, deadline_wall_ms - current_time * 1_000)
+        details = f"，负责角色 {role_id}"
+        if deadline_wall_ms:
+            details += f"，剩余 {_minutes(remaining_ms)}"
+        if message:
+            details += f"，提示 {message}"
+        lines.append(f"- 整机状态 {state}{details}")
     elapsed_since_snapshot_ms = max(0.0, current_time - received_at) * 1_000 if received_at else 0.0
     for group in groups:
         group_id = str(group.get("groupId") or "").strip()

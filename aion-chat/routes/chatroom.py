@@ -50,7 +50,14 @@ from camera import cam, CAM_CHECK_CMD
 from luckin import handle_luckin_commands, luckin_payment_attachments
 from link_preview import build_link_preview_attachments
 from song_gen import clean_song_visible_reply
+from stream_reply import resolve_stream_failure
+from stream_safety import (
+    CHAT_STREAM_POLICY,
+    StreamSafetyResult,
+    consume_safe_stream,
+)
 from band_commands import process_band_vibration, with_band_vibration_attachment
+from hug_pillow_commands import process_hug_pillow_commands
 from app_supervision_ai import (
     queue_app_supervision_reply_command,
     broadcast_app_supervision_command,
@@ -70,6 +77,31 @@ from web_search import (
 )
 
 router = APIRouter(prefix="/api/chatroom", tags=["chatroom"])
+
+
+async def _consume_chatroom_stream(
+    source,
+    queue,
+    *,
+    chunk_type: str,
+) -> StreamSafetyResult:
+    stream_filter = WebCommandStreamFilter()
+
+    async def on_commit(chunk: str) -> None:
+        visible = stream_filter.feed(chunk)
+        if visible:
+            await queue.put({"type": chunk_type, "content": visible})
+
+    result = await consume_safe_stream(source, CHAT_STREAM_POLICY, on_commit)
+    visible_tail = stream_filter.flush()
+    if visible_tail:
+        await queue.put({"type": chunk_type, "content": visible_tail})
+    if result.notice:
+        await queue.put({
+            "type": chunk_type,
+            "content": f"\n\n[{result.notice}]",
+        })
+    return result
 
 
 def _done_streaming_response() -> StreamingResponse:
@@ -236,6 +268,58 @@ async def _chatroom_sys_msg(room_id: str, text: str, _q: asyncio.Queue, after_ms
     msg = {"id": msg_id, "room_id": room_id, "sender": "system", "content": text, "created_at": now, "attachments": order_atts}
     await _q.put({"type": "system_msg", "message": msg})
     await broadcast_synced(manager, {"type": "chatroom_msg_created", "data": msg})
+    return msg
+
+
+async def _append_system_message_attachment(
+    room_id: str,
+    msg_id: str,
+    attachment: dict | None,
+) -> dict | None:
+    if not room_id or not msg_id or not attachment:
+        return None
+    async with get_db() as db:
+        cur = await db.execute(
+            """
+            SELECT content, created_at, attachments
+            FROM chatroom_messages
+            WHERE id=? AND room_id=? AND sender='system'
+            """,
+            (msg_id, room_id),
+        )
+        row = await cur.fetchone()
+        if not row:
+            return None
+        try:
+            attachments = json.loads(row[2] or "[]")
+        except (TypeError, json.JSONDecodeError):
+            attachments = []
+        if not isinstance(attachments, list):
+            attachments = []
+        if attachment not in attachments:
+            attachments.append(attachment)
+            await db.execute(
+                "UPDATE chatroom_messages SET attachments=? WHERE id=? AND room_id=?",
+                (
+                    json.dumps(attachments, ensure_ascii=False),
+                    msg_id,
+                    room_id,
+                ),
+            )
+            await db.commit()
+    msg = {
+        "id": msg_id,
+        "room_id": room_id,
+        "sender": "system",
+        "content": row[0],
+        "created_at": row[1],
+        "attachments": attachments,
+    }
+    await broadcast_synced(
+        manager,
+        {"type": "chatroom_msg_updated", "data": msg},
+    )
+    return msg
 
 
 def _name_for_identity(identity: str) -> str:
@@ -451,6 +535,17 @@ async def _process_chatroom_commands(full_text: str, room_id: str, who: str, msg
         source_msg_id=msg_id,
         sender=who_identity,
     )
+    full_text = await process_hug_pillow_commands(
+        full_text,
+        source_type="chatroom",
+        source_id=room_id,
+        source_msg_id=msg_id,
+        sender=who_identity,
+        sender_name=who_label,
+        save_system_message=lambda text: _chatroom_sys_msg(
+            room_id, text, _q, after_msg_id=msg_id
+        ),
+    )
 
     # ── 点歌 ──
     music_matches = MUSIC_CMD_PATTERN.findall(full_text)
@@ -523,8 +618,13 @@ async def _process_chatroom_commands(full_text: str, room_id: str, who: str, msg
     cam_triggered = CAM_CHECK_CMD in full_text
     if cam_triggered:
         full_text = full_text.replace(CAM_CHECK_CMD, "")
-        await _chatroom_sys_msg(room_id, f"📷 {who_label}查看了监控", _q, after_msg_id=msg_id)
-        triggered["cam_check"] = True
+        cam_notice = await _chatroom_sys_msg(
+            room_id,
+            f"📷 {who_label}查看了监控",
+            _q,
+            after_msg_id=msg_id,
+        )
+        triggered["cam_check"] = cam_notice["id"]
 
     # ── 查看动态 ──
     activity_match = ACTIVITY_CHECK_PATTERN.search(full_text)
@@ -777,7 +877,14 @@ def _luckin_attachments_from_triggered(triggered: dict) -> list[dict]:
 def _fire_chatroom_followups(triggered: dict, room_id: str, sender: str, model_key: str, trigger_msg_id: str | None = None):
     """根据 _process_chatroom_commands 返回的 triggered dict，启动异步后续任务"""
     if triggered.get("cam_check"):
-        asyncio.create_task(_chatroom_cam_check(room_id, sender, model_key))
+        asyncio.create_task(
+            _chatroom_cam_check(
+                room_id,
+                sender,
+                model_key,
+                system_msg_id=str(triggered["cam_check"]),
+            )
+        )
     if triggered.get("activity"):
         asyncio.create_task(_chatroom_activity_check(room_id, sender, model_key, triggered["activity"]))
     if triggered.get("poi"):
@@ -799,32 +906,65 @@ async def _broadcast_chatroom_ai_status(room_id: str, sender: str, text: str):
     })
 
 
-async def _chatroom_cam_check(room_id: str, sender: str, model_key: str, delay: float = 5.0):
+async def _chatroom_cam_check(
+    room_id: str,
+    sender: str,
+    model_key: str,
+    delay: float = 5.0,
+    system_msg_id: str = "",
+):
     """聊天室版监控查看：播放提示音 → 延迟截图 → AI 追加回复到聊天室"""
     from config import load_worldbook, SETTINGS, UPLOADS_DIR, SCREENSHOTS_DIR
-    from camera import cam
+    from camera import cam, build_monitor_alert_data
 
     # 播放摄像头调起提示音，给用户反应时间
-    await manager.broadcast({"type": "monitor_alert", "data": {"content": "监控查看"}})
-    await asyncio.sleep(delay)
+    await manager.broadcast({
+        "type": "monitor_alert",
+        "data": build_monitor_alert_data("监控查看"),
+    })
+    if cam.cfg.get("active_source", "local") != "phone":
+        await asyncio.sleep(delay)
 
     await _broadcast_chatroom_ai_status(room_id, sender, "正在获取监控画面...")
 
-    jpg_bytes = cam.get_frame_jpeg(force_pc_screen=True)
-    frame_source = "camera"
-    if not jpg_bytes:
-        jpg_bytes = cam.get_screen_only_jpeg(force_pc_screen=True)
-        frame_source = "device"
-    if not jpg_bytes:
-        await _save_msg(room_id, "system", "未获取到可用监控画面（摄像头、电脑屏幕和手机屏幕均不可用）。", auto_tts=False)
-        return
-
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    fname = f"cam_check_{ts}.jpg"
-    fpath = UPLOADS_DIR / fname
-    fpath.write_bytes(jpg_bytes)
-    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-    (SCREENSHOTS_DIR / fname).write_bytes(jpg_bytes)
+    from camera import acquire_monitor_image, save_monitor_camera_snapshot
+    image_result = await acquire_monitor_image(
+        "ai_cam_check",
+        force_pc_screen=True,
+    )
+    snapshot_attachment = save_monitor_camera_snapshot(
+        image_result.camera_jpeg,
+        "chatroom_cam_check",
+    )
+    if system_msg_id:
+        if snapshot_attachment:
+            await _append_system_message_attachment(
+                room_id,
+                system_msg_id,
+                snapshot_attachment,
+            )
+    else:
+        system_atts = [{"type": "system_model_context"}]
+        if snapshot_attachment:
+            system_atts.append(snapshot_attachment)
+        notice = await _save_msg(
+            room_id,
+            "system",
+            f"📷 {_name_for_identity(sender)}查看了监控",
+            attachments=system_atts,
+            auto_tts=False,
+        )
+        system_msg_id = notice["id"]
+    jpg_bytes = image_result.jpeg
+    frame_source = image_result.source
+    fname = None
+    if jpg_bytes:
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        fname = f"cam_check_{ts}_{time.time_ns()}.jpg"
+        fpath = UPLOADS_DIR / fname
+        fpath.write_bytes(jpg_bytes)
+        SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+        (SCREENSHOTS_DIR / fname).write_bytes(jpg_bytes)
 
     wb = load_worldbook()
     user_name = wb.get("user_name", "用户")
@@ -842,6 +982,8 @@ async def _chatroom_cam_check(room_id: str, sender: str, model_key: str, delay: 
     )
     if frame_source == "device":
         cam_prompt += "本次没有可用摄像头画面，系统改用电脑屏幕和/或手机屏幕截图。"
+    if image_result.no_image_context:
+        cam_prompt += image_result.no_image_context
 
     prefix_msgs = []
     if wb.get("ai_persona") and sender == "aion":
@@ -851,11 +993,13 @@ async def _chatroom_cam_check(room_id: str, sender: str, model_key: str, delay: 
         prefix_msgs.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
         prefix_msgs.append({"role": "assistant", "content": "收到，我会记住你的信息。"})
 
-    messages = prefix_msgs + recent + [
-        {"role": "user", "content": cam_prompt, "attachments": [f"/uploads/{fname}"]}
-    ]
+    cam_message = {"role": "user", "content": cam_prompt}
+    if fname:
+        cam_message["attachments"] = [f"/uploads/{fname}"]
+    messages = prefix_msgs + recent + [cam_message]
 
     full_text = ""
+    tts_from_model = True
     try:
         if sender == "aion":
             _temp = SETTINGS.get("temperature")
@@ -871,7 +1015,9 @@ async def _chatroom_cam_check(room_id: str, sender: str, model_key: str, delay: 
                     continue
                 full_text += chunk
     except Exception as e:
-        full_text = f"[监控查看失败] {e}"
+        resolution = resolve_stream_failure(full_text, e, "监控查看失败")
+        full_text = resolution.visible_text
+        tts_from_model = resolution.had_partial_text
 
     if not full_text.strip():
         await _save_msg(room_id, "system", "监控画面已获取，但模型没有返回分析结果。", auto_tts=False)
@@ -887,7 +1033,7 @@ async def _chatroom_cam_check(room_id: str, sender: str, model_key: str, delay: 
         ai_msg_id=reply_msg_id,
     )
     full_text = _normalize_cli_bubble_breaks(_visible_chatroom_text(full_text), model_key)
-    await _save_msg(room_id, sender, full_text, msg_id=reply_msg_id)
+    await _save_msg(room_id, sender, full_text, msg_id=reply_msg_id, auto_tts=tts_from_model)
     print(f"[CHATROOM_CAM_CHECK] {sender} 查看监控完成, room={room_id}")
 
 
@@ -928,6 +1074,7 @@ async def _chatroom_activity_check(room_id: str, sender: str, model_key: str, n:
     messages = prefix_msgs + recent + [{"role": "user", "content": activity_prompt}]
 
     full_text = ""
+    tts_from_model = True
     try:
         if sender == "aion":
             _temp = SETTINGS.get("temperature")
@@ -941,7 +1088,9 @@ async def _chatroom_activity_check(room_id: str, sender: str, model_key: str, n:
                     continue
                 full_text += chunk
     except Exception as e:
-        full_text = f"[查看动态失败] {e}"
+        resolution = resolve_stream_failure(full_text, e, "查看动态失败")
+        full_text = resolution.visible_text
+        tts_from_model = resolution.had_partial_text
 
     if not full_text.strip():
         return
@@ -956,7 +1105,7 @@ async def _chatroom_activity_check(room_id: str, sender: str, model_key: str, n:
         ai_msg_id=reply_msg_id,
     )
     full_text = _normalize_cli_bubble_breaks(_visible_chatroom_text(full_text), model_key)
-    await _save_msg(room_id, sender, full_text, msg_id=reply_msg_id)
+    await _save_msg(room_id, sender, full_text, msg_id=reply_msg_id, auto_tts=tts_from_model)
     print(f"[CHATROOM_ACTIVITY] {sender} 查看动态完成, room={room_id}, n={n}")
 
 
@@ -1044,6 +1193,7 @@ async def _chatroom_poi_check(room_id: str, sender: str, model_key: str, categor
     messages = prefix_msgs + recent + [{"role": "user", "content": poi_prompt}]
 
     full_text = ""
+    tts_from_model = True
     try:
         if sender == "aion":
             _temp = SETTINGS.get("temperature")
@@ -1057,7 +1207,9 @@ async def _chatroom_poi_check(room_id: str, sender: str, model_key: str, categor
                     continue
                 full_text += chunk
     except Exception as e:
-        full_text = f"[周边搜索完成但回复生成失败] {e}"
+        resolution = resolve_stream_failure(full_text, e, "周边搜索完成但回复生成失败")
+        full_text = resolution.visible_text
+        tts_from_model = resolution.had_partial_text
 
     if not full_text.strip():
         return
@@ -1072,7 +1224,7 @@ async def _chatroom_poi_check(room_id: str, sender: str, model_key: str, categor
         ai_msg_id=reply_msg_id,
     )
     full_text = _normalize_cli_bubble_breaks(_visible_chatroom_text(full_text), model_key)
-    await _save_msg(room_id, sender, full_text, msg_id=reply_msg_id)
+    await _save_msg(room_id, sender, full_text, msg_id=reply_msg_id, auto_tts=tts_from_model)
     searched_cats = "、".join(c.strip() for c in categories)
     print(f"[CHATROOM_POI] {sender} 搜索完成, room={room_id}, categories={searched_cats}")
 
@@ -1122,6 +1274,7 @@ async def _chatroom_web_search(room_id: str, sender: str, model_key: str, payloa
     messages = prefix_msgs + recent + [{"role": "user", "content": web_prompt}]
 
     full_text = ""
+    tts_from_model = True
     try:
         if sender == "aion":
             _temp = SETTINGS.get("temperature")
@@ -1135,7 +1288,9 @@ async def _chatroom_web_search(room_id: str, sender: str, model_key: str, payloa
                     continue
                 full_text += chunk
     except Exception as e:
-        full_text = f"[联网搜索完成但回复生成失败] {e}"
+        resolution = resolve_stream_failure(full_text, e, "联网搜索完成但回复生成失败")
+        full_text = resolution.visible_text
+        tts_from_model = resolution.had_partial_text
 
     if not full_text.strip():
         return
@@ -1152,7 +1307,7 @@ async def _chatroom_web_search(room_id: str, sender: str, model_key: str, payloa
     full_text = _normalize_cli_bubble_breaks(_visible_chatroom_text(clean_web_command_text(full_text)), model_key)
     if not full_text.strip():
         return
-    await _save_msg(room_id, sender, full_text, msg_id=reply_msg_id)
+    await _save_msg(room_id, sender, full_text, msg_id=reply_msg_id, auto_tts=tts_from_model)
     print(f"[CHATROOM_WEB_SEARCH] {sender} 搜索完成, room={room_id}, searches={len(searches)}, extracts={len(extracts)}")
 
 
@@ -2766,18 +2921,23 @@ async def edit_resend_chatroom_message(msg_id: str, body: MsgEditResend):
             return {"error": "only user messages can be edited"}
         room_id = orig["room_id"]
         msg_created_at = orig["created_at"]
-        await db.execute("UPDATE chatroom_messages SET content=? WHERE id=?", (body.content, msg_id))
+        resent_at = time.time()
         cur2 = await db.execute(
             "SELECT id FROM chatroom_messages WHERE room_id=? AND created_at>?",
             (room_id, msg_created_at),
         )
         later_msgs = await cur2.fetchall()
         await db.execute("DELETE FROM chatroom_messages WHERE room_id=? AND created_at>?", (room_id, msg_created_at))
-        await db.execute("UPDATE chatroom_rooms SET updated_at=? WHERE id=?", (time.time(), room_id))
+        await db.execute(
+            "UPDATE chatroom_messages SET content=?, created_at=? WHERE id=?",
+            (body.content, resent_at, msg_id),
+        )
+        await db.execute("UPDATE chatroom_rooms SET updated_at=? WHERE id=?", (resent_at, room_id))
         await db.commit()
 
     updated = dict(orig)
     updated["content"] = body.content
+    updated["created_at"] = resent_at
     try:
         updated["attachments"] = json.loads(updated.get("attachments") or "[]") if updated.get("attachments") else []
     except Exception:
@@ -2930,26 +3090,28 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
     has_reply = False
     has_error = False
     error_text = None
+    tts_from_model = True
     usage_meta: dict = {}
-    web_stream_filter = WebCommandStreamFilter()
-    try:
+
+    async def content_stream():
+        nonlocal has_reply
         async for chunk in _stream_connor_model(connor_messages, connor_model_key, usage_meta):
             if chunk.startswith(CLI_STATUS_PREFIX):
                 await _q.put({"type": "connor_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                 continue
             has_reply = True
-            full_text += chunk
-            visible_chunk = web_stream_filter.feed(chunk)
-            if visible_chunk:
-                await _q.put({"type": "connor_chunk", "content": visible_chunk})
-        visible_tail = web_stream_filter.flush()
-        if visible_tail:
-            await _q.put({"type": "connor_chunk", "content": visible_tail})
-    except Exception as e:
-        has_error = True
-        error_text = str(e)
-        full_text += f"\n[{connor_label} 回复出错: {e}]"
-        await _q.put({"type": "connor_chunk", "content": f"\n[回复出错: {e}]"})
+            yield chunk
+
+    stream_result = await _consume_chatroom_stream(
+        content_stream(),
+        _q,
+        chunk_type="connor_chunk",
+    )
+    full_text = stream_result.committed_text
+    safety_notice = stream_result.notice
+    has_error = stream_result.stop_reason is not None
+    error_text = stream_result.diagnostic_error or stream_result.stop_reason
+    tts_from_model = bool(full_text)
 
     full_text = full_text.strip()
     if not full_text:
@@ -2968,17 +3130,19 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
     clean_text = _normalize_cli_bubble_breaks(clean_text, connor_model_key)
 
     # TTS 用干净文本
-    if tts_enabled and tts_connor_voice and clean_text:
+    if tts_enabled and tts_connor_voice and clean_text and tts_from_model:
         tts = TTSStreamer(connor_msg_id, tts_connor_voice, manager, sse_queue=_q)
         tts.feed(clean_text)
         await tts.flush()
 
+    if safety_notice:
+        clean_text = f"{clean_text}\n\n[{safety_notice}]".strip()
     reply = _rewrite_connor_paths(clean_text)
     saved_imgs = await _extract_and_save_images(reply)
     msg = await _save_msg(
         room_id, "connor", reply, connor_msg_id,
         attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered),
-        auto_tts=not (tts_enabled and tts_connor_voice and clean_text),
+        auto_tts=not safety_notice and tts_from_model and not (tts_enabled and tts_connor_voice and clean_text),
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
     await _q.put({"type": "connor_done", "message": msg})
@@ -3082,25 +3246,26 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
     full_text = ""
     has_error = False
     error_text = None
+    tts_from_model = True
     usage_meta: dict = {}
-    web_stream_filter = WebCommandStreamFilter()
-    try:
+
+    async def content_stream():
         async for chunk in stream_ai(aion_history, model_key, usage_meta):
             if chunk.startswith(CLI_STATUS_PREFIX):
                 await _q.put({"type": "aion_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                 continue
-            full_text += chunk
-            visible_chunk = web_stream_filter.feed(chunk)
-            if visible_chunk:
-                await _q.put({"type": "aion_chunk", "content": visible_chunk})
-        visible_tail = web_stream_filter.flush()
-        if visible_tail:
-            await _q.put({"type": "aion_chunk", "content": visible_tail})
-    except Exception as e:
-        has_error = True
-        error_text = str(e)
-        full_text += f"\n[{ai_label} 回复出错: {e}]"
-        await _q.put({"type": "aion_chunk", "content": f"\n[回复出错: {e}]"})
+            yield chunk
+
+    stream_result = await _consume_chatroom_stream(
+        content_stream(),
+        _q,
+        chunk_type="aion_chunk",
+    )
+    full_text = stream_result.committed_text
+    safety_notice = stream_result.notice
+    has_error = stream_result.stop_reason is not None
+    error_text = stream_result.diagnostic_error or stream_result.stop_reason
+    tts_from_model = bool(full_text)
 
     # 工具指令处理（从文本中剥离并执行）
     try:
@@ -3115,17 +3280,19 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
     clean_text = _normalize_cli_bubble_breaks(clean_text, model_key)
 
     # TTS 用干净文本
-    if tts_enabled and tts_voice and clean_text:
+    if tts_enabled and tts_voice and clean_text and tts_from_model:
         tts = TTSStreamer(aion_msg_id, tts_voice, manager, sse_queue=_q)
         tts.feed(clean_text)
         await tts.flush()
 
+    if safety_notice:
+        clean_text = f"{clean_text}\n\n[{safety_notice}]".strip()
     # 保存干净文本
     saved_imgs = await _extract_and_save_images(clean_text)
     aion_msg = await _save_msg(
         room_id, "aion", clean_text, aion_msg_id,
         attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered) + _toy_attachments_from_triggered(triggered),
-        auto_tts=not (tts_enabled and tts_voice and clean_text),
+        auto_tts=not safety_notice and tts_from_model and not (tts_enabled and tts_voice and clean_text),
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
     await _q.put({"type": "aion_done", "message": aion_msg})
@@ -3162,25 +3329,26 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
     full_text = ""
     has_error = False
     error_text = None
+    tts_from_model = True
     usage_meta: dict = {}
-    web_stream_filter = WebCommandStreamFilter()
-    try:
+
+    async def content_stream():
         async for chunk in _stream_connor_model(connor_history, connor_model_key, usage_meta):
             if chunk.startswith(CLI_STATUS_PREFIX):
                 await _q.put({"type": "connor_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                 continue
-            full_text += chunk
-            visible_chunk = web_stream_filter.feed(chunk)
-            if visible_chunk:
-                await _q.put({"type": "connor_chunk", "content": visible_chunk})
-        visible_tail = web_stream_filter.flush()
-        if visible_tail:
-            await _q.put({"type": "connor_chunk", "content": visible_tail})
-    except Exception as e:
-        has_error = True
-        error_text = str(e)
-        full_text += f"\n[{connor_label} 回复出错: {e}]"
-        await _q.put({"type": "connor_chunk", "content": f"\n[回复出错: {e}]"})
+            yield chunk
+
+    stream_result = await _consume_chatroom_stream(
+        content_stream(),
+        _q,
+        chunk_type="connor_chunk",
+    )
+    full_text = stream_result.committed_text
+    safety_notice = stream_result.notice
+    has_error = stream_result.stop_reason is not None
+    error_text = stream_result.diagnostic_error or stream_result.stop_reason
+    tts_from_model = bool(full_text)
 
     full_text = full_text.strip()
     if not full_text:
@@ -3199,17 +3367,19 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
     clean_text = _normalize_cli_bubble_breaks(clean_text, connor_model_key)
 
     # TTS 用干净文本
-    if tts_enabled and tts_voice and clean_text:
+    if tts_enabled and tts_voice and clean_text and tts_from_model:
         tts = TTSStreamer(connor_msg_id, tts_voice, manager, sse_queue=_q)
         tts.feed(clean_text)
         await tts.flush()
 
+    if safety_notice:
+        clean_text = f"{clean_text}\n\n[{safety_notice}]".strip()
     clean_text = _rewrite_connor_paths(clean_text)
     saved_imgs = await _extract_and_save_images(clean_text)
     connor_msg = await _save_msg(
         room_id, "connor", clean_text, connor_msg_id,
         attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered) + _toy_attachments_from_triggered(triggered),
-        auto_tts=not (tts_enabled and tts_voice and clean_text),
+        auto_tts=not safety_notice and tts_from_model and not (tts_enabled and tts_voice and clean_text),
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
     await _q.put({"type": "connor_done", "message": connor_msg})

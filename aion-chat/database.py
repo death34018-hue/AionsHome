@@ -3,8 +3,69 @@
 """
 
 import aiosqlite
+from schedule_history import migrate_schedule_history
 from config import DB_PATH
 from message_dedup import ensure_message_ingress_dedupe_table
+
+
+async def _table_has_rows(db, table_name: str) -> bool:
+    cursor = await db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    )
+    if await cursor.fetchone() is None:
+        return False
+    cursor = await db.execute(f"SELECT 1 FROM {table_name} LIMIT 1")
+    return await cursor.fetchone() is not None
+
+
+async def _bootstrap_english_corner_schema(
+    db,
+    *,
+    settings=None,
+    persist_settings=None,
+) -> bool:
+    cursor = await db.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'english_learning_packs'
+        """
+    )
+    schema_already_existed = await cursor.fetchone() is not None
+
+    from english_corner import ensure_english_corner_tables
+
+    await ensure_english_corner_tables(db)
+    if schema_already_existed:
+        return False
+
+    if settings is None or persist_settings is None:
+        from config import SETTINGS, save_settings
+
+        if settings is None:
+            settings = SETTINGS
+        if persist_settings is None:
+            persist_settings = save_settings
+
+    capability_settings = settings.get("ai_prompt_capabilities")
+    existing_capabilities = (
+        capability_settings if isinstance(capability_settings, dict) else {}
+    )
+    if "english_corner_reminder" in existing_capabilities:
+        return False
+
+    has_existing_history = await _table_has_rows(db, "conversations")
+    if not has_existing_history:
+        has_existing_history = await _table_has_rows(db, "chatroom_messages")
+    if not has_existing_history:
+        return False
+
+    updated_capabilities = dict(existing_capabilities)
+    updated_capabilities["english_corner_reminder"] = True
+    settings["ai_prompt_capabilities"] = updated_capabilities
+    persist_settings(settings)
+    return True
 
 
 async def init_db():
@@ -56,6 +117,7 @@ async def init_db():
         await ensure_message_ingress_dedupe_table(db)
         from app_supervision_ai import ensure_app_supervision_tables
         await ensure_app_supervision_tables(db)
+        await _bootstrap_english_corner_schema(db)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
@@ -189,7 +251,8 @@ async def init_db():
                 trigger_at TEXT NOT NULL,
                 content TEXT NOT NULL,
                 created_at REAL NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active'
+                status TEXT NOT NULL DEFAULT 'active',
+                ended_at REAL
             )
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_schedules_status ON schedules(status, trigger_at)")
@@ -416,9 +479,14 @@ async def init_db():
                 content TEXT NOT NULL,
                 created_at REAL NOT NULL,
                 attachments TEXT DEFAULT '[]',
+                reasoning_content TEXT DEFAULT '',
                 FOREIGN KEY (conv_id) REFERENCES theater_conversations(id) ON DELETE CASCADE
             )
         """)
+        try:
+            await db.execute("ALTER TABLE theater_messages ADD COLUMN reasoning_content TEXT DEFAULT ''")
+        except:
+            pass
         await db.execute("CREATE INDEX IF NOT EXISTS idx_theater_msg_conv ON theater_messages(conv_id, created_at)")
         await db.execute("""
             CREATE TABLE IF NOT EXISTS date_sessions (
@@ -457,6 +525,7 @@ async def init_db():
                 await db.execute(ddl)
             except:
                 pass
+        await migrate_schedule_history(db)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS date_messages (
                 id TEXT PRIMARY KEY,

@@ -14,6 +14,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import ai_providers
+from codex_app_server import CodexAppServerEvent
+from stream_safety import StreamActivity
 
 
 def _config_overrides(command):
@@ -34,25 +36,18 @@ class CodexCliMinimalModeTests(unittest.TestCase):
             skill_files=(),
         )
 
-        self.assertEqual(command[:4], ["node", "codex.js", "-m", "gpt-5.6-terra"])
-        exec_index = command.index("exec")
-        for global_flag in ("-m", "--ask-for-approval", "--sandbox", "-C"):
-            with self.subTest(global_flag=global_flag):
-                self.assertLess(command.index(global_flag), exec_index)
-        for exec_flag in ("--json", "--ignore-user-config", "--ignore-rules", "--ephemeral"):
-            with self.subTest(exec_flag=exec_flag):
-                self.assertGreater(command.index(exec_flag), exec_index)
+        self.assertEqual(command[:2], ["node", "codex.js"])
+        app_server_index = command.index("app-server")
+        self.assertEqual(command[-2:], ["app-server", "--stdio"])
+        for removed_flag in ("-m", "--ask-for-approval", "--sandbox", "-C", "exec", "--json"):
+            with self.subTest(removed_flag=removed_flag):
+                self.assertNotIn(removed_flag, command)
         self.assertIn("-c", command)
         verbosity_index = command.index("-c")
-        self.assertLess(verbosity_index, exec_index)
+        self.assertLess(verbosity_index, app_server_index)
         self.assertRegex(command[verbosity_index + 1], r'^model_verbosity="(?:low|medium|high)"$')
-        self.assertIn("--ignore-user-config", command)
-        self.assertIn("--ignore-rules", command)
-        self.assertIn("--ephemeral", command)
         self.assertNotIn("--search", command)
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", command)
-        self.assertEqual(command[command.index("--sandbox") + 1], "read-only")
-        self.assertEqual(command[command.index("--ask-for-approval") + 1], "never")
 
     def test_chat_command_grants_companion_capabilities_at_developer_priority(self):
         command = ai_providers._build_codex_chat_command(
@@ -63,7 +58,7 @@ class CodexCliMinimalModeTests(unittest.TestCase):
             skill_files=(),
         )
 
-        exec_index = command.index("exec")
+        app_server_index = command.index("app-server")
         overrides = [
             command[index + 1]
             for index, value in enumerate(command[:-1])
@@ -74,7 +69,7 @@ class CodexCliMinimalModeTests(unittest.TestCase):
         ]
         self.assertEqual(len(developer_overrides), 1)
         developer_override = developer_overrides[0]
-        self.assertLess(command.index(developer_override), exec_index)
+        self.assertLess(command.index(developer_override), app_server_index)
 
         instructions = tomllib.loads(developer_override)["developer_instructions"]
         self.assertIn("可信的应用配置", instructions)
@@ -96,7 +91,7 @@ class CodexCliMinimalModeTests(unittest.TestCase):
             skill_files=skill_files,
         )
 
-        exec_index = command.index("exec")
+        app_server_index = command.index("app-server")
         overrides = _config_overrides(command)
         parsed = tomllib.loads("\n".join(overrides))
 
@@ -126,7 +121,7 @@ class CodexCliMinimalModeTests(unittest.TestCase):
         self.assertTrue(
             all(not item["enabled"] for item in parsed["skills"]["config"])
         )
-        self.assertTrue(all(command.index(value) < exec_index for value in overrides))
+        self.assertTrue(all(command.index(value) < app_server_index for value in overrides))
         self.assertFalse(any("web_search" in value for value in overrides))
         self.assertFalse(any("view_image" in value for value in overrides))
 
@@ -141,8 +136,8 @@ class CodexCliMinimalModeTests(unittest.TestCase):
             ai_providers._CODEX_WORKSPACE,
             "",
         )
-        exec_index = command.index("exec")
-        command = command[:exec_index] + ["debug", "prompt-input", "hello"]
+        app_server_index = command.index("app-server")
+        command = command[:app_server_index] + ["debug", "prompt-input", "hello"]
 
         with tempfile.TemporaryDirectory() as tmpdir:
             env = {
@@ -265,13 +260,7 @@ class CodexCliMinimalModeAsyncTests(unittest.IsolatedAsyncioTestCase):
                     "_CODEX_COMPANION_INSTRUCTIONS_FILE",
                     missing_prompt,
                 ),
-                patch.object(
-                    ai_providers,
-                    "_spawn_cli_process",
-                    new_callable=AsyncMock,
-                ) as spawn,
             ):
-                spawn.side_effect = AssertionError("subprocess started")
                 chunks = [
                     chunk
                     async for chunk in ai_providers.call_codex_cli(
@@ -282,7 +271,91 @@ class CodexCliMinimalModeAsyncTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(chunks), 1)
         self.assertIn("陪伴模式基础指令文件缺失", chunks[0])
-        spawn.assert_not_awaited()
+
+    async def test_app_server_events_map_to_existing_stream_contract(self):
+        async def fake_stream(*_args, **_kwargs):
+            yield CodexAppServerEvent("activity")
+            yield CodexAppServerEvent("reasoning_delta", text="检查上下文")
+            yield CodexAppServerEvent("text_delta", text="你")
+            yield CodexAppServerEvent("text_delta", text="好")
+            yield CodexAppServerEvent(
+                "usage",
+                usage={
+                    "inputTokens": 10,
+                    "cachedInputTokens": 2,
+                    "outputTokens": 7,
+                    "reasoningOutputTokens": 3,
+                    "totalTokens": 17,
+                },
+            )
+            yield CodexAppServerEvent("completed")
+
+        meta = {}
+        with (
+            patch.object(ai_providers, "_CODEX_SCRIPT", "codex.js"),
+            patch.object(
+                ai_providers,
+                "_CODEX_COMPANION_INSTRUCTIONS_FILE",
+                Path(__file__),
+            ),
+            patch.object(ai_providers, "stream_codex_app_server", fake_stream),
+            patch.object(ai_providers, "_build_codex_chat_environment", return_value={}),
+        ):
+            chunks = [
+                chunk
+                async for chunk in ai_providers.call_codex_cli(
+                    [{"role": "user", "content": "hello"}],
+                    "gpt-5.6-sol",
+                    meta,
+                )
+            ]
+
+        self.assertIsInstance(chunks[0], StreamActivity)
+        self.assertIsInstance(chunks[1], StreamActivity)
+        self.assertEqual(chunks[2:], ["你", "好", StreamActivity()])
+        self.assertEqual(meta["reasoning_content"], "检查上下文")
+        self.assertEqual(meta["prompt_tokens"], 10)
+        self.assertEqual(meta["completion_tokens"], 7)
+        self.assertEqual(meta["raw"]["completion_tokens_details"]["reasoning_tokens"], 3)
+
+
+class CodexRuntimeConfigTests(unittest.TestCase):
+    def test_reasoning_summary_is_configurable_with_safe_auto_fallback(self):
+        self.assertEqual(ai_providers._codex_reasoning_summary({}), "auto")
+        for value in ("auto", "concise", "detailed", "none"):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    ai_providers._codex_reasoning_summary(
+                        {"codex_reasoning_summary": value}
+                    ),
+                    value,
+                )
+        self.assertEqual(
+            ai_providers._codex_reasoning_summary(
+                {"codex_reasoning_summary": "unexpected"}
+            ),
+            "auto",
+        )
+
+    def test_concurrency_is_configurable_and_bounded(self):
+        self.assertEqual(ai_providers._codex_max_concurrency({}), 2)
+        self.assertEqual(
+            ai_providers._codex_max_concurrency(
+                {"codex_max_concurrent_requests": 1}
+            ),
+            1,
+        )
+        self.assertEqual(
+            ai_providers._codex_max_concurrency(
+                {"codex_max_concurrent_requests": 99}
+            ),
+            8,
+        )
+
+    def test_stream_activity_is_safe_for_legacy_string_collectors(self):
+        activity = StreamActivity()
+        self.assertIsInstance(activity, str)
+        self.assertEqual("prefix" + activity, "prefix")
 
 
 if __name__ == "__main__":

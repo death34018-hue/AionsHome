@@ -102,7 +102,11 @@ public final class AppSupervisionStore {
                     states.put(groupId, stateFromJson(stateValues.getJSONObject(groupId)));
                 }
             }
-            return new RuntimeSnapshot(states);
+            JSONObject deviceValue = root.optJSONObject("device_state");
+            PersistedDeviceState deviceState = deviceValue == null
+                    ? PersistedDeviceState.empty()
+                    : deviceStateFromJson(deviceValue);
+            return new RuntimeSnapshot(states, deviceState);
         } catch (Exception exception) {
             backend.putString(RUNTIME_JSON, "");
             recordRecovery("runtime_json");
@@ -122,6 +126,7 @@ public final class AppSupervisionStore {
                 states.put(entry.getKey(), stateToJson(entry.getValue()));
             }
             root.put("states", states);
+            root.put("device_state", deviceStateToJson(snapshot.getDeviceState()));
             backend.putString(RUNTIME_BOOT_ID, checkedBootId);
             backend.putString(RUNTIME_JSON, root.toString());
         } catch (Exception exception) {
@@ -274,6 +279,30 @@ public final class AppSupervisionStore {
                         ? directiveFromJson(value.getJSONObject("temporary_unlock")) : null);
     }
 
+    private static JSONObject deviceStateToJson(PersistedDeviceState state)
+            throws Exception {
+        JSONObject value = new JSONObject();
+        if (state.getLock() != null) {
+            value.put("lock", directiveToJson(state.getLock()));
+        }
+        if (state.getTemporaryUnlock() != null) {
+            value.put(
+                    "temporary_unlock",
+                    directiveToJson(state.getTemporaryUnlock()));
+        }
+        return value;
+    }
+
+    private static PersistedDeviceState deviceStateFromJson(JSONObject value)
+            throws Exception {
+        return new PersistedDeviceState(
+                value.has("lock")
+                        ? directiveFromJson(value.getJSONObject("lock")) : null,
+                value.has("temporary_unlock")
+                        ? directiveFromJson(value.getJSONObject("temporary_unlock"))
+                        : null);
+    }
+
     private static JSONObject directiveToJson(TimedDirective directive) throws Exception {
         JSONObject value = new JSONObject();
         value.put("received_elapsed_ms", directive.getReceivedElapsedMs());
@@ -364,19 +393,52 @@ public final class AppSupervisionStore {
 
     public static final class RuntimeSnapshot {
         private final Map<String, PersistedGroupState> states;
+        private final PersistedDeviceState deviceState;
 
         public RuntimeSnapshot(Map<String, PersistedGroupState> states) {
+            this(states, PersistedDeviceState.empty());
+        }
+
+        public RuntimeSnapshot(
+                Map<String, PersistedGroupState> states,
+                PersistedDeviceState deviceState) {
             if (states == null) {
                 throw new IllegalArgumentException("states is required");
             }
+            if (deviceState == null) {
+                throw new IllegalArgumentException("deviceState is required");
+            }
             this.states = Collections.unmodifiableMap(new LinkedHashMap<>(states));
+            this.deviceState = deviceState;
         }
 
         public static RuntimeSnapshot empty() {
-            return new RuntimeSnapshot(Collections.<String, PersistedGroupState>emptyMap());
+            return new RuntimeSnapshot(
+                    Collections.<String, PersistedGroupState>emptyMap(),
+                    PersistedDeviceState.empty());
         }
 
         public Map<String, PersistedGroupState> getStates() { return states; }
+        public PersistedDeviceState getDeviceState() { return deviceState; }
+    }
+
+    public static final class PersistedDeviceState {
+        private final TimedDirective lock;
+        private final TimedDirective temporaryUnlock;
+
+        public PersistedDeviceState(
+                TimedDirective lock,
+                TimedDirective temporaryUnlock) {
+            this.lock = lock;
+            this.temporaryUnlock = temporaryUnlock;
+        }
+
+        public static PersistedDeviceState empty() {
+            return new PersistedDeviceState(null, null);
+        }
+
+        public TimedDirective getLock() { return lock; }
+        public TimedDirective getTemporaryUnlock() { return temporaryUnlock; }
     }
 
     public static final class PersistedGroupState {

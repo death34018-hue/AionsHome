@@ -253,6 +253,7 @@ class WeChatBridgeBindingCreate(BaseModel):
 @router.get("/api/settings/wechat-bridge")
 async def get_wechat_bridge_setting():
     from wechat_bridge import public_wechat_bindings
+    from wechat_mode import public_wechat_modes
 
     openclaw_accounts = []
     openclaw_status_error = ""
@@ -278,6 +279,7 @@ async def get_wechat_bridge_setting():
         "openclaw_accounts": openclaw_accounts,
         "openclaw_status_error": openclaw_status_error,
         "bindings": public_wechat_bindings(settings=SETTINGS),
+        "modes": public_wechat_modes(SETTINGS),
         "pending_bindings": list(pending.values()),
     }
 

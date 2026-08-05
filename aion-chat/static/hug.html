@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#111426">
+  <title>抱抱</title>
+  <link rel="stylesheet" href="/static/common.css">
+  <link rel="stylesheet" href="/static/hug.css">
+</head>
+<body>
+  <main class="hug-page">
+    <section class="remote-shell" aria-label="拍拍抱枕红外遥控器">
+      <header class="top-bar">
+        <button type="button" class="back-btn" onclick="navigateSubPageBack()" aria-label="返回">
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M15 5 8 12l7 7"/>
+          </svg>
+        </button>
+        <div class="title-wrap">
+          <p>PAIPAI PILLOW</p>
+          <h1>抱抱</h1>
+        </div>
+        <span class="top-spacer" aria-hidden="true"></span>
+      </header>
+
+      <section class="device-card" aria-label="红外能力状态">
+        <img src="/public/funIcon_0029_爱的抱抱.png" alt="爱的抱抱">
+        <div class="device-copy">
+          <p>拍拍抱枕</p>
+          <h2>红外遥控器</h2>
+          <div class="ready-line">
+            <span class="ready-dot" aria-hidden="true"></span>
+            <span id="irStatus" class="hug-status" aria-live="polite">正在检测手机红外…</span>
+          </div>
+        </div>
+        <span class="signal-mark" aria-hidden="true">
+          <i></i><i></i><i></i>
+        </span>
+      </section>
+
+      <button type="button" class="power-key" data-command="POWER" aria-label="总开关">
+        <span class="key-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 2v9"/><path d="M6.4 5.6a8 8 0 1 0 11.2 0"/></svg>
+        </span>
+        <span class="key-label">总开关</span>
+      </button>
+
+      <p class="section-label">拍打控制</p>
+      <section class="remote-grid" aria-label="拍打控制">
+        <button type="button" class="remote-key remote-key--wide remote-key--primary" data-command="PAT_START_STOP" aria-label="拍打开关">
+          <span class="key-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 20s-7-4.3-7-10a4 4 0 0 1 7-2.7A4 4 0 0 1 19 10c0 5.7-7 10-7 10Z"/></svg>
+          </span>
+          <span class="key-label">拍打开关</span>
+        </button>
+        <button type="button" class="remote-key" data-command="SPEED_DOWN" aria-label="拍拍调慢">
+          <span class="key-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg>
+          </span>
+          <span class="key-label">拍拍调慢</span>
+        </button>
+        <button type="button" class="remote-key" data-command="SPEED_UP" aria-label="拍拍调快">
+          <span class="key-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></svg>
+          </span>
+          <span class="key-label">拍拍调快</span>
+        </button>
+      </section>
+
+      <p class="section-label">声音与陪伴</p>
+      <section class="remote-grid" aria-label="声音与陪伴控制">
+        <button type="button" class="remote-key" data-command="BLUETOOTH" aria-label="蓝牙">
+          <span class="key-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="m8 7 8 10V3L8 13l8 8V11Z"/></svg>
+          </span>
+          <span class="key-label">蓝牙</span>
+        </button>
+        <button type="button" class="remote-key" data-command="TIMER" aria-label="拍打定时">
+          <span class="key-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="7"/><path d="M12 9v4l3 2M9 3h6"/></svg>
+          </span>
+          <span class="key-label">拍打定时</span>
+        </button>
+        <button type="button" class="remote-key" data-command="PREVIOUS" aria-label="上一首">
+          <span class="key-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M7 6v12M18 6l-8 6 8 6Z"/></svg>
+          </span>
+          <span class="key-label">上一首</span>
+        </button>
+        <button type="button" class="remote-key" data-command="NEXT" aria-label="下一首">
+          <span class="key-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M17 6v12M6 6l8 6-8 6Z"/></svg>
+          </span>
+          <span class="key-label">下一首</span>
+        </button>
+        <button type="button" class="remote-key remote-key--wide remote-key--record" data-command="RECORD_PLAY" aria-label="录音播放">
+          <span class="key-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><circle cx="8" cy="12" r="3"/><path d="m14 8 5 4-5 4Z"/></svg>
+          </span>
+          <span class="key-label">录音播放</span>
+        </button>
+      </section>
+
+      <p class="remote-hint">请将手机顶部红外发射口对准抱枕</p>
+    </section>
+  </main>
+
+  <script src="/static/common.js"></script>
+  <script src="/static/hug.js"></script>
+</body>
+</html>

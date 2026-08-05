@@ -139,11 +139,11 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 .msg-row.user .msg-role-name { color:var(--accent); }
 .msg-row.assistant .msg-role-name { color:#8ab87a; }
 .msg-time { font-size: 10px; color: var(--text3); }
-.msg-header-spacer { flex:1; }
+.msg-actions { position:relative; display:flex; align-items:center; flex-shrink:0; }
 .msg-dots { background:none; border:none; color:var(--text3); font-size:14px; cursor:pointer; padding:0 4px; line-height:1; display:none; }
 .msg-dots:hover { color:var(--text); }
 .msg-row:hover .msg-dots { display:inline; }
-.msg-menu { display:none; position:absolute; top:26px; background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:4px 0; z-index:16; box-shadow:0 4px 16px rgba(0,0,0,0.3); white-space:nowrap; }
+.msg-menu { display:none; position:absolute; top:calc(100% + 4px); background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:4px 0; z-index:16; box-shadow:0 4px 16px rgba(0,0,0,0.3); white-space:nowrap; }
 .msg-row.user .msg-menu { right:0; }
 .msg-row.assistant .msg-menu { left:0; }
 .msg-menu.show { display:block; }
@@ -154,6 +154,15 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 .msg-row.user .msg-bubble { background: linear-gradient(180deg, rgba(131, 80, 226, 0.32), rgba(77, 45, 158, 0.30)); color: var(--text); border-top-right-radius: 4px; border: 1px solid rgba(210, 142, 255, 0.52); box-shadow: inset 0 1px 1px rgba(255,255,255,0.18), inset 0 -10px 28px rgba(54,20,110,0.12), 0 0 24px rgba(147, 91, 255, 0.22), 0 10px 30px rgba(0,0,0,0.16); }
 .msg-row.assistant .msg-bubble { background: linear-gradient(180deg, rgba(37, 92, 183, 0.28), rgba(17, 41, 103, 0.26)); color: var(--text); border-top-left-radius: 4px; border: 1px solid rgba(108, 177, 255, 0.44); box-shadow: inset 0 1px 1px rgba(255,255,255,0.16), inset 0 -10px 26px rgba(9,16,48,0.10), 0 10px 28px rgba(0,0,0,0.16); }
 .msg-bubbles { display:flex; flex-direction:column; gap:3px; }
+.msg-reasoning { margin-bottom:3px; border:1px solid rgba(142,108,255,0.32); border-radius:12px; background:rgba(16,20,61,0.52); overflow:hidden; }
+.msg-reasoning summary { display:flex; align-items:center; gap:7px; padding:8px 12px; color:var(--text2); font-size:12px; cursor:pointer; list-style:none; user-select:none; }
+.msg-reasoning summary::-webkit-details-marker { display:none; }
+.msg-reasoning summary::before { content:"›"; color:var(--accent3); font-size:17px; line-height:1; transition:transform 0.18s ease; }
+.msg-reasoning[open] summary::before { transform:rotate(90deg); }
+.msg-reasoning-status { margin-left:auto; color:var(--text3); font-size:11px; }
+.msg-reasoning.is-streaming .msg-reasoning-status::after { content:""; display:inline-block; width:5px; height:5px; margin-left:5px; border-radius:50%; background:var(--accent3); animation:reasoningPulse 1.2s ease-in-out infinite; vertical-align:1px; }
+.msg-reasoning-content { max-height:260px; overflow:auto; padding:0 12px 11px 31px; border-top:1px solid rgba(142,108,255,0.16); color:var(--text2); white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; line-height:1.65; }
+@keyframes reasoningPulse { 0%,100% { opacity:0.35; } 50% { opacity:1; } }
 
 .msg-bubble.editing { background:var(--surface2) !important; }
 .msg-bubble textarea { width:100%; background:transparent; color:var(--text); border:none; outline:none; font-size:15px; line-height:1.65; resize:none; font-family:inherit; min-height:60px; }
@@ -176,7 +185,13 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 @keyframes dotBounce { 0%,80%,100% { transform: scale(0.4); opacity: 0.4; } 40% { transform: scale(1); opacity: 1; } }
 
 /* ── 输入区 ── */
-.input-box { padding: 10px 16px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+.input-box { position:relative; padding: 10px 16px 12px; border-top: 1px solid var(--border); background: var(--surface); }
+.message-nav { position:absolute; top:-70px; right:10px; z-index:6; display:flex; flex-direction:column; gap:5px; opacity:0.32; transition:opacity 0.18s ease; }
+.message-nav:hover, .message-nav:focus-within { opacity:0.92; }
+.message-nav button { width:28px; height:28px; border:1px solid var(--border); border-radius:50%; background:rgba(17,22,61,0.84); color:var(--text2); font-size:15px; line-height:1; cursor:pointer; box-shadow:0 3px 12px rgba(0,0,0,0.22); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
+.message-nav button:hover { color:var(--text); border-color:var(--accent); }
+.message-nav button:active { transform:scale(0.92); }
+.message-nav button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .preview-area { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
 .preview-area:empty { display:none; }
 .preview-item { position:relative; width:60px; height:60px; border-radius:8px; overflow:hidden; border:1px solid var(--border); }
@@ -214,11 +229,12 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
   .sidebar.open { left:0; }
   .chat-header .menu-btn { display:block; }
   .msg-bubble { font-size: 14px; padding: 9px 12px; }
-  .messages { padding: 10px; padding-top: calc(56px + env(safe-area-inset-top)); gap: 4px; }
+  .messages { padding: 10px 0; padding-top: calc(56px + env(safe-area-inset-top)); gap: 4px; }
   .chat-area.tts-player-open .messages { padding-top: calc(112px + env(safe-area-inset-top)); }
   .tts-top-player { left:8px; right:8px; gap:5px; padding-left:7px; padding-right:7px; }
   .tts-top-player .tts-time { min-width:38px; font-size:10px; }
   .msg-avatar { width:24px; height:24px; }
+  .message-nav { right:6px; }
 }
 </style>
 </head>
@@ -292,6 +308,10 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
     <div class="messages" id="messages"></div>
 
     <div class="input-box">
+      <div class="message-nav" aria-label="按消息跳转">
+        <button type="button" onclick="navigateMessage(-1)" title="当前或上一条消息开头" aria-label="当前或上一条消息开头">↑</button>
+        <button type="button" onclick="navigateMessage(1)" title="下一条消息开头" aria-label="下一条消息开头">↓</button>
+      </div>
       <div class="preview-area" id="previewArea"></div>
       <div class="input-row">
         <button class="upload-btn" onclick="$('fileInput').click()">📎</button>
@@ -697,6 +717,58 @@ async function loadOlderMessages() {
 }
 
 /* ── 消息渲染 ── */
+function reasoningDetailsHtml(m) {
+  const reasoning = (m.reasoning_content || '').trim();
+  if (m.role !== 'assistant' || !reasoning) return '';
+  const streamingClass = m._streaming ? ' is-streaming' : '';
+  const status = m._streaming ? '思考中' : '';
+  return `<details class="msg-reasoning${streamingClass}">
+    <summary><span>思考过程</span><span class="msg-reasoning-status">${status}</span></summary>
+    <div class="msg-reasoning-content">${escHtml(reasoning)}</div>
+  </details>`;
+}
+
+function messageBubblesHtml(m) {
+  const raw = (m.content || '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
+  return `${reasoningDetailsHtml(m)}<div class="msg-bubble msg-body-bubble">${escHtml(raw).replace(/\n/g, '<br>')}</div>`;
+}
+
+function updateStreamingReasoning(msgId, delta) {
+  const msg = currentMessages.find(m => m.id === msgId);
+  if (!msg || !delta) return;
+  msg.reasoning_content = (msg.reasoning_content || '') + delta;
+  const bubbles = document.querySelector(`.msg-row[data-id="${msgId}"] .msg-bubbles`);
+  if (!bubbles) return;
+  let details = bubbles.querySelector('.msg-reasoning');
+  if (!details) {
+    bubbles.insertAdjacentHTML('afterbegin', reasoningDetailsHtml(msg));
+    details = bubbles.querySelector('.msg-reasoning');
+  } else {
+    details.classList.add('is-streaming');
+    details.querySelector('.msg-reasoning-content').textContent = msg.reasoning_content.trim();
+    details.querySelector('.msg-reasoning-status').textContent = '思考中';
+  }
+}
+
+function updateStreamingBody(msgId, content) {
+  const msg = currentMessages.find(m => m.id === msgId);
+  if (msg) msg.content = content;
+  const body = document.querySelector(`.msg-row[data-id="${msgId}"] .msg-body-bubble`);
+  if (!body) return;
+  const display = content.replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
+  body.innerHTML = escHtml(display).replace(/\n/g, '<br>');
+}
+
+function finishStreamingMessage(msgId) {
+  const msg = currentMessages.find(m => m.id === msgId);
+  if (msg) msg._streaming = false;
+  const details = document.querySelector(`.msg-row[data-id="${msgId}"] .msg-reasoning`);
+  if (!details) return;
+  details.classList.remove('is-streaming');
+  const status = details.querySelector('.msg-reasoning-status');
+  if (status) status.textContent = '';
+}
+
 function renderMessages() {
   const el = $('messages');
   let html = '';
@@ -716,9 +788,8 @@ function renderMessages() {
     const ts = m.created_at ? new Date(m.created_at * 1000) : null;
     const timeStr = ts ? `${ts.getHours().toString().padStart(2,'0')}:${ts.getMinutes().toString().padStart(2,'0')}` : '';
 
-    // 单气泡：整条消息一个气泡
-    const raw = (m.content || '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
-    const bubblesHtml = `<div class="msg-bubble">${escHtml(raw).replace(/\n/g, '<br>')}</div>`;
+    // 思考过程独立折叠在正文气泡上方
+    const bubblesHtml = messageBubblesHtml(m);
 
     // 附件
     let attHtml = '';
@@ -743,12 +814,13 @@ function renderMessages() {
         ${!isUser ? `<button class="tts-replay-btn" onclick="replayTTS('${m.id}')">🔊</button>` : ''}
         <span class="msg-role-name">${name}</span>
         <span class="msg-time">${timeStr}</span>
-        <span class="msg-header-spacer"></span>
-        <button class="msg-dots" onclick="toggleMenu(event,'menu_${m.id}')">⋯</button>
-        <div class="msg-menu" id="menu_${m.id}">
-          ${isUser ? `<button onclick="editMsg('${m.id}')">编辑</button>` : `<button onclick="regenerateMsg()">重新生成</button>`}
-          <button onclick="copyMsg('${m.id}')">复制</button>
-          <button onclick="delMsg('${m.id}')">删除</button>
+        <div class="msg-actions">
+          <button class="msg-dots" onclick="toggleMenu(event,'menu_${m.id}')">⋯</button>
+          <div class="msg-menu" id="menu_${m.id}">
+            ${isUser ? `<button onclick="editMsg('${m.id}')">编辑</button>` : `<button onclick="regenerateMsg('${m.id}')">重新生成</button>`}
+            <button onclick="copyMsg('${m.id}')">复制</button>
+            <button onclick="delMsg('${m.id}')">删除</button>
+          </div>
         </div>
       </div>
       <div class="msg-bubbles">${bubblesHtml}</div>
@@ -762,6 +834,80 @@ function renderMessages() {
 function scrollBottom() {
   const el = $('messages');
   requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+}
+
+let messageNavLoading = false;
+
+function messageViewportTop() {
+  const messages = $('messages');
+  const messagesRect = messages.getBoundingClientRect();
+  const header = document.querySelector('.chat-header');
+  const player = $('ttsTopPlayer');
+  let top = messagesRect.top;
+  if (header) top = Math.max(top, header.getBoundingClientRect().bottom);
+  if (player && player.classList.contains('show')) {
+    top = Math.max(top, player.getBoundingClientRect().bottom);
+  }
+  return top + 6;
+}
+
+function scrollToMessageStart(row) {
+  if (!row) return;
+  const messages = $('messages');
+  const delta = row.getBoundingClientRect().top - messageViewportTop();
+  messages.scrollTo({
+    top: Math.max(0, messages.scrollTop + delta),
+    behavior: 'smooth',
+  });
+}
+
+async function navigateMessage(direction) {
+  if (messageNavLoading) return;
+  const messages = $('messages');
+  let rows = Array.from(messages.querySelectorAll('.msg-row'));
+  if (!rows.length) return;
+
+  const viewportTop = messageViewportTop();
+  let currentIndex = rows.findIndex(
+    row => row.getBoundingClientRect().bottom > viewportTop + 2
+  );
+  if (currentIndex < 0) currentIndex = rows.length - 1;
+
+  if (direction > 0) {
+    const next = rows[currentIndex + 1];
+    if (next) scrollToMessageStart(next);
+    else showToast('已经是最后一条消息');
+    return;
+  }
+
+  const current = rows[currentIndex];
+  const currentStartsHere = current.getBoundingClientRect().top >= viewportTop - 4;
+  if (!currentStartsHere) {
+    scrollToMessageStart(current);
+    return;
+  }
+
+  if (currentIndex > 0) {
+    scrollToMessageStart(rows[currentIndex - 1]);
+    return;
+  }
+
+  if (!hasMoreMessages) {
+    showToast('已经是最早一条消息');
+    return;
+  }
+
+  messageNavLoading = true;
+  const currentId = current.dataset.id;
+  try {
+    await loadOlderMessages();
+    rows = Array.from(messages.querySelectorAll('.msg-row'));
+    const restoredIndex = rows.findIndex(row => row.dataset.id === currentId);
+    if (restoredIndex > 0) scrollToMessageStart(rows[restoredIndex - 1]);
+    else showToast('已经是最早一条消息');
+  } finally {
+    messageNavLoading = false;
+  }
 }
 
 /* ── 消息菜单 ── */
@@ -888,14 +1034,15 @@ async function send() {
           if (currentConvId === requestConvId) {
             currentMessages.push({
               id: aiMsgId, conv_id: requestConvId, role: 'assistant',
-              content: '', created_at: Date.now()/1000, attachments: [], _streaming: true
+              content: '', reasoning_content: '', created_at: Date.now()/1000,
+              attachments: [], _streaming: true
             });
             renderMessages();
           }
           // 显示输入动画
           const row = document.querySelector(`.msg-row[data-id="${aiMsgId}"] .msg-bubbles`);
           if (row) {
-            row.innerHTML = `<div class="msg-bubble"><div class="typing-bubble">
+            row.innerHTML = `<div class="msg-bubble msg-body-bubble"><div class="typing-bubble">
               <span class="typing-text">${typingTexts[0]}</span>
               <span class="typing-dots"><span></span><span></span><span></span></span>
             </div></div>`;
@@ -912,22 +1059,18 @@ async function send() {
           window._typeInterval = _typeInterval;
         }
 
+        if (data.type === 'reasoning' && aiMsgId) {
+          updateStreamingReasoning(aiMsgId, data.content || '');
+        }
+
         if (data.type === 'chunk' && aiMsgId) {
           if (window._typeInterval) { clearInterval(window._typeInterval); window._typeInterval = null; }
           aiText += data.content;
-          // 更新占位消息
-          const msg = currentMessages.find(m => m.id === aiMsgId);
-          if (msg) msg.content = aiText;
-          // 实时更新 DOM
-          const row = document.querySelector(`.msg-row[data-id="${aiMsgId}"] .msg-bubbles`);
-          if (row) {
-            const display = aiText.replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
-            row.innerHTML = `<div class="msg-bubble">${escHtml(display).replace(/\n/g, '<br>')}</div>`;
-          }
+          updateStreamingBody(aiMsgId, aiText);
         }
 
         if (data.type === 'debug') {
-          // 静默处理
+          if (aiMsgId) finishStreamingMessage(aiMsgId);
         }
       }
     }
@@ -941,7 +1084,7 @@ async function send() {
 }
 
 /* ── 重新生成 ── */
-async function regenerateMsg() {
+async function regenerateMsg(aiMsgId) {
   document.querySelectorAll('.msg-menu.show').forEach(m => m.classList.remove('show'));
   if (!currentConvId || isStreaming) return;
   const requestConvId = currentConvId;
@@ -954,11 +1097,21 @@ async function regenerateMsg() {
   try {
     const res = await fetch(`/api/theater/conversations/${requestConvId}/regenerate?context_limit=${ctx}&temperature=${temp}&tts_enabled=${requestTtsEnabled}&tts_voice=${encodeURIComponent(ttsVoice)}`, {
       method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        message_id: aiMsgId,
+        model: $('modelSelect').value,
+        persona_id: currentPersonaId,
+      }),
     });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    discardMessageTTS(aiMsgId, true);
+    currentMessages = currentMessages.filter(m => m.id !== aiMsgId);
+    renderMessages();
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = '';
-    let aiMsgId = null;
+    let newAiMsgId = null;
     let aiText = '';
 
     while (true) {
@@ -974,38 +1127,41 @@ async function regenerateMsg() {
         try { data = JSON.parse(line.slice(6)); } catch(e) { continue; }
 
         if (data.type === 'start') {
-          aiMsgId = data.id;
-          ttsMessageConversations.set(aiMsgId, requestConvId);
-          if (requestTtsEnabled) ttsLiveMessages.add(aiMsgId);
+          newAiMsgId = data.id;
+          ttsMessageConversations.set(newAiMsgId, requestConvId);
+          if (requestTtsEnabled) ttsLiveMessages.add(newAiMsgId);
           if (ttsDeletedConversations.has(requestConvId)) {
-            discardMessageTTS(aiMsgId, true);
+            discardMessageTTS(newAiMsgId, true);
             continue;
           }
           if (currentConvId === requestConvId) {
             currentMessages.push({
-              id: aiMsgId, conv_id: requestConvId, role: 'assistant',
-              content: '', created_at: Date.now()/1000, attachments: [], _streaming: true
+              id: newAiMsgId, conv_id: requestConvId, role: 'assistant',
+              content: '', reasoning_content: '', created_at: Date.now()/1000,
+              attachments: [], _streaming: true
             });
             renderMessages();
           }
-          const row = document.querySelector(`.msg-row[data-id="${aiMsgId}"] .msg-bubbles`);
+          const row = document.querySelector(`.msg-row[data-id="${newAiMsgId}"] .msg-bubbles`);
           if (row) {
-            row.innerHTML = `<div class="msg-bubble"><div class="typing-bubble">
+            row.innerHTML = `<div class="msg-bubble msg-body-bubble"><div class="typing-bubble">
               <span class="typing-text">正在重新生成</span>
               <span class="typing-dots"><span></span><span></span><span></span></span>
             </div></div>`;
           }
         }
 
-        if (data.type === 'chunk' && aiMsgId) {
+        if (data.type === 'reasoning' && newAiMsgId) {
+          updateStreamingReasoning(newAiMsgId, data.content || '');
+        }
+
+        if (data.type === 'chunk' && newAiMsgId) {
           aiText += data.content;
-          const msg = currentMessages.find(m => m.id === aiMsgId);
-          if (msg) msg.content = aiText;
-          const row = document.querySelector(`.msg-row[data-id="${aiMsgId}"] .msg-bubbles`);
-          if (row) {
-            const display = aiText.replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
-            row.innerHTML = `<div class="msg-bubble">${escHtml(display).replace(/\n/g, '<br>')}</div>`;
-          }
+          updateStreamingBody(newAiMsgId, aiText);
+        }
+
+        if (data.type === 'debug') {
+          if (newAiMsgId) finishStreamingMessage(newAiMsgId);
         }
       }
     }

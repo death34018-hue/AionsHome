@@ -263,8 +263,11 @@ function connectCommonWS(extraHandler) {
     }
     // 监控提示音 — 全局
     if (msg.type === "monitor_alert") {
-      const audio = new Audio('/public/AionMonitoralart.mp3');
-      audio.play().catch(() => {});
+      const data = msg.data || {};
+      if (!data.phone_camera_native_capture) {
+        const audio = new Audio('/public/AionMonitoralart.mp3');
+        audio.play().catch(() => {});
+      }
       const body = msg.data?.origin_name
         ? `【${msg.data.origin_name}】设定的监督：${msg.data?.content || '哨兵监控即将分析'}`
         : (msg.data?.content || '哨兵监控即将分析');

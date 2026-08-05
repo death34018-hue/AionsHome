@@ -125,6 +125,42 @@ class WeChatBridgeTests(unittest.IsolatedAsyncioTestCase):
             source_msg_id="msg_1",
         )
 
+    async def test_active_mode_turns_explicit_payload_into_visible_text_without_direct_send(self):
+        import config
+        from wechat_mode import set_wechat_mode
+
+        settings = {}
+        set_wechat_mode(
+            settings,
+            account_id="bot-1",
+            wechat_user_id="peer-1",
+            inbound_route={"source_type": "aion_private", "source_id": "conv_1"},
+            outbound_routes=[{"source_type": "aion_private", "source_id": "conv_1"}],
+            enabled=True,
+            now=100,
+        )
+        saved_system_messages = []
+        record_route = AsyncMock()
+        send_wechat_message = AsyncMock()
+
+        with patch.object(config, "SETTINGS", settings):
+            cleaned, messages = await process_wechat_outbound_commands(
+                "本地一句。[微信消息：微信一句]",
+                source_type="aion_private",
+                source_id="conv_1",
+                sender="aion",
+                source_msg_id="msg_1",
+                save_system_message=saved_system_messages.append,
+                send_wechat_message=send_wechat_message,
+                record_route=record_route,
+            )
+
+        self.assertEqual(cleaned, "本地一句。\n微信一句")
+        self.assertEqual(messages, ["微信一句"])
+        self.assertEqual(saved_system_messages, [])
+        send_wechat_message.assert_not_awaited()
+        record_route.assert_not_awaited()
+
 
 if __name__ == "__main__":
     unittest.main()

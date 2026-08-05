@@ -42,6 +42,23 @@ public class AppSupervisionEngineTest {
     }
 
     @Test
+    public void nextCheckpointDelayUsesLiveUsageAndSkipsFiredCheckpoints() {
+        AppSupervisionEngine engine = engine(30, 20, 40);
+        engine.onForegroundChanged("com.example.main", elapsedAt(0), wallAt(0));
+
+        assertEquals(Long.valueOf(15 * MINUTE_MS),
+                engine.nextCheckpointDelayMs("group-1", elapsedAt(5)));
+
+        engine.onUsageTick(elapsedAt(20), wallAt(20));
+        assertEquals(Long.valueOf(20 * MINUTE_MS),
+                engine.nextCheckpointDelayMs("group-1", elapsedAt(20)));
+
+        engine.onUsageTick(elapsedAt(40), wallAt(40));
+        assertEquals(null,
+                engine.nextCheckpointDelayMs("group-1", elapsedAt(40)));
+    }
+
+    @Test
     public void successfulLockClearsRoundAndRestartsOpenIntervalAtCommandTime() {
         AppSupervisionEngine engine = engine(30, 20, 40);
         engine.onForegroundChanged("com.example.main", elapsedAt(0), wallAt(0));

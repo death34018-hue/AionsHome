@@ -3,10 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="only light">
 <title>Aion Wallpaper</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html, body { width: 100vw; height: 100vh; overflow: hidden; background: #000; cursor: none; user-select: none; }
+html, body { width: 100vw; height: 100vh; overflow: hidden; background: #000; cursor: none; user-select: none; color-scheme: only light; }
 
 /* ── 媒体层 ── */
 .media-layer {
@@ -31,10 +32,10 @@ html, body { width: 100vw; height: 100vh; overflow: hidden; background: #000; cu
   transition: top 0.5s ease, left 0.5s ease, right 0.5s ease, bottom 0.5s ease;
 }
 .chat-bubble {
-  background: rgba(255, 255, 255, 0.88);
+  background: rgba(255, 255, 255, 0.96) !important;
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  color: #2c2c2c;
+  color: #171717 !important;
   padding: 14px 18px;
   border-radius: 18px 18px 4px 18px;
   margin-bottom: 8px;
@@ -43,12 +44,34 @@ html, body { width: 100vw; height: 100vh; overflow: hidden; background: #000; cu
   box-shadow: 0 4px 24px rgba(0,0,0,0.15);
   animation: bubbleIn 0.5s ease forwards;
   word-break: break-word;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  forced-color-adjust: none;
+}
+.inner-monologue-line {
+  background: rgba(255, 255, 255, 0.9) !important;
+  color: #3a3a3a !important;
+  padding: 9px 14px;
+  border-radius: 14px;
+  margin: 0 4px 8px;
+  font-size: 13px;
+  line-height: 1.55;
+  box-shadow: 0 3px 18px rgba(0,0,0,0.12);
+  animation: bubbleIn 0.5s ease forwards;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  forced-color-adjust: none;
+}
+.inner-monologue-line::before {
+  content: "💭 ";
+  opacity: 0.8;
 }
 @keyframes bubbleIn {
   from { opacity: 0; transform: translateY(-12px) scale(0.95); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
-.chat-bubble.fade-out {
+.chat-bubble.fade-out,
+.inner-monologue-line.fade-out {
   animation: bubbleOut 1s ease forwards;
 }
 @keyframes bubbleOut {
@@ -401,22 +424,54 @@ function showBubble(text) {
   text = cleanAIText(text);
   if (!text.trim()) return;
 
-  // 拆分多气泡（按 \n\n）
-  const parts = text.split(/\n\n+/).filter(s => s.trim());
-  for (const part of parts) {
-    _addOneBubble(part.trim(), container, duration);
+  // 沿用群聊格式：单换行拆气泡，结构化内容保留换行，心里嘀咕独立显示
+  const items = wallpaperMessageItems(text);
+  // 优先移除旧内容；即使单条新消息超过上限，也要完整保留它自己的所有分段
+  while (bubbles.length && bubbles.length + items.length > MAX_BUBBLES) {
+    const old = bubbles.shift();
+    clearTimeout(old.timer);
+    old.el.remove();
+  }
+  for (const item of items) {
+    _addOneBubble(item.text, container, duration, item.type);
   }
 }
 
-function _addOneBubble(text, container, duration) {
-  // 限制数量
-  while (bubbles.length >= MAX_BUBBLES) {
-    const old = bubbles.shift();
-    old.el.remove();
-  }
+const WALLPAPER_STRUCTURED_LINE_RE = /^\s*(```|[-*+]\s+|\d+[.)]\s+|[>|#]|\|)/;
 
+function wallpaperBubbleParts(raw) {
+  const text = raw || '';
+  const singleLineParts = text.split(/\n+/).map(part => part.trim()).filter(Boolean);
+  if (singleLineParts.length < 2) return singleLineParts;
+  if (singleLineParts.some(part => WALLPAPER_STRUCTURED_LINE_RE.test(part))) {
+    return text.split(/\n{2,}/).map(part => part.trim()).filter(Boolean);
+  }
+  return singleLineParts;
+}
+
+function wallpaperMessageItems(raw) {
+  const items = [];
+  const monologueRe = /\[心里嘀咕[：:]\s*([^\]]+?)\]/g;
+  for (const part of wallpaperBubbleParts(raw)) {
+    let last = 0;
+    let match;
+    monologueRe.lastIndex = 0;
+    while ((match = monologueRe.exec(part)) !== null) {
+      const before = part.slice(last, match.index).trim();
+      if (before) items.push({ type: 'bubble', text: before });
+      const thought = (match[1] || '').trim();
+      if (thought) items.push({ type: 'monologue', text: thought });
+      last = monologueRe.lastIndex;
+    }
+    const tail = part.slice(last).trim();
+    if (tail) items.push({ type: 'bubble', text: tail });
+  }
+  return items;
+}
+
+function _addOneBubble(text, container, duration, type = 'bubble') {
   const el = document.createElement('div');
-  el.className = 'chat-bubble';
+  el.className = type === 'monologue' ? 'inner-monologue-line' : 'chat-bubble';
   el.textContent = text;
   container.appendChild(el);
 
@@ -455,7 +510,10 @@ function connectWS() {
   ws.onmessage = e => {
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === 'msg_created' && msg.data?.role === 'assistant') {
+      const isPrivateAIMessage = msg.type === 'msg_created' && msg.data?.role === 'assistant';
+      const isChatroomAIMessage = msg.type === 'chatroom_msg_created'
+        && (msg.data?.sender === 'aion' || msg.data?.sender === 'connor');
+      if (isPrivateAIMessage || isChatroomAIMessage) {
         showBubble(msg.data.content);
       }
     } catch {}

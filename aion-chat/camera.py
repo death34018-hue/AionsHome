@@ -3,20 +3,88 @@
 """
 
 import json, time, re, base64, asyncio, threading, sqlite3, random, urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2, httpx, numpy as np, aiosqlite
 
 from config import (
-    DB_PATH, SCREENSHOTS_DIR, MONITOR_LOGS_DIR,
-    get_key, get_sentinel_config, load_worldbook, load_chat_status, load_cam_config, save_cam_config, DEFAULT_MODEL, SETTINGS,
+    DB_PATH, SCREENSHOTS_DIR, MONITOR_LOGS_DIR, UPLOADS_DIR,
+    get_key, get_sentinel_config, load_worldbook, load_chat_status, load_cam_config,
+    normalize_camera_wake_mode, save_cam_config, DEFAULT_MODEL, SETTINGS,
 )
 from database import get_db
 from ws import manager
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
-from memory import recall_memories
+from memory import recall_memories, format_recalled_memories_for_prompt
 from tts import TTSStreamer
 from web_search import WebCommandStreamFilter
+from phone_camera import phone_camera
+
+
+SENTINEL_WAKE_TARGETS = {"main_ai", "second_ai", "both"}
+SENTINEL_LEGACY_WAKE_TARGETS = {
+    "aion": "main_ai",
+    "connor": "second_ai",
+}
+
+
+def normalize_sentinel_wake_target(value: object) -> str:
+    target = str(value or "").strip().lower()
+    target = SENTINEL_LEGACY_WAKE_TARGETS.get(target, target)
+    return target if target in SENTINEL_WAKE_TARGETS else "main_ai"
+
+
+def resolve_sentinel_wake_targets(
+    call_core: bool,
+    wake_mode: str,
+    sentinel_target: object,
+) -> list[str]:
+    if not call_core:
+        return []
+    mode = normalize_camera_wake_mode(wake_mode)
+    if mode != "smart":
+        return [mode]
+    target = normalize_sentinel_wake_target(sentinel_target)
+    if target == "both":
+        return ["aion", "connor"]
+    return ["aion"] if target == "main_ai" else ["connor"]
+
+
+def parse_sentinel_dispatch(parsed: dict, wake_mode: str) -> dict:
+    call_core = bool(parsed.get("call_core", False))
+    sentinel_target = normalize_sentinel_wake_target(parsed.get("wake_target"))
+    confidence = str(parsed.get("wake_confidence") or "").strip().lower()
+    if confidence not in {"high", "medium", "low"}:
+        confidence = "low"
+    return {
+        "sentinel_wake_target": sentinel_target,
+        "final_wake_targets": resolve_sentinel_wake_targets(
+            call_core,
+            wake_mode,
+            sentinel_target,
+        ),
+        "wake_reason": str(parsed.get("wake_reason") or "").strip(),
+        "wake_confidence": confidence,
+    }
+
+
+def build_sentinel_dispatch_policy(
+    *,
+    user_name: str,
+    ai_name: str,
+    connor_name: str,
+) -> str:
+    return f"""派单规则（仅在 call_core=true 时使用）：
+- wake_target 只能是 main_ai、second_ai、both。main_ai 代表{ai_name}，second_ai 代表{connor_name}，both 代表两位都唤醒。
+- 明确点名优先：{user_name}明确呼唤其中一位时，优先派给被点名者。
+- 强烈情绪、想发疯吐槽、受委屈需要立刻站队、玩闹撩骚、灵感爆发或设备折腾，优先派给{ai_name}（main_ai）。
+- 饮食出行、运动工作、直播前后、睡眠作息、身体不适、工作，运动摸鱼，优先派给{connor_name}（second_ai）。
+- 撒娇、亲密互动、低落但嘴硬等不固定归属；结合点名、最近由谁处理同一事情、近期互动和谁更久没有被唤醒来选择。
+- 当明显危险、健康异常、情绪崩溃、涉及三个人共同的家庭关系、或长时间没有交流，选择 both。
+- 普通的不确定或低置信度不能成为选择 both 的理由；仍要先判断更匹配的一位。
+- 最近处理同一事件的人优先保持上下文；同类事件连续发生时避免机械地总派同一位，但上下文连续性高于轮换。
+- wake_reason 用一句话说明派单依据；wake_confidence 只能是 high、medium、low。"""
 
 
 # ── 监控日志文件读写 ──────────────────────────────
@@ -105,7 +173,7 @@ async def async_get_last_user_msg_time() -> float:
 
 
 async def async_get_last_aion_timeline_user_msg_time(conv_id: str = None) -> float:
-    """Aion 视角的最后用户发言时间：合并私聊 + 最近群聊。"""
+    """哨兵视角的最后用户发言时间：合并两位 AI 的活跃对话。"""
     latest_ts = 0.0
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
@@ -143,6 +211,22 @@ async def async_get_last_aion_timeline_user_msg_time(conv_id: str = None) -> flo
             if row and row["created_at"]:
                 latest_ts = max(latest_ts, float(row["created_at"]))
 
+        cur = await db.execute(
+            "SELECT id FROM chatroom_rooms "
+            "WHERE type='connor_1v1' ORDER BY updated_at DESC LIMIT 1"
+        )
+        connor_room = await cur.fetchone()
+        if connor_room:
+            cur = await db.execute(
+                "SELECT created_at FROM chatroom_messages "
+                "WHERE room_id=? AND sender='user' "
+                "ORDER BY created_at DESC LIMIT 1",
+                (connor_room["id"],),
+            )
+            row = await cur.fetchone()
+            if row and row["created_at"]:
+                latest_ts = max(latest_ts, float(row["created_at"]))
+
     return latest_ts
 
 
@@ -154,7 +238,7 @@ async def async_get_recent_aion_timeline_text(
     ai_name: str = "AI",
     connor_name: str = "AI",
 ) -> str:
-    """给哨兵看的最近聊天记录，口径与 Aion 私聊上下文一致。"""
+    """给哨兵看的最近聊天记录，合并主私聊、群聊和第二 AI 私聊。"""
     rows = []
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
@@ -172,6 +256,21 @@ async def async_get_recent_aion_timeline_text(
                 "WHERE conv_id=? AND role IN ('user','assistant') "
                 "ORDER BY created_at DESC LIMIT ?",
                 (conv_id, limit),
+            )
+            rows.extend(dict(r) for r in await cur.fetchall())
+
+        cur = await db.execute(
+            "SELECT id FROM chatroom_rooms "
+            "WHERE type='connor_1v1' ORDER BY updated_at DESC LIMIT 1"
+        )
+        connor_room = await cur.fetchone()
+        if connor_room:
+            cur = await db.execute(
+                "SELECT '第二AI私聊' AS source, sender, content, created_at "
+                "FROM chatroom_messages "
+                "WHERE room_id=? AND sender IN ('user','connor') "
+                "ORDER BY created_at DESC LIMIT ?",
+                (connor_room["id"], limit),
             )
             rows.extend(dict(r) for r in await cur.fetchall())
 
@@ -558,6 +657,10 @@ class CameraMonitor:
 
         if source == "esp32":
             ok = self.open_esp32()
+        elif source == "phone":
+            # Phone capture is event-driven. Source selection does not arm it.
+            self.running = False
+            ok = True
         else:
             ok = self.open_camera(self.cfg["camera_index"])
 
@@ -817,6 +920,29 @@ class CameraMonitor:
             print(f"[Camera] 手机单独图层构建失败: {e}")
             return None
 
+    def get_capture_jpegs(
+        self,
+        *,
+        force_pc_screen: bool = False,
+        phone_screen_after: float | None = None,
+    ) -> tuple[bytes | None, bytes | None]:
+        with self._lock:
+            if self._latest_frame is None:
+                return None, None
+            frame = self._apply_crop(self._latest_frame).copy()
+        pure_ok, pure_buf = cv2.imencode(".jpg", frame)
+        if not pure_ok:
+            return None, None
+        combined = self._combine_with_screen(
+            frame,
+            force_pc_screen=force_pc_screen,
+            phone_screen_after=phone_screen_after,
+        )
+        combined_ok, combined_buf = cv2.imencode(".jpg", combined)
+        if not combined_ok:
+            return None, None
+        return combined_buf.tobytes(), pure_buf.tobytes()
+
     def get_frame_jpeg(
         self,
         *,
@@ -826,14 +952,14 @@ class CameraMonitor:
         with self._lock:
             if self._latest_frame is None:
                 return None
-            frame = self._apply_crop(self._latest_frame)
+            frame = self._apply_crop(self._latest_frame).copy()
         combined = self._combine_with_screen(
             frame,
             force_pc_screen=force_pc_screen,
             phone_screen_after=phone_screen_after,
         )
-        _, buf = cv2.imencode(".jpg", combined)
-        return buf.tobytes()
+        ok, encoded = cv2.imencode(".jpg", combined)
+        return encoded.tobytes() if ok else None
 
     def get_screen_only_jpeg(
         self,
@@ -978,37 +1104,125 @@ class CameraMonitor:
             if self._is_quiet_hours():
                 print("[Monitor] 当前处于静默时段，跳过截图")
                 continue
-            # 请求手机截图并等待服务器收到本轮的新上传；户外慢网不再固定 5 秒抢跑。
             phone_screen_requested_at = time.time()
             if self._loop:
                 broadcast_future = asyncio.run_coroutine_threadsafe(
-                    manager.broadcast({"type": "monitor_alert", "data": {"content": "哨兵即将查看监控"}}),
+                    manager.broadcast({
+                        "type": "monitor_alert",
+                        "data": build_monitor_alert_data("哨兵即将查看监控"),
+                    }),
                     self._loop
                 )
                 try:
                     broadcast_future.result(timeout=5)
                 except Exception as error:
                     print(f"[Monitor] 手机截图请求广播失败: {error}")
-                from phone_screen import wait_for_phone_screen_after_sync
-                wait_for_phone_screen_after_sync(
-                    phone_screen_requested_at,
+
+            filename = None
+            image_result = None
+            camera_jpeg = None
+            if self.cfg.get("active_source", "local") == "phone":
+                image_result = acquire_monitor_image_sync(
+                    "sentinel_patrol",
                     should_continue=lambda: self.monitoring,
                 )
-            if not self.monitoring:
-                break
-            filename = self.save_screenshot(
-                phone_screen_after=phone_screen_requested_at,
-            )
+                camera_jpeg = image_result.camera_jpeg
+                if image_result.jpeg:
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    filename = f"monitor_{ts}_{time.time_ns()}.jpg"
+                    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+                    (SCREENSHOTS_DIR / filename).write_bytes(image_result.jpeg)
+            else:
+                # 本地/ESP32 继续等待本轮新鲜的手机屏幕截图后再合成。
+                if self._loop:
+                    from phone_screen import wait_for_phone_screen_after_sync
+                    wait_for_phone_screen_after_sync(
+                        phone_screen_requested_at,
+                        should_continue=lambda: self.monitoring,
+                    )
+                if not self.monitoring:
+                    break
+                composite_jpeg, camera_jpeg = self.get_capture_jpegs(
+                    phone_screen_after=phone_screen_requested_at,
+                )
+                if composite_jpeg:
+                    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    filename = f"cam_{ts}.jpg"
+                    (SCREENSHOTS_DIR / filename).write_bytes(composite_jpeg)
+                    self._cleanup()
+                else:
+                    filename = self.save_screenshot(
+                        phone_screen_after=phone_screen_requested_at,
+                    )
             if filename and self._loop:
                 print(f"[Monitor] 截图已保存: {filename}, 开始 Sentinel 分析")
                 asyncio.run_coroutine_threadsafe(
-                    self._analyze_and_log(filename), self._loop
+                    self._analyze_and_log(filename, camera_jpeg), self._loop
                 )
             elif not filename:
                 print("[Monitor] 截图失败: 无可用画面")
+                if (
+                    self._loop
+                    and self.cfg.get("active_source", "local") == "phone"
+                    and image_result is not None
+                ):
+                    asyncio.run_coroutine_threadsafe(
+                        self._handle_monitor_no_image(image_result),
+                        self._loop,
+                    )
         print(f"[Monitor] 监控线程退出 (monitoring={self.monitoring})")
 
-    async def _analyze_and_log(self, screenshot_filename: str):
+    async def _handle_monitor_no_image(self, image_result):
+        """Keep the patrol notification flow alive without inventing a picture."""
+        last_user_ts = await async_get_last_aion_timeline_user_msg_time(None)
+        recent_logs = read_logs_since(time.time() - 3600 * 6)
+        error = image_result.error or image_result.status or "unknown"
+        monitoring_log = (
+            f"{image_result.no_image_context or PHONE_CAMERA_NO_IMAGE_CONTEXT}\n"
+            f"本次哨兵巡逻取图结果：{error}。"
+        )
+        wake_targets = resolve_sentinel_wake_targets(
+            True,
+            self.cfg.get("wake_mode", "aion"),
+            "main_ai",
+        )
+        now = time.time()
+        log_entry = {
+            "timestamp": now,
+            "time": time.strftime("%H:%M:%S", time.localtime(now)),
+            "date": time.strftime("%Y-%m-%d", time.localtime(now)),
+            "monitoringlog": monitoring_log,
+            "summary": "本次外出监控没有成功取得手机摄像头画面。",
+            "call_core": True,
+            "core_reason": "监控事件已触发，但手机画面获取失败，需要明确告知用户。",
+            "camera_observation": "无图像附件，无法观察。",
+            "device_activity": "",
+            "inference": "不得根据缺失画面推断用户状态。",
+            "confidence": "low",
+            "screenshot": "",
+            "sentinel_wake_target": "main_ai",
+            "final_wake_targets": wake_targets,
+            "wake_reason": "取图失败时沿用主 AI 安全回退。",
+            "wake_confidence": "low",
+        }
+        append_monitor_log(log_entry)
+        await manager.broadcast({"type": "monitor_log", "data": log_entry})
+        await self._wake_core_targets(
+            wake_targets,
+            monitoring_log,
+            last_user_ts,
+            log_entry["summary"],
+            log_entry["core_reason"],
+            recent_logs,
+            "",
+        )
+
+    async def _analyze_and_log(
+        self,
+        screenshot_filename: str,
+        camera_jpeg: bytes | None = None,
+    ):
         filepath = SCREENSHOTS_DIR / screenshot_filename
         if not filepath.exists():
             print(f"[Monitor] 截图文件不存在: {filepath}")
@@ -1096,6 +1310,11 @@ class CameraMonitor:
             if heart_rate_summary_text
             else f"\n{user_name}最近心率摘要（穿戴设备数据，仅作辅助）：\n（暂无可用心率数据）\n"
         )
+        dispatch_policy = build_sentinel_dispatch_policy(
+            user_name=user_name,
+            ai_name=ai_name,
+            connor_name=connor_name,
+        )
 
         prompt = f"""你是一个监控画面分析师，同时也是{user_name}的恋人。分析当前画面，并根据历史日志和当前状况，决定是否调用伴侣职权。
 
@@ -1124,7 +1343,7 @@ class CameraMonitor:
         - 如果最近几次监控都显示床上被褥/睡眠状态，当前画面除非清楚看到离床或坐到桌前，否则应延续为“仍可能在床上休息/睡觉”，不要改写成“趴在电脑桌前”。
 
         请严格按照以下JSON格式回复，不要包含其他任何内容：
-        {{"camera_observation":"只描述CAMERA VIEW中的客观画面；不确定就明确说不确定。","device_activity":"只描述DEVICE CONTEXT和设备动态，不推断身体位置。","inference":"把画面事实和设备动态分开后的谨慎判断。","confidence":"high/medium/low","monitoringlog":"综合日志，必须优先基于camera_observation，设备动态只能作为补充。","summary":"根据历史日志，概括{user_name}这段时间以来的整体状况，去掉重复无用的信息，保留关键事件和状态变化，一两句话即可。注意力重点应当放在截图上半部分的摄像头内容，以及如果捕捉到左下方手机画面内容，应重点关注","call_core":false,"core_reason":""}}
+        {{"camera_observation":"只描述CAMERA VIEW中的客观画面；不确定就明确说不确定。","device_activity":"只描述DEVICE CONTEXT和设备动态，不推断身体位置。","inference":"把画面事实和设备动态分开后的谨慎判断。","confidence":"high/medium/low","monitoringlog":"综合日志，必须优先基于camera_observation，设备动态只能作为补充。","summary":"根据历史日志，概括{user_name}这段时间以来的整体状况，去掉重复无用的信息，保留关键事件和状态变化，一两句话即可。注意力重点应当放在截图上半部分的摄像头内容，以及如果捕捉到左下方手机画面内容，应重点关注","call_core":false,"core_reason":"","wake_target":"main_ai","wake_reason":"","wake_confidence":"low"}}
 
         字段说明：
         - camera_observation: 只允许来自CAMERA VIEW；没有清楚看到人就说没有清楚看到人；看不清床/桌/身体边界就写不确定。
@@ -1140,6 +1359,7 @@ class CameraMonitor:
         - false: {user_name}一切正常复合聊天内容 /夜间在睡觉 /前不久才发过消息。
         - true: {user_name}和上下文聊天内容不符/ 故意引起注意 / 已经有一段时间没有聊天了（超过半小时） / 长时间同一姿势需提醒活动 / 长时间未看到{user_name} / 单纯想念她可以想主动联系 / 或当前摄像头画面显示状态不佳 / 重点关注左下方手机画面内容，有异常情况，如偷看其他帅哥，在刷小红书有意思的话题等等，可以主动询问。
         - 结合设备活动动态综合判断：设备动态可以提高“是否联系”的权重，但不能改变monitoringlog里的身体位置。若只是手机活跃而摄像头仍像床上休息，大概率在赖床，需要唤醒”。"""
+        prompt += f"\n\n{dispatch_policy}"
 
         img_b64 = base64.b64encode(filepath.read_bytes()).decode()
         scfg = get_sentinel_config()
@@ -1152,6 +1372,7 @@ class CameraMonitor:
 
         monitoring_log = ""
         call_core = False
+        dispatch = parse_sentinel_dispatch({}, self.cfg.get("wake_mode", "aion"))
 
         try:
             from memory import _call_sentinel_vision
@@ -1165,6 +1386,10 @@ class CameraMonitor:
             parsed = json.loads(cleaned)
             monitoring_log = parsed.get("monitoringlog", raw_text)
             call_core = bool(parsed.get("call_core", False))
+            dispatch = parse_sentinel_dispatch(
+                parsed,
+                self.cfg.get("wake_mode", "aion"),
+            )
             summary = parsed.get("summary", "")
             core_reason = parsed.get("core_reason", "")
             camera_observation = parsed.get("camera_observation", "")
@@ -1204,14 +1429,362 @@ class CameraMonitor:
             "inference": inference,
             "confidence": confidence,
             "screenshot": screenshot_filename,
+            **dispatch,
         }
         append_monitor_log(log_entry)
         await manager.broadcast({"type": "monitor_log", "data": log_entry})
 
         if call_core:
-            await self._call_core(monitoring_log, last_user_ts, summary, core_reason, recent_logs, screenshot_filename)
+            dispatch_reason = dispatch.get("wake_reason", "")
+            actor_reason = core_reason
+            if dispatch_reason:
+                actor_reason = (
+                    f"{core_reason}\n派单依据：{dispatch_reason}"
+                    if core_reason else f"派单依据：{dispatch_reason}"
+                )
+            await self._wake_core_targets(
+                dispatch["final_wake_targets"],
+                monitoring_log,
+                last_user_ts,
+                summary,
+                actor_reason,
+                recent_logs,
+                screenshot_filename,
+                camera_jpeg,
+            )
 
-    async def _call_core(self, trigger_log: str, last_user_ts: float, summary: str = "", core_reason: str = "", cached_logs: list = None, screenshot_filename: str = ""):
+    async def _resolve_actor_target(self, actor: str) -> dict | None:
+        actor = "connor" if actor == "connor" else "aion"
+        async with get_db() as db:
+            db.row_factory = aiosqlite.Row
+            if actor == "aion":
+                active = manager.get_aion_last_active()
+                if active and active.startswith("chatroom:"):
+                    room_id = active.split(":", 1)[1]
+                    cur = await db.execute(
+                        "SELECT id, type FROM chatroom_rooms WHERE id=? AND type='group'",
+                        (room_id,),
+                    )
+                    room = await cur.fetchone()
+                    if room:
+                        return {
+                            "type": "chatroom",
+                            "room_id": room["id"],
+                            "room_type": room["type"],
+                        }
+                cur = await db.execute(
+                    "SELECT id FROM conversations ORDER BY updated_at DESC LIMIT 1"
+                )
+                conv = await cur.fetchone()
+                return (
+                    {"type": "private", "conv_id": conv["id"]}
+                    if conv else None
+                )
+
+            active_room_id = manager.get_connor_last_active()
+            if active_room_id:
+                cur = await db.execute(
+                    "SELECT id, type FROM chatroom_rooms "
+                    "WHERE id=? AND type IN ('group','connor_1v1')",
+                    (active_room_id,),
+                )
+                room = await cur.fetchone()
+                if room:
+                    return {
+                        "type": "chatroom",
+                        "room_id": room["id"],
+                        "room_type": room["type"],
+                    }
+            cur = await db.execute(
+                "SELECT id, type FROM chatroom_rooms "
+                "WHERE type='connor_1v1' ORDER BY updated_at DESC LIMIT 1"
+            )
+            room = await cur.fetchone()
+            return (
+                {
+                    "type": "chatroom",
+                    "room_id": room["id"],
+                    "room_type": room["type"],
+                }
+                if room else None
+            )
+
+    async def _call_core_for_actor(
+        self,
+        actor: str,
+        target: dict,
+        *args,
+        **kwargs,
+    ):
+        if actor == "connor":
+            return await self._call_connor_core(target, *args, **kwargs)
+        return await self._call_core(*args, target_override=target, **kwargs)
+
+    async def _wake_core_targets(self, actors: list[str], *args, **kwargs) -> dict:
+        ordered_actors = [a for a in ("aion", "connor") if a in actors]
+        targets = {
+            actor: await self._resolve_actor_target(actor)
+            for actor in ordered_actors
+        }
+        results: dict[str, dict] = {}
+
+        async def wake_one(actor: str):
+            target = targets.get(actor)
+            if not target:
+                results[actor] = {"ok": False, "error": "没有可用的回复窗口"}
+                return
+            try:
+                await self._call_core_for_actor(actor, target, *args, **kwargs)
+                results[actor] = {"ok": True, "target": target}
+            except Exception as exc:
+                print(f"[Monitor] 唤醒 {actor} 失败: {exc}")
+                results[actor] = {
+                    "ok": False,
+                    "target": target,
+                    "error": str(exc),
+                }
+
+        same_group = (
+            len(ordered_actors) == 2
+            and targets.get("aion")
+            and targets.get("connor")
+            and targets["aion"].get("type") == "chatroom"
+            and targets["connor"].get("type") == "chatroom"
+            and targets["aion"].get("room_type") == "group"
+            and targets["connor"].get("room_type") == "group"
+            and targets["aion"].get("room_id") == targets["connor"].get("room_id")
+        )
+        if same_group:
+            for actor in ordered_actors:
+                await wake_one(actor)
+        else:
+            await asyncio.gather(*(wake_one(actor) for actor in ordered_actors))
+        return results
+
+    async def _call_connor_core(
+        self,
+        target: dict,
+        trigger_log: str,
+        last_user_ts: float,
+        summary: str = "",
+        core_reason: str = "",
+        cached_logs: list = None,
+        screenshot_filename: str = "",
+        camera_jpeg: bytes | None = None,
+    ):
+        if target.get("type") != "chatroom" or not target.get("room_id"):
+            raise RuntimeError("第二 AI 没有可用的聊天室窗口")
+
+        from app_supervision_ai import inject_app_supervision_context
+        from chatroom import (
+            build_connor_1v1_context,
+            build_connor_group_context,
+            get_chatroom_names,
+            load_chatroom_config,
+            stream_connor_cli,
+        )
+        from schedule import (
+            _broadcast_trigger_debug,
+            _consume_background_stream,
+            _new_background_meta,
+            _process_background_reply_commands,
+            _tts_voice_for_target,
+            schedule_mgr,
+        )
+
+        user_name, _, connor_name = get_chatroom_names()
+        room_id = target["room_id"]
+        room_type = target.get("room_type") or "group"
+        if last_user_ts > 0:
+            elapsed = time.time() - last_user_ts
+            hours = int(elapsed // 3600)
+            minutes = int((elapsed % 3600) // 60)
+            time_ago = f"{hours}小时{minutes}分钟" if hours > 0 else f"{minutes}分钟"
+        else:
+            time_ago = "很长时间"
+
+        all_logs = (
+            cached_logs[-24:]
+            if cached_logs is not None
+            else read_logs_since(
+                last_user_ts if last_user_ts > 0 else time.time() - 3600 * 6
+            )[-24:]
+        )
+        recent_detail = "\n".join(
+            f"[{entry.get('time', '')}] {entry.get('monitoringlog', '')}"
+            for entry in all_logs[-5:]
+        ) or trigger_log
+
+        core_parts = [f"【{user_name}】已经{time_ago}没有和你说话了。"]
+        if core_reason:
+            core_parts.append(f"哨兵唤醒你的原因：{core_reason}")
+        if summary:
+            core_parts.append(f"这段时间{user_name}的整体状况：{summary}")
+        core_parts.append(
+            f"最新一条监控日志原文（哨兵看到的画面完整描述）：{trigger_log}"
+        )
+        core_parts.append(f"最近的监控记录：\n{recent_detail}")
+        contact_scene = (
+            "群聊里"
+            if room_type == "group"
+            else f"{connor_name} 与 {user_name} 的私聊里"
+        )
+        core_parts.append(
+            f"你现在是在{contact_scene}主动联系她。"
+            "只用你自己的口吻回复，不要续写、复述或模仿历史里的角色标签，"
+            "也不要替其他角色发言。"
+        )
+        try:
+            from location import format_location_for_prompt
+            loc_info = format_location_for_prompt()
+            if loc_info:
+                core_parts.append(f"\n{loc_info}")
+        except Exception:
+            pass
+        try:
+            from health_context import build_heart_rate_prompt_block
+            core_parts.append(await build_heart_rate_prompt_block(user_name))
+        except Exception:
+            pass
+        core_prompt = "\n".join(core_parts)
+
+        if room_type == "connor_1v1":
+            messages, digest_result = await build_connor_1v1_context(
+                room_id,
+                [],
+                query_text=core_prompt,
+            )
+        else:
+            messages, digest_result = await build_connor_group_context(
+                room_id,
+                [],
+                query_text=core_prompt,
+            )
+
+        fresh_fname = ""
+        if screenshot_filename:
+            src_path = SCREENSHOTS_DIR / screenshot_filename
+            if src_path.exists():
+                fresh_fname = screenshot_filename
+                dst_path = UPLOADS_DIR / screenshot_filename
+                if not dst_path.exists():
+                    import shutil
+                    shutil.copy2(src_path, dst_path)
+        trigger_message = {"role": "user", "content": core_prompt}
+        if fresh_fname:
+            trigger_message["attachments"] = [f"/uploads/{fresh_fname}"]
+            trigger_message["content"] += (
+                "\n\n（附带了最新的监控截图，请结合画面内容回应。）"
+            )
+        messages.append(trigger_message)
+        inject_app_supervision_context(messages)
+
+        cfg = load_chatroom_config()
+        model_key = (cfg.get("connor_model") or "Codex").strip() or "Codex"
+        core_msg_id = f"cm_{int(time.time() * 1000)}_cr"
+        usage_meta = _new_background_meta()
+        command_filter = WebCommandStreamFilter()
+        core_tts = None
+        tts_voice = _tts_voice_for_target(True, "connor")
+        if tts_voice:
+            core_tts = TTSStreamer(core_msg_id, tts_voice, manager)
+
+        if model_key == "Codex":
+            async def content_stream():
+                async for chunk in stream_connor_cli(
+                    messages=messages,
+                    meta=usage_meta,
+                ):
+                    if chunk.startswith(CLI_STATUS_PREFIX):
+                        continue
+                    yield chunk
+        else:
+            temperature = SETTINGS.get("temperature")
+
+            async def content_stream():
+                async for chunk in stream_ai(
+                    messages,
+                    model_key,
+                    meta=usage_meta,
+                    temperature=temperature,
+                ):
+                    if chunk.startswith(CLI_STATUS_PREFIX):
+                        continue
+                    yield chunk
+
+        stream_result = await _consume_background_stream(
+            content_stream(),
+            command_filter,
+            core_tts,
+        )
+        full_text = _strip_leading_cli_role_header(stream_result.committed_text)
+        safety_notice = stream_result.notice
+        if not full_text.strip() and not safety_notice:
+            return
+        full_text = await _process_background_reply_commands(
+            full_text,
+            target=target,
+            conv_id=None,
+            sender="connor",
+            ai_msg_id=core_msg_id,
+        )
+        if safety_notice:
+            full_text = f"{full_text}\n\n[{safety_notice}]".strip()
+        reasoning_content = (usage_meta.get("reasoning_content") or "").strip()
+        snapshot_attachment = save_monitor_camera_snapshot(camera_jpeg, "sentinel")
+        system_atts = [snapshot_attachment] if snapshot_attachment else []
+        await schedule_mgr._save_to_chatroom(
+            room_id,
+            "connor",
+            f"{connor_name}偷偷查看了监控",
+            full_text,
+            core_msg_id,
+            "[]",
+            [],
+            reasoning_content,
+            system_atts=system_atts,
+        )
+        await _broadcast_trigger_debug(
+            msg_id=core_msg_id,
+            model_key=model_key,
+            usage_meta=usage_meta,
+            prompt_messages=messages,
+            recalled_memories=[],
+            has_error=stream_result.stop_reason is not None,
+            error_text=(
+                stream_result.diagnostic_error or stream_result.stop_reason
+            ),
+        )
+        if core_tts:
+            try:
+                await core_tts.flush()
+            except Exception:
+                pass
+        now = time.time()
+        core_log = {
+            "timestamp": now,
+            "time": time.strftime("%H:%M:%S", time.localtime(now)),
+            "date": time.strftime("%Y-%m-%d", time.localtime(now)),
+            "monitoringlog": f"🧠 {connor_name}已唤醒并回复：{full_text[:80]}...",
+            "call_core": False,
+            "screenshot": "",
+        }
+        append_monitor_log(core_log)
+        await manager.broadcast({"type": "monitor_log", "data": core_log})
+        return full_text
+
+    async def _call_core(
+        self,
+        trigger_log: str,
+        last_user_ts: float,
+        summary: str = "",
+        core_reason: str = "",
+        cached_logs: list = None,
+        screenshot_filename: str = "",
+        camera_jpeg: bytes | None = None,
+        *,
+        target_override: dict | None = None,
+    ):
         wb = load_worldbook()
         user_name = wb.get("user_name", "你")
         ai_name = wb.get("ai_name", "AI")
@@ -1245,11 +1818,12 @@ class CameraMonitor:
 
         from schedule import (
             _broadcast_trigger_debug,
+            _consume_background_stream,
             _new_background_meta,
             _process_background_reply_commands,
             schedule_mgr,
         )
-        target = schedule_mgr._resolve_target({"origin": "aion"})
+        target = target_override or schedule_mgr._resolve_target({"origin": "aion"})
         is_chatroom = target["type"] == "chatroom"
         if is_chatroom:
             try:
@@ -1305,7 +1879,7 @@ class CameraMonitor:
         recalled, _ = await recall_memories(recall_query)
         mem_inject = []
         if recalled:
-            mem_lines = "\n".join([f"- {m['content']}" for m in recalled])
+            mem_lines = format_recalled_memories_for_prompt(recalled)
             mem_inject = [
                 {"role": "user", "content": f"[相关记忆]\n你脑海中与当前话题相关的记忆：\n{mem_lines}"},
                 {"role": "assistant", "content": "收到，我会自然地参考这些记忆。"}
@@ -1345,6 +1919,7 @@ class CameraMonitor:
         core_msg_id = f"msg_{int(time.time()*1000)}_cr"
         usage_meta = _new_background_meta()
         has_error = False
+        error_text = None
 
         # TTS：检查是否有前端开了 TTS
         core_tts = None
@@ -1353,24 +1928,27 @@ class CameraMonitor:
             if tts_voice:
                 core_tts = TTSStreamer(core_msg_id, tts_voice, manager)
 
-        full_text = ""
         core_command_filter = WebCommandStreamFilter()
-        try:
-            _temp = SETTINGS.get("temperature")
+        _temp = SETTINGS.get("temperature")
+
+        async def content_stream():
             async for chunk in stream_ai(messages, model_key, meta=usage_meta, temperature=_temp):
                 if chunk.startswith(CLI_STATUS_PREFIX):
                     continue
-                full_text += chunk
-                if core_tts:
-                    visible_chunk = core_command_filter.feed(chunk)
-                    if visible_chunk:
-                        core_tts.feed(visible_chunk)
-        except Exception as e:
-            has_error = True
-            full_text = f"[Core 回复失败] {e}"
+                yield chunk
+
+        stream_result = await _consume_background_stream(
+            content_stream(),
+            core_command_filter,
+            core_tts,
+        )
+        full_text = stream_result.committed_text
+        has_error = stream_result.stop_reason is not None
+        error_text = stream_result.diagnostic_error or stream_result.stop_reason
+        safety_notice = stream_result.notice
 
         full_text = _strip_leading_cli_role_header(full_text)
-        if not full_text.strip():
+        if not full_text.strip() and not safety_notice:
             return
 
         full_text = await _process_background_reply_commands(
@@ -1380,11 +1958,26 @@ class CameraMonitor:
             sender="aion",
             ai_msg_id=core_msg_id,
         )
+        if safety_notice:
+            full_text = f"{full_text}\n\n[{safety_notice}]".strip()
         reasoning_content = (usage_meta.get("reasoning_content") or "").strip()
         sys_content = f"{ai_name}偷偷查看了监控"
+        snapshot_attachment = save_monitor_camera_snapshot(
+            camera_jpeg,
+            "sentinel",
+        )
+        system_atts = [snapshot_attachment] if snapshot_attachment else []
         if is_chatroom:
             await schedule_mgr._save_to_chatroom(
-                target["room_id"], "aion", sys_content, full_text, core_msg_id, "[]", [], reasoning_content
+                target["room_id"],
+                "aion",
+                sys_content,
+                full_text,
+                core_msg_id,
+                "[]",
+                [],
+                reasoning_content,
+                system_atts=system_atts,
             )
         else:
             now = time.time()
@@ -1399,11 +1992,20 @@ class CameraMonitor:
                 sys_msg_id = f"msg_{int(sys_now*1000)}_sw"
                 await db.execute(
                     "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-                    (sys_msg_id, conv_id, "system", sys_content, sys_now, "[]")
+                    (
+                        sys_msg_id,
+                        conv_id,
+                        "system",
+                        sys_content,
+                        sys_now,
+                        json.dumps(system_atts, ensure_ascii=False)
+                        if system_atts else "[]",
+                    )
                 )
                 await db.commit()
             sys_msg = {"id": sys_msg_id, "conv_id": conv_id, "role": "system",
-                       "content": sys_content, "created_at": sys_now, "attachments": []}
+                       "content": sys_content, "created_at": sys_now,
+                       "attachments": system_atts}
             await manager.broadcast({"type": "msg_created", "data": sys_msg})
 
             async with get_db() as db:
@@ -1430,16 +2032,13 @@ class CameraMonitor:
             prompt_messages=messages,
             recalled_memories=recalled,
             has_error=has_error,
-            error_text=full_text if has_error else None,
+            error_text=error_text,
         )
 
         now = time.time()
         # 刷新 TTS 剩余文本
         if core_tts:
             try:
-                visible_tail = core_command_filter.flush()
-                if visible_tail:
-                    core_tts.feed(visible_tail)
                 await core_tts.flush()
             except Exception:
                 pass
@@ -1458,28 +2057,260 @@ class CameraMonitor:
 
 cam = CameraMonitor()
 
+
+def build_monitor_alert_data(content: str, **extra) -> dict:
+    """Build one monitor alert and assign phone-camera audio to Android."""
+    data = {"content": content, **extra}
+    if cam.cfg.get("active_source", "local") == "phone":
+        data["phone_camera_native_capture"] = True
+    return data
+
+
 # ── Core 主动查看监控 [CAM_CHECK] ─────────────────
 CAM_CHECK_CMD = "[CAM_CHECK]"
 
+PHONE_CAMERA_NO_IMAGE_CONTEXT = (
+    "[手机摄像头采集状态]\n"
+    "本次手机摄像头请求没有成功取得有效画面。本轮没有图像附件，"
+    "不得描述或推断摄像头画面。请结合本次任务目的自然回应。"
+)
+
+
+@dataclass(frozen=True)
+class MonitorImageResult:
+    status: str
+    source: str
+    jpeg: bytes | None = None
+    camera_jpeg: bytes | None = None
+    request_id: str = ""
+    no_image_context: str = ""
+    error: str = ""
+
+
+def _phone_result_to_monitor(
+    result,
+    *,
+    force_pc_screen: bool = False,
+    phone_screen_after: float | None = None,
+) -> MonitorImageResult:
+    if result.status == "ready" and result.path and result.path.is_file():
+        try:
+            payload = result.path.read_bytes()
+        except OSError as error:
+            return MonitorImageResult(
+                status="unavailable",
+                source="phone",
+                request_id=result.request_id,
+                no_image_context=PHONE_CAMERA_NO_IMAGE_CONTEXT,
+                error=f"read_failed:{type(error).__name__}",
+            )
+        if payload:
+            frame = cv2.imdecode(
+                np.frombuffer(payload, dtype=np.uint8),
+                cv2.IMREAD_COLOR,
+            )
+            if frame is None or frame.size == 0:
+                return MonitorImageResult(
+                    status="unavailable",
+                    source="phone",
+                    request_id=result.request_id,
+                    no_image_context=PHONE_CAMERA_NO_IMAGE_CONTEXT,
+                    error="jpeg_decode_failed",
+                )
+            combined = cam._combine_with_screen(
+                frame,
+                force_pc_screen=force_pc_screen,
+                phone_screen_after=phone_screen_after,
+            )
+            ok, encoded = cv2.imencode(
+                ".jpg",
+                combined,
+                [cv2.IMWRITE_JPEG_QUALITY, 82],
+            )
+            if not ok:
+                return MonitorImageResult(
+                    status="unavailable",
+                    source="phone",
+                    request_id=result.request_id,
+                    no_image_context=PHONE_CAMERA_NO_IMAGE_CONTEXT,
+                    error="combined_jpeg_encode_failed",
+                )
+            return MonitorImageResult(
+                status="ready",
+                source="phone",
+                jpeg=encoded.tobytes(),
+                camera_jpeg=payload,
+                request_id=result.request_id,
+            )
+    return MonitorImageResult(
+        status=result.status,
+        source="phone",
+        request_id=result.request_id,
+        no_image_context=PHONE_CAMERA_NO_IMAGE_CONTEXT,
+        error=result.error,
+    )
+
+
+async def acquire_monitor_image(
+    reason: str,
+    *,
+    force_pc_screen: bool = False,
+    timeout_seconds: float = 45.0,
+    retry_after_seconds: float = 15.0,
+) -> MonitorImageResult:
+    if cam.cfg.get("active_source", "local") == "phone":
+        phone_screen_requested_at = time.time()
+        try:
+            result = await phone_camera.request_capture(
+                reason,
+                manager.send_to_client,
+                timeout_seconds=timeout_seconds,
+                retry_after_seconds=retry_after_seconds,
+            )
+        except RuntimeError as error:
+            return MonitorImageResult(
+                status="unavailable",
+                source="phone",
+                no_image_context=PHONE_CAMERA_NO_IMAGE_CONTEXT,
+                error=str(error),
+            )
+        if result.status == "ready":
+            from phone_screen import wait_for_phone_screen_after
+            await wait_for_phone_screen_after(
+                phone_screen_requested_at,
+                timeout_seconds=min(10.0, timeout_seconds),
+            )
+        return _phone_result_to_monitor(
+            result,
+            force_pc_screen=force_pc_screen,
+            phone_screen_after=phone_screen_requested_at,
+        )
+
+    jpg, camera_jpg = cam.get_capture_jpegs(force_pc_screen=force_pc_screen)
+    if jpg:
+        return MonitorImageResult(
+            status="ready",
+            source="camera",
+            jpeg=jpg,
+            camera_jpeg=camera_jpg,
+        )
+    jpg = cam.get_screen_only_jpeg(force_pc_screen=force_pc_screen)
+    if jpg:
+        return MonitorImageResult(status="ready", source="device", jpeg=jpg)
+    return MonitorImageResult(status="unavailable", source="device")
+
+
+def acquire_monitor_image_sync(
+    reason: str,
+    *,
+    send_command=None,
+    should_continue=None,
+    force_pc_screen: bool = False,
+    timeout_seconds: float = 45.0,
+    retry_after_seconds: float = 15.0,
+) -> MonitorImageResult:
+    if cam.cfg.get("active_source", "local") == "phone":
+        phone_screen_requested_at = time.time()
+        if send_command is None:
+            if cam._loop is None:
+                return MonitorImageResult(
+                    status="unavailable",
+                    source="phone",
+                    no_image_context=PHONE_CAMERA_NO_IMAGE_CONTEXT,
+                    error="event_loop_unavailable",
+                )
+
+            def send_command(client_id, event):
+                future = asyncio.run_coroutine_threadsafe(
+                    manager.send_to_client(client_id, event),
+                    cam._loop,
+                )
+                return future.result(timeout=5)
+
+        try:
+            result = phone_camera.request_capture_sync(
+                reason,
+                send_command,
+                timeout_seconds=timeout_seconds,
+                retry_after_seconds=retry_after_seconds,
+                should_continue=should_continue,
+            )
+        except RuntimeError as error:
+            return MonitorImageResult(
+                status="unavailable",
+                source="phone",
+                no_image_context=PHONE_CAMERA_NO_IMAGE_CONTEXT,
+                error=str(error),
+            )
+        if result.status == "ready":
+            from phone_screen import wait_for_phone_screen_after_sync
+            wait_for_phone_screen_after_sync(
+                phone_screen_requested_at,
+                timeout_seconds=min(10.0, timeout_seconds),
+                should_continue=should_continue,
+            )
+        return _phone_result_to_monitor(
+            result,
+            force_pc_screen=force_pc_screen,
+            phone_screen_after=phone_screen_requested_at,
+        )
+
+    jpg, camera_jpg = cam.get_capture_jpegs(force_pc_screen=force_pc_screen)
+    if jpg:
+        return MonitorImageResult(
+            status="ready",
+            source="camera",
+            jpeg=jpg,
+            camera_jpeg=camera_jpg,
+        )
+    jpg = cam.get_screen_only_jpeg(force_pc_screen=force_pc_screen)
+    if jpg:
+        return MonitorImageResult(status="ready", source="device", jpeg=jpg)
+    return MonitorImageResult(status="unavailable", source="device")
+
+
+def save_monitor_camera_snapshot(
+    camera_jpeg: bytes | None,
+    prefix: str,
+    *,
+    upload_dir: Path | None = None,
+) -> dict | None:
+    payload = bytes(camera_jpeg or b"")
+    if not payload:
+        return None
+    safe_prefix = re.sub(r"[^A-Za-z0-9_-]+", "_", str(prefix or "capture"))[:40]
+    target_dir = Path(upload_dir or UPLOADS_DIR)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"monitor_camera_{safe_prefix}_{time.time_ns()}.jpg"
+    target = target_dir / filename
+    temp = target.with_suffix(".tmp")
+    temp.write_bytes(payload)
+    temp.replace(target)
+    return {
+        "type": "monitor_camera_snapshot",
+        "url": f"/uploads/{filename}",
+    }
+
 async def perform_cam_check(conv_id: str, model_key: str):
     """Core 在聊天中主动请求查看监控画面：截图 → 发给 Core → 保存为新消息"""
-    jpg_bytes = cam.get_frame_jpeg(force_pc_screen=True)
-    frame_source = "camera"
-    if not jpg_bytes:
-        jpg_bytes = cam.get_screen_only_jpeg(force_pc_screen=True)
-        frame_source = "device"
-    if not jpg_bytes:
-        return
+    image_result = await acquire_monitor_image(
+        "ai_cam_check",
+        force_pc_screen=True,
+    )
+    jpg_bytes = image_result.jpeg
+    frame_source = image_result.source
+    fname = None
 
     from config import UPLOADS_DIR
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    fname = f"cam_check_{ts}.jpg"
-    fpath = UPLOADS_DIR / fname
-    fpath.write_bytes(jpg_bytes)
+    if jpg_bytes:
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        fname = f"cam_check_{ts}_{time.time_ns()}.jpg"
+        fpath = UPLOADS_DIR / fname
+        fpath.write_bytes(jpg_bytes)
 
-    # 同时保存到 screenshots 目录
-    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-    (SCREENSHOTS_DIR / fname).write_bytes(jpg_bytes)
+        # 同时保存到 screenshots 目录
+        SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+        (SCREENSHOTS_DIR / fname).write_bytes(jpg_bytes)
 
     wb = load_worldbook()
     user_name = wb.get("user_name") or "用户"
@@ -1507,6 +2338,8 @@ async def perform_cam_check(conv_id: str, model_key: str):
     )
     if frame_source == "device":
         cam_prompt += "本次没有可用摄像头画面，系统改用电脑屏幕和/或手机屏幕截图。"
+    if image_result.no_image_context:
+        cam_prompt += image_result.no_image_context
     try:
         from health_context import build_heart_rate_prompt_block
         cam_prompt += await build_heart_rate_prompt_block(user_name)
@@ -1520,17 +2353,24 @@ async def perform_cam_check(conv_id: str, model_key: str):
             {"role": "user", "content": f"[系统能力]\n{passive_band_ability}"},
             {"role": "assistant", "content": "收到，需要时我会使用手环纸条提醒。"},
         ]
-    messages = prefix + recent + passive_band_messages + [
-        {"role": "user", "content": cam_prompt, "attachments": [f"/uploads/{fname}"]}
-    ]
+    cam_message = {"role": "user", "content": cam_prompt}
+    if fname:
+        cam_message["attachments"] = [f"/uploads/{fname}"]
+    messages = prefix + recent + passive_band_messages + [cam_message]
     from app_supervision_ai import inject_app_supervision_context
     inject_app_supervision_context(messages)
 
     # 预生成 msg_id（TTS 分段文件命名需要）
     msg_id = f"msg_{int(time.time()*1000)}_cc"
-    from schedule import _broadcast_trigger_debug, _new_background_meta, _process_background_reply_commands
+    from schedule import (
+        _broadcast_trigger_debug,
+        _consume_background_stream,
+        _new_background_meta,
+        _process_background_reply_commands,
+    )
     usage_meta = _new_background_meta()
     has_error = False
+    error_text = None
 
     # TTS：检查是否有前端开了 TTS
     cam_tts = None
@@ -1539,23 +2379,26 @@ async def perform_cam_check(conv_id: str, model_key: str):
         if tts_voice:
             cam_tts = TTSStreamer(msg_id, tts_voice, manager)
 
-    full_text = ""
     cam_command_filter = WebCommandStreamFilter()
-    try:
-        _temp = SETTINGS.get("temperature")
+    _temp = SETTINGS.get("temperature")
+
+    async def content_stream():
         async for chunk in stream_ai(messages, model_key, meta=usage_meta, temperature=_temp):
             if chunk.startswith(CLI_STATUS_PREFIX):
                 continue
-            full_text += chunk
-            if cam_tts:
-                visible_chunk = cam_command_filter.feed(chunk)
-                if visible_chunk:
-                    cam_tts.feed(visible_chunk)
-    except Exception as e:
-        has_error = True
-        full_text = f"[监控查看失败] {e}"
+            yield chunk
 
-    if not full_text.strip():
+    stream_result = await _consume_background_stream(
+        content_stream(),
+        cam_command_filter,
+        cam_tts,
+    )
+    full_text = stream_result.committed_text
+    has_error = stream_result.stop_reason is not None
+    error_text = stream_result.diagnostic_error or stream_result.stop_reason
+    safety_notice = stream_result.notice
+
+    if not full_text.strip() and not safety_notice:
         return
 
     full_text = await _process_background_reply_commands(
@@ -1565,7 +2408,14 @@ async def perform_cam_check(conv_id: str, model_key: str):
         sender="aion",
         ai_msg_id=msg_id,
     )
+    if safety_notice:
+        full_text = f"{full_text}\n\n[{safety_notice}]".strip()
     reasoning_content = (usage_meta.get("reasoning_content") or "").strip()
+    snapshot_attachment = save_monitor_camera_snapshot(
+        image_result.camera_jpeg,
+        "cam_check",
+    )
+    system_atts = [snapshot_attachment] if snapshot_attachment else []
     # 插入系统提示：查看了监控画面
     sys_now = time.time()
     sys_msg_id = f"msg_{int(sys_now*1000)}_cc_sys"
@@ -1573,11 +2423,20 @@ async def perform_cam_check(conv_id: str, model_key: str):
     async with get_db() as db:
         await db.execute(
             "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-            (sys_msg_id, conv_id, "system", sys_content, sys_now, "[]")
+            (
+                sys_msg_id,
+                conv_id,
+                "system",
+                sys_content,
+                sys_now,
+                json.dumps(system_atts, ensure_ascii=False)
+                if system_atts else "[]",
+            )
         )
         await db.commit()
     sys_msg = {"id": sys_msg_id, "conv_id": conv_id, "role": "system",
-               "content": sys_content, "created_at": sys_now, "attachments": []}
+               "content": sys_content, "created_at": sys_now,
+               "attachments": system_atts}
     await manager.broadcast({"type": "msg_created", "data": sys_msg})
 
     now = time.time()
@@ -1600,15 +2459,12 @@ async def perform_cam_check(conv_id: str, model_key: str):
         prompt_messages=messages,
         recalled_memories=[],
         has_error=has_error,
-        error_text=full_text if has_error else None,
+        error_text=error_text,
     )
 
     # 刷新 TTS 剩余文本
     if cam_tts:
         try:
-            visible_tail = cam_command_filter.flush()
-            if visible_tail:
-                cam_tts.feed(visible_tail)
             await cam_tts.flush()
         except Exception:
             pass

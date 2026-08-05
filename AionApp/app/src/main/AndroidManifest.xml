@@ -5,6 +5,7 @@
     <!-- 网络权限 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.TRANSMIT_IR" />
 
     <!-- 麦克风权限（语音唤醒/通话用） -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
@@ -22,6 +23,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
 
     <!-- 通知权限（Android 13+） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -31,6 +33,7 @@
 
     <!-- 精确闹钟（用于 Service 被杀后自复活） -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- 网络变化监听（用于断线后自动重连） -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -58,6 +61,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+    <uses-feature android:name="android.hardware.consumerir" android:required="false" />
 
     <queries>
         <intent>
@@ -79,7 +83,20 @@
         <!-- 地址选择页 -->
         <activity
             android:name=".LauncherActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <activity
+            android:name=".homecoming.HomecomingActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
+        <!-- WebView 聊天页 -->
+        <activity
+            android:name=".WebViewActivity"
             android:exported="true"
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden"
+            android:launchMode="singleTask"
             android:screenOrientation="portrait">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -87,18 +104,37 @@
             </intent-filter>
         </activity>
 
-        <!-- WebView 聊天页 -->
-        <activity
-            android:name=".WebViewActivity"
-            android:exported="false"
-            android:configChanges="orientation|screenSize|keyboard|keyboardHidden"
-            android:screenOrientation="portrait" />
-
         <!-- 后台推送服务（前台服务 + WebSocket 长连接） -->
         <service
             android:name=".AionPushService"
             android:exported="false"
-            android:foregroundServiceType="dataSync|location|connectedDevice|mediaProjection" />
+            android:foregroundServiceType="dataSync|location|connectedDevice|mediaProjection|camera" />
+
+        <service
+            android:name=".homecoming.HomecomingBackupJobService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+
+        <service
+            android:name=".homecoming.HomecomingForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <receiver
+            android:name=".homecoming.HomecomingAlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".homecoming.HomecomingBootReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+        </receiver>
 
         <!-- 无障碍截图服务：用户在系统无障碍设置中手动开启后，可在 MediaProjection 掉线时继续截普通界面 -->
         <service

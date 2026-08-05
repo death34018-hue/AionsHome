@@ -1,4 +1,5 @@
 import sys
+import re
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -98,6 +99,23 @@ class MemoryKindToggleFrontendTests(unittest.TestCase):
         self.assertIn("result.kind_totals", main_html)
         self.assertIn("_memoryKindTotals[_memoryKindFilter]", main_html)
         self.assertNotIn("${filterText} ${kindFiltered.length} 条", main_html)
+
+    def test_main_memory_kind_tab_requests_a_fresh_server_filtered_page(self):
+        main_html = (ROOT / "static" / "memory.html").read_text(encoding="utf-8")
+        load_function = re.search(
+            r"async function loadMemories\(options = \{\}\) \{.*?\n\}",
+            main_html,
+            re.S,
+        ).group(0)
+        filter_function = re.search(
+            r"function setMemoryKindFilter\(kind\) \{.*?\n\}",
+            main_html,
+            re.S,
+        ).group(0)
+
+        self.assertIn('params.set("kind", _memoryKindFilter)', load_function)
+        self.assertIn("loadMemories({ reset: true })", filter_function)
+        self.assertNotIn("renderMemories();", filter_function)
 
 
 if __name__ == "__main__":

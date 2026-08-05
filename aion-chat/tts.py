@@ -6,6 +6,7 @@
 """
 
 import re, asyncio, logging, time
+from collections import deque
 from pathlib import Path
 import httpx
 
@@ -66,6 +67,7 @@ _STRIP_PATTERNS = [
     re.compile(r'\[MOMENT:[^\]]*\]'),
     re.compile(r'\[MEMORY:[^\]]*\]'),
     re.compile(r'\[微信消息[：:][^\]]*\]'),
+    re.compile(r'\[拍拍抱枕:(?:拍打开关|拍拍调慢|拍拍调快)\]'),
     re.compile(r'\[心里嘀咕\s*[：:]\s*[^\]]*\]'),
     re.compile(r'\[查看动态:\d+\]'),
     re.compile(r'\[SELFIE:[^\]]*\]'),
@@ -308,6 +310,9 @@ class TTSStreamer:
         delete_segments_after_seconds: int | None = None,
         cache_max_bytes: int | None = TTS_CACHE_MAX_BYTES,
         event_data: dict | None = None,
+        max_concurrency: int = 2,
+        max_pending_segments: int = 6,
+        max_segments: int = 40,
     ):
         self.msg_id = msg_id
         self.voice = voice
@@ -320,7 +325,13 @@ class TTSStreamer:
         self._audio_url_prefix = audio_url_prefix.rstrip("/")
         self._buffer = ""       # 原始文本缓冲
         self._seq = 0           # 分段序号
-        self._tasks: list[asyncio.Task] = []
+        self._max_concurrency = max(1, int(max_concurrency))
+        self._max_pending_segments = max(1, int(max_pending_segments))
+        self._max_segments = max(1, int(max_segments))
+        self._queue: asyncio.Queue | None = None
+        self._workers: list[asyncio.Task] = []
+        self._deferred_segments: deque[tuple[str, int, str]] = deque()
+        self._segment_limit_reached = False
         self._segment_paths: dict[int, Path] = {}
         self._merge_segments = merge_segments
         self._merge_task: asyncio.Task | None = None
@@ -329,6 +340,22 @@ class TTSStreamer:
         self._event_data = dict(event_data or {})
         self._cancelled = False
 
+    @property
+    def worker_task_count(self) -> int:
+        return len(self._workers)
+
+    @property
+    def pending_segment_count(self) -> int:
+        return self._queue.qsize() if self._queue is not None else 0
+
+    @property
+    def accepted_segment_count(self) -> int:
+        return self._seq
+
+    @property
+    def segment_limit_reached(self) -> bool:
+        return self._segment_limit_reached
+
     def _with_event_data(self, data: dict) -> dict:
         return {**self._event_data, **data}
 
@@ -336,7 +363,16 @@ class TTSStreamer:
         """Suppress notifications and remove every file owned by this streamer."""
         self._cancelled = True
         self._buffer = ""
-        for task in self._tasks:
+        self._deferred_segments.clear()
+        if self._queue is not None:
+            while True:
+                try:
+                    self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                else:
+                    self._queue.task_done()
+        for task in self._workers:
             if not task.done():
                 task.cancel()
         self._cleanup_owned_files()
@@ -371,34 +407,49 @@ class TTSStreamer:
             await self._sse_queue.put(payload)
 
     def feed(self, chunk: str):
-        """喂入 AI 流式 chunk，检测到可切分的句子就异步发起合成"""
+        """Buffer text for synthesis during ``flush``.
+
+        Streaming callers should use ``feed_async`` so queue backpressure can
+        pause the producer without creating one task per segment.
+        """
         if self._cancelled:
             return
-        self._buffer += chunk
-        self._try_split()
+        self._append_to_buffer(chunk)
 
-    def _try_split(self):
-        """尝试从 buffer 中切出完整句子送去合成"""
+    def _append_to_buffer(self, chunk: str) -> None:
+        remaining_segments = max(0, self._max_segments - self._seq)
+        buffer_limit = (remaining_segments + 1) * self._max_chars
+        available = max(0, buffer_limit - len(self._buffer))
+        if len(chunk) > available:
+            self._segment_limit_reached = True
+        if available:
+            self._buffer += chunk[:available]
+
+    def _take_ready_segment(self) -> str | None:
+        """Remove and return one complete TTS segment from the buffer."""
+        if self._cancelled or _has_unclosed_tag(self._buffer):
+            return None
+        clean = _strip_tags(self._buffer)
+        if len(clean) < self._min_chars:
+            return None
+        cut_pos = self._find_cut_position()
+        if cut_pos is None:
+            return None
+        segment = self._buffer[:cut_pos + 1]
+        self._buffer = self._buffer[cut_pos + 1:]
+        cleaned = _strip_tags(segment).strip()
+        return cleaned or None
+
+    async def feed_async(self, chunk: str):
+        """Feed validated streaming text through the bounded worker queue."""
+        if self._cancelled:
+            return
+        self._append_to_buffer(chunk)
         while True:
-            # 有未闭合的标签，先不切
-            if _has_unclosed_tag(self._buffer):
+            segment = self._take_ready_segment()
+            if segment is None:
                 break
-
-            # 先清除标签，计算纯文本长度
-            clean = _strip_tags(self._buffer)
-            if len(clean) < self._min_chars:
-                break
-
-            cut_pos = self._find_cut_position()
-            if cut_pos is None:
-                break
-
-            segment = self._buffer[:cut_pos + 1]
-            self._buffer = self._buffer[cut_pos + 1:]
-
-            cleaned = _strip_tags(segment)
-            if cleaned.strip():
-                self._dispatch(cleaned.strip())
+            await self._enqueue_segment(segment)
 
     def _find_cut_position(self) -> int | None:
         """
@@ -409,31 +460,103 @@ class TTSStreamer:
         return _find_cut_position_for_text(self._buffer, self._min_chars, self._max_chars)
 
     def _dispatch(self, text: str):
-        """发起异步合成任务"""
+        """Compatibility hook for one-off callers and existing tests."""
         if self._cancelled:
             return
+        item = self._new_segment(text)
+        if item is None:
+            return
+        self._ensure_workers()
+        try:
+            self._queue.put_nowait(item)
+        except asyncio.QueueFull:
+            self._deferred_segments.append(item)
+
+    def _new_segment(self, text: str) -> tuple[str, int, str] | None:
+        if self._cancelled:
+            return None
+        if self._seq >= self._max_segments:
+            if not self._segment_limit_reached:
+                log.warning(
+                    "TTS segment limit reached: msg=%s limit=%d",
+                    self.msg_id,
+                    self._max_segments,
+                )
+            self._segment_limit_reached = True
+            return None
         seq = self._seq
         self._seq += 1
         safe_id = re.sub(r'[^a-zA-Z0-9_\-]', '', self.msg_id)
-        task = asyncio.create_task(self._synthesize(text, seq, safe_id))
-        self._tasks.append(task)
+        return text, seq, safe_id
+
+    def _ensure_workers(self) -> None:
+        if self._workers:
+            return
+        self._queue = asyncio.Queue(maxsize=self._max_pending_segments)
+        self._workers = [
+            asyncio.create_task(self._worker())
+            for _ in range(self._max_concurrency)
+        ]
+
+    async def _enqueue_segment(self, text: str) -> None:
+        item = self._new_segment(text)
+        if item is None:
+            return
+        self._ensure_workers()
+        await self._queue.put(item)
+        if self._cancelled:
+            while True:
+                try:
+                    self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                else:
+                    self._queue.task_done()
+
+    async def _worker(self) -> None:
+        while True:
+            item = await self._queue.get()
+            try:
+                if item is None:
+                    return
+                text, seq, safe_id = item
+                if not self._cancelled:
+                    await self._synthesize(text, seq, safe_id)
+            finally:
+                if self._deferred_segments and not self._cancelled:
+                    try:
+                        self._queue.put_nowait(self._deferred_segments[0])
+                    except asyncio.QueueFull:
+                        pass
+                    else:
+                        self._deferred_segments.popleft()
+                self._queue.task_done()
 
     async def flush(self, *, wait_for_merge: bool = False):
         """流结束后，处理 buffer 中剩余文本并等待所有合成任务完成"""
         if self._cancelled:
             self._buffer = ""
-            if self._tasks:
-                await asyncio.gather(*self._tasks, return_exceptions=True)
+            if self._workers:
+                await asyncio.gather(*self._workers, return_exceptions=True)
             self._cleanup_owned_files()
             return
+
+        while True:
+            segment = self._take_ready_segment()
+            if segment is None:
+                break
+            await self._enqueue_segment(segment)
+
         remaining = _strip_tags(self._buffer).strip()
         if remaining:
-            self._dispatch(remaining)
+            await self._enqueue_segment(remaining)
         self._buffer = ""
 
-        # 等待所有合成任务完成
-        if self._tasks:
-            await asyncio.gather(*self._tasks, return_exceptions=True)
+        if self._workers:
+            await self._queue.join()
+            for _worker in self._workers:
+                await self._queue.put(None)
+            await asyncio.gather(*self._workers, return_exceptions=True)
 
         # 通知前端该消息的 TTS 分段已全部推送完毕
         await self._notify({

@@ -452,9 +452,10 @@ async def build_surfacing_chatroom_memories(
         cur = await db.execute(
             "SELECT id, content, scope AS type, created_at, keywords, importance, unresolved, "
             "source_start_ts, source_end_ts, evidence_summary "
-            "FROM chatroom_memories WHERE unresolved = 1 "
+            "FROM chatroom_memories WHERE scope = ? AND unresolved = 1 "
             "AND COALESCE(archive_state,'active')='active' "
-            "ORDER BY created_at DESC LIMIT 2"
+            "ORDER BY created_at DESC LIMIT 2",
+            ("connor",),
         )
         unresolved_rows = await cur.fetchall()
     for row in unresolved_rows:
@@ -481,7 +482,8 @@ async def build_surfacing_chatroom_memories(
                     "SELECT id, content, scope AS type, created_at, embedding, keywords, importance, "
                     "source_start_ts, source_end_ts, evidence_summary "
                     "FROM chatroom_memories WHERE embedding IS NOT NULL "
-                    "AND COALESCE(archive_state,'active')='active'"
+                    "AND scope = ? AND COALESCE(archive_state,'active')='active'",
+                    ("connor",),
                 )
                 rows = await cur.fetchall()
             scored = []
@@ -516,10 +518,10 @@ async def build_surfacing_chatroom_memories(
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "SELECT id, content, scope AS type, created_at, source_start_ts, source_end_ts, evidence_summary FROM chatroom_memories "
-                "WHERE COALESCE(archive_state,'active')='active' "
+                "WHERE scope = ? AND COALESCE(archive_state,'active')='active' "
                 "AND COALESCE(source_end_ts, source_start_ts, created_at) > ? "
                 "ORDER BY COALESCE(source_end_ts, source_start_ts, created_at) DESC LIMIT ?",
-                (three_days_ago, max_total)
+                ("connor", three_days_ago, max_total)
             )
             recent_rows = await cur.fetchall()
         for row in recent_rows:
@@ -679,6 +681,8 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
 
     # 读取统一锚点（以 "connor_unified" 为 key）
     anchor_key = "connor_unified"
+    covered_ids = set()
+    digest_window_last_ts = 0
     try:
         async with get_db() as db:
             db.row_factory = aiosqlite.Row
@@ -725,11 +729,35 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
 
             # 按时间排序合并
             msgs.sort(key=lambda x: x["created_at"])
+            if msgs:
+                digest_window_last_ts = msgs[-1]["created_at"]
+                from homecoming.summary_coverage import filter_uncovered
+                msgs, covered_ids = await filter_uncovered(
+                    db, "second", msgs
+                )
     except Exception as e:
         print(f"[chatroom_digest] 读取待总结消息失败，锚点未变: {type(e).__name__}: {e}")
         return {
             "ok": False,
             "message": f"读取待总结消息失败，锚点未变：{type(e).__name__}",
+            "new_memories_count": 0,
+            "processed_messages": 0,
+        }
+
+    if not msgs and covered_ids:
+        try:
+            async with get_db() as db:
+                await db.execute(
+                    "INSERT OR REPLACE INTO chatroom_digest_anchors "
+                    "(room_id, anchor_ts) VALUES (?, ?)",
+                    (anchor_key, digest_window_last_ts),
+                )
+                await db.commit()
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "message": "当前没有新增内容需要总结",
             "new_memories_count": 0,
             "processed_messages": 0,
         }
@@ -849,6 +877,22 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
             print(f"[chatroom_digest] 组 {group_start} ~ {group_end} 无可写入原子记忆")
             digest_incomplete = True
             break
+
+    if (
+        not digest_incomplete
+        and total_new > 0
+        and digest_window_last_ts > msgs[-1]["created_at"]
+    ):
+        try:
+            async with get_db() as db:
+                await db.execute(
+                    "INSERT OR REPLACE INTO chatroom_digest_anchors "
+                    "(room_id, anchor_ts) VALUES (?, ?)",
+                    (anchor_key, digest_window_last_ts),
+                )
+                await db.commit()
+        except Exception:
+            pass
 
     if total_new == 0:
         return {"ok": True, "message": f"总结完成：处理了 {len(msgs)} 条消息，但没有产出新的有效记忆；锚点已保留，可稍后重试", "new_memories_count": 0, "processed_messages": len(msgs)}

@@ -49,6 +49,13 @@ public final class AppSupervisionBridge {
                 groups.put(item);
             }
             out.put("groups", groups);
+            DeviceLockState.Snapshot device = runtime.deviceSnapshot();
+            JSONObject deviceJson = new JSONObject();
+            deviceJson.put("effectiveState", device.getEffectiveState().name());
+            deviceJson.put("lock", directiveJson(device.getLock()));
+            deviceJson.put("temporaryUnlock",
+                    directiveJson(device.getTemporaryUnlock()));
+            out.put("deviceLock", deviceJson);
             JSONArray logs = new JSONArray();
             for (AppSupervisionStore.LogRecord record : runtime.logs()) {
                 JSONObject item = new JSONObject();

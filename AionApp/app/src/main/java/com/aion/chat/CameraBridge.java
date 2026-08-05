@@ -14,6 +14,7 @@ import android.webkit.WebView;
 import java.io.ByteArrayOutputStream;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 原生摄像头桥接 — 绕过 WebView getUserMedia 的 HTTPS 限制
@@ -32,18 +33,18 @@ public class CameraBridge {
 
     private final WebView webView;
     private Camera camera;
-    private volatile boolean running = false;
+    private final CameraPreviewState previewState = new CameraPreviewState();
+    private final CameraPreviewSessionGate sessionGate =
+            new CameraPreviewSessionGate();
     private int facing;
     private int sensorRotation;
     private int previewWidth, previewHeight;
     private volatile String lastFrameB64 = null;
     private volatile byte[] lastRotatedNv21 = null; // 旋转后的 NV21（用于截图）
     private int rotatedWidth, rotatedHeight;         // 旋转后的尺寸
-    private long lastFrameTime = 0;
     private static final long FRAME_INTERVAL_MS = 66; // ~15fps
 
     private final ExecutorService encodeThread = Executors.newSingleThreadExecutor();
-    private volatile boolean encoding = false;
 
     // 可复用缓冲区
     private byte[] rotateBuf;
@@ -70,8 +71,10 @@ public class CameraBridge {
     public int getRotatedHeight() { return rotatedHeight; }
 
     @JavascriptInterface
-    public boolean start(String facingStr) {
-        if (running) stop();
+    public synchronized boolean start(String facingStr) {
+        if (!previewState.canStart()
+                || PhoneCameraPreviewCoordinator.shared().isEventActive()) return false;
+        if (previewState.isRunning()) stop();
 
         facing = "user".equals(facingStr)
                 ? Camera.CameraInfo.CAMERA_FACING_FRONT
@@ -84,8 +87,12 @@ public class CameraBridge {
             camera = Camera.open(camId);
         } catch (Exception e) {
             android.util.Log.e("CameraBridge", "Camera.open failed", e);
+            previewState.failed();
             return false;
         }
+        final long sessionToken = sessionGate.start();
+        camera.setErrorCallback((error, failedCamera) ->
+                handleCameraError(error, failedCamera, sessionToken));
 
         Camera.CameraInfo info = new Camera.CameraInfo();
         Camera.getCameraInfo(camId, info);
@@ -130,7 +137,15 @@ public class CameraBridge {
         int bufSize = previewWidth * previewHeight * 3 / 2;
         rotateBuf = new byte[bufSize];
         inputBuf = new byte[bufSize];
-        encoding = false;
+        final byte[] sessionRotateBuf = rotateBuf;
+        final byte[] sessionInputBuf = inputBuf;
+        final byte[] sessionOutputBuf = new byte[bufSize];
+        final int sessionPreviewWidth = previewWidth;
+        final int sessionPreviewHeight = previewHeight;
+        final int sessionRotation = sensorRotation;
+        final int sessionRotatedWidth = rotatedWidth;
+        final int sessionRotatedHeight = rotatedHeight;
+        final AtomicBoolean sessionEncoding = new AtomicBoolean(false);
 
         // 使用 buffer 回调避免 GC 导致的冻结
         camera.addCallbackBuffer(new byte[bufSize]);
@@ -138,29 +153,40 @@ public class CameraBridge {
         camera.addCallbackBuffer(new byte[bufSize]);
 
         camera.setPreviewCallbackWithBuffer((data, cam) -> {
-            if (!running || data == null) {
+            if (!sessionGate.isCurrent(sessionToken)
+                    || !previewState.isRunning() || data == null) {
                 if (data != null && cam != null) cam.addCallbackBuffer(data);
                 return;
             }
 
             long now = System.currentTimeMillis();
-            if (now - lastFrameTime < FRAME_INTERVAL_MS || encoding) {
+            long lastFrameAt = previewState.getLastFrameAt();
+            if (now - lastFrameAt < FRAME_INTERVAL_MS
+                    || !sessionEncoding.compareAndSet(false, true)) {
                 cam.addCallbackBuffer(data);
                 return;
             }
-            lastFrameTime = now;
+            previewState.receivedFrame(now);
 
             // 复制数据到专用输入缓冲区后立即归还 camera buffer
-            System.arraycopy(data, 0, inputBuf, 0, data.length);
+            System.arraycopy(data, 0, sessionInputBuf, 0, data.length);
             cam.addCallbackBuffer(data);
 
             // 后台线程做旋转 + JPEG 编码
-            encoding = true;
             encodeThread.execute(() -> {
                 try {
-                    processFrame(inputBuf);
+                    processFrame(
+                            sessionInputBuf,
+                            sessionRotateBuf,
+                            sessionOutputBuf,
+                            sessionPreviewWidth,
+                            sessionPreviewHeight,
+                            sessionRotation,
+                            sessionRotatedWidth,
+                            sessionRotatedHeight,
+                            sessionToken);
                 } finally {
-                    encoding = false;
+                    sessionEncoding.set(false);
                 }
             });
         });
@@ -173,24 +199,26 @@ public class CameraBridge {
             surfaceTexture = new android.graphics.SurfaceTexture(0);
             surfaceTexture.setDefaultBufferSize(1, 1); // 最小化内部缓冲区防止积压卡死
             camera.setPreviewTexture(surfaceTexture);
+            previewState.started();
             camera.startPreview();
         } catch (Exception e) {
             android.util.Log.e("CameraBridge", "startPreview failed", e);
             camera.release();
             camera = null;
+            previewState.failed();
+            sessionGate.stop();
             return false;
         }
 
-        running = true;
         android.util.Log.i("CameraBridge", "Started: " + facingStr + " " +
                 previewWidth + "x" + previewHeight + " rot=" + sensorRotation);
         return true;
     }
 
     @JavascriptInterface
-    public void stop() {
-        running = false;
-        encoding = false;
+    public synchronized void stop() {
+        sessionGate.stop();
+        previewState.stopped();
         if (camera != null) {
             try { camera.setPreviewCallbackWithBuffer(null); } catch (Exception ignored) {}
             try { camera.stopPreview(); } catch (Exception ignored) {}
@@ -253,46 +281,132 @@ public class CameraBridge {
     public int getRotation() { return 0; }
 
     @JavascriptInterface
-    public boolean isRunning() { return running; }
+    public boolean isRunning() { return previewState.isRunning(); }
+
+    @JavascriptInterface
+    public long getLastFrameAt() { return previewState.getLastFrameAt(); }
+
+    void setAppForeground(boolean foreground) {
+        previewState.setAppForeground(foreground);
+        if (!foreground) stop();
+    }
 
     @JavascriptInterface
     public String getFacing() {
         return facing == Camera.CameraInfo.CAMERA_FACING_FRONT ? "user" : "environment";
     }
 
+    @JavascriptInterface
+    public float setZoom(float requestedZoom) {
+        Camera active = camera;
+        if (active == null) return 1f;
+        try {
+            Camera.Parameters parameters = active.getParameters();
+            if (!parameters.isZoomSupported()) return 1f;
+            java.util.List<Integer> ratios = parameters.getZoomRatios();
+            int targetRatio = Math.max(100, Math.round(requestedZoom * 100f));
+            int bestIndex = 0;
+            int bestDistance = Integer.MAX_VALUE;
+            for (int index = 0; index < ratios.size(); index++) {
+                int distance = Math.abs(ratios.get(index) - targetRatio);
+                if (distance < bestDistance) {
+                    bestDistance = distance;
+                    bestIndex = index;
+                }
+            }
+            parameters.setZoom(bestIndex);
+            active.setParameters(parameters);
+            return ratios.get(bestIndex) / 100f;
+        } catch (Exception error) {
+            android.util.Log.w("CameraBridge", "setZoom failed", error);
+            return 1f;
+        }
+    }
+
     // ── 帧处理：NV21 字节旋转 + JPEG 编码（在后台线程执行） ──
 
-    private void processFrame(byte[] nv21Data) {
+    private void processFrame(
+            byte[] nv21Data,
+            byte[] sessionRotateBuf,
+            byte[] sessionOutputBuf,
+            int sessionPreviewWidth,
+            int sessionPreviewHeight,
+            int sessionRotation,
+            int sessionRotatedWidth,
+            int sessionRotatedHeight,
+            long sessionToken
+    ) {
         byte[] src = nv21Data;
 
         // NV21 纯字节数组旋转（无 Bitmap，极快）
-        if (sensorRotation == 90) {
-            rotateNV21_CW90(nv21Data, rotateBuf, previewWidth, previewHeight);
-            src = rotateBuf;
-        } else if (sensorRotation == 270) {
-            rotateNV21_CW270(nv21Data, rotateBuf, previewWidth, previewHeight);
-            src = rotateBuf;
-        } else if (sensorRotation == 180) {
-            rotateNV21_180(nv21Data, rotateBuf, previewWidth, previewHeight);
-            src = rotateBuf;
+        if (sessionRotation == 90) {
+            rotateNV21_CW90(
+                    nv21Data, sessionRotateBuf,
+                    sessionPreviewWidth, sessionPreviewHeight);
+            src = sessionRotateBuf;
+        } else if (sessionRotation == 270) {
+            rotateNV21_CW270(
+                    nv21Data, sessionRotateBuf,
+                    sessionPreviewWidth, sessionPreviewHeight);
+            src = sessionRotateBuf;
+        } else if (sessionRotation == 180) {
+            rotateNV21_180(
+                    nv21Data, sessionRotateBuf,
+                    sessionPreviewWidth, sessionPreviewHeight);
+            src = sessionRotateBuf;
         }
 
-        // 保存旋转后的 NV21（capture 用）
-        if (lastRotatedNv21 == null || lastRotatedNv21.length != src.length)
-            lastRotatedNv21 = new byte[src.length];
-        System.arraycopy(src, 0, lastRotatedNv21, 0, src.length);
+        if (!sessionGate.isCurrent(sessionToken)) return;
+        System.arraycopy(src, 0, sessionOutputBuf, 0, src.length);
 
         // 推送给 VideoBridge（录制时）
         VideoBridge vb = videoBridge;
         if (vb != null && vb.isRecording()) {
-            vb.onVideoFrame(src, rotatedWidth, rotatedHeight);
+            vb.onVideoFrame(src, sessionRotatedWidth, sessionRotatedHeight);
         }
 
         // JPEG 编码（一次编码，已旋转）
-        YuvImage yuv = new YuvImage(src, ImageFormat.NV21, rotatedWidth, rotatedHeight, null);
+        YuvImage yuv = new YuvImage(
+                src,
+                ImageFormat.NV21,
+                sessionRotatedWidth,
+                sessionRotatedHeight,
+                null);
         ByteArrayOutputStream buf = new ByteArrayOutputStream(16384);
-        yuv.compressToJpeg(new Rect(0, 0, rotatedWidth, rotatedHeight), 70, buf);
-        lastFrameB64 = Base64.encodeToString(buf.toByteArray(), Base64.NO_WRAP);
+        yuv.compressToJpeg(
+                new Rect(0, 0, sessionRotatedWidth, sessionRotatedHeight),
+                70,
+                buf);
+        synchronized (this) {
+            if (!sessionGate.isCurrent(sessionToken)
+                    || !previewState.isRunning()) return;
+            lastRotatedNv21 = sessionOutputBuf;
+            lastFrameB64 = Base64.encodeToString(buf.toByteArray(), Base64.NO_WRAP);
+        }
+    }
+
+    private synchronized void handleCameraError(
+            int error,
+            Camera failedCamera,
+            long sessionToken
+    ) {
+        android.util.Log.w("CameraBridge", "Camera error/eviction: " + error);
+        if (!sessionGate.isCurrent(sessionToken) || camera != failedCamera) {
+            try { failedCamera.release(); } catch (Exception ignored) {}
+            return;
+        }
+        sessionGate.stop();
+        previewState.failed();
+        try { camera.setPreviewCallbackWithBuffer(null); } catch (Exception ignored) {}
+        try { camera.stopPreview(); } catch (Exception ignored) {}
+        try { camera.release(); } catch (Exception ignored) {}
+        camera = null;
+        if (surfaceTexture != null) {
+            try { surfaceTexture.release(); } catch (Exception ignored) {}
+            surfaceTexture = null;
+        }
+        lastFrameB64 = null;
+        lastRotatedNv21 = null;
     }
 
     // ── NV21 纯字节旋转算法（不涉及 Bitmap，只做数组索引映射） ──

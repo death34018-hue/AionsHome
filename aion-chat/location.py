@@ -769,7 +769,7 @@ async def _call_core_location(
     from camera import read_logs_since, append_monitor_log, async_get_last_aion_timeline_user_msg_time
     from ai_providers import stream_ai, CLI_STATUS_PREFIX
     from tts import TTSStreamer
-    from memory import recall_memories
+    from memory import recall_memories, format_recalled_memories_for_prompt
     from context_builder import fetch_merged_timeline, render_merged_timeline
 
     wb = load_worldbook()
@@ -804,7 +804,13 @@ async def _call_core_location(
         conv_id = conv["id"]
         model_key = conv["model"] or "gemini-3-flash"
 
-    from schedule import _new_background_meta, _process_background_reply_commands, schedule_mgr
+    from schedule import (
+        _consume_background_stream,
+        _new_background_meta,
+        _process_background_reply_commands,
+        schedule_mgr,
+    )
+    from web_search import WebCommandStreamFilter
     target = schedule_mgr._resolve_target({"origin": "aion"})
     is_chatroom = target["type"] == "chatroom"
     if is_chatroom:
@@ -847,7 +853,7 @@ async def _call_core_location(
     recalled, _ = await recall_memories(recall_query)
     mem_inject = []
     if recalled:
-        mem_lines = "\n".join([f"- {m['content']}" for m in recalled])
+        mem_lines = format_recalled_memories_for_prompt(recalled)
         mem_inject = [
             {"role": "user", "content": f"[相关记忆]\n你脑海中与当前话题相关的记忆：\n{mem_lines}"},
             {"role": "assistant", "content": "收到，我会自然地参考这些记忆。"},
@@ -864,19 +870,24 @@ async def _call_core_location(
         if tts_voice:
             loc_tts = TTSStreamer(core_msg_id, tts_voice, manager)
 
-    full_text = ""
-    try:
-        _temp = SETTINGS.get("temperature")
+    loc_command_filter = WebCommandStreamFilter()
+    _temp = SETTINGS.get("temperature")
+
+    async def content_stream():
         async for chunk in stream_ai(messages, model_key, meta=usage_meta, temperature=_temp):
             if chunk.startswith(CLI_STATUS_PREFIX):
                 continue
-            full_text += chunk
-            if loc_tts:
-                loc_tts.feed(chunk)
-    except Exception as e:
-        full_text = f"[Core 回复失败] {e}"
+            yield chunk
 
-    if not full_text.strip():
+    stream_result = await _consume_background_stream(
+        content_stream(),
+        loc_command_filter,
+        loc_tts,
+    )
+    full_text = stream_result.committed_text
+    safety_notice = stream_result.notice
+
+    if not full_text.strip() and not safety_notice:
         return
 
     full_text = await _process_background_reply_commands(
@@ -886,6 +897,8 @@ async def _call_core_location(
         sender="aion",
         ai_msg_id=core_msg_id,
     )
+    if safety_notice:
+        full_text = f"{full_text}\n\n[{safety_notice}]".strip()
     reasoning_content = (usage_meta.get("reasoning_content") or "").strip()
     sys_content = f"检测到{user_name}的位置发生变化，拉响警报！"
     if is_chatroom:

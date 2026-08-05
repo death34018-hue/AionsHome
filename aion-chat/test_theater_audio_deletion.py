@@ -30,6 +30,7 @@ def _create_theater_schema(db_path: Path):
             content TEXT NOT NULL,
             created_at REAL NOT NULL,
             attachments TEXT DEFAULT '[]',
+            reasoning_content TEXT DEFAULT '',
             FOREIGN KEY (conv_id) REFERENCES theater_conversations(id) ON DELETE CASCADE
         )
         """
@@ -46,7 +47,9 @@ def _insert_conversation(db_path: Path, conv_id: str, message_ids: list[str]):
     )
     for index, message_id in enumerate(message_ids):
         conn.execute(
-            "INSERT INTO theater_messages VALUES (?,?,?,?,?,?)",
+            "INSERT INTO theater_messages "
+            "(id, conv_id, role, content, created_at, attachments) "
+            "VALUES (?,?,?,?,?,?)",
             (message_id, conv_id, "assistant", f"story-{index}", index + 1.0, "[]"),
         )
     conn.commit()

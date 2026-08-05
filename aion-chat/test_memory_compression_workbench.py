@@ -1,11 +1,24 @@
 import sys
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+class _ButtonIdParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.button_ids = set()
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "button":
+            values = dict(attrs)
+            if values.get("id"):
+                self.button_ids.add(values["id"])
 
 
 class MemoryCompressionWorkbenchTests(unittest.TestCase):
@@ -42,6 +55,20 @@ class MemoryCompressionWorkbenchTests(unittest.TestCase):
         source = (ROOT / "static" / "memory.html").read_text(encoding="utf-8")
 
         self.assertIn('href="/memory-compression"', source)
+
+    def test_memory_page_does_not_show_legacy_compression_draft_button(self):
+        source = (ROOT / "static" / "memory.html").read_text(encoding="utf-8")
+        parser = _ButtonIdParser()
+        parser.feed(source)
+
+        self.assertNotIn("compressDailyBtn", parser.button_ids)
+
+    def test_chatroom_memory_panel_does_not_show_legacy_daily_compression_button(self):
+        source = (ROOT / "static" / "chatroom.html").read_text(encoding="utf-8")
+        parser = _ButtonIdParser()
+        parser.feed(source)
+
+        self.assertNotIn("chatroomCompressDailyBtn", parser.button_ids)
 
     def test_memory_page_discards_stale_search_responses_and_old_count_snapshots(self):
         source = (ROOT / "static" / "memory.html").read_text(encoding="utf-8")

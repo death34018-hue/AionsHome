@@ -68,6 +68,39 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("always surfaced by vector recall", result["memory_block"])
 
+    async def test_memory_blocks_formats_surfaced_memories_without_private_helper(self):
+        surfaced = [
+            _memory("surface1", "ordinary surfaced memory"),
+            {**_memory("surface2", "unfinished surfaced memory"), "unresolved": True},
+        ]
+        digest = {
+            "is_search_needed": False,
+            "keywords": [],
+            "require_detail": False,
+            "status": "",
+            "topic": "current topic",
+        }
+
+        with (
+            patch("context_builder.build_health_summary", new=_empty_health),
+            patch(
+                "context_builder.build_surfacing_memories",
+                new=AsyncMock(return_value=(surfaced, {"surface1", "surface2"})),
+            ),
+            patch("context_builder.recall_memories", new=AsyncMock(return_value=([], []))),
+        ):
+            result = await context_builder.build_memory_blocks(
+                "current user message",
+                recent_messages=[],
+                digest_result=digest,
+            )
+
+        self.assertIn("- 记忆：ordinary surfaced memory", result["time_block"])
+        self.assertIn(
+            "📌 记忆：unfinished surfaced memory（还没做/还没去）",
+            result["time_block"],
+        )
+
     async def test_search_signal_includes_recalled_memory_source_text(self):
         recalled = _memory("main1", "memory with source")
         recalled["source_start_ts"] = 1000.0
@@ -190,6 +223,47 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("scope = ?", executed["sql"])
         self.assertEqual(executed["params"][0], "connor")
+
+    async def test_companion_background_surfacing_filters_every_query_by_scope(self):
+        executed = []
+
+        class Cursor:
+            async def fetchall(self):
+                return []
+
+        class Db:
+            row_factory = None
+
+            async def execute(self, sql, params=()):
+                executed.append((sql, params))
+                return Cursor()
+
+        class DbContext:
+            async def __aenter__(self):
+                return Db()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with (
+            patch("chatroom.get_embedding", new=AsyncMock(return_value=[1.0, 0.0])),
+            patch("chatroom.get_db", return_value=DbContext()),
+        ):
+            await chatroom.build_surfacing_chatroom_memories(
+                topic="scope isolation probe",
+                keywords=[],
+                max_total=8,
+            )
+
+        memory_queries = [
+            (sql, params)
+            for sql, params in executed
+            if "FROM chatroom_memories" in sql
+        ]
+        self.assertEqual(len(memory_queries), 3)
+        for sql, params in memory_queries:
+            self.assertIn("scope = ?", sql)
+            self.assertIn("connor", params)
 
     async def test_private_chat_regenerate_injects_recalled_memory_without_search_signal(self):
         captured = {}

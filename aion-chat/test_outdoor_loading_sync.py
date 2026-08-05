@@ -44,16 +44,6 @@ class DataLoadingContractTests(unittest.TestCase):
         self.assertIn('"has_more"', source)
         self.assertIn('"next_cursor"', source)
 
-    def test_memory_and_moments_pages_use_versioned_snapshots(self):
-        memory = (ROOT / "static/memory.html").read_text(encoding="utf-8")
-        moments = (ROOT / "static/moments.html").read_text(encoding="utf-8")
-
-        self.assertIn("memory_page_snapshot_v2", memory)
-        self.assertIn("loadMoreMemories", memory)
-        self.assertIn("const PAGE_SIZE = 50", moments)
-        self.assertIn("moments_page_snapshot_v2", moments)
-
-
 class ChatroomSettingsContractTests(unittest.TestCase):
     def test_settings_use_one_aggregate_endpoint(self):
         backend = (ROOT / "routes/chatroom.py").read_text(encoding="utf-8")

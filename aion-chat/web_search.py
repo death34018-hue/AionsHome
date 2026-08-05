@@ -15,7 +15,9 @@ WEB_SEARCH_CMD_PATTERN = re.compile(r"\[WEB_SEARCH\s*[：:]\s*([^\]]+)\]", re.IG
 WEB_EXTRACT_CMD_PATTERN = re.compile(r"\[WEB_EXTRACT\s*[：:]\s*([^\]]+)\]", re.IGNORECASE)
 _WEB_CMD_START_RE = re.compile(
     r"\[(?:(?:WEB_SEARCH|WEB_EXTRACT)\s*[：:]|BAND_VIBRATE\s*:"
-    r"|BAND_NOTE_(?:SINGLE|CALL)\s*[：:]|APP_(?:LOCK|TEMP_UNLOCK|UNLOCK)\s*:)",
+    r"|BAND_NOTE_(?:SINGLE|CALL)\s*[：:]|APP_(?:LOCK|TEMP_UNLOCK|UNLOCK)\s*:"
+    r"|DEVICE_(?:LOCK|TEMP_UNLOCK)\s*:|DEVICE_UNLOCK"
+    r"|拍拍抱枕:)",
     re.IGNORECASE,
 )
 _MAX_QUERIES = 3
@@ -239,6 +241,8 @@ def _possible_command_prefix_len(text: str) -> int:
         "[BAND_NOTE_SINGLE:", "[BAND_NOTE_SINGLE：",
         "[BAND_NOTE_CALL:", "[BAND_NOTE_CALL：",
         "[APP_LOCK:", "[APP_TEMP_UNLOCK:", "[APP_UNLOCK:",
+        "[DEVICE_LOCK:", "[DEVICE_TEMP_UNLOCK:", "[DEVICE_UNLOCK]",
+        "[拍拍抱枕:",
     )
     max_len = min(len(text), max(len(item) for item in probes) - 1)
     upper = text.upper()

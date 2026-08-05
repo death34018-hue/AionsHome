@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>监控日志 - Aion</title>
+<title>监控日志</title>
 <link rel="stylesheet" href="/static/common.css">
 <link rel="manifest" href="/manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -18,6 +18,11 @@
 .log-time { color:var(--text2); font-size:11px; font-family:monospace; margin-right:6px; }
 .log-text { color:var(--text); }
 .log-core { color:#e65100; font-style:italic; }
+.log-dispatch { color:#e65100; font-size:11px; margin-top:2px; }
+.log-dispatch-reason { color:#e65100; font-size:11px; margin-top:2px; }
+.log-debug-details { margin-top:4px; color:var(--text2); }
+.log-debug-details summary { width:max-content; cursor:pointer; user-select:none; font-size:11px; color:var(--text2); }
+.log-debug-details[open] summary { margin-bottom:2px; }
 .log-debug { color:var(--text2); font-size:11px; margin-top:2px; white-space:pre-wrap; }
 .log-debug b { color:var(--text); font-weight:600; }
 .log-empty { padding:24px; text-align:center; color:var(--text3); font-size:14px; }
@@ -51,6 +56,8 @@
 <script src="/static/theme.js?v=theme-20260606"></script>
 <script src="/static/common.js"></script>
 <script>
+let wakeTargetNames = { aion: "主 AI", connor: "第二 AI" };
+
 connectCommonWS(msg => {
   if (msg.type === "chat_status") {
     $("chatStatusText").textContent = msg.data.status || "暂无";
@@ -69,9 +76,20 @@ connectCommonWS(msg => {
 });
 
 (async function init() {
+  await loadWakeTargetNames();
   await loadLogDates();
   loadChatStatus();
 })();
+
+async function loadWakeTargetNames() {
+  try {
+    const status = await api("GET", "/api/cam/status");
+    wakeTargetNames = {
+      aion: (status.ai_name || "").trim() || "主 AI",
+      connor: (status.connor_name || "").trim() || "第二 AI"
+    };
+  } catch (e) {}
+}
 
 async function loadChatStatus() {
   try { const data = await api("GET", "/api/chat_status"); $("chatStatusText").textContent = data.status || "暂无"; } catch(e){}
@@ -120,13 +138,23 @@ function renderMonitorEntry(e) {
   const callTag = e.call_core ? ' <span style="color:#d32f2f;font-size:11px">[唤醒Core]</span>' : '';
   const summaryTag = e.summary ? `<div style="color:#1a73e8;font-size:11px;margin-top:2px">📋 概况: ${escHtml(e.summary)}</div>` : '';
   const reasonTag = e.core_reason ? `<div style="color:#e65100;font-size:11px;margin-top:2px">⚡ 唤醒原因: ${escHtml(e.core_reason)}</div>` : '';
+  const wakeTargets = Array.isArray(e.final_wake_targets) ? e.final_wake_targets : [];
+  const wakeNames = wakeTargets.map(target => wakeTargetNames[target] || target).filter(Boolean);
+  const dispatchTargetTag = e.call_core && wakeNames.length
+    ? `<div class="log-dispatch">🎯 唤醒对象: ${escHtml(wakeNames.join("、"))}</div>`
+    : '';
+  const dispatchReasonTag = e.call_core && e.wake_reason
+    ? `<div class="log-dispatch-reason">💡 唤醒理由: ${escHtml(e.wake_reason)}</div>`
+    : '';
   const debugParts = [];
   if (e.camera_observation) debugParts.push(`<b>视野</b>: ${escHtml(e.camera_observation)}`);
   if (e.device_activity) debugParts.push(`<b>设备</b>: ${escHtml(e.device_activity)}`);
   if (e.inference) debugParts.push(`<b>判断</b>: ${escHtml(e.inference)}`);
   if (e.confidence) debugParts.push(`<b>置信</b>: ${escHtml(e.confidence)}`);
-  const debugTag = debugParts.length ? `<div class="log-debug">${debugParts.join("\n")}</div>` : '';
-  return `<div class="log-entry"><span class="log-time">${escHtml(e.time || '')}</span><span class="${cls}">${escHtml(e.monitoringlog || '')}</span>${callTag}${summaryTag}${reasonTag}${debugTag}</div>`;
+  const debugTag = debugParts.length
+    ? `<details class="log-debug-details"><summary>🔍 客观信息</summary><div class="log-debug">${debugParts.join("\n")}</div></details>`
+    : '';
+  return `<div class="log-entry"><span class="log-time">${escHtml(e.time || '')}</span><span class="${cls}">${escHtml(e.monitoringlog || '')}</span>${callTag}${summaryTag}${reasonTag}${dispatchTargetTag}${dispatchReasonTag}${debugTag}</div>`;
 }
 </script>
 </body>

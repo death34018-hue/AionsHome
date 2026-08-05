@@ -61,6 +61,15 @@ class AppSupervisionCapabilityTests(unittest.TestCase):
     def test_enabled_prompt_renders_commands_mapping_and_cached_estimate(self):
         self.cache.replace_snapshot(
             {
+                "deviceLock": {
+                    "effectiveState": "LOCKED",
+                    "lock": {
+                        "deadlineWallMs": 1_120_000,
+                        "roleId": "connor",
+                        "message": "该睡觉了",
+                    },
+                    "temporaryUnlock": None,
+                },
                 "groups": [
                     {
                         "groupId": "xhs-main",
@@ -85,6 +94,13 @@ class AppSupervisionCapabilityTests(unittest.TestCase):
         self.assertIn("[APP_LOCK:groupId|分钟|锁屏提示]", text)
         self.assertIn("[APP_TEMP_UNLOCK:groupId|分钟|解锁说明]", text)
         self.assertIn("[APP_UNLOCK:groupId]", text)
+        self.assertIn("[DEVICE_LOCK:分钟|锁屏提示]", text)
+        self.assertIn("[DEVICE_TEMP_UNLOCK:分钟|解锁说明]", text)
+        self.assertIn("[DEVICE_UNLOCK]", text)
+        self.assertIn("整机状态 LOCKED", text)
+        self.assertIn("负责角色 connor", text)
+        self.assertIn("该睡觉了", text)
+        self.assertIn("连续切换", text)
         self.assertIn("xhs-main → 小红书", text)
         self.assertIn("douyin-main → 抖音", text)
         self.assertIn("21.0 分钟（估算）", text)
@@ -137,6 +153,45 @@ class AppSupervisionCommandParserTests(unittest.TestCase):
         self.assertEqual("lock", command["action"])
         self.assertEqual(30, command["minutes"])
 
+    def test_device_commands_parse_with_empty_group_id(self):
+        cases = [
+            ("[DEVICE_LOCK:30|去睡觉]", "device_lock", 30, "去睡觉"),
+            (
+                "[DEVICE_TEMP_UNLOCK:10|处理消息]",
+                "device_temp_unlock",
+                10,
+                "处理消息",
+            ),
+            ("[DEVICE_UNLOCK]", "device_unlock", None, ""),
+        ]
+        for source, action, minutes, message in cases:
+            with self.subTest(source=source):
+                cleaned, command = parse_app_supervision_command(
+                    source, valid_group_ids=set(), enabled=True
+                )
+                self.assertEqual("", cleaned)
+                self.assertEqual(action, command["action"])
+                self.assertEqual("", command["groupId"])
+                self.assertEqual(minutes, command.get("minutes"))
+                self.assertEqual(message, command.get("message", ""))
+
+    def test_invalid_device_directives_are_hidden_and_never_execute(self):
+        for directive in (
+            "[DEVICE_LOCK:0|x]",
+            "[DEVICE_LOCK:121|x]",
+            "[DEVICE_LOCK:1.5|x]",
+            "[DEVICE_LOCK:20]",
+            "[DEVICE_LOCK:20|x|extra]",
+            "[DEVICE_TEMP_UNLOCK]",
+            "[DEVICE_UNLOCK:extra]",
+        ):
+            with self.subTest(directive=directive):
+                cleaned, command = parse_app_supervision_command(
+                    f"正文{directive}", {"xhs"}, enabled=True
+                )
+                self.assertEqual("正文", cleaned)
+                self.assertIsNone(command)
+
     def test_minutes_group_and_disabled_gate_are_enforced(self):
         for minutes in (0, 121, 1.5):
             cleaned, command = parse_app_supervision_command(
@@ -158,6 +213,13 @@ class AppSupervisionCommandParserTests(unittest.TestCase):
         ) + stream_filter.flush()
         self.assertEqual("先休息，好吗", visible)
 
+        device_filter = WebCommandStreamFilter()
+        device_visible = "".join(
+            device_filter.feed(chunk)
+            for chunk in ("去睡觉", "[DEVICE_", "LOCK:30|休息]", "。")
+        ) + device_filter.flush()
+        self.assertEqual("去睡觉。", device_visible)
+
 
 class AppSupervisionStateRouteTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -169,6 +231,10 @@ class AppSupervisionStateRouteTests(unittest.IsolatedAsyncioTestCase):
             eventType="checkpoint",
             triggerGroupId="xhs",
             checkpointMinutes=20,
+            deviceLock=app_supervision_routes.StateDeviceLock(
+                effectiveState="LOCKED",
+                lock={"commandId": "device-state-1"},
+            ),
             groups=[
                 app_supervision_routes.StateGroup(
                     groupId="xhs", displayName="小红书", roleId="connor",
@@ -194,6 +260,9 @@ class AppSupervisionStateRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(20, wake.await_args.kwargs["checkpoint_minutes"])
         snapshot, _ = app_supervision_routes.supervision_state_cache.read()
         self.assertEqual("xhs", snapshot["groups"][0]["groupId"])
+        self.assertEqual(
+            "device-state-1", snapshot["deviceLock"]["lock"]["commandId"]
+        )
 
     async def test_disabled_state_route_clears_cache_and_returns_silent_config(self):
         app_supervision_routes.supervision_state_cache.replace_snapshot(
@@ -281,6 +350,27 @@ class AppSupervisionCommandQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["commandId"], second["commandId"])
         self.assertTrue(accepted)
         self.assertFalse(duplicate)
+
+    async def test_device_command_round_trips_with_empty_group(self):
+        async with aiosqlite.connect(self.db_path) as db:
+            created = await enqueue_app_supervision_command(
+                db,
+                {
+                    "action": "device_lock",
+                    "groupId": "",
+                    "minutes": 30,
+                    "message": "休息",
+                },
+                source_message_id="device-msg-1",
+                role_id="connor",
+                source_kind="private",
+                source_ref="conv-1",
+                now=2_000,
+            )
+            await db.commit()
+            pending = await list_pending_app_supervision_commands(db, now=2_001)
+        self.assertEqual("", created["groupId"])
+        self.assertEqual("device_lock", pending[0]["action"])
 
 
 class AppSupervisionCheckpointWakeTests(unittest.IsolatedAsyncioTestCase):
@@ -374,6 +464,32 @@ class AppSupervisionResultMessageTests(unittest.TestCase):
         )
         self.assertEqual("【Main X】未能锁定小红书：命令已过期", text)
         self.assertNotIn("锁定了", text)
+
+    def test_device_success_messages_use_configured_role_name(self):
+        cases = [
+            (
+                {"action": "device_lock", "minutes": 30},
+                "【Partner X】锁定了手机 30 分钟",
+            ),
+            (
+                {"action": "device_temp_unlock", "minutes": 10},
+                "【Partner X】暂时解锁了手机 10 分钟",
+            ),
+            ({"action": "device_unlock"}, "【Partner X】解锁了手机"),
+        ]
+        for command, expected in cases:
+            command.update({"groupId": "", "roleId": "connor"})
+            with self.subTest(command=command):
+                self.assertEqual(
+                    expected,
+                    format_app_supervision_result_message(
+                        command,
+                        success=True,
+                        reason="",
+                        role_names={"connor": "Partner X"},
+                        group_names={},
+                    ),
+                )
 
 
 if __name__ == "__main__":

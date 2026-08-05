@@ -2752,9 +2752,21 @@ function msgHTML(m) {
     const msgId = m.id || '';
     const afterMsgId = crSystemNoticeAfterMsgId(m);
     const afterAttr = afterMsgId ? ` data-after-msg-id="${esc(afterMsgId)}"` : '';
+    const snapshotHtml = window.MonitorCameraSnapshot
+      ? window.MonitorCameraSnapshot.renderMonitorCameraSnapshot(
+          m.attachments,
+          {
+            escapeHtml: esc,
+            imageAttrs: imageInteractionAttrs(),
+          },
+        )
+      : '';
     return `<div class="system-event-msg" data-msg-id="${msgId}"${afterAttr}>
-      <span class="system-event-text">${esc(m.content || '')}</span>
-      ${crMsgMenuHtml('system', msgId)}
+      <div class="system-event-line">
+        <span class="system-event-text">${esc(m.content || '')}</span>
+        ${crMsgMenuHtml('system', msgId)}
+      </div>
+      ${snapshotHtml}
     </div>`;
   }
 
@@ -3236,7 +3248,9 @@ function startStreamingBubble(sender, id) {
 function feedStreamingChunk(text) {
   if (!streamingBubble) return;
   streamingText += text;
-  streamingBubble.textContent = streamingText;
+  streamingBubble.textContent = window.ScheduleCommandFilter
+    ? window.ScheduleCommandFilter.stripScheduleCommands(streamingText)
+    : streamingText;
   scrollToBottom();
 }
 
@@ -5287,6 +5301,11 @@ function connectWS() {
       const data = JSON.parse(e.data);
       crRememberSyncSeq(data);
       if (data.type === 'pong') return;
+
+      if (data.type === 'hug_pillow_command') {
+        window.HugPillowAI?.handleCommandEvent(data.data);
+        return;
+      }
 
       if (data.type === 'tts_chunk' && data.data) {
         crEnqueueTTSChunk(data.data.msg_id, data.data.seq, data.data.url, data.data.created_at, data.data.target_client_id, data.data.text);

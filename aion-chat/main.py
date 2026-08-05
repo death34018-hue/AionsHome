@@ -55,15 +55,18 @@ from routes import connor_wallet as connor_wallet_routes
 from routes import health as health_routes
 from routes import band_commands as band_commands_routes
 from routes import phone_screen as phone_screen_routes
+from routes import phone_camera as phone_camera_routes
 from routes import search as search_routes
 from routes import autonomy as autonomy_routes
 from routes import persona_evolution as persona_evolution_routes
 from routes import wishes as wishes_routes
 from routes import xhs_lite as xhs_lite_routes
 from routes import capabilities as capabilities_routes
+from routes import english_corner as english_corner_routes
 from routes import wechat as wechat_routes
 from routes import sync as sync_routes
 from routes import app_supervision as app_supervision_routes
+from routes import homecoming as homecoming_routes
 from activity import pc_tracker, pc_display_tracker
 from memory import auto_digest
 from memory_compression import migrate_legacy_daily_capsules
@@ -74,6 +77,7 @@ from persona_evolution import main_ai_persona_evolution_loop, connor_persona_evo
 from asset_manifest import get_client_asset_manifest
 from home_assistant_events import ha_event_listener
 from wechat_openclaw_runtime import openclaw_weixin_runtime
+from wechat_mode_dispatcher import wechat_mode_dispatcher
 
 
 # ── 自动记忆总结定时任务 ──────────────────────────
@@ -134,6 +138,10 @@ async def lifespan(app: FastAPI):
     if cam_cfg.get("monitor_enabled"):
         if cam_cfg.get("active_source") == "esp32":
             cam.open_esp32()
+        elif cam_cfg.get("active_source") == "phone":
+            # Android camera arming is intentionally not restored after a
+            # process restart; monitoring may run and report capture failure.
+            cam.running = False
         else:
             cam.open_camera(cam_cfg["camera_index"])
         cam.start_monitoring()
@@ -163,9 +171,11 @@ async def lifespan(app: FastAPI):
     connor_persona_evolution_task = asyncio.create_task(connor_persona_evolution_loop())
     idle_autonomy_mgr.start()
     ha_event_listener.start()
+    wechat_mode_dispatcher.start()
     openclaw_weixin_runtime.start()
     yield
     await openclaw_weixin_runtime.stop()
+    await wechat_mode_dispatcher.stop()
     await ha_event_listener.stop()
     idle_autonomy_mgr.stop()
     connor_persona_evolution_task.cancel()
@@ -246,15 +256,18 @@ app.include_router(connor_wallet_routes.router)
 app.include_router(health_routes.router)
 app.include_router(band_commands_routes.router)
 app.include_router(phone_screen_routes.router)
+app.include_router(phone_camera_routes.router)
 app.include_router(search_routes.router)
 app.include_router(autonomy_routes.router)
 app.include_router(persona_evolution_routes.router)
 app.include_router(wishes_routes.router)
 app.include_router(xhs_lite_routes.router)
 app.include_router(capabilities_routes.router)
+app.include_router(english_corner_routes.router)
 app.include_router(wechat_routes.router)
 app.include_router(sync_routes.router)
 app.include_router(app_supervision_routes.router)
+app.include_router(homecoming_routes.router)
 
 
 @app.get("/api/client-assets")
@@ -281,6 +294,10 @@ async def settings_page():
 @app.get("/capabilities")
 async def capabilities_page():
     return FileResponse(BASE_DIR / "static" / "capabilities.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+@app.get("/english-corner")
+async def english_corner_page():
+    return FileResponse(BASE_DIR / "static" / "english-corner.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/app-supervision")
 async def app_supervision_page():
@@ -389,6 +406,10 @@ async def xhs_lite_logs_page():
 @app.get("/health")
 async def health_page():
     return FileResponse(BASE_DIR / "static" / "health.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+@app.get("/hug")
+async def hug_page():
+    return FileResponse(BASE_DIR / "static" / "hug.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/pet")
 async def pet_page():

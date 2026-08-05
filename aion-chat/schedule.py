@@ -14,10 +14,17 @@ from config import DB_PATH, DEFAULT_MODEL, load_worldbook, SETTINGS
 from database import get_db
 from ws import manager
 from band_commands import process_band_vibration, with_band_vibration_attachment
+from hug_pillow_commands import process_hug_pillow_commands
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
-from memory import recall_memories
+from memory import recall_memories, format_recalled_memories_for_prompt
 from music import search_songs, get_audio_url
 from routes.music import MUSIC_CMD_PATTERN
+from schedule_history import finish_schedule
+from stream_safety import (
+    CHAT_STREAM_POLICY,
+    StreamSafetyResult,
+    consume_safe_stream,
+)
 from tts import TTSStreamer
 from web_search import WebCommandStreamFilter
 from capabilities import build_band_note_ability_text
@@ -29,6 +36,26 @@ from wechat_bridge import (
 
 log = logging.getLogger("schedule")
 BACKGROUND_CLI_META = {"antigravity_print_timeout": "90s"}
+
+
+async def _consume_background_stream(
+    source,
+    command_filter: WebCommandStreamFilter,
+    tts_streamer: TTSStreamer | None,
+) -> StreamSafetyResult:
+    async def on_commit(chunk: str) -> None:
+        if not tts_streamer:
+            return
+        visible = command_filter.feed(chunk)
+        if visible:
+            await tts_streamer.feed_async(visible)
+
+    result = await consume_safe_stream(source, CHAT_STREAM_POLICY, on_commit)
+    if tts_streamer:
+        visible_tail = command_filter.flush()
+        if visible_tail:
+            await tts_streamer.feed_async(visible_tail)
+    return result
 
 
 def _new_background_meta() -> dict:
@@ -76,11 +103,32 @@ def _tts_voice_for_target(is_chatroom: bool, sender: str) -> str:
     return (manager.get_tts_voice() or "").strip()
 
 # ── 文本指令正则 ──────────────────────────────────
-ALARM_CMD = re.compile(r"\[ALARM:(.+?)\|(.+?)\]")
-REMINDER_CMD = re.compile(r"\[REMINDER:(.+?)\|(.+?)\]")
-MONITOR_CMD = re.compile(r"\[Monitor:(.+?)\|(.+?)\]")
-SCHEDULE_DEL_CMD = re.compile(r"\[SCHEDULE_DEL:(.+?)\]")
-SCHEDULE_LIST_CMD = re.compile(r"\[SCHEDULE_LIST\]")
+_SCHEDULE_OPEN = r"[\[［]\s*"
+_SCHEDULE_CLOSE = r"\s*[\]］]"
+_SCHEDULE_COLON = r"\s*[:：]\s*"
+_SCHEDULE_PIPE = r"\s*[|｜]\s*"
+_SCHEDULE_FLAGS = re.IGNORECASE
+
+ALARM_CMD = re.compile(
+    rf"{_SCHEDULE_OPEN}ALARM{_SCHEDULE_COLON}(.+?){_SCHEDULE_PIPE}(.+?){_SCHEDULE_CLOSE}",
+    _SCHEDULE_FLAGS,
+)
+REMINDER_CMD = re.compile(
+    rf"{_SCHEDULE_OPEN}REMINDER{_SCHEDULE_COLON}(.+?){_SCHEDULE_PIPE}(.+?){_SCHEDULE_CLOSE}",
+    _SCHEDULE_FLAGS,
+)
+MONITOR_CMD = re.compile(
+    rf"{_SCHEDULE_OPEN}MONITOR{_SCHEDULE_COLON}(.+?){_SCHEDULE_PIPE}(.+?){_SCHEDULE_CLOSE}",
+    _SCHEDULE_FLAGS,
+)
+SCHEDULE_DEL_CMD = re.compile(
+    rf"{_SCHEDULE_OPEN}SCHEDULE_DEL{_SCHEDULE_COLON}(.+?){_SCHEDULE_CLOSE}",
+    _SCHEDULE_FLAGS,
+)
+SCHEDULE_LIST_CMD = re.compile(
+    rf"{_SCHEDULE_OPEN}SCHEDULE_LIST{_SCHEDULE_CLOSE}",
+    _SCHEDULE_FLAGS,
+)
 
 
 def get_schedule_origin_name(origin: str | None) -> str:
@@ -173,10 +221,15 @@ class ScheduleManager:
     # ── 后台轮询 ──────────────────────────────────
     def _check_loop(self):
         while self._running:
+            tick_future = asyncio.run_coroutine_threadsafe(self._tick(), self._loop)
             try:
-                asyncio.run_coroutine_threadsafe(self._tick(), self._loop).result(timeout=60)
-            except Exception as e:
-                log.error("schedule tick error: %s", e)
+                tick_future.result(timeout=CHAT_STREAM_POLICY.total_timeout + 30)
+            except Exception as error:
+                tick_future.cancel()
+                log.exception(
+                    "schedule tick error (%s)",
+                    type(error).__name__,
+                )
             # 每 30 秒检查一次
             for _ in range(60):          # 30s = 60 × 0.5s
                 if not self._running:
@@ -278,18 +331,31 @@ class ScheduleManager:
         att_json: str,
         music_atts: list,
         reasoning_content: str = "",
+        system_atts: list | None = None,
     ):
         """将系统消息和 AI 回复保存到 Aion 私聊"""
         now = time.time()
         sys_msg_id = f"msg_{int(now*1000)}_st"
+        system_atts = list(system_atts or [])
+        system_att_json = (
+            json.dumps(system_atts, ensure_ascii=False) if system_atts else "[]"
+        )
         async with get_db() as db:
             await db.execute(
                 "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-                (sys_msg_id, conv_id, "system", sys_content, now, "[]"),
+                (
+                    sys_msg_id,
+                    conv_id,
+                    "system",
+                    sys_content,
+                    now,
+                    system_att_json,
+                ),
             )
             await db.commit()
         sys_msg = {"id": sys_msg_id, "conv_id": conv_id, "role": "system",
-                   "content": sys_content, "created_at": now, "attachments": []}
+                   "content": sys_content, "created_at": now,
+                   "attachments": system_atts}
         await manager.broadcast({"type": "msg_created", "data": sys_msg})
 
         now2 = time.time()
@@ -320,18 +386,31 @@ class ScheduleManager:
         att_json: str,
         music_atts: list,
         reasoning_content: str = "",
+        system_atts: list | None = None,
     ):
         """将系统消息和 AI 回复保存到聊天室（群聊/Connor 私聊）"""
         now = time.time()
         sys_msg_id = f"cm_{int(now*1000)}_sys"
+        system_atts = list(system_atts or [])
+        system_att_json = (
+            json.dumps(system_atts, ensure_ascii=False) if system_atts else "[]"
+        )
         async with get_db() as db:
             await db.execute(
                 "INSERT INTO chatroom_messages (id, room_id, sender, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-                (sys_msg_id, room_id, "system", sys_content, now, "[]"),
+                (
+                    sys_msg_id,
+                    room_id,
+                    "system",
+                    sys_content,
+                    now,
+                    system_att_json,
+                ),
             )
             await db.commit()
         sys_msg = {"id": sys_msg_id, "room_id": room_id, "sender": "system",
-                   "content": sys_content, "created_at": now, "attachments": []}
+                   "content": sys_content, "created_at": now,
+                   "attachments": system_atts}
         await manager.broadcast({"type": "chatroom_msg_created", "data": sys_msg})
 
         now2 = time.time()
@@ -366,8 +445,10 @@ class ScheduleManager:
         # 标记为已触发
         if not is_app_checkpoint:
             async with aiosqlite.connect(DB_PATH) as db:
-                await db.execute("UPDATE schedules SET status='triggered' WHERE id=?", (sid,))
+                changed = await finish_schedule(db, sid, "triggered")
                 await db.commit()
+            if not changed:
+                return
 
         # 广播给前端弹窗
         if not is_app_checkpoint:
@@ -497,7 +578,7 @@ class ScheduleManager:
             debug_recalled = recalled
             mem_inject = []
             if recalled:
-                mem_lines = "\n".join([f"- {m['content']}" for m in recalled])
+                mem_lines = format_recalled_memories_for_prompt(recalled)
                 mem_inject = [
                     {"role": "user", "content": f"[相关记忆]\n你脑海中与当前话题相关的记忆：\n{mem_lines}"},
                     {"role": "assistant", "content": "收到，我会自然地参考这些记忆。"},
@@ -516,6 +597,7 @@ class ScheduleManager:
         usage_meta = _new_background_meta()
         debug_model_key = model_key
         has_error = False
+        error_text = None
         alarm_command_filter = WebCommandStreamFilter()
 
         # Connor 来源时根据配置的模型调用
@@ -531,30 +613,20 @@ class ScheduleManager:
             if tts_voice:
                 alarm_tts = TTSStreamer(ai_msg_id, tts_voice, manager)
 
-            full_text = ""
-            try:
-                if _connor_model == "Codex":
+            if _connor_model == "Codex":
+                async def content_stream():
                     async for chunk in stream_connor_cli(messages=messages, meta=usage_meta):
                         if chunk.startswith(_CSP):
                             continue
-                        full_text += chunk
-                        if alarm_tts:
-                            visible_chunk = alarm_command_filter.feed(chunk)
-                            if visible_chunk:
-                                alarm_tts.feed(visible_chunk)
-                else:
-                    _temp = SETTINGS.get("temperature")
+                        yield chunk
+            else:
+                _temp = SETTINGS.get("temperature")
+
+                async def content_stream():
                     async for chunk in stream_ai(messages, _connor_model, meta=usage_meta, temperature=_temp):
                         if chunk.startswith(CLI_STATUS_PREFIX):
                             continue
-                        full_text += chunk
-                        if alarm_tts:
-                            visible_chunk = alarm_command_filter.feed(chunk)
-                            if visible_chunk:
-                                alarm_tts.feed(visible_chunk)
-            except Exception as e:
-                has_error = True
-                full_text = f"[闹铃提醒回复失败] {e}"
+                        yield chunk
         else:
             # Aion 来源用常规 stream_ai
             alarm_tts = None
@@ -562,22 +634,25 @@ class ScheduleManager:
             if tts_voice:
                 alarm_tts = TTSStreamer(ai_msg_id, tts_voice, manager)
 
-            full_text = ""
-            try:
-                _temp = SETTINGS.get("temperature")
+            _temp = SETTINGS.get("temperature")
+
+            async def content_stream():
                 async for chunk in stream_ai(messages, model_key, meta=usage_meta, temperature=_temp):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         continue
-                    full_text += chunk
-                    if alarm_tts:
-                        visible_chunk = alarm_command_filter.feed(chunk)
-                        if visible_chunk:
-                            alarm_tts.feed(visible_chunk)
-            except Exception as e:
-                has_error = True
-                full_text = f"[闹铃提醒回复失败] {e}"
+                    yield chunk
 
-        if not full_text.strip():
+        stream_result = await _consume_background_stream(
+            content_stream(),
+            alarm_command_filter,
+            alarm_tts,
+        )
+        full_text = stream_result.committed_text
+        has_error = stream_result.stop_reason is not None
+        error_text = stream_result.diagnostic_error or stream_result.stop_reason
+        safety_notice = stream_result.notice
+
+        if not full_text.strip() and not safety_notice:
             return
 
         # 检测 [MUSIC:xxx] 指令
@@ -609,6 +684,8 @@ class ScheduleManager:
             sender=sender,
             ai_msg_id=ai_msg_id,
         )
+        if safety_notice:
+            full_text = f"{full_text}\n\n[{safety_notice}]".strip()
 
         music_atts = [{"type": "music", "name": s["name"], "artist": s["artist"], "id": s["id"]} for s in music_cards] if music_cards else []
         att_json = json.dumps(music_atts, ensure_ascii=False) if music_atts else "[]"
@@ -630,15 +707,12 @@ class ScheduleManager:
             prompt_messages=messages,
             recalled_memories=debug_recalled,
             has_error=has_error,
-            error_text=full_text if has_error else None,
+            error_text=error_text,
         )
 
         # 刷新 TTS 剩余文本
         if alarm_tts:
             try:
-                visible_tail = alarm_command_filter.flush()
-                if visible_tail:
-                    alarm_tts.feed(visible_tail)
                 await alarm_tts.flush()
             except Exception:
                 pass
@@ -659,8 +733,10 @@ class ScheduleManager:
 
         # 标记为已触发
         async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("UPDATE schedules SET status='triggered' WHERE id=?", (sid,))
+            changed = await finish_schedule(db, sid, "triggered")
             await db.commit()
+        if not changed:
+            return
         await manager.broadcast({"type": "schedule_changed"})
 
         # ── 确定响应目标 ──
@@ -668,19 +744,41 @@ class ScheduleManager:
         is_chatroom = target["type"] == "chatroom"
         sender = "connor" if origin == "connor" else "aion"
 
-        # 尝试截图（优先摄像头+屏幕，摄像头未开启时仅截取屏幕+手机）
-        from camera import cam
-        fname = None
-        # 请求手机截图，并等待服务器确实收到本次请求之后的新结果。
-        phone_screen_requested_at = time.time()
-        await manager.broadcast({"type": "monitor_alert", "data": {"content": content, "origin": origin, "origin_name": origin_name}})
-        from phone_screen import wait_for_phone_screen_after
-        await wait_for_phone_screen_after(phone_screen_requested_at)
-
-        jpg_bytes = (
-            cam.get_frame_jpeg(phone_screen_after=phone_screen_requested_at)
-            or cam.get_screen_only_jpeg(phone_screen_after=phone_screen_requested_at)
+        # 尝试截图。手机源必须等待本轮 request_id 对应的新照片。
+        from camera import (
+            acquire_monitor_image,
+            build_monitor_alert_data,
+            cam,
+            save_monitor_camera_snapshot,
         )
+        fname = None
+        camera_jpeg = None
+        await manager.broadcast({
+            "type": "monitor_alert",
+            "data": build_monitor_alert_data(
+                content,
+                origin=origin,
+                origin_name=origin_name,
+            ),
+        })
+        no_image_context = ""
+        if cam.cfg.get("active_source", "local") == "phone":
+            image_result = await acquire_monitor_image("scheduled_monitor")
+            jpg_bytes = image_result.jpeg
+            camera_jpeg = image_result.camera_jpeg
+            no_image_context = image_result.no_image_context
+        else:
+            # 本地/ESP32 路径仍合成一次本轮新鲜的手机屏幕截图。
+            phone_screen_requested_at = time.time()
+            from phone_screen import wait_for_phone_screen_after
+            await wait_for_phone_screen_after(phone_screen_requested_at)
+            jpg_bytes, camera_jpeg = cam.get_capture_jpegs(
+                phone_screen_after=phone_screen_requested_at,
+            )
+            if not jpg_bytes:
+                jpg_bytes = cam.get_screen_only_jpeg(
+                    phone_screen_after=phone_screen_requested_at,
+                )
         if jpg_bytes:
             from config import UPLOADS_DIR, SCREENSHOTS_DIR
             ts = time.strftime("%Y%m%d_%H%M%S")
@@ -745,6 +843,8 @@ class ScheduleManager:
             trigger_prompt += f"这是系统在当前时间（{now_str}）自动从摄像头截取的实时画面。\n"
         else:
             trigger_prompt += f"当前时间是{now_str}，摄像头未开启，无法获取画面。\n"
+        if no_image_context:
+            trigger_prompt += no_image_context + "\n"
         if activity_summary_text:
             trigger_prompt += (
                 f"\n以下是{user_name}过去一小时的设备使用动态（手机/电脑应用使用情况，每10分钟一条摘要）：\n"
@@ -829,6 +929,7 @@ class ScheduleManager:
         usage_meta = _new_background_meta()
         debug_model_key = model_key
         has_error = False
+        error_text = None
         monitor_command_filter = WebCommandStreamFilter()
 
         # Connor 来源时根据配置的模型调用
@@ -844,52 +945,45 @@ class ScheduleManager:
             if tts_voice:
                 monitor_tts = TTSStreamer(ai_msg_id, tts_voice, manager)
 
-            full_text = ""
-            try:
-                if _connor_model == "Codex":
+            if _connor_model == "Codex":
+                async def content_stream():
                     async for chunk in stream_connor_cli(messages=messages, meta=usage_meta):
                         if chunk.startswith(_CSP):
                             continue
-                        full_text += chunk
-                        if monitor_tts:
-                            visible_chunk = monitor_command_filter.feed(chunk)
-                            if visible_chunk:
-                                monitor_tts.feed(visible_chunk)
-                else:
-                    _temp = SETTINGS.get("temperature")
+                        yield chunk
+            else:
+                _temp = SETTINGS.get("temperature")
+
+                async def content_stream():
                     async for chunk in stream_ai(messages, _connor_model, meta=usage_meta, temperature=_temp):
                         if chunk.startswith(CLI_STATUS_PREFIX):
                             continue
-                        full_text += chunk
-                        if monitor_tts:
-                            visible_chunk = monitor_command_filter.feed(chunk)
-                            if visible_chunk:
-                                monitor_tts.feed(visible_chunk)
-            except Exception as e:
-                has_error = True
-                full_text = f"[定时监控回复失败] {e}"
+                        yield chunk
         else:
             monitor_tts = None
             tts_voice = _tts_voice_for_target(is_chatroom, "aion")
             if tts_voice:
                 monitor_tts = TTSStreamer(ai_msg_id, tts_voice, manager)
 
-            full_text = ""
-            try:
-                _temp = SETTINGS.get("temperature")
+            _temp = SETTINGS.get("temperature")
+
+            async def content_stream():
                 async for chunk in stream_ai(messages, model_key, meta=usage_meta, temperature=_temp):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         continue
-                    full_text += chunk
-                    if monitor_tts:
-                        visible_chunk = monitor_command_filter.feed(chunk)
-                        if visible_chunk:
-                            monitor_tts.feed(visible_chunk)
-            except Exception as e:
-                has_error = True
-                full_text = f"[定时监控回复失败] {e}"
+                    yield chunk
 
-        if not full_text.strip():
+        stream_result = await _consume_background_stream(
+            content_stream(),
+            monitor_command_filter,
+            monitor_tts,
+        )
+        full_text = stream_result.committed_text
+        has_error = stream_result.stop_reason is not None
+        error_text = stream_result.diagnostic_error or stream_result.stop_reason
+        safety_notice = stream_result.notice
+
+        if not full_text.strip() and not safety_notice:
             return
 
         # 检测 [MUSIC:xxx] 指令
@@ -921,10 +1015,17 @@ class ScheduleManager:
             sender=sender,
             ai_msg_id=ai_msg_id,
         )
+        if safety_notice:
+            full_text = f"{full_text}\n\n[{safety_notice}]".strip()
 
         music_atts = [{"type": "music", "name": s["name"], "artist": s["artist"], "id": s["id"]} for s in music_cards] if music_cards else []
         att_json = json.dumps(music_atts, ensure_ascii=False) if music_atts else "[]"
         reasoning_content = (usage_meta.get("reasoning_content") or "").strip()
+        snapshot_attachment = save_monitor_camera_snapshot(
+            camera_jpeg,
+            "scheduled_monitor",
+        )
+        system_atts = [snapshot_attachment] if snapshot_attachment else []
 
         # ── 保存到目标窗口 ──
         if origin == "connor":
@@ -934,9 +1035,28 @@ class ScheduleManager:
         else:
             sys_content = f"{ai_name}查看了监控"
         if is_chatroom:
-            await self._save_to_chatroom(target["room_id"], sender, sys_content, full_text, ai_msg_id, att_json, music_atts, reasoning_content)
+            await self._save_to_chatroom(
+                target["room_id"],
+                sender,
+                sys_content,
+                full_text,
+                ai_msg_id,
+                att_json,
+                music_atts,
+                reasoning_content,
+                system_atts=system_atts,
+            )
         else:
-            await self._save_to_private(conv_id, sys_content, full_text, ai_msg_id, att_json, music_atts, reasoning_content)
+            await self._save_to_private(
+                conv_id,
+                sys_content,
+                full_text,
+                ai_msg_id,
+                att_json,
+                music_atts,
+                reasoning_content,
+                system_atts=system_atts,
+            )
         await _broadcast_trigger_debug(
             msg_id=ai_msg_id,
             model_key=debug_model_key,
@@ -944,15 +1064,12 @@ class ScheduleManager:
             prompt_messages=messages,
             recalled_memories=[],
             has_error=has_error,
-            error_text=full_text if has_error else None,
+            error_text=error_text,
         )
 
         # 刷新 TTS 剩余文本
         if monitor_tts:
             try:
-                visible_tail = monitor_command_filter.flush()
-                if visible_tail:
-                    monitor_tts.feed(visible_tail)
                 await monitor_tts.flush()
             except Exception:
                 pass
@@ -1035,8 +1152,8 @@ async def process_schedule_commands(full_text: str, conv_id: str = None, origin:
             sid = match.group(1).strip()
             if sid:
                 info = await _get_schedule_info(sid)
-                await _del_schedule(sid)
-                if conv_id and info:
+                changed = await _del_schedule(sid)
+                if conv_id and info and changed:
                     type_labels = {"alarm": "闹铃", "reminder": "日程", "monitor": "定时监控"}
                     label = type_labels.get(info["type"], "日程")
                     await _sys_msg(conv_id, f"【{actor_name}】取消了 {info['trigger_at'].replace('T', ' ')} 的{label}：{info['content']}", after_msg_id=after_msg_id)
@@ -1143,7 +1260,7 @@ async def _process_background_reply_commands(
     ai_msg_id: str,
 ) -> str:
     """Run lightweight shared post-processing for background AI replies."""
-    from routes.chat import _process_home_commands
+    from routes.chat import _hug_pillow_sys_msg, _process_home_commands
 
     cleaned = await _process_home_commands(full_text)
     cleaned = await _process_background_wechat_commands(
@@ -1161,6 +1278,22 @@ async def _process_background_reply_commands(
         source_id=source_id or "",
         source_msg_id=ai_msg_id,
         sender=sender,
+    )
+    if target_type == "chatroom":
+        save_hug_system_message = lambda text: _chatroom_sys_msg(
+            source_id or "", text, after_msg_id=ai_msg_id
+        )
+    else:
+        save_hug_system_message = lambda text: _hug_pillow_sys_msg(
+            conv_id or "", text, after_msg_id=ai_msg_id
+        )
+    cleaned = await process_hug_pillow_commands(
+        cleaned,
+        source_type=f"background_{target_type}",
+        source_id=source_id or "",
+        source_msg_id=ai_msg_id,
+        sender=sender,
+        save_system_message=save_hug_system_message,
     )
     from app_supervision_ai import (
         queue_app_supervision_reply_command,
@@ -1201,9 +1334,11 @@ async def _add_schedule(stype: str, trigger_at: str, content: str, origin: str =
 
 async def _del_schedule(sid: str):
     async with get_db() as db:
-        await db.execute("UPDATE schedules SET status='cancelled' WHERE id=?", (sid,))
+        changed = await finish_schedule(db, sid, "cancelled")
         await db.commit()
-    await manager.broadcast({"type": "schedule_changed"})
+    if changed:
+        await manager.broadcast({"type": "schedule_changed"})
+    return changed
 
 
 # ── 获取活跃日程（供 prompt 注入） ────────────────

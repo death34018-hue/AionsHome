@@ -60,4 +60,19 @@ public class SupervisionIntegrationGuardTest {
         assertTrue(storeIndex < freshAckIndex);
         assertFalse(source.contains("offerAppSupervisionCommand("));
     }
+
+    @Test
+    public void wholeDeviceOverlayUsesDedicatedHomeButtonCopy() throws Exception {
+        String strings = new String(Files.readAllBytes(Paths.get(
+                "src/main/res/values/strings.xml")), StandardCharsets.UTF_8);
+        String overlay = new String(Files.readAllBytes(Paths.get(
+                "src/main/java/com/aion/chat/supervision/AppSupervisionOverlay.java")),
+                StandardCharsets.UTF_8);
+
+        assertTrue(strings.contains(
+                "<string name=\"device_lock_home_button\">乖乖回小家呆着</string>"));
+        assertTrue(overlay.contains("deviceLock ? context.getString("));
+        assertTrue(overlay.contains(
+                "com.aion.chat.R.string.device_lock_home_button) : \"返回桌面\""));
+    }
 }

@@ -82,6 +82,24 @@ public final class AppSupervisionEngine {
         return events;
     }
 
+    public Long nextCheckpointDelayMs(String groupId, long elapsedMs) {
+        if (!featureEnabled || groupId == null || !groupId.equals(foregroundGroupId)) {
+            return null;
+        }
+        AppGroup group = groups.get(groupId);
+        AppGroupState state = states.get(groupId);
+        if (group == null || state == null || !group.isMonitored()) {
+            return null;
+        }
+        AppGroupState.Snapshot snapshot = state.snapshot(elapsedMs);
+        for (Long checkpointMs : group.getPolicy().getCheckpointsMs()) {
+            if (!snapshot.getFiredCheckpointsMs().contains(checkpointMs)) {
+                return Math.max(0L, checkpointMs - snapshot.getRoundUsageMs());
+            }
+        }
+        return null;
+    }
+
     public void setLock(String groupId, int minutes, String roleId, String message,
             String commandId, SupervisionTime now) {
         AppGroupState target = state(required(groupId));

@@ -18,6 +18,7 @@ from wechat_bridge import (
 BindingInboundHandler = Callable[..., Awaitable[Any]]
 SendTextHandler = Callable[..., Any]
 DefaultRouteResolver = Callable[[], Any]
+PrivateRouteResolver = Callable[[], Any]
 DEFAULT_BINDING_ALIASES = {"aionshome", "default", "auto", "main", "current", "默认", "主聊天", "当前"}
 
 
@@ -63,6 +64,7 @@ async def _default_inbound_handler(**kwargs: Any) -> Any:
         source_type=kwargs["source_type"],
         source_id=kwargs["source_id"],
         auto_reply=bool(kwargs.get("auto_reply", True)),
+        mark_channel=bool(kwargs.get("mark_channel", True)),
     )
     return await receive_wechat_message(body, authorization=None)
 
@@ -96,6 +98,19 @@ async def _default_binding_route() -> dict[str, str]:
         return {"source_type": "aion_private", "source_id": conv_id}
 
 
+async def _default_private_route() -> dict[str, str] | None:
+    from database import get_db
+
+    async with get_db() as db:
+        cur = await db.execute(
+            "SELECT id FROM conversations ORDER BY updated_at DESC LIMIT 1"
+        )
+        row = await cur.fetchone()
+    if not row:
+        return None
+    return {"source_type": "aion_private", "source_id": str(row[0])}
+
+
 class OpenClawWeixinBridgeRuntime:
     def __init__(
         self,
@@ -105,6 +120,7 @@ class OpenClawWeixinBridgeRuntime:
         inbound_handler: BindingInboundHandler | None = None,
         send_text: SendTextHandler | None = None,
         default_route_resolver: DefaultRouteResolver | None = None,
+        private_route_resolver: PrivateRouteResolver | None = None,
         now: Callable[[], float] | None = None,
         openclaw_home: str | Path | None = None,
         poll_interval_seconds: float = 2.0,
@@ -122,6 +138,7 @@ class OpenClawWeixinBridgeRuntime:
         self.inbound_handler = inbound_handler or _default_inbound_handler
         self.send_text = send_text
         self.default_route_resolver = default_route_resolver or _default_binding_route
+        self.private_route_resolver = private_route_resolver or _default_private_route
         self.now = now or time.time
         self.openclaw_home = openclaw_home
         self.poll_interval_seconds = poll_interval_seconds
@@ -275,18 +292,66 @@ class OpenClawWeixinBridgeRuntime:
             )
             return False
 
+        from wechat_mode import (
+            find_wechat_mode_for_sender,
+            parse_wechat_mode_command,
+            set_wechat_mode,
+        )
+
         updated = update_wechat_binding_context(
             binding,
             context_token=context_token,
             now=self.now(),
             settings=self.settings,
         )
+        mode_command = parse_wechat_mode_command(text)
+        if mode_command:
+            outbound_routes = [{
+                "source_type": updated["source_type"],
+                "source_id": updated["source_id"],
+            }]
+            if mode_command == "enable" and updated["source_type"] == "chatroom":
+                private_route = await _maybe_await(self.private_route_resolver())
+                if isinstance(private_route, dict):
+                    outbound_routes.append(private_route)
+            existing_mode = find_wechat_mode_for_sender(
+                self.settings, account_id, wechat_user_id
+            )
+            if mode_command == "disable" and existing_mode:
+                outbound_routes = list(existing_mode.get("outbound_routes") or outbound_routes)
+            set_wechat_mode(
+                self.settings,
+                account_id=account_id,
+                wechat_user_id=wechat_user_id,
+                inbound_route={
+                    "source_type": updated["source_type"],
+                    "source_id": updated["source_id"],
+                },
+                outbound_routes=outbound_routes,
+                enabled=mode_command == "enable",
+                now=self.now(),
+            )
+            await _maybe_await(self.save_settings(self.settings))
+            await self._send_text(
+                account_id=account_id,
+                wechat_user_id=wechat_user_id,
+                context_token=context_token,
+                content=(
+                    "微信模式已开启。"
+                    if mode_command == "enable"
+                    else "微信模式已关闭。"
+                ),
+            )
+            return True
+
         await _maybe_await(self.save_settings(self.settings))
+        mode = find_wechat_mode_for_sender(self.settings, account_id, wechat_user_id)
         await self.inbound_handler(
             content=text,
             source_type=updated["source_type"],
             source_id=updated["source_id"],
             auto_reply=True,
+            mark_channel=not bool(mode and mode.get("enabled")),
         )
         return True
 

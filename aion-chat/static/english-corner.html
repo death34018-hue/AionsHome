@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#27223f">
+  <title>学习角</title>
+  <link rel="stylesheet" href="/static/english-corner.css">
+</head>
+<body>
+  <div class="night-sky" aria-hidden="true">
+    <span class="star star--one">✦</span>
+    <span class="star star--two">·</span>
+    <span class="star star--three">✧</span>
+    <span class="star star--four">✦</span>
+    <span class="star star--five">·</span>
+  </div>
+
+  <div class="cabin-shell">
+    <header class="topbar">
+      <div class="top-left-actions">
+        <a class="top-button home-back-link" id="homeBackLink" href="/" aria-label="返回主界面">
+          <span aria-hidden="true">‹</span>
+        </a>
+        <button class="top-button archive-button" id="archiveButton" type="button" aria-label="打开卡片收纳">
+          <span aria-hidden="true">☰</span>
+          <span class="count-badge" id="learningCount">0</span>
+        </button>
+      </div>
+
+      <div class="page-title" aria-live="polite">
+        <h1>今晚的小剧场</h1>
+        <p id="progressText">等待新一幕</p>
+        <div class="progress-dots" id="progressDots" aria-hidden="true"></div>
+      </div>
+
+      <button class="top-button generate-button" id="generateButton" type="button" aria-label="生成新的学习卡片">
+        <span aria-hidden="true">✦</span>
+        <span>生成</span>
+      </button>
+    </header>
+
+    <aside class="status-banner" id="statusBanner" role="status" hidden>
+      <span id="statusMessage"></span>
+      <button id="statusRetry" type="button" hidden>重试</button>
+    </aside>
+
+    <main class="learning-stage">
+      <button class="carousel-button carousel-button--previous" id="previousCard" type="button" aria-label="上一幕">
+        <span aria-hidden="true">‹</span>
+      </button>
+
+      <div class="card-viewport">
+        <section class="card-region" id="cardRegion" tabindex="-1" aria-live="polite" aria-label="正在学习的卡片"></section>
+      </div>
+
+      <button class="carousel-button carousel-button--next" id="nextCard" type="button" aria-label="下一幕">
+        <span aria-hidden="true">›</span>
+      </button>
+    </main>
+
+    <p class="swipe-hint">← 左右滑动，去往上一幕或下一幕 →</p>
+  </div>
+
+  <dialog class="drawer-dialog" id="archiveDialog" aria-labelledby="archiveTitle">
+    <section class="drawer-panel">
+      <header class="panel-header">
+        <div>
+          <span class="panel-kicker">OUR LITTLE ARCHIVE</span>
+          <h2 id="archiveTitle">卡片收纳</h2>
+        </div>
+        <button class="close-button" id="archiveClose" type="button" aria-label="关闭卡片收纳">×</button>
+      </header>
+      <div class="archive-tabs" role="tablist" aria-label="卡片状态">
+        <button id="archiveLearningTab" type="button" role="tab" aria-selected="true">正在学 0</button>
+        <button id="archiveLearnedTab" type="button" role="tab" aria-selected="false">已学会 0</button>
+      </div>
+      <div class="archive-list" id="archiveList" role="tabpanel"></div>
+    </section>
+  </dialog>
+
+  <dialog class="sheet-dialog" id="generateDialog" aria-labelledby="generateTitle">
+    <form class="sheet-panel" id="generateForm">
+      <header class="panel-header">
+        <div>
+          <span class="panel-kicker">FROM OUR DAY</span>
+          <h2 id="generateTitle">编织今晚的三幕</h2>
+        </div>
+        <button class="close-button" id="generateClose" type="button" aria-label="关闭生成面板">×</button>
+      </header>
+
+      <fieldset class="form-section">
+        <legend>由谁来写</legend>
+        <div class="actor-choices" id="actorChoices"></div>
+      </fieldset>
+
+      <div class="form-section">
+        <label for="contextSelect">从今天的相处里取多少灵感</label>
+        <select id="contextSelect" name="context_limit" disabled>
+          <option>正在读取…</option>
+        </select>
+        <p class="context-meta" id="contextMeta">正在数今天留下的消息…</p>
+      </div>
+
+      <div class="form-section">
+        <label for="voiceSelect">朗读音色</label>
+        <select id="voiceSelect" name="tts_voice" disabled>
+          <option value="">正在读取音色…</option>
+        </select>
+        <p class="context-meta" id="voiceMeta">三个人的全部英文都会使用这个音色。</p>
+      </div>
+
+      <div class="learning-day-note">
+        <span aria-hidden="true">☾</span>
+        <span>
+          <strong>我们的学习日从 05:00 开始</strong>
+          <small id="learningDay">学习日每天从 05:00 开始</small>
+        </span>
+      </div>
+
+      <p class="generate-error" id="generateError" role="alert" hidden></p>
+      <button class="peach-button generate-submit" id="generateSubmit" type="submit">生成三幕英语小剧场</button>
+      <p class="gentle-note">一次只生成三张；不会自动生成，也不会覆盖旧卡片。</p>
+    </form>
+  </dialog>
+
+  <div class="undo-toast" id="undoToast" role="status" hidden>
+    <span>这一幕已经收进“已学会”</span>
+    <button id="undoButton" type="button">撤销</button>
+  </div>
+
+  <div class="generation-toast" id="generationToast" role="status" hidden></div>
+
+  <script src="/static/english-corner.js"></script>
+</body>
+</html>

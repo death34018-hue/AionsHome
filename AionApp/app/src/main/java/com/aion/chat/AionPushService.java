@@ -24,6 +24,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
+import android.content.res.AssetFileDescriptor;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -53,6 +54,8 @@ import okhttp3.WebSocketListener;
 import java.util.ArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -123,6 +126,10 @@ public class AionPushService extends Service {
     public static final String ACTION_ACQUIRE_RING_FOR_BACKGROUND = "acquire_ring_for_background";
     public static final String ACTION_RING_FEATURE_CHANGED = "ring_feature_changed";
     public static final String ACTION_MI_BAND_SETTINGS_CHANGED = "mi_band_settings_changed";
+    public static final String ACTION_ARM_PHONE_CAMERA = "arm_phone_camera";
+    public static final String ACTION_DISARM_PHONE_CAMERA = "disarm_phone_camera";
+    public static final String EXTRA_PHONE_CAMERA_FACING = "phone_camera_facing";
+    public static final String EXTRA_PHONE_CAMERA_ZOOM = "phone_camera_zoom";
     private static final String PREFS = "aion_prefs";
     private static final String PREF_SAVED_URL = "saved_url";
     private static final String DEFAULT_PAGE_URL = "http://192.168.xx.xxx:8080/chat";
@@ -138,6 +145,7 @@ public class AionPushService extends Service {
 
     private static final long HEARTBEAT_MS  = 45_000;  // 45s 心跳（省电）
     private static final long HEALTH_TIMEOUT = 120_000; // 120s 无消息 → 重连
+    private static final long PHONE_CAMERA_SHUTTER_OFFSET_MS = 5_000L;
 
     private OkHttpClient client;
     private volatile WebSocket webSocket;
@@ -152,11 +160,20 @@ public class AionPushService extends Service {
     private static final int MAX_RECONNECT_DELAY = 30000;
     private volatile boolean shouldRun = true;
     private volatile boolean isForegroundActive = false;
+    private final PhoneCameraState phoneCameraState = new PhoneCameraState();
+    private PhoneCameraArmPersistence phoneCameraArmPersistence;
+    private final ExecutorService phoneCameraStateSync =
+            Executors.newSingleThreadExecutor();
+    private PhoneCameraController phoneCameraController;
+    private final AtomicInteger phoneCameraCaptureGeneration = new AtomicInteger();
+    private volatile Runnable phoneCameraRetryRunnable;
 
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
     private Thread heartbeatThread;
     private MediaPlayer mediaPlayer;
+    private final Object phoneCameraAlertLock = new Object();
+    private MediaPlayer phoneCameraAlertPlayer;
 
     private volatile int msgReceived = 0;
     private volatile long lastMessageTime = 0;
@@ -249,6 +266,40 @@ public class AionPushService extends Service {
         Log.i(TAG, "=== onCreate ===");
         createNotificationChannels();
         mainHandler = new Handler(Looper.getMainLooper());
+        phoneCameraController = new PhoneCameraController(this);
+        android.content.SharedPreferences phoneCameraPrefs =
+                getSharedPreferences("phone_camera_arm", MODE_PRIVATE);
+        phoneCameraArmPersistence = new PhoneCameraArmPersistence(
+                new PhoneCameraArmPersistence.Store() {
+                    @Override
+                    public boolean getBoolean(String key, boolean fallback) {
+                        return phoneCameraPrefs.getBoolean(key, fallback);
+                    }
+
+                    @Override
+                    public String getString(String key, String fallback) {
+                        return phoneCameraPrefs.getString(key, fallback);
+                    }
+
+                    @Override
+                    public float getFloat(String key, float fallback) {
+                        return phoneCameraPrefs.getFloat(key, fallback);
+                    }
+
+                    @Override
+                    public void put(
+                            boolean armed,
+                            String facing,
+                            float zoom
+                    ) {
+                        phoneCameraPrefs.edit()
+                                .putBoolean("armed", armed)
+                                .putString("facing", facing)
+                                .putFloat("zoom", zoom)
+                                .apply();
+                    }
+                });
+        phoneCameraArmPersistence.restoreInto(phoneCameraState);
 
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (pm != null) {
@@ -389,6 +440,22 @@ public class AionPushService extends Service {
                 requestAccessibilityPhoneScreen("manual_test", true);
                 return START_STICKY;
             }
+            if (ACTION_ARM_PHONE_CAMERA.equals(action)) {
+                phoneCameraState.arm(
+                        intent.getStringExtra(EXTRA_PHONE_CAMERA_FACING),
+                        intent.getFloatExtra(EXTRA_PHONE_CAMERA_ZOOM, 1f)
+                );
+                phoneCameraArmPersistence.rememberArmed(
+                        phoneCameraState.getFacing(),
+                        phoneCameraState.getZoom());
+                postPhoneCameraArmState(true);
+            }
+            if (ACTION_DISARM_PHONE_CAMERA.equals(action)) {
+                cancelActivePhoneCameraCapture();
+                phoneCameraState.disarm();
+                phoneCameraArmPersistence.rememberDisarmed();
+                postPhoneCameraArmState(false);
+            }
         }
 
         if (serverUrl == null) {
@@ -423,6 +490,11 @@ public class AionPushService extends Service {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
                     == PackageManager.PERMISSION_GRANTED) {
                 serviceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE;
+            }
+            if (phoneCameraState.isArmed()
+                    && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                    == PackageManager.PERMISSION_GRANTED) {
+                serviceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
             }
             startForeground(NOTIF_FOREGROUND, buildKeepAlive("连接中..."), serviceType);
         } else {
@@ -477,11 +549,16 @@ public class AionPushService extends Service {
         if (miBandRuntime != null) miBandRuntime.disconnect();
         stopEsp32Bridge();
         stopPhoneScreenProjection();
+        phoneCameraState.disarm();
+        cancelActivePhoneCameraCapture();
+        if (phoneCameraController != null) phoneCameraController.close();
+        phoneCameraStateSync.shutdownNow();
         unregisterScreenReceiver();
         if (sensorManager != null) sensorManager.unregisterListener(stepListener);
         if (webSocket != null) try { webSocket.cancel(); } catch (Exception ignored) {}
         if (client != null) client.dispatcher().executorService().shutdown();
         stopMusic();
+        stopPhoneCameraAlert();
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
         unregisterNetworkCallback();
@@ -560,6 +637,11 @@ public class AionPushService extends Service {
                 if (!shouldRun) break;
 
                 try {
+                    com.aion.chat.supervision.AppSupervisionRuntime supervisionRuntime =
+                            com.aion.chat.supervision.AppSupervisionRuntime.get();
+                    if (supervisionRuntime != null) {
+                        supervisionRuntime.checkpointWatchdog();
+                    }
                     if (wsConnected.get() && webSocket != null) {
                         boolean sent = webSocket.send("{\"type\":\"ping\"}");
                         long elapsed = (lastMessageTime > 0)
@@ -2039,6 +2121,17 @@ public class AionPushService extends Service {
                     reconnectDelay = 3000;
                     msgReceived = 0;
                     lastMessageTime = System.currentTimeMillis();
+                    try {
+                        JSONObject registration = new JSONObject();
+                        registration.put("type", "register_client");
+                        registration.put("client_id", getPhoneCameraClientId());
+                        ws.send(registration.toString());
+                        if (phoneCameraState.isArmed()) {
+                            postPhoneCameraArmState(true);
+                        }
+                    } catch (Exception error) {
+                        Log.w(TAG, "phone camera registration failed", error);
+                    }
                     updateKeepAlive("在线 ✨");
                     fetchPendingMiBandCommands();
                     syncAppSupervisionRuntimeConfig();
@@ -2388,6 +2481,10 @@ public class AionPushService extends Service {
             JSONObject data = json.optJSONObject("data");
 
             switch (type) {
+                case "phone_camera_capture": {
+                    dispatchPhoneCameraCapture(data);
+                    break;
+                }
                 case "mi_band_command": {
                     offerBandCommand(data);
                     break;
@@ -2414,8 +2511,12 @@ public class AionPushService extends Service {
                 }
                 case "monitor_alert": {
                     String c = data != null ? data.optString("content", "监控提醒") : "监控提醒";
-                    showNotif(CH_ALARM, "👁 监控", c, true);
-                    schedulePhoneScreenCapture("monitor_alert");
+                    boolean nativePhoneCapture = data != null
+                            && data.optBoolean("phone_camera_native_capture", false);
+                    showNotif(CH_ALARM, "👁 监控", c, true, nativePhoneCapture);
+                    if (!nativePhoneCapture) {
+                        schedulePhoneScreenCapture("monitor_alert");
+                    }
                     break;
                 }
                 case "cam_check": {
@@ -2758,7 +2859,79 @@ public class AionPushService extends Service {
         }
     }
 
+    private long startPhoneCameraAlert() {
+        stopPhoneCameraAlert();
+        MediaPlayer player = new MediaPlayer();
+        try (AssetFileDescriptor asset = getAssets().openFd(
+                "public/AionMonitoralart.mp3")) {
+            player.setAudioAttributes(new AudioAttributes.Builder()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+                    .build());
+            player.setDataSource(
+                    asset.getFileDescriptor(),
+                    asset.getStartOffset(),
+                    asset.getLength());
+            player.setOnCompletionListener(this::releasePhoneCameraAlert);
+            player.setOnErrorListener((failed, what, extra) -> {
+                Log.e(TAG, "phone camera alert failed: " + what + "/" + extra);
+                releasePhoneCameraAlert(failed);
+                return true;
+            });
+            player.prepare();
+            synchronized (phoneCameraAlertLock) {
+                phoneCameraAlertPlayer = player;
+            }
+            player.start();
+            long startedElapsedMs = SystemClock.elapsedRealtime();
+            long captureTargetElapsedMs =
+                    startedElapsedMs + PHONE_CAMERA_SHUTTER_OFFSET_MS;
+            Log.i(TAG, "phone camera alert started=" + startedElapsedMs
+                    + " captureTargetElapsedMs=" + captureTargetElapsedMs);
+            return captureTargetElapsedMs;
+        } catch (Exception error) {
+            Log.e(TAG, "phone camera alert unavailable; capture continues", error);
+            try { player.release(); } catch (Exception ignored) {}
+            synchronized (phoneCameraAlertLock) {
+                if (phoneCameraAlertPlayer == player) {
+                    phoneCameraAlertPlayer = null;
+                }
+            }
+            return 0L;
+        }
+    }
+
+    private void stopPhoneCameraAlert() {
+        releasePhoneCameraAlert(null);
+    }
+
+    private void releasePhoneCameraAlert(MediaPlayer expected) {
+        MediaPlayer player;
+        synchronized (phoneCameraAlertLock) {
+            if (expected != null && phoneCameraAlertPlayer != expected) return;
+            player = phoneCameraAlertPlayer;
+            phoneCameraAlertPlayer = null;
+        }
+        if (player != null) {
+            try {
+                if (player.isPlaying()) player.stop();
+            } catch (Exception ignored) {
+            }
+            try { player.release(); } catch (Exception ignored) {}
+        }
+    }
+
     private void showNotif(String ch, String title, String text, boolean high) {
+        showNotif(ch, title, text, high, false);
+    }
+
+    private void showNotif(
+            String ch,
+            String title,
+            String text,
+            boolean high,
+            boolean silent
+    ) {
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (nm == null) return;
 
@@ -2780,8 +2953,11 @@ public class AionPushService extends Service {
                 .setCategory(high ? NotificationCompat.CATEGORY_ALARM : NotificationCompat.CATEGORY_MESSAGE)
                 .setVisibility(NotificationCompat.VISIBILITY_PUBLIC);
 
+        if (silent) {
+            b.setSilent(true);
+        }
         if (high) {
-            b.setDefaults(NotificationCompat.DEFAULT_ALL);
+            if (!silent) b.setDefaults(NotificationCompat.DEFAULT_ALL);
             b.setFullScreenIntent(pi, true);  // 锁屏时亮屏弹出
         }
 
@@ -2901,10 +3077,43 @@ public class AionPushService extends Service {
     }
 
     private void schedulePhoneScreenSnapshot(String reason, long delayMs, boolean forceAccessibilityFallback) {
+        schedulePhoneScreenSnapshot(
+                reason, delayMs, forceAccessibilityFallback, 0L);
+    }
+
+    private void schedulePhoneScreenSnapshotAt(
+            String reason,
+            long captureTargetElapsedMs,
+            boolean forceAccessibilityFallback
+    ) {
+        long delayMs = captureTargetElapsedMs > 0L
+                ? Math.max(0L, captureTargetElapsedMs - SystemClock.elapsedRealtime())
+                : 0L;
+        schedulePhoneScreenSnapshot(
+                reason,
+                delayMs,
+                forceAccessibilityFallback,
+                captureTargetElapsedMs);
+    }
+
+    private void schedulePhoneScreenSnapshot(
+            String reason,
+            long delayMs,
+            boolean forceAccessibilityFallback,
+            long captureTargetElapsedMs
+    ) {
         if (System.currentTimeMillis() - lastPhoneCaptureAt < 3000) return;
         lastPhoneCaptureAt = System.currentTimeMillis();
         new Thread(() -> {
             try { Thread.sleep(Math.max(0, delayMs)); } catch (InterruptedException ignored) {}
+            if (captureTargetElapsedMs > 0L) {
+                long triggeredElapsedMs = SystemClock.elapsedRealtime();
+                Log.i(TAG, "phone screen capture target="
+                        + captureTargetElapsedMs
+                        + " triggered=" + triggeredElapsedMs
+                        + " deltaMs="
+                        + (triggeredElapsedMs - captureTargetElapsedMs));
+            }
             captureAndUploadPhoneScreen(reason, forceAccessibilityFallback);
         }, "PhoneScreenCapture").start();
     }
@@ -3018,6 +3227,265 @@ public class AionPushService extends Service {
             if (bitmap != null) bitmap.recycle();
             if (cropped != null && cropped != scaled) cropped.recycle();
             if (scaled != null) scaled.recycle();
+        }
+    }
+
+    private String getPhoneCameraClientId() {
+        String deviceId = Settings.Secure.getString(
+                getContentResolver(), Settings.Secure.ANDROID_ID);
+        if (deviceId == null || deviceId.trim().isEmpty()) {
+            deviceId = "unknown-device";
+        }
+        return "android-push:" + deviceId;
+    }
+
+    private String getPhoneCameraHttpBase() {
+        String current = getHttpBase();
+        if (current != null) return current;
+        String saved = getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getString(PushServiceStartPolicy.PREF_LAST_ACTIVE_URL, DEFAULT_PAGE_URL);
+        return ConnectionEndpoint.normalizePageUrl(saved)
+                .replaceFirst("/(?:chat|camera|settings)(?:[/?#].*)?$", "");
+    }
+
+    private void postPhoneCameraArmState(boolean armed) {
+        phoneCameraStateSync.execute(() -> {
+            String httpBase = getPhoneCameraHttpBase();
+            if (httpBase == null || client == null) return;
+            try {
+                JSONObject body = new JSONObject();
+                body.put("client_id", getPhoneCameraClientId());
+                if (armed) {
+                    body.put("facing", phoneCameraState.getFacing());
+                    body.put("zoom", phoneCameraState.getZoom());
+                    body.put("capabilities", phoneCameraController.getCapabilities());
+                }
+                MediaType jsonType = MediaType.get("application/json; charset=utf-8");
+                Request request = new Request.Builder()
+                        .url(httpBase + (armed
+                                ? "/api/phone-camera/arm"
+                                : "/api/phone-camera/disarm"))
+                        .post(RequestBody.create(body.toString(), jsonType))
+                        .build();
+                try (Response response = client.newCall(request).execute()) {
+                    Log.i(TAG, "phone camera " + (armed ? "armed" : "disarmed")
+                            + " -> " + response.code());
+                }
+            } catch (Exception error) {
+                Log.w(TAG, "phone camera state sync failed", error);
+            }
+        });
+    }
+
+    private void dispatchPhoneCameraCapture(JSONObject data) {
+        if (data == null || phoneCameraController == null) return;
+        String requestId = data.optString("request_id", "").trim();
+        long deadlineMs = Math.round(data.optDouble("deadline_at", 0) * 1000.0);
+        PhoneCameraState.Decision decision = phoneCameraState.begin(
+                requestId, deadlineMs, System.currentTimeMillis());
+        if (decision != PhoneCameraState.Decision.ACCEPTED) {
+            Log.d(TAG, "phone camera request ignored: " + decision + " " + requestId);
+            return;
+        }
+        String facing = PhoneCameraImagePolicy.normalizeFacing(
+                data.optString("facing", phoneCameraState.getFacing()));
+        float zoom = (float) data.optDouble("zoom", phoneCameraState.getZoom());
+        long captureTargetElapsedMs = startPhoneCameraAlert();
+        schedulePhoneScreenSnapshotAt(
+                "phone_camera_capture",
+                captureTargetElapsedMs,
+                true);
+        int generation = phoneCameraCaptureGeneration.incrementAndGet();
+        attemptPhoneCameraCapture(
+                requestId,
+                deadlineMs,
+                facing,
+                zoom,
+                1,
+                generation,
+                captureTargetElapsedMs);
+    }
+
+    private void attemptPhoneCameraCapture(
+            String requestId,
+            long deadlineMs,
+            String facing,
+            float zoom,
+            int attempt,
+            int generation,
+            long captureTargetElapsedMs
+    ) {
+        if (!isPhoneCameraCaptureActive(generation)) return;
+        if (!PhoneCameraPreviewCoordinator.shared().pauseForEvent(750L)) {
+            handlePhoneCameraAttemptFailure(
+                    requestId,
+                    deadlineMs,
+                    facing,
+                    zoom,
+                    attempt,
+                    generation,
+                    captureTargetElapsedMs,
+                    "preview_release_timeout");
+            return;
+        }
+        long timeoutMs = PhoneCameraRetryPolicy.captureTimeoutMs(
+                System.currentTimeMillis(), deadlineMs);
+        if (timeoutMs <= 0L) {
+            finishPhoneCameraCaptureFailure(
+                    requestId, "capture_deadline_exhausted", generation);
+            return;
+        }
+        phoneCameraController.capture(
+                facing,
+                zoom,
+                new PhoneCameraController.CaptureCallback() {
+                    @Override
+                    public void onSuccess(byte[] jpeg, JSONObject metadata) {
+                        if (!isPhoneCameraCaptureActive(generation)) return;
+                        cancelPhoneCameraRetry();
+                        PhoneCameraPreviewCoordinator.shared().finishEvent();
+                        new Thread(
+                                () -> uploadPhoneCameraCapture(requestId, jpeg, metadata),
+                                "PhoneCameraUpload"
+                        ).start();
+                    }
+
+                    @Override
+                    public void onFailure(String error) {
+                        handlePhoneCameraAttemptFailure(
+                                requestId,
+                                deadlineMs,
+                                facing,
+                                zoom,
+                                attempt,
+                                generation,
+                                captureTargetElapsedMs,
+                                error);
+                    }
+                },
+                timeoutMs,
+                captureTargetElapsedMs
+        );
+    }
+
+    private void handlePhoneCameraAttemptFailure(
+            String requestId,
+            long deadlineMs,
+            String facing,
+            float zoom,
+            int attempt,
+            int generation,
+            long captureTargetElapsedMs,
+            String error
+    ) {
+        if (!isPhoneCameraCaptureActive(generation)) return;
+        long now = System.currentTimeMillis();
+        if (PhoneCameraRetryPolicy.shouldRetry(
+                error, attempt, now, deadlineMs)) {
+            long delayMs = PhoneCameraRetryPolicy.delayMs(attempt);
+            Log.i(TAG, "phone camera busy; retry " + requestId
+                    + " attempt=" + (attempt + 1)
+                    + " delayMs=" + delayMs
+                    + " error=" + error);
+            Runnable retry = () -> {
+                phoneCameraRetryRunnable = null;
+                if (!isPhoneCameraCaptureActive(generation)) return;
+                attemptPhoneCameraCapture(
+                        requestId,
+                        deadlineMs,
+                        facing,
+                        zoom,
+                        attempt + 1,
+                        generation,
+                        captureTargetElapsedMs);
+            };
+            cancelPhoneCameraRetry();
+            phoneCameraRetryRunnable = retry;
+            mainHandler.postDelayed(retry, delayMs);
+            return;
+        }
+        finishPhoneCameraCaptureFailure(requestId, error, generation);
+    }
+
+    private void finishPhoneCameraCaptureFailure(
+            String requestId,
+            String error,
+            int generation
+    ) {
+        if (!isPhoneCameraCaptureActive(generation)) return;
+        cancelPhoneCameraRetry();
+        PhoneCameraPreviewCoordinator.shared().finishEvent();
+        new Thread(
+                () -> postPhoneCameraFailure(requestId, error),
+                "PhoneCameraFailure"
+        ).start();
+    }
+
+    private boolean isPhoneCameraCaptureActive(int generation) {
+        return shouldRun && phoneCameraCaptureGeneration.get() == generation;
+    }
+
+    private void cancelPhoneCameraRetry() {
+        Runnable retry = phoneCameraRetryRunnable;
+        phoneCameraRetryRunnable = null;
+        if (retry != null) mainHandler.removeCallbacks(retry);
+    }
+
+    private void cancelActivePhoneCameraCapture() {
+        phoneCameraCaptureGeneration.incrementAndGet();
+        cancelPhoneCameraRetry();
+        if (phoneCameraController != null) phoneCameraController.close();
+        PhoneCameraPreviewCoordinator.shared().finishEvent();
+    }
+
+    private void uploadPhoneCameraCapture(
+            String requestId,
+            byte[] jpeg,
+            JSONObject metadata
+    ) {
+        try {
+            Request request = new Request.Builder()
+                    .url(getPhoneCameraHttpBase() + "/api/phone-camera/upload")
+                    .header("X-Phone-Camera-Request-Id", requestId)
+                    .header("X-Phone-Camera-Metadata", metadata.toString())
+                    .post(RequestBody.create(jpeg, MediaType.get("image/jpeg")))
+                    .build();
+            try (Response response = client.newCall(request).execute()) {
+                Log.i(TAG, "phone camera upload " + requestId + " -> " + response.code());
+                if (!response.isSuccessful()) {
+                    throw new java.io.IOException("upload_http_" + response.code());
+                }
+            }
+        } catch (Exception error) {
+            Log.w(TAG, "phone camera upload failed", error);
+            postPhoneCameraFailure(requestId, "upload_failed");
+            return;
+        } finally {
+            phoneCameraState.complete(requestId);
+        }
+    }
+
+    private void postPhoneCameraFailure(String requestId, String errorMessage) {
+        try {
+            JSONObject body = new JSONObject();
+            body.put("request_id", requestId);
+            body.put("error", errorMessage);
+            body.put("metadata", new JSONObject()
+                    .put("facing", phoneCameraState.getFacing())
+                    .put("zoom", phoneCameraState.getZoom()));
+            Request request = new Request.Builder()
+                    .url(getPhoneCameraHttpBase() + "/api/phone-camera/failure")
+                    .post(RequestBody.create(
+                            body.toString(),
+                            MediaType.get("application/json; charset=utf-8")))
+                    .build();
+            try (Response response = client.newCall(request).execute()) {
+                Log.i(TAG, "phone camera failure " + requestId + " -> " + response.code());
+            }
+        } catch (Exception postError) {
+            Log.w(TAG, "phone camera failure report failed", postError);
+        } finally {
+            phoneCameraState.complete(requestId);
         }
     }
 

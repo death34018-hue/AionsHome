@@ -17,13 +17,19 @@ from database import get_db
 from ws import manager
 from active_window_state import record_aion_private_active
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
-from memory import recall_memories, instant_digest, fetch_source_details, build_surfacing_memories, get_embedding, _pack_embedding, _memory_line_with_evidence
+from memory import recall_memories, instant_digest, fetch_source_details, build_surfacing_memories, get_embedding, _pack_embedding, format_recalled_memories_for_prompt
 from camera import cam, CAM_CHECK_CMD, perform_cam_check
 from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prompt
 from message_dedup import build_message_dedupe_key, reserve_message_ingress
 from routes.files import export_conversation
 from routes.music import MUSIC_CMD_PATTERN
 from song_gen import SONG_CMD_PATTERN, clean_song_visible_reply
+from stream_reply import resolve_stream_failure
+from stream_safety import (
+    CHAT_STREAM_POLICY,
+    StreamSafetyResult,
+    consume_safe_stream,
+)
 from tts import TTSStreamer
 from wechat_bridge import (
     dispatch_wechat_message,
@@ -31,6 +37,7 @@ from wechat_bridge import (
     record_wechat_route,
 )
 from band_commands import process_band_vibration, with_band_vibration_attachment
+from hug_pillow_commands import process_hug_pillow_commands
 from app_supervision_ai import (
     queue_app_supervision_reply_command,
     broadcast_app_supervision_command,
@@ -216,7 +223,48 @@ async def _emit_chat_visible_chunk(
         return
     await _q.put(_chat_stream_event(model_key, visible_text, visible_chunk))
     if tts_streamer:
-        tts_streamer.feed(visible_chunk)
+        await tts_streamer.feed_async(visible_chunk)
+
+
+async def _consume_chat_stream(
+    source,
+    queue,
+    *,
+    model_key: str,
+    tts_streamer: TTSStreamer | None = None,
+) -> tuple[StreamSafetyResult, str]:
+    visible_text = ""
+    stream_filter = WebCommandStreamFilter()
+
+    async def on_commit(chunk: str) -> None:
+        nonlocal visible_text
+        visible_chunk = stream_filter.feed(chunk)
+        if visible_chunk:
+            visible_text += visible_chunk
+            await _emit_chat_visible_chunk(
+                queue,
+                model_key,
+                visible_text,
+                visible_chunk,
+                tts_streamer,
+            )
+
+    result = await consume_safe_stream(source, CHAT_STREAM_POLICY, on_commit)
+    visible_tail = stream_filter.flush()
+    if visible_tail:
+        visible_text += visible_tail
+        await _emit_chat_visible_chunk(
+            queue,
+            model_key,
+            visible_text,
+            visible_tail,
+            tts_streamer,
+        )
+    if result.notice:
+        notice = f"\n\n[{result.notice}]"
+        visible_text += notice
+        await queue.put(_chat_stream_event(model_key, visible_text, notice))
+    return result, visible_text
 
 
 _AI_ERROR_PREFIXES = (
@@ -652,6 +700,31 @@ async def _wechat_sys_msg(conv_id: str, text: str, after_msg_id: str = None):
     await manager.broadcast({"type": "msg_created", "data": msg})
 
 
+async def _hug_pillow_sys_msg(conv_id: str, text: str, after_msg_id: str = None):
+    """Insert a hug-pillow action notice that remains visible to later models."""
+    now = time.time()
+    msg_id = f"msg_{time.time_ns()}_hug"
+    order_atts = [{"type": "system_model_context"}]
+    if after_msg_id:
+        order_atts.append({"type": "system_notice_order", "after_msg_id": after_msg_id})
+    att_json = json.dumps(order_atts, ensure_ascii=False)
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
+            (msg_id, conv_id, "system", text, now, att_json),
+        )
+        await db.commit()
+    msg = {
+        "id": msg_id,
+        "conv_id": conv_id,
+        "role": "system",
+        "content": text,
+        "created_at": now,
+        "attachments": order_atts,
+    }
+    await manager.broadcast({"type": "msg_created", "data": msg})
+
+
 async def _process_private_wechat_commands(full_text: str, conv_id: str, ai_msg_id: str) -> str:
     async def _save_system(system_text: str):
         await _wechat_sys_msg(conv_id, system_text, after_msg_id=ai_msg_id)
@@ -968,11 +1041,9 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
             return {"error": "message not found"}
         conv_id = orig["conv_id"]
         msg_created_at = orig["created_at"]
+        resent_at = time.time()
 
-        # 2. 更新消息内容
-        await db.execute("UPDATE messages SET content=? WHERE id=?", (body.content, msg_id))
-
-        # 3. 删除该消息之后的所有消息
+        # 2. 先按原发送时间删除后续消息
         cur2 = await db.execute(
             "SELECT id FROM messages WHERE conv_id=? AND created_at>?",
             (conv_id, msg_created_at)
@@ -983,12 +1054,22 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 "DELETE FROM messages WHERE conv_id=? AND created_at>?",
                 (conv_id, msg_created_at)
             )
+        # 3. 编辑确认等同重新发送，内容和发送时间一起更新
+        await db.execute(
+            "UPDATE messages SET content=?, created_at=? WHERE id=?",
+            (body.content, resent_at, msg_id),
+        )
+        await db.execute(
+            "UPDATE conversations SET updated_at=? WHERE id=?",
+            (resent_at, conv_id),
+        )
         await db.commit()
 
     # 广播更新和删除事件
     await record_aion_private_active()
     updated_d = dict(orig)
     updated_d["content"] = body.content
+    updated_d["created_at"] = resent_at
     try: updated_d["attachments"] = json.loads(updated_d.get("attachments") or "[]") if updated_d.get("attachments") else []
     except: updated_d["attachments"] = []
     await manager.broadcast({"type": "msg_updated", "data": updated_d})
@@ -1081,8 +1162,16 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     if health_text:
         bg_block += health_text
     if surfaced:
-        unresolved_lines = [f"📌 {_memory_line_with_evidence(m)[2:]}（还没做/还没去）" for m in surfaced if m.get("unresolved")]
-        normal_lines = [_memory_line_with_evidence(m) for m in surfaced if not m.get("unresolved")]
+        unresolved_lines = [
+            f"📌 {format_recalled_memories_for_prompt([m])[2:]}（还没做/还没去）"
+            for m in surfaced
+            if m.get("unresolved")
+        ]
+        normal_lines = [
+            format_recalled_memories_for_prompt([m])
+            for m in surfaced
+            if not m.get("unresolved")
+        ]
         mem_text = "\n".join(unresolved_lines + normal_lines)
         bg_block += f"\n\n[背景记忆]\n以下是你记得的近期事件和需要关注的事项，在对话中如果有关联可以自然提起：\n{mem_text}"
     history.insert(cap_idx + inject_offset, {"role": "user", "content": bg_block})
@@ -1101,7 +1190,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                         "vec_sim": m.get("vec_sim"), "kw_score": m.get("kw_score"),
                         "importance": m.get("importance")} for m in debug_top6] if debug_top6 else []
     if recalled:
-        mem_lines = "\n".join([_memory_line_with_evidence(m) for m in recalled])
+        mem_lines = format_recalled_memories_for_prompt(recalled)
         mem_block = f"[相关记忆]\n你脑海中与当前话题相关的记忆：\n{mem_lines}"
         if detail_text:
             mem_block += f"\n\n[记忆来源原文]\n以下是相关记忆挂载的来源原文；旧记忆没有精确来源时才会按时间范围回退筛选原文：\n{detail_text}"
@@ -1127,33 +1216,35 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     async def _bg_generate():
         full_text = ""
         visible_text = ""
-        web_stream_filter = WebCommandStreamFilter()
         has_error = False
+        error_text = None
         try:
             await _q.put({"id": ai_msg_id, "type": "start"})
-            try:
+
+            async def content_stream():
                 async for chunk in stream_ai(history, model_key, usage_meta, max_tokens=body.max_tokens, cancel_event=cancel_event):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         continue
-                    full_text += chunk
-                    visible_chunk = web_stream_filter.feed(chunk)
-                    if visible_chunk:
-                        visible_text += visible_chunk
-                        await _emit_chat_visible_chunk(_q, model_key, visible_text, visible_chunk, tts_streamer)
-                visible_tail = web_stream_filter.flush()
-                if visible_tail:
-                    visible_text += visible_tail
-                    await _emit_chat_visible_chunk(_q, model_key, visible_text, visible_tail, tts_streamer)
-            except Exception as e:
-                has_error = True
-                error_text = f"\n[请求出错: {str(e)}]"
-                full_text += error_text
-                await _q.put({"type": "chunk", "content": error_text})
+                    yield chunk
+
+            stream_result, visible_text = await _consume_chat_stream(
+                content_stream(),
+                _q,
+                model_key=model_key,
+                tts_streamer=tts_streamer,
+            )
+            full_text = stream_result.committed_text
+            safety_notice = stream_result.notice
+            has_error = stream_result.stop_reason is not None
+            error_text = stream_result.diagnostic_error or stream_result.stop_reason
 
             stripped = full_text.strip()
             if not has_error and _is_ai_error_text(stripped):
                 has_error = True
+                error_text = stripped
+            if safety_notice:
+                full_text = f"{full_text}\n\n[{safety_notice}]".strip()
 
             music_matches = MUSIC_CMD_PATTERN.findall(full_text)
             music_cards = []
@@ -1176,6 +1267,16 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 source_type="private",
                 source_id=conv_id,
                 source_msg_id=ai_msg_id,
+            )
+            full_text = await process_hug_pillow_commands(
+                full_text,
+                source_type="private",
+                source_id=conv_id,
+                source_msg_id=ai_msg_id,
+                sender="aion",
+                save_system_message=lambda text: _hug_pillow_sys_msg(
+                    conv_id, text, after_msg_id=ai_msg_id
+                ),
             )
 
             toy_matches = TOY_CMD_PATTERN.findall(full_text)
@@ -1422,7 +1523,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 "prompt_count": len(history),
                 "usage": usage_meta if usage_meta else None,
                 "has_error": has_error,
-                "error_text": stripped if has_error else None,
+                "error_text": error_text if has_error else None,
             }
             await _q.put(debug_data)
             await manager.broadcast({"type": "debug", "data": debug_data})
@@ -1682,8 +1783,16 @@ async def send_message(conv_id: str, body: MsgCreate):
         if health_text:
             bg_block += health_text
         if surfaced:
-            unresolved_lines = [f"📌 {_memory_line_with_evidence(m)[2:]}（还没做/还没去）" for m in surfaced if m.get("unresolved")]
-            normal_lines = [_memory_line_with_evidence(m) for m in surfaced if not m.get("unresolved")]
+            unresolved_lines = [
+                f"📌 {format_recalled_memories_for_prompt([m])[2:]}（还没做/还没去）"
+                for m in surfaced
+                if m.get("unresolved")
+            ]
+            normal_lines = [
+                format_recalled_memories_for_prompt([m])
+                for m in surfaced
+                if not m.get("unresolved")
+            ]
             mem_text = "\n".join(unresolved_lines + normal_lines)
             bg_block += f"\n\n[背景记忆]\n以下是你记得的近期事件和需要关注的事项，在对话中如果有关联可以自然提起：\n{mem_text}"
         history.insert(cap_idx + inject_offset, {"role": "user", "content": bg_block})
@@ -1705,7 +1814,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                             "importance": m.get("importance")} for m in debug_top6] if debug_top6 else []
         # 5. 注入向量匹配到的相关记忆（在背景记忆之后，每次请求都可能不同）
         if recalled:
-            mem_lines = "\n".join([_memory_line_with_evidence(m) for m in recalled])
+            mem_lines = format_recalled_memories_for_prompt(recalled)
             mem_block = f"[相关记忆]\n你脑海中与当前话题相关的记忆：\n{mem_lines}"
             if detail_text:
                 mem_block += f"\n\n[记忆来源原文]\n以下是相关记忆挂载的来源原文；旧记忆没有精确来源时才会按时间范围回退筛选原文：\n{detail_text}"
@@ -1735,34 +1844,36 @@ async def send_message(conv_id: str, body: MsgCreate):
         """后台任务：AI 流式生成 → 后处理 → 存 DB → WS 广播。始终运行到结束。"""
         full_text = ""
         visible_text = ""
-        web_stream_filter = WebCommandStreamFilter()
         has_error = False
+        error_text = None
         try:
             await _q.put({"id": ai_msg_id, "type": "start"})
-            try:
+
+            async def content_stream():
                 async for chunk in stream_ai(history, model_key, usage_meta, max_tokens=body.max_tokens, cancel_event=cancel_event):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         continue
-                    full_text += chunk
-                    visible_chunk = web_stream_filter.feed(chunk)
-                    if visible_chunk:
-                        visible_text += visible_chunk
-                        await _emit_chat_visible_chunk(_q, model_key, visible_text, visible_chunk, tts_streamer)
-                visible_tail = web_stream_filter.flush()
-                if visible_tail:
-                    visible_text += visible_tail
-                    await _emit_chat_visible_chunk(_q, model_key, visible_text, visible_tail, tts_streamer)
-            except Exception as e:
-                has_error = True
-                error_text = f"\n[请求出错: {str(e)}]"
-                full_text += error_text
-                await _q.put({"type": "chunk", "content": error_text})
+                    yield chunk
+
+            stream_result, visible_text = await _consume_chat_stream(
+                content_stream(),
+                _q,
+                model_key=model_key,
+                tts_streamer=tts_streamer,
+            )
+            full_text = stream_result.committed_text
+            safety_notice = stream_result.notice
+            has_error = stream_result.stop_reason is not None
+            error_text = stream_result.diagnostic_error or stream_result.stop_reason
 
             # 检查 AI 返回的错误文本
             stripped = full_text.strip()
             if not has_error and _is_ai_error_text(stripped):
                 has_error = True
+                error_text = stripped
+            if safety_notice:
+                full_text = f"{full_text}\n\n[{safety_notice}]".strip()
 
             # 检测 [MUSIC:xxx] 指令 → 搜索歌曲并推送卡片数据
             music_matches = MUSIC_CMD_PATTERN.findall(full_text)
@@ -1786,6 +1897,16 @@ async def send_message(conv_id: str, body: MsgCreate):
                 source_type="private",
                 source_id=conv_id,
                 source_msg_id=ai_msg_id,
+            )
+            full_text = await process_hug_pillow_commands(
+                full_text,
+                source_type="private",
+                source_id=conv_id,
+                source_msg_id=ai_msg_id,
+                sender="aion",
+                save_system_message=lambda text: _hug_pillow_sys_msg(
+                    conv_id, text, after_msg_id=ai_msg_id
+                ),
             )
 
             # 检测 [TOY:x] 指令
@@ -2090,7 +2211,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                 "prompt_count": len(history),
                 "usage": usage_meta if usage_meta else None,
                 "has_error": has_error,
-                "error_text": stripped if has_error else None,
+                "error_text": error_text if has_error else None,
             }
 
             # 推送剧场指令结果到前端
@@ -2383,7 +2504,8 @@ async def perform_web_search_check(conv_id: str, model_key: str, searches: list[
         if web_tts and visible_tail:
             web_tts.feed(visible_tail)
     except Exception as e:
-        full_text = f"[联网搜索完成但回复生成失败] {e}"
+        resolution = resolve_stream_failure(full_text, e, "联网搜索完成但回复生成失败")
+        full_text = resolution.visible_text
 
     if not full_text.strip():
         return
@@ -2558,7 +2680,8 @@ async def perform_poi_check(conv_id: str, model_key: str, categories: list[str])
             if poi_tts:
                 poi_tts.feed(chunk)
     except Exception as e:
-        full_text = f"[周边搜索完成但回复生成失败] {e}"
+        resolution = resolve_stream_failure(full_text, e, "周边搜索完成但回复生成失败")
+        full_text = resolution.visible_text
 
     if not full_text.strip():
         return
@@ -2700,7 +2823,8 @@ async def perform_activity_check(conv_id: str, model_key: str, n: int = 6):
             if ac_tts:
                 ac_tts.feed(chunk)
     except Exception as e:
-        full_text = f"[查看动态失败] {e}"
+        resolution = resolve_stream_failure(full_text, e, "查看动态失败")
+        full_text = resolution.visible_text
 
     if not full_text.strip():
         return
@@ -2840,8 +2964,16 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
         if health_text:
             bg_block += health_text
         if surfaced:
-            unresolved_lines = [f"📌 {_memory_line_with_evidence(m)[2:]}（还没做/还没去）" for m in surfaced if m.get("unresolved")]
-            normal_lines = [_memory_line_with_evidence(m) for m in surfaced if not m.get("unresolved")]
+            unresolved_lines = [
+                f"📌 {format_recalled_memories_for_prompt([m])[2:]}（还没做/还没去）"
+                for m in surfaced
+                if m.get("unresolved")
+            ]
+            normal_lines = [
+                format_recalled_memories_for_prompt([m])
+                for m in surfaced
+                if not m.get("unresolved")
+            ]
             mem_text = "\n".join(unresolved_lines + normal_lines)
             bg_block += f"\n\n[背景记忆]\n以下是你记得的近期事件和需要关注的事项，在对话中如果有关联可以自然提起：\n{mem_text}"
         history.insert(cap_idx + inject_offset, {"role": "user", "content": bg_block})
@@ -2875,7 +3007,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                             "importance": m.get("importance")} for m in debug_top6] if debug_top6 else []
         # 5. 注入相关记忆（在背景记忆之后）
         if recalled:
-            mem_lines = "\n".join([_memory_line_with_evidence(m) for m in recalled])
+            mem_lines = format_recalled_memories_for_prompt(recalled)
             mem_block = f"[相关记忆]\n你脑海中与当前话题相关的记忆：\n{mem_lines}"
             if detail_text:
                 mem_block += f"\n\n[记忆来源原文]\n以下是相关记忆挂载的来源原文；旧记忆没有精确来源时才会按时间范围回退筛选原文：\n{detail_text}"
@@ -2903,34 +3035,36 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
         """后台任务：AI 流式生成 → 后处理 → 存 DB → WS 广播。始终运行到结束。"""
         full_text = ""
         visible_text = ""
-        web_stream_filter = WebCommandStreamFilter()
         has_error = False
+        error_text = None
         try:
             await _q.put({"id": ai_msg_id, "type": "start"})
-            try:
+
+            async def content_stream():
                 async for chunk in stream_ai(history, model_key, usage_meta, temperature, max_tokens=max_tokens, cancel_event=cancel_event):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         continue
-                    full_text += chunk
-                    visible_chunk = web_stream_filter.feed(chunk)
-                    if visible_chunk:
-                        visible_text += visible_chunk
-                        await _emit_chat_visible_chunk(_q, model_key, visible_text, visible_chunk, regen_tts)
-                visible_tail = web_stream_filter.flush()
-                if visible_tail:
-                    visible_text += visible_tail
-                    await _emit_chat_visible_chunk(_q, model_key, visible_text, visible_tail, regen_tts)
-            except Exception as e:
-                has_error = True
-                error_text = f"\n[请求出错: {str(e)}]"
-                full_text += error_text
-                await _q.put({"type": "chunk", "content": error_text})
+                    yield chunk
+
+            stream_result, visible_text = await _consume_chat_stream(
+                content_stream(),
+                _q,
+                model_key=model_key,
+                tts_streamer=regen_tts,
+            )
+            full_text = stream_result.committed_text
+            safety_notice = stream_result.notice
+            has_error = stream_result.stop_reason is not None
+            error_text = stream_result.diagnostic_error or stream_result.stop_reason
 
             # 检查 AI 返回的错误文本
             stripped = full_text.strip()
             if not has_error and _is_ai_error_text(stripped):
                 has_error = True
+                error_text = stripped
+            if safety_notice:
+                full_text = f"{full_text}\n\n[{safety_notice}]".strip()
 
             # 检测 [MUSIC:xxx] 指令 → 搜索歌曲并推送卡片数据
             music_matches = MUSIC_CMD_PATTERN.findall(full_text)
@@ -2954,6 +3088,16 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 source_type="private",
                 source_id=conv_id,
                 source_msg_id=ai_msg_id,
+            )
+            full_text = await process_hug_pillow_commands(
+                full_text,
+                source_type="private",
+                source_id=conv_id,
+                source_msg_id=ai_msg_id,
+                sender="aion",
+                save_system_message=lambda text: _hug_pillow_sys_msg(
+                    conv_id, text, after_msg_id=ai_msg_id
+                ),
             )
 
             # 检测 [TOY:x] 指令
@@ -3210,7 +3354,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 "prompt_count": len(history),
                 "usage": usage_meta if usage_meta else None,
                 "has_error": has_error,
-                "error_text": stripped if has_error else None,
+                "error_text": error_text if has_error else None,
             }
             await _q.put(debug_data)
             await manager.broadcast({"type": "debug", "data": debug_data})

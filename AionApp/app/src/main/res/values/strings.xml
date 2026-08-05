@@ -1,4 +1,5 @@
 <resources>
     <string name="app_name">Aion Oloth</string>
+    <string name="device_lock_home_button">乖乖回小家呆着</string>
     <string name="aion_accessibility_description">用于在手机解锁使用时截取当前屏幕，发送给 Aion 进行查岗监督。</string>
 </resources>

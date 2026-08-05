@@ -66,6 +66,22 @@ public class AppSupervisionOverlay {
         show(group, nextLock, now);
     }
 
+    public void evaluateDevice(TimedDirective directive, SupervisionTime now) {
+        if (context == null) return;
+        if (directive == null || !Settings.canDrawOverlays(context)) {
+            hide();
+            return;
+        }
+        boolean attached = visible && root != null && root.isAttachedToWindow();
+        String visibleCommandId = visibleLock == null
+                ? "" : visibleLock.getCommandId();
+        if (shouldReuseVisibleLock(attached, visibleCommandId, directive)) {
+            visibleLock = directive;
+            return;
+        }
+        showLock("手机专注模式", directive, true);
+    }
+
     public void hide() {
         if (handler != null) handler.removeCallbacksAndMessages(null);
         visibleLock = null;
@@ -106,6 +122,10 @@ public class AppSupervisionOverlay {
     }
 
     private void show(AppGroup group, TimedDirective lock, SupervisionTime now) {
+        showLock(group.getDisplayName(), lock, false);
+    }
+
+    private void showLock(String displayName, TimedDirective lock, boolean deviceLock) {
         hide();
         visibleLock = lock;
         FrameLayout shell = new FrameLayout(context);
@@ -131,7 +151,8 @@ public class AppSupervisionOverlay {
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
 
-        TextView status = text("应用已锁定", 13, Color.rgb(184, 203, 255));
+        TextView status = text(deviceLock ? "手机已进入专注模式" : "应用已锁定",
+                13, Color.rgb(184, 203, 255));
         status.setGravity(Gravity.CENTER);
         status.setPadding(dp(16), dp(7), dp(16), dp(7));
         status.setBackground(rounded(Color.argb(120, 52, 67, 129), 999,
@@ -142,7 +163,7 @@ public class AppSupervisionOverlay {
         icon.setGravity(Gravity.CENTER);
         page.addView(icon, centeredWrap(18));
 
-        TextView title = text(group.getDisplayName(), 31, Color.WHITE);
+        TextView title = text(displayName, 31, Color.WHITE);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setGravity(Gravity.CENTER);
         page.addView(title, centeredWrap(4));
@@ -176,18 +197,27 @@ public class AppSupervisionOverlay {
         }
         page.addView(detailCard, centeredMatch(22));
 
-        TextView home = text("返回桌面", 17, Color.WHITE);
+        String appLabel = context.getString(com.aion.chat.R.string.app_name);
+        TextView home = text(deviceLock ? context.getString(
+                com.aion.chat.R.string.device_lock_home_button) : "返回桌面",
+                17, Color.WHITE);
         home.setTypeface(Typeface.DEFAULT_BOLD);
         home.setGravity(Gravity.CENTER);
         home.setPadding(dp(18), dp(15), dp(18), dp(15));
         home.setBackground(gradient(GradientDrawable.Orientation.LEFT_RIGHT,
                 new int[]{Color.rgb(91, 85, 238), Color.rgb(121, 82, 224),
                         Color.rgb(65, 166, 235)}, 18));
-        home.setOnClickListener(view -> openHome());
+        home.setOnClickListener(view -> {
+            if (deviceLock) openAionsHome();
+            else openHome();
+        });
         page.addView(home, centeredMatch(20));
 
-        TextView footer = text("锁定结束后可重新打开此应用", 12,
-                Color.rgb(135, 151, 197));
+        TextView footer = text(
+                deviceLock
+                        ? "你可以在 " + appLabel + " 中查看状态、临时解锁或结束专注"
+                        : "锁定结束后可重新打开此应用",
+                12, Color.rgb(135, 151, 197));
         footer.setGravity(Gravity.CENTER);
         page.addView(footer, centeredWrap(12));
 
@@ -239,6 +269,15 @@ public class AppSupervisionOverlay {
         Intent intent = new Intent(Intent.ACTION_MAIN);
         intent.addCategory(Intent.CATEGORY_HOME);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        context.startActivity(intent);
+        hide();
+    }
+
+    private void openAionsHome() {
+        Intent intent = new Intent(context, com.aion.chat.WebViewActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         context.startActivity(intent);
         hide();
     }

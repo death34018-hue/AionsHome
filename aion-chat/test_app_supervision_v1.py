@@ -244,6 +244,15 @@ class AppSupervisionV1FrontendTest(unittest.TestCase):
         self.assertNotIn("nativeCall('clearRound'", page)
         self.assertNotIn("清空本轮", page)
 
+    def test_page_shows_device_status_and_only_emergency_device_unlock(self):
+        page = self.page()
+        self.assertIn('id="deviceLockStatus"', page)
+        self.assertIn("整机专注", page)
+        self.assertIn("__device__", page)
+        self.assertIn("deviceLock", page)
+        self.assertNotIn('id="setDeviceLock"', page)
+        self.assertNotIn("debugSetDeviceLock", page)
+
     def test_emergency_hold_uses_real_pointer_completion_events(self):
         page = self.page()
         self.assertIn("AppSupervisionUi.createEmergencyHoldController", page)

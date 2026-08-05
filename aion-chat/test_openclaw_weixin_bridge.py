@@ -338,6 +338,147 @@ class OpenClawRuntimeTests(unittest.IsolatedAsyncioTestCase):
         binding = settings["wechat_bridge_bindings"]["aion_private:conv-1"]
         self.assertEqual(binding["context_token"], "new-token")
 
+    async def test_mode_enable_is_consumed_without_calling_ai(self):
+        from wechat_bridge import create_wechat_binding
+        from wechat_mode import find_wechat_mode_for_sender
+        from wechat_openclaw_runtime import OpenClawWeixinBridgeRuntime
+
+        settings = {"wechat_bridge_enabled": True, "wechat_bridge_transport": "openclaw"}
+        create_wechat_binding(
+            source_type="chatroom",
+            source_id="room-1",
+            account_id="bot-1",
+            wechat_user_id="friend@im.wechat",
+            context_token="ctx",
+            settings=settings,
+        )
+        inbound = AsyncMock()
+        sent = []
+        runtime = OpenClawWeixinBridgeRuntime(
+            settings=settings,
+            save_settings=lambda value: None,
+            inbound_handler=inbound,
+            send_text=lambda **kwargs: sent.append(kwargs),
+            private_route_resolver=AsyncMock(return_value={
+                "source_type": "aion_private",
+                "source_id": "conv-1",
+            }),
+            now=lambda: 100,
+        )
+
+        handled = await runtime.handle_text_message(
+            account_id="bot-1",
+            wechat_user_id="friend@im.wechat",
+            context_token="ctx-new",
+            text="［微信模式开启］",
+        )
+
+        self.assertTrue(handled)
+        inbound.assert_not_awaited()
+        self.assertEqual([item["content"] for item in sent], ["微信模式已开启。"])
+        mode = find_wechat_mode_for_sender(settings, "bot-1", "friend@im.wechat")
+        self.assertEqual(mode["inbound_route"], {
+            "source_type": "chatroom",
+            "source_id": "room-1",
+        })
+        self.assertEqual(mode["outbound_routes"], [
+            {"source_type": "chatroom", "source_id": "room-1"},
+            {"source_type": "aion_private", "source_id": "conv-1"},
+        ])
+
+    async def test_normal_message_in_enabled_mode_keeps_bound_route_and_is_plain(self):
+        from wechat_bridge import create_wechat_binding
+        from wechat_mode import set_wechat_mode
+        from wechat_openclaw_runtime import OpenClawWeixinBridgeRuntime
+
+        settings = {"wechat_bridge_enabled": True, "wechat_bridge_transport": "openclaw"}
+        create_wechat_binding(
+            source_type="chatroom",
+            source_id="room-1",
+            account_id="bot-1",
+            wechat_user_id="friend@im.wechat",
+            context_token="ctx",
+            settings=settings,
+        )
+        set_wechat_mode(
+            settings,
+            account_id="bot-1",
+            wechat_user_id="friend@im.wechat",
+            inbound_route={"source_type": "chatroom", "source_id": "room-1"},
+            outbound_routes=[{"source_type": "chatroom", "source_id": "room-1"}],
+            enabled=True,
+            now=100,
+        )
+        inbound = AsyncMock()
+        runtime = OpenClawWeixinBridgeRuntime(
+            settings=settings,
+            save_settings=lambda value: None,
+            inbound_handler=inbound,
+            now=lambda: 110,
+        )
+
+        await runtime.handle_text_message(
+            account_id="bot-1",
+            wechat_user_id="friend@im.wechat",
+            context_token="ctx-new",
+            text="下一条正常消息",
+        )
+
+        inbound.assert_awaited_once_with(
+            content="下一条正常消息",
+            source_type="chatroom",
+            source_id="room-1",
+            auto_reply=True,
+            mark_channel=False,
+        )
+
+    async def test_mode_disable_is_idempotent_and_never_calls_ai(self):
+        from wechat_bridge import create_wechat_binding
+        from wechat_mode import find_wechat_mode_for_sender, set_wechat_mode
+        from wechat_openclaw_runtime import OpenClawWeixinBridgeRuntime
+
+        settings = {"wechat_bridge_enabled": True, "wechat_bridge_transport": "openclaw"}
+        create_wechat_binding(
+            source_type="chatroom",
+            source_id="room-1",
+            account_id="bot-1",
+            wechat_user_id="friend@im.wechat",
+            context_token="ctx",
+            settings=settings,
+        )
+        set_wechat_mode(
+            settings,
+            account_id="bot-1",
+            wechat_user_id="friend@im.wechat",
+            inbound_route={"source_type": "chatroom", "source_id": "room-1"},
+            outbound_routes=[{"source_type": "chatroom", "source_id": "room-1"}],
+            enabled=True,
+            now=100,
+        )
+        inbound = AsyncMock()
+        sent = []
+        runtime = OpenClawWeixinBridgeRuntime(
+            settings=settings,
+            save_settings=lambda value: None,
+            inbound_handler=inbound,
+            send_text=lambda **kwargs: sent.append(kwargs["content"]),
+            now=lambda: 110,
+        )
+
+        for _ in range(2):
+            await runtime.handle_text_message(
+                account_id="bot-1",
+                wechat_user_id="friend@im.wechat",
+                context_token="ctx-new",
+                text="[微信模式关闭]",
+            )
+
+        inbound.assert_not_awaited()
+        self.assertEqual(sent, ["微信模式已关闭。", "微信模式已关闭。"])
+        self.assertFalse(
+            find_wechat_mode_for_sender(settings, "bot-1", "friend@im.wechat")["enabled"]
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ from typing import Optional
 import aiosqlite
 from database import get_db
 from schedule import get_schedule_origin_name
+from schedule_history import fetch_schedule_history, finish_schedule
 from ws import manager
 
 router = APIRouter()
@@ -25,13 +26,16 @@ class ScheduleCreate(BaseModel):
 async def list_schedules(status: Optional[str] = Query(None)):
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
-        if status:
+        if status == "history":
+            rows = await fetch_schedule_history(db)
+        elif status:
             cur = await db.execute(
                 "SELECT * FROM schedules WHERE status=? ORDER BY trigger_at", (status,)
             )
+            rows = [dict(r) for r in await cur.fetchall()]
         else:
             cur = await db.execute("SELECT * FROM schedules ORDER BY trigger_at")
-        rows = [dict(r) for r in await cur.fetchall()]
+            rows = [dict(r) for r in await cur.fetchall()]
         for row in rows:
             row["origin_name"] = get_schedule_origin_name(row.get("origin"))
         return rows
@@ -58,7 +62,8 @@ async def create_schedule(body: ScheduleCreate):
 @router.delete("/api/schedules/{schedule_id}")
 async def delete_schedule(schedule_id: str):
     async with get_db() as db:
-        await db.execute("UPDATE schedules SET status='cancelled' WHERE id=?", (schedule_id,))
+        changed = await finish_schedule(db, schedule_id, "cancelled")
         await db.commit()
-    await manager.broadcast({"type": "schedule_changed"})
-    return {"ok": True}
+    if changed:
+        await manager.broadcast({"type": "schedule_changed"})
+    return {"ok": changed}

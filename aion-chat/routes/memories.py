@@ -204,19 +204,36 @@ async def list_memories(
     limit: int = Query(50, ge=1, le=100),
     before: Optional[float] = Query(None),
     q: str = Query("", max_length=200),
+    kind: str = "all",
 ):
     """Cursor-paginated memories; the former unbounded response was slow outdoors."""
     search = (q or "").strip().lower()
+    kind = str(kind or "all").strip().lower()
+    if kind not in {"all", "daily", "long_term"}:
+        raise HTTPException(status_code=400, detail="无效的记忆分类")
     where = ["COALESCE(archive_state,'active')='active'"]
     params: list = []
+    filtered_where = ["COALESCE(archive_state,'active')='active'"]
+    filtered_params: list = []
     sort_expr = "COALESCE(source_end_ts, source_start_ts, created_at)"
+    if kind == "daily":
+        kind_sql = "LOWER(type) IN ('daily','digest','seeky_digest','seeky_compressed')"
+        where.append(kind_sql)
+        filtered_where.append(kind_sql)
+    elif kind == "long_term":
+        kind_sql = "LOWER(type) NOT IN ('daily','digest','seeky_digest','seeky_compressed')"
+        where.append(kind_sql)
+        filtered_where.append(kind_sql)
     if before is not None:
         where.append(f"{sort_expr} < ?")
         params.append(before)
     if search:
-        where.append("(LOWER(content) LIKE ? OR LOWER(COALESCE(keywords,'')) LIKE ? OR LOWER(type) LIKE ?)")
+        search_sql = "(LOWER(content) LIKE ? OR LOWER(COALESCE(keywords,'')) LIKE ? OR LOWER(type) LIKE ?)"
+        where.append(search_sql)
+        filtered_where.append(search_sql)
         needle = f"%{search}%"
         params.extend([needle, needle, needle])
+        filtered_params.extend([needle, needle, needle])
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
@@ -236,13 +253,10 @@ async def list_memories(
             "long_term": int(count_row["long_term"] or 0),
         }
         filtered_total = total
-        if search:
-            search_needle = f"%{search}%"
+        if search or kind != "all":
             cur = await db.execute(
-                "SELECT COUNT(*) AS total FROM memories "
-                "WHERE COALESCE(archive_state,'active')='active' "
-                "AND (LOWER(content) LIKE ? OR LOWER(COALESCE(keywords,'')) LIKE ? OR LOWER(type) LIKE ?)",
-                (search_needle, search_needle, search_needle),
+                f"SELECT COUNT(*) AS total FROM memories WHERE {' AND '.join(filtered_where)}",
+                tuple(filtered_params),
             )
             filtered_total = int((await cur.fetchone())["total"] or 0)
         cur = await db.execute(

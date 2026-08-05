@@ -9,6 +9,22 @@ from config import load_worldbook
 log = logging.getLogger("ws")
 
 
+def _offer_wechat_mode_event(event: dict) -> bool:
+    """Best-effort handoff to the optional WeChat mirror side channel."""
+    try:
+        from wechat_mode_dispatcher import (
+            extract_wechat_event_route,
+            wechat_mode_dispatcher,
+        )
+
+        if extract_wechat_event_route(event) is None:
+            return False
+        return wechat_mode_dispatcher.offer(event)
+    except Exception as exc:
+        log.warning("WeChat mode event offer failed: %s", type(exc).__name__)
+        return False
+
+
 def _clean_private_ai_name(ai_name: str | None) -> str:
     return (ai_name or "").strip() or "AI"
 
@@ -90,15 +106,18 @@ class ConnectionManager:
     def has_active_pet(self) -> bool:
         return any(self.pet_clients.values())
 
-    async def send_to_client(self, client_id: str, data: dict):
+    async def send_to_client(self, client_id: str, data: dict) -> bool:
         """定向推送消息到指定 client_id 的客户端"""
         msg = json.dumps(data, ensure_ascii=False)
+        sent = False
         for ws, cid in list(self.client_ids.items()):
             if cid == client_id:
                 try:
                     await ws.send_text(msg)
+                    sent = True
                 except Exception as e:
                     log.warning("WS send_to_client failed: %s", e)
+        return sent
 
     async def send_to_last_sender(self, data: dict):
         """推送消息到最后发消息的客户端"""
@@ -186,6 +205,12 @@ class ConnectionManager:
                 # Live delivery remains available while startup migrations or a
                 # transient SQLite lock are being resolved.
                 log.warning("sync event persistence failed: %s", type(e).__name__)
+        try:
+            _offer_wechat_mode_event(payload)
+        except Exception as exc:
+            # The WeChat mirror is strictly a side channel: even a broken hook
+            # must never interrupt the original WebSocket delivery path.
+            log.warning("WeChat mode event hook failed: %s", type(exc).__name__)
         msg = json.dumps(payload, ensure_ascii=False)
         msg_type = payload.get("type", "unknown")
         targets = [ws for ws in self.active.copy() if ws is not exclude]

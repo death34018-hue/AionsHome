@@ -154,7 +154,13 @@ def _memory_time_payload(mem: dict) -> dict:
 def _memory_line_with_evidence(mem: dict, limit: int = 220) -> str:
     content = str(mem.get("content") or "").strip()[:limit]
     time_label = mem.get("memory_time_label") or _memory_time_payload(mem).get("memory_time_label")
+    if time_label:
+        content = _LEADING_DATE_RE.sub("", content, count=1).strip()
     return f"- 记忆（{time_label}）：{content}" if time_label else f"- 记忆：{content}"
+
+
+def format_recalled_memories_for_prompt(memories: list[dict], limit: int = 220) -> str:
+    return "\n".join(_memory_line_with_evidence(mem, limit) for mem in memories)
 
 
 async def _fetch_source_rows_by_ids(source_ids: list[str], user_name: str, ai_name: str) -> list[dict]:
@@ -203,9 +209,7 @@ async def _fetch_source_rows_by_ids(source_ids: list[str], user_name: str, ai_na
 
 
 def _format_raw_evidence_block(mem: dict, rows: list[dict], limit: int = 700) -> str:
-    content = str(mem.get("content") or "").strip()[:220]
-    time_label = mem.get("memory_time_label") or _memory_time_payload(mem).get("memory_time_label")
-    head = f"- 记忆（{time_label}）：{content}" if time_label else f"- 记忆：{content}"
+    head = _memory_line_with_evidence(mem)
     lines = [head, "  来源原文："]
     for row in rows:
         ts = datetime.fromtimestamp(float(row["created_at"])).strftime("%m-%d %H:%M")
@@ -1257,6 +1261,8 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
 
     try:
         anchor_ts = load_digest_anchor()
+        covered_ids = set()
+        digest_window_last_ts = anchor_ts
 
         async with get_db() as db:
             db.row_factory = aiosqlite.Row
@@ -1299,6 +1305,12 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
 
             # 按时间排序合并
             new_msgs.sort(key=lambda x: x["created_at"])
+            if new_msgs:
+                digest_window_last_ts = new_msgs[-1]["created_at"]
+                from homecoming.summary_coverage import filter_uncovered
+                new_msgs, covered_ids = await filter_uncovered(
+                    db, "main", new_msgs
+                )
     except Exception as e:
         print(f"[digest] 读取待总结消息失败，锚点未变: {type(e).__name__}: {e}")
         return {
@@ -1329,6 +1341,11 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
                         m["content"] = f"[视频通话] {transcript}" + (f"\n{orig}" if orig else "")
 
     if not new_msgs:
+        if covered_ids and digest_window_last_ts > anchor_ts:
+            try:
+                save_digest_anchor(digest_window_last_ts)
+            except Exception:
+                pass
         return {"ok": True, "message": "当前没有新增内容需要总结", "new_memories_count": 0, "processed_messages": 0}
 
     if min_messages > 0 and len(new_msgs) < min_messages:
@@ -1475,6 +1492,16 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
             print(f"[digest] 组 {group_start} ~ {group_end} 无可写入原子记忆")
             digest_incomplete = True
             break
+
+    if (
+        not digest_incomplete
+        and total_new > 0
+        and digest_window_last_ts > new_msgs[-1]["created_at"]
+    ):
+        try:
+            save_digest_anchor(digest_window_last_ts)
+        except Exception:
+            pass
 
     # ── 全部总结完成后，生成日记；可选发布朋友圈 ──
     context_msgs = []

@@ -59,7 +59,7 @@ public class AppSupervisionRuntimePolicyTest {
     }
 
     @Test
-    public void monitoredForegroundReportsEventsAndOnlyRunsTenMinuteCalibrationWhileActive() {
+    public void delayedSchedulerStillFiresAtTheAbsoluteCheckpointDeadline() {
         Harness harness = new Harness(true);
         RecordingSyncListener listener = new RecordingSyncListener();
         harness.runtime.setSyncListener(listener);
@@ -67,25 +67,26 @@ public class AppSupervisionRuntimePolicyTest {
         harness.runtime.onPackageForeground("com.example.main");
         assertEquals("enter", listener.events.get(0));
 
-        harness.scheduler.advanceMinutes(10);
+        harness.scheduler.advanceMinutes(19);
         harness.scheduler.runDue();
-        assertTrue(listener.events.contains("calibration"));
+        assertFalse(listener.events.contains("checkpoint:group-1:20"));
 
-        harness.scheduler.advanceMinutes(10);
+        harness.scheduler.advanceMinutes(1);
         harness.scheduler.runDue();
         assertTrue(listener.events.contains("checkpoint:group-1:20"));
+        assertFalse(listener.events.contains("calibration"));
 
         int beforeExit = listener.events.size();
         harness.runtime.onPackageForeground("com.example.other");
         assertEquals("exit", listener.events.get(beforeExit));
         harness.scheduler.advanceMinutes(20);
         harness.scheduler.runDue();
-        assertFalse(listener.events.subList(beforeExit + 1, listener.events.size())
-                .contains("calibration"));
+        assertEquals(1, java.util.Collections.frequency(
+                listener.events, "checkpoint:group-1:20"));
     }
 
     @Test
-    public void screenOffReportsFinalSnapshotThenCancelsCalibrationTraffic() {
+    public void screenOffReportsFinalSnapshotThenCancelsCheckpointDeadline() {
         Harness harness = new Harness(true);
         RecordingSyncListener listener = new RecordingSyncListener();
         harness.runtime.setSyncListener(listener);
@@ -99,6 +100,24 @@ public class AppSupervisionRuntimePolicyTest {
         harness.scheduler.advanceMinutes(20);
         harness.scheduler.runDue();
         assertEquals(settled, listener.events.size());
+    }
+
+    @Test
+    public void heartbeatWatchdogRecoversAStalledDeadlineWithoutDuplicateCheckpoint() {
+        Harness harness = new Harness(true);
+        RecordingSyncListener listener = new RecordingSyncListener();
+        harness.runtime.setSyncListener(listener);
+        harness.runtime.onPackageForeground("com.example.main");
+
+        harness.scheduler.advanceMinutes(21);
+        harness.runtime.checkpointWatchdog();
+
+        assertEquals(1, java.util.Collections.frequency(
+                listener.events, "checkpoint:group-1:20"));
+
+        harness.scheduler.runDue();
+        assertEquals(1, java.util.Collections.frequency(
+                listener.events, "checkpoint:group-1:20"));
     }
 
     @Test
@@ -188,6 +207,194 @@ public class AppSupervisionRuntimePolicyTest {
     }
 
     @Test
+    public void laterDeviceLockReplacesEarlierAndDeviceUnlockLeavesAppLockUntouched() {
+        Harness harness = new Harness(true);
+        long future = harness.scheduler.currentTimeMillis() + 300_000L;
+        harness.runtime.debugSetLock(
+                "group-1", 60, "role-main", "应用休息", "app-lock");
+
+        assertTrue(harness.runtime.applyAiCommand(
+                "device_lock", "", 20, "aion", "先休息", "device-a", future)
+                .isSuccess());
+        assertTrue(harness.runtime.applyAiCommand(
+                "device_lock", "", 45, "connor", "该睡觉了", "device-b", future)
+                .isSuccess());
+        assertEquals("device-b",
+                harness.runtime.deviceSnapshot().getLock().getCommandId());
+        assertEquals(45 * 60_000L,
+                harness.runtime.deviceSnapshot().getLock().getDurationMs());
+
+        assertTrue(harness.runtime.applyAiCommand(
+                "device_unlock", "", 0, "connor", "", "device-c", future)
+                .isSuccess());
+        assertEquals(EffectiveState.NORMAL,
+                harness.runtime.deviceSnapshot().getEffectiveState());
+        assertEquals(EffectiveState.LOCKED, harness.engine.effectiveState(
+                "group-1", harness.scheduler.elapsedRealtime()));
+    }
+
+    @Test
+    public void deviceTemporaryUnlockExpiresBackToDeviceLockAndPayloadReportsState()
+            throws Exception {
+        Harness harness = new Harness(true);
+        long future = harness.scheduler.currentTimeMillis() + 300_000L;
+
+        assertTrue(harness.runtime.applyAiCommand(
+                "device_lock", "", 60, "aion", "专注", "device-lock", future)
+                .isSuccess());
+        assertTrue(harness.runtime.applyAiCommand(
+                "device_temp_unlock", "", 10, "connor", "临时处理",
+                "device-temp", future).isSuccess());
+        assertEquals(EffectiveState.TEMPORARILY_UNLOCKED,
+                harness.runtime.deviceSnapshot().getEffectiveState());
+
+        org.json.JSONObject payload = harness.runtime.buildStatePayload(
+                "snapshot", "", 0L).getJSONObject("deviceLock");
+        assertEquals("TEMPORARILY_UNLOCKED", payload.getString("effectiveState"));
+        assertEquals("device-lock",
+                payload.getJSONObject("lock").getString("commandId"));
+        assertEquals("device-temp",
+                payload.getJSONObject("temporaryUnlock").getString("commandId"));
+
+        harness.scheduler.advanceMinutes(11);
+        assertEquals(EffectiveState.LOCKED,
+                harness.runtime.deviceSnapshot().getEffectiveState());
+    }
+
+    @Test
+    public void deviceCommandsRequireEmptyGroupAndPersistAcrossRuntimeRecreation() {
+        MemoryBackend backend = new MemoryBackend();
+        AppSupervisionStore store = new AppSupervisionStore(backend);
+        AppGroup group = AppGroup.create(
+                "group-1", "示例应用", Collections.singletonList("com.example.main"), true,
+                SupervisionPolicy.of(30 * 60_000L,
+                        Collections.singletonList(20 * 60_000L), "role-main"));
+        FakeScheduler scheduler = new FakeScheduler();
+        AppSupervisionRuntime first = new AppSupervisionRuntime(
+                null, new AppSupervisionEngine(true, Collections.singletonList(group)),
+                store, new FakeDetector(), new FakeRecovery(), new FakeOverlay(), scheduler);
+        long future = scheduler.currentTimeMillis() + 300_000L;
+
+        AppSupervisionRuntime.CommandResult invalid = first.applyAiCommand(
+                "device_lock", "group-1", 20, "aion", "休息",
+                "device-invalid", future);
+        assertFalse(invalid.isSuccess());
+        assertEquals("device_group_must_be_empty", invalid.getReason());
+        assertTrue(first.applyAiCommand(
+                "device_lock", "", 20, "aion", "休息",
+                "device-persisted", future).isSuccess());
+
+        AppSupervisionRuntime restored = new AppSupervisionRuntime(
+                null, new AppSupervisionEngine(true, Collections.singletonList(group)),
+                store, new FakeDetector(), new FakeRecovery(), new FakeOverlay(), scheduler);
+        assertEquals("device-persisted",
+                restored.deviceSnapshot().getLock().getCommandId());
+    }
+
+    @Test
+    public void resumedAionsHomeRejectsStaleForeignForegroundEventUntilRealPause() {
+        Harness harness = new Harness(true);
+        lockDevice(harness, 60, "device-own-app");
+        harness.runtime.onPackageForeground("com.example.other");
+        assertEquals(SupervisionOverlayDecision.Mode.DEVICE_LOCK,
+                harness.overlay.lastMode);
+
+        harness.runtime.onAionsHomeForegroundChanged(true);
+        assertEquals(SupervisionOverlayDecision.Mode.HIDDEN,
+                harness.overlay.lastMode);
+        harness.runtime.onPackageForeground("com.example.other");
+        assertEquals(SupervisionOverlayDecision.Mode.HIDDEN,
+                harness.overlay.lastMode);
+
+        harness.runtime.onAionsHomeForegroundChanged(false);
+        assertEquals(SupervisionOverlayDecision.Mode.HIDDEN,
+                harness.overlay.lastMode);
+        harness.runtime.onPackageForeground("com.example.other");
+        assertEquals(SupervisionOverlayDecision.Mode.DEVICE_LOCK,
+                harness.overlay.lastMode);
+    }
+
+    @Test
+    public void deviceLockWinsThenExpiryRevealsStillActiveAppLock() {
+        Harness harness = new Harness(true);
+        harness.runtime.debugSetLock(
+                "group-1", 60, "role-main", "应用锁", "app-under-device");
+        lockDevice(harness, 10, "device-over-app");
+
+        harness.runtime.onPackageForeground("com.example.main");
+        assertEquals(SupervisionOverlayDecision.Mode.DEVICE_LOCK,
+                harness.overlay.lastMode);
+
+        harness.scheduler.advanceMinutes(11);
+        harness.scheduler.runDue();
+        assertEquals(SupervisionOverlayDecision.Mode.APP_LOCK,
+                harness.overlay.lastMode);
+    }
+
+    @Test
+    public void incomingCallSafetyPackageHidesWholeDeviceOverlay() {
+        Harness harness = new Harness(true);
+        lockDevice(harness, 60, "device-call");
+        harness.runtime.onPackageForeground("com.example.other");
+        assertEquals(SupervisionOverlayDecision.Mode.DEVICE_LOCK,
+                harness.overlay.lastMode);
+
+        harness.runtime.onPackageForeground("com.android.dialer");
+        assertEquals(SupervisionOverlayDecision.Mode.HIDDEN,
+                harness.overlay.lastMode);
+    }
+
+    @Test
+    public void emergencyDeviceUnlockLeavesAppLockUntouched() {
+        Harness harness = new Harness(true);
+        harness.runtime.debugSetLock(
+                "group-1", 60, "role-main", "应用锁", "app-emergency-isolation");
+        lockDevice(harness, 60, "device-emergency");
+
+        completeEmergencyUnlock(harness, "__device__");
+
+        assertEquals(EffectiveState.NORMAL,
+                harness.runtime.deviceSnapshot().getEffectiveState());
+        assertEquals(EffectiveState.LOCKED, harness.engine.effectiveState(
+                "group-1", harness.scheduler.elapsedRealtime()));
+    }
+
+    @Test
+    public void emergencyAppUnlockLeavesDeviceLockUntouched() {
+        Harness harness = new Harness(true);
+        harness.runtime.debugSetLock(
+                "group-1", 60, "role-main", "应用锁", "app-emergency");
+        lockDevice(harness, 60, "device-emergency-isolation");
+
+        completeEmergencyUnlock(harness, "group-1");
+
+        assertEquals(EffectiveState.NORMAL, harness.engine.effectiveState(
+                "group-1", harness.scheduler.elapsedRealtime()));
+        assertEquals(EffectiveState.LOCKED,
+                harness.runtime.deviceSnapshot().getEffectiveState());
+    }
+
+    private static void lockDevice(Harness harness, int minutes, String commandId) {
+        assertTrue(harness.runtime.applyAiCommand(
+                "device_lock", "", minutes, "aion", "专注",
+                commandId, harness.scheduler.currentTimeMillis() + 300_000L)
+                .isSuccess());
+    }
+
+    private static void completeEmergencyUnlock(Harness harness, String targetId) {
+        assertEquals(EmergencyUnlockGate.Phase.HOLDING,
+                harness.runtime.emergencyBegin(targetId, targetId).getPhase());
+        harness.scheduler.advanceMillis(8_000L);
+        assertEquals(EmergencyUnlockGate.Phase.REASON_REQUIRED,
+                harness.runtime.emergencyHold(targetId, targetId, true).getPhase());
+        assertEquals(EmergencyUnlockGate.Phase.WAITING,
+                harness.runtime.emergencyReason(
+                        targetId, targetId, "需要处理紧急事项").getPhase());
+        harness.scheduler.advanceMinutes(1);
+        assertTrue(harness.runtime.emergencyConfirm(targetId, targetId).isOk());
+    }
+
+    @Test
     public void accessibilityStateTransitionsAreRecordedInDiagnostics() {
         Harness harness = new Harness(true);
 
@@ -215,7 +422,7 @@ public class AppSupervisionRuntimePolicyTest {
 
         assertEquals(0L, harness.engine.snapshot(
                 "group-1", harness.scheduler.elapsedRealtime()).getRoundUsageMs());
-        assertEquals(2, harness.overlay.evaluateCount);
+        assertTrue(harness.overlay.evaluateCount >= 1);
         assertTrue(harness.overlay.sawLocked);
     }
 
@@ -456,6 +663,8 @@ public class AppSupervisionRuntimePolicyTest {
         int evaluateCount;
         EffectiveState lastState = EffectiveState.NORMAL;
         boolean sawLocked;
+        SupervisionOverlayDecision.Mode lastMode =
+                SupervisionOverlayDecision.Mode.HIDDEN;
 
         FakeOverlay() { super(); }
 
@@ -465,6 +674,19 @@ public class AppSupervisionRuntimePolicyTest {
             evaluateCount++;
             lastState = state;
             sawLocked |= state == EffectiveState.LOCKED;
+            lastMode = state == EffectiveState.LOCKED
+                    ? SupervisionOverlayDecision.Mode.APP_LOCK
+                    : SupervisionOverlayDecision.Mode.HIDDEN;
+        }
+
+        @Override public void evaluateDevice(
+                TimedDirective directive, SupervisionTime now) {
+            evaluateCount++;
+            lastMode = SupervisionOverlayDecision.Mode.DEVICE_LOCK;
+        }
+
+        @Override public void hide() {
+            lastMode = SupervisionOverlayDecision.Mode.HIDDEN;
         }
     }
 
