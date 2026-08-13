@@ -2786,12 +2786,13 @@ function msgHTML(m) {
   const isVoiceOnly = hasVoiceAtt && (!raw || messageAttachments.some(a => typeof a === 'object' && a.type === 'voice' && a.transcript === raw));
   const hasWishFulfillmentAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'wish_fulfillment');
   const hasDateSummaryAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'date_summary');
+  const hasLoungeReportAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'lounge_visit_report');
 
   // AI 消息使用 escWithImages 解析 [[image:...]] 和转账卡片，用户消息也渲染转账卡片
   const fmt = isUser ? escWithTransfer : escWithImages;
   // 渲染附件图片、语音和结构化卡片
   const toyHtml = renderToyAttachments(messageAttachments);
-  const attHtml = renderAttachments(messageAttachments);
+  const attHtml = renderAttachments(messageAttachments, { actorName: name });
   const bandVibrationHtml = crBandVibrationNoteHtml(messageAttachments);
   let bubblesHtml = '';
   if (isVoiceOnly) {
@@ -2803,7 +2804,16 @@ function msgHTML(m) {
       deleteOnly: true,
       preBubbleHtml: attHtml,
     })}</div>`;
-  } else if (!hasDateSummaryAtt && (!hasWishFulfillmentAtt || !isUser)) {
+  } else if (hasLoungeReportAtt) {
+    bubblesHtml = `<div class="message-stack">${crBubbleUnitHtml({
+      sender, name, avatar, msgId: m.id || '', msg: m,
+      html: '',
+      showHeader: true,
+      includeActions: false,
+      deleteOnly: true,
+      preBubbleHtml: attHtml,
+    })}</div>`;
+  } else if (!hasDateSummaryAtt && !hasLoungeReportAtt && (!hasWishFulfillmentAtt || !isUser)) {
     const items = crMessageContentItems(raw, isUser);
     bubblesHtml = items.length
       ? `<div class="message-stack">${crRenderMessageItems(items, { sender, name, avatar, msgId: m.id || '', msg: m, fmt, isUser })}</div>`
@@ -2824,7 +2834,7 @@ function msgHTML(m) {
           ${hasWishFulfillmentAtt || hasDateSummaryAtt ? attHtml : ''}
           ${bubblesHtml}
           ${toyHtml}
-          ${hasWishFulfillmentAtt || hasDateSummaryAtt || isVoiceOnly ? '' : attHtml}
+          ${hasWishFulfillmentAtt || hasDateSummaryAtt || hasLoungeReportAtt || isVoiceOnly ? '' : attHtml}
           ${bandVibrationHtml}
         </div>
       </div>
@@ -6005,7 +6015,7 @@ function crBuildLinkPreviewCard(item) {
   </a>`;
 }
 
-function renderAttachments(atts) {
+function renderAttachments(atts, options = {}) {
   if (!atts || !atts.length) return '';
   let html = '';
   let musicHtml = '';
@@ -6015,6 +6025,16 @@ function renderAttachments(atts) {
     const type = (typeof item === 'object' && item.type) || '';
     if (type === 'luckin_payment') {
       html += buildLuckinPaymentCard(item);
+    } else if (type === 'lounge_visit_report') {
+      const inbound = item.direction === 'inbound';
+      const actorName = esc(String(options.actorName || 'AI'));
+      const partner = esc(String(item.partner_name || '朋友'));
+      const title = inbound
+        ? `${actorName}刚刚接待了访客${partner}。`
+        : `${actorName}刚刚去${partner}那里串门回来了。`;
+      const summary = esc(String(item.summary || '这次会面已经结束。'));
+      const turns = Math.max(0, Number(item.turn_count) || 0);
+      html += `<section class="lounge-report-card ${inbound ? 'inbound' : 'outbound'}"><div class="lounge-report-kicker">${title}</div><p>${summary}</p><small>共聊了 ${turns} 回合</small></section>`;
     } else if (type === 'date_summary') {
       html += buildDateSummaryCard(item);
     } else if (type === 'link_preview') {

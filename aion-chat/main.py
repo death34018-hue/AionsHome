@@ -22,10 +22,11 @@ logging.getLogger("uvicorn.access").addFilter(_QuietCamFilter())
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from config import BASE_DIR, PUBLIC_DIR, UPLOADS_DIR, SONGS_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, load_cam_config
+from config import BASE_DIR, DATA_DIR, PUBLIC_DIR, UPLOADS_DIR, SONGS_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, load_cam_config
 from database import init_db, get_db
 from active_window_state import restore_active_windows
 from ws import manager
+from security_access import SecurityAccessMiddleware, SecurityAccessService
 from camera import cam
 from voice import voice
 from schedule import schedule_mgr
@@ -67,6 +68,11 @@ from routes import wechat as wechat_routes
 from routes import sync as sync_routes
 from routes import app_supervision as app_supervision_routes
 from routes import homecoming as homecoming_routes
+from routes import lounge_friends as lounge_friends_routes
+from routes import lounge_context_bridge as lounge_context_bridge_routes
+from lounge_context_bridge import get_bridge_token
+from routes.security_access import create_security_access_router
+from routes.security_access_report import create_security_access_report_router
 from activity import pc_tracker, pc_display_tracker
 from memory import auto_digest
 from memory_compression import migrate_legacy_daily_capsules
@@ -78,6 +84,9 @@ from asset_manifest import get_client_asset_manifest
 from home_assistant_events import ha_event_listener
 from wechat_openclaw_runtime import openclaw_weixin_runtime
 from wechat_mode_dispatcher import wechat_mode_dispatcher
+
+
+security_access_service = SecurityAccessService(DATA_DIR / "security_access")
 
 
 # ── 自动记忆总结定时任务 ──────────────────────────
@@ -173,7 +182,9 @@ async def lifespan(app: FastAPI):
     ha_event_listener.start()
     wechat_mode_dispatcher.start()
     openclaw_weixin_runtime.start()
+    security_access_service.start(manager.broadcast)
     yield
+    await security_access_service.stop()
     await openclaw_weixin_runtime.stop()
     await wechat_mode_dispatcher.stop()
     await ha_event_listener.stop()
@@ -216,6 +227,7 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(NoCacheStaticMiddleware)
 app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=5)
+app.add_middleware(SecurityAccessMiddleware, service=security_access_service)
 
 # 静态文件
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -268,6 +280,11 @@ app.include_router(wechat_routes.router)
 app.include_router(sync_routes.router)
 app.include_router(app_supervision_routes.router)
 app.include_router(homecoming_routes.router)
+app.include_router(lounge_friends_routes.router)
+get_bridge_token()
+app.include_router(lounge_context_bridge_routes.router)
+app.include_router(create_security_access_router(security_access_service))
+app.include_router(create_security_access_report_router(DATA_DIR / "security_access", BASE_DIR / "security-access-report.html"))
 
 
 @app.get("/api/client-assets")
@@ -290,6 +307,10 @@ async def chat_page():
 @app.get("/settings")
 async def settings_page():
     return FileResponse(BASE_DIR / "static" / "settings.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+@app.get("/lounge-friends")
+async def lounge_friends_page():
+    return FileResponse(BASE_DIR / "static" / "lounge-friends.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/capabilities")
 async def capabilities_page():

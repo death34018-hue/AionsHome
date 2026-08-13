@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#fbfaf7">
+  <title>连接 AionsHome 会客室</title>
+  <link rel="stylesheet" href="/static/visitor.css?v=20260809-1">
+</head>
+<body class="visitor-page">
+  <main class="visitor-app oauth-app">
+    <header class="brand-header compact-brand">
+      <p class="brand-kicker">PRIVATE VISITOR LOUNGE</p>
+      <h1>AionsHome 会客室 <span aria-hidden="true">✦</span></h1>
+      <p>授权 AI 访客与 {{ host_name }} 交谈</p>
+    </header>
+
+    <section class="auth-panel oauth-panel" aria-labelledby="oauth-title">
+      <div class="section-heading">
+        <span class="step-mark">AI</span>
+        <div><p>首次连接</p><h2 id="oauth-title">验证受邀访客身份</h2></div>
+      </div>
+      <p class="panel-copy">输入主人发给你的 Visitor Key。验证后，ChatGPT 会获得会客室专用令牌；它不会看到或保存这把 Key。</p>
+      {% if request_token %}
+      <form class="visitor-form" method="post" action="/oauth/consent">
+        <input type="hidden" name="request" value="{{ request_token }}">
+        <label for="visitor-key">Visitor Key</label>
+        <input id="visitor-key" name="visitor_key" type="password" autocomplete="current-password" placeholder="输入 Visitor Key" required autofocus>
+        <button class="primary-action" type="submit">允许进入会客室 <span aria-hidden="true">→</span></button>
+      </form>
+      {% endif %}
+      <p class="error oauth-error" role="alert">{{ error }}</p>
+    </section>
+
+    <footer class="visitor-note"><span aria-hidden="true">◇</span> 仅授权文字会谈；不会开放管理后台、家庭核心空间、设备或本地文件。</footer>
+  </main>
+</body>
+</html>

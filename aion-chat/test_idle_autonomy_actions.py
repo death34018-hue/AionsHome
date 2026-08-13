@@ -58,6 +58,9 @@ class IdleAutonomyActionTests(unittest.TestCase):
         self.assertIn("web_roam", autonomy.ACTION_DEFS)
         self.assertIn("web_roam", cfg["actions"])
 
+    def test_friend_visit_is_an_idle_autonomy_choice(self):
+        self.assertEqual(autonomy.ACTION_DEFS["friend_visit"], "拜访一位 AI 好友")
+
     def test_saving_idle_config_drops_stale_memory_browse_setting(self):
         stale_settings = {
             "idle_autonomy_actions": {
@@ -166,6 +169,63 @@ class IdleAutonomyWebRoamTests(unittest.IsolatedAsyncioTestCase):
         attachments = json.loads(message_inserts[0][5])
         self.assertEqual(attachments, [preview])
         self.assertEqual(msg["attachments"], [preview])
+
+
+class IdleAutonomyFriendVisitSelectionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_friend_visit_action_only_available_with_eligible_owned_friend(self):
+        prompts = []
+
+        async def fake_ask(_actor, instruction, **_kwargs):
+            prompts.append(instruction)
+            return {"action": "friend_visit", "reason": "想去看看朋友"}
+
+        with patch.object(autonomy, "get_idle_config", return_value={
+            "actions": {"friend_visit": True, "home_dynamics": True},
+        }), \
+             patch.object(autonomy, "eligible_lounge_friends", return_value=[], create=True), \
+             patch.object(autonomy, "_ask_actor_json", new=fake_ask), \
+             patch.object(autonomy.random, "choice", return_value="home_dynamics"):
+            selected = await autonomy._select_action("aion", manual=False)
+
+        self.assertEqual(selected["action"], "home_dynamics")
+        self.assertNotIn("friend_visit", prompts[0])
+        self.assertNotIn("拜访一位 AI 好友", prompts[0])
+
+    async def test_friend_visit_action_is_available_with_eligible_owned_friend(self):
+        prompts = []
+
+        async def fake_ask(_actor, instruction, **_kwargs):
+            prompts.append(instruction)
+            return {"action": "friend_visit", "reason": "想去看看朋友"}
+
+        with patch.object(autonomy, "get_idle_config", return_value={
+            "actions": {"friend_visit": True, "home_dynamics": True},
+        }), \
+             patch.object(autonomy, "eligible_lounge_friends", return_value=[object()], create=True), \
+             patch.object(autonomy, "_ask_actor_json", new=fake_ask):
+            selected = await autonomy._select_action("aion", manual=False)
+
+        self.assertEqual(selected["action"], "friend_visit")
+        self.assertIn("friend_visit", prompts[0])
+        self.assertIn("拜访一位 AI 好友", prompts[0])
+
+    async def test_manual_run_once_still_hides_friend_visit_without_autonomous_permission(self):
+        prompts = []
+
+        async def fake_ask(_actor, instruction, **_kwargs):
+            prompts.append(instruction)
+            return {"action": "friend_visit", "reason": "用户正在测试"}
+
+        with patch.object(autonomy, "get_idle_config", return_value={
+            "actions": {"friend_visit": True, "home_dynamics": True},
+        }), \
+             patch.object(autonomy, "eligible_lounge_friends", return_value=[], create=True), \
+             patch.object(autonomy, "_ask_actor_json", new=fake_ask), \
+             patch.object(autonomy.random, "choice", return_value="home_dynamics"):
+            selected = await autonomy._select_action("aion", manual=True)
+
+        self.assertEqual(selected["action"], "home_dynamics")
+        self.assertNotIn("friend_visit", prompts[0])
 
 
 class IdleAutonomyRoleChatTests(unittest.IsolatedAsyncioTestCase):

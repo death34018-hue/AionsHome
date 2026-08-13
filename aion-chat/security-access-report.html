@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>安全访问概览</title>
+  <style>
+    :root{color-scheme:dark;font-family:"Microsoft YaHei",system-ui,sans-serif;background:#0b1020;color:#eef2ff}
+    *{box-sizing:border-box}body{margin:0;padding:32px 18px;background:radial-gradient(circle at top,#18213b,#0b1020 48%);min-height:100vh}
+    main{width:min(1100px,100%);margin:auto}.head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px}
+    h1{font-size:26px;margin:0}.sub{color:#94a3b8;margin:6px 0 0;font-size:13px}button{border:0;border-radius:999px;padding:10px 18px;background:#334155;color:#fff;font-weight:700;cursor:pointer}
+    #summary{margin:0 0 18px;padding:18px 20px;border-radius:16px;font-size:18px;font-weight:800;background:#13251d;border:1px solid #2d6a4f;color:#bbf7d0}
+    #summary.unknown{background:#31230f;border-color:#a16207;color:#fde68a}#summary.serious{background:#351318;border-color:#b91c1c;color:#fecaca}
+    .table-wrap{overflow:auto;border:1px solid #27324a;border-radius:16px;background:rgba(15,23,42,.88)}table{width:100%;border-collapse:collapse;min-width:820px}
+    th,td{text-align:left;padding:13px 14px;border-bottom:1px solid #263149;font-size:14px}th{position:sticky;top:0;background:#172036;color:#aebbd3}tbody tr:last-child td{border-bottom:0}
+    .badge{display:inline-block;border-radius:999px;padding:4px 9px;font-size:12px;font-weight:800}.normal{background:#173b2a;color:#86efac}.unknown{background:#4a3210;color:#fcd34d}.serious{background:#4a1720;color:#fca5a5}.blocked{background:#2f3441;color:#cbd5e1}
+    .empty{text-align:center;color:#94a3b8;padding:30px}.ip{font-family:Consolas,monospace;color:#fff}.time{white-space:nowrap;color:#bac5d8}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="head"><div><h1>安全访问概览</h1><p class="sub" id="updated">正在读取本地日志…</p></div><button id="refresh" type="button">刷新</button></div>
+    <div id="summary">正在检查…</div>
+    <div class="table-wrap"><table><thead><tr><th>IP</th><th>归属地</th><th>来源</th><th>首次出现</th><th>最后出现</th><th>状态</th></tr></thead><tbody id="rows"></tbody></table></div>
+  </main>
+  <script>
+    const formatTime=value=>{if(!value)return '未知';const date=new Date(value);return Number.isNaN(date.getTime())?value:date.toLocaleString('zh-CN',{hour12:false})};
+    const addCell=(row,text,className='')=>{const cell=document.createElement('td');cell.textContent=text;if(className)cell.className=className;row.appendChild(cell)};
+    async function load(){
+      const summary=document.getElementById('summary'),body=document.getElementById('rows');
+      try{
+        const response=await fetch('/api/security-access-report',{cache:'no-store'});if(!response.ok)throw new Error('读取失败');
+        const data=await response.json();summary.textContent=data.summary;summary.className=data.summary_kind||'';body.replaceChildren();
+        for(const item of data.ips||[]){const row=document.createElement('tr');addCell(row,item.ip,'ip');addCell(row,item.location);addCell(row,item.source);addCell(row,formatTime(item.first_seen),'time');addCell(row,formatTime(item.last_seen),'time');const cell=document.createElement('td'),badge=document.createElement('span');badge.className=`badge ${item.status_kind}`;badge.textContent=item.status;cell.appendChild(badge);row.appendChild(cell);body.appendChild(row)}
+        if(!body.children.length){const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=6;cell.className='empty';cell.textContent='还没有访问记录';row.appendChild(cell);body.appendChild(row)}
+        document.getElementById('updated').textContent=`最近更新：${new Date().toLocaleString('zh-CN',{hour12:false})}`;
+      }catch(error){summary.textContent='读取安全日志失败，请稍后刷新。';summary.className='serious'}
+    }
+    document.getElementById('refresh').addEventListener('click',load);load();
+  </script>
+</body>
+</html>

@@ -9,12 +9,12 @@ import static org.junit.Assert.assertTrue;
 public class CachePolicyTest {
     @Test
     public void manifestEndpointKeepsSelectedRouteOrigin() {
-        assertEquals("http://192.168.1.92:8080/api/client-assets",
-                SharedAssetCache.buildManifestUrl("http://192.168.1.92:8080/chat"));
-        assertEquals("http://100.117.195.40:8080/api/client-assets",
-                SharedAssetCache.buildManifestUrl("http://100.117.195.40:8080/chat"));
-        assertEquals("https://chat.aionshome.com/api/client-assets",
-                SharedAssetCache.buildManifestUrl("https://chat.aionshome.com/chat"));
+        assertEquals("http://192.168.1.100:8080/api/client-assets",
+                SharedAssetCache.buildManifestUrl("http://192.168.1.100:8080/chat"));
+        assertEquals("http://100.64.0.1:8080/api/client-assets",
+                SharedAssetCache.buildManifestUrl("http://100.64.0.1:8080/chat"));
+        assertEquals("https://chat.example.com/api/client-assets",
+                SharedAssetCache.buildManifestUrl("https://chat.example.com/chat"));
     }
 
     @Test
@@ -32,7 +32,7 @@ public class CachePolicyTest {
                         ConnectionEndpoint.CLOUDFLARE_PAGE_URL, 302, login));
         assertEquals(SharedAssetCache.RefreshResult.NOT_REFRESHED,
                 SharedAssetCache.classifyManifestResponse(
-                        "http://100.117.195.40:8080/chat", 302, login));
+                        "http://100.64.0.1:8080/chat", 302, login));
         assertEquals(SharedAssetCache.RefreshResult.NOT_REFRESHED,
                 SharedAssetCache.classifyManifestResponse(
                         ConnectionEndpoint.CLOUDFLARE_PAGE_URL, 200, login));

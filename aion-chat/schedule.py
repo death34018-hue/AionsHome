@@ -1295,6 +1295,13 @@ async def _process_background_reply_commands(
         sender=sender,
         save_system_message=save_hug_system_message,
     )
+    cleaned = await process_schedule_commands(
+        cleaned,
+        conv_id if target_type == "private" else None,
+        origin="connor" if sender == "connor" else "aion",
+        origin_room_id=(source_id or "") if target_type == "chatroom" else "",
+        after_msg_id=ai_msg_id,
+    )
     from app_supervision_ai import (
         queue_app_supervision_reply_command,
         broadcast_app_supervision_command,

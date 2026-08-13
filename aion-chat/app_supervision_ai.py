@@ -440,21 +440,24 @@ def build_app_supervision_ability_text(
     lines.append(f"当前缓存状态（快照于 {age_seconds} 秒前收到）：")
     if device:
         state = str(device.get("effectiveState") or "NORMAL")
-        directive = (
-            device.get("temporaryUnlock")
-            if state == "TEMPORARILY_UNLOCKED"
-            else device.get("lock")
-        )
+        if state == "LOCKED":
+            directive = device.get("lock")
+        elif state == "TEMPORARILY_UNLOCKED":
+            directive = device.get("temporaryUnlock")
+        else:
+            directive = None
         directive = directive if isinstance(directive, dict) else {}
-        role_id = str(directive.get("roleId") or "未指定")
-        message = str(directive.get("message") or "").strip()
-        deadline_wall_ms = float(directive.get("deadlineWallMs") or 0)
-        remaining_ms = max(0.0, deadline_wall_ms - current_time * 1_000)
-        details = f"，负责角色 {role_id}"
-        if deadline_wall_ms:
-            details += f"，剩余 {_minutes(remaining_ms)}"
-        if message:
-            details += f"，提示 {message}"
+        details = ""
+        if directive:
+            role_id = str(directive.get("roleId") or "未指定")
+            message = str(directive.get("message") or "").strip()
+            deadline_wall_ms = float(directive.get("deadlineWallMs") or 0)
+            remaining_ms = max(0.0, deadline_wall_ms - current_time * 1_000)
+            details = f"，负责角色 {role_id}"
+            if deadline_wall_ms:
+                details += f"，剩余 {_minutes(remaining_ms)}"
+            if message:
+                details += f"，提示 {message}"
         lines.append(f"- 整机状态 {state}{details}")
     elapsed_since_snapshot_ms = max(0.0, current_time - received_at) * 1_000 if received_at else 0.0
     for group in groups:

@@ -35,7 +35,7 @@ function loadMessageRenderer() {
       connor: '/avatar-connor.png',
     },
     crMemoryRecordMsgIds: new Set(),
-    crName: sender => ({ user: 'Ithil', aion: 'Aion', connor: 'Connor' })[sender],
+    crName: sender => ({ user: 'Test User', aion: 'Primary AI', connor: 'Second AI' })[sender],
     crStripWishFulfillmentMarker: value => value,
     crWithWishFallbackAttachments: message => message.attachments || [],
     crMessageContentItems: () => [],

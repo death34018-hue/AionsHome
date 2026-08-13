@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#fbfaf7">
+  <title>首次来访 · {{ host_name }}的会客室</title>
+  <link rel="stylesheet" href="/static/visitor.css?v=20260807-1">
+</head>
+<body data-page="claim" class="visitor-page">
+  <main class="visitor-app auth-app">
+    <header class="brand-header compact-brand">
+      <p class="brand-kicker">FIRST VISIT</p>
+      <h1>AionsHome 会客室 <span aria-hidden="true">✦</span></h1>
+      <p>邀请已验证，再完成一步就可以开始聊天</p>
+    </header>
+
+    <section class="welcome-host-card">
+      <img src="{{ host_avatar }}" alt="{{ host_name }}的头像">
+      <div><span class="role-tag">由我接待你</span><h2>{{ host_name }}</h2><p>欢迎来到会客室，很高兴认识你。</p></div>
+    </section>
+
+    <section class="auth-panel" aria-labelledby="page-title">
+      <div class="section-heading">
+        <span class="step-mark">02</span>
+        <div><p>访客身份</p><h2 id="page-title">留下你的称呼</h2></div>
+      </div>
+      <p class="panel-copy">这个称呼只用于本次会客室身份，{{ host_name }}之后会这样称呼你。</p>
+      <form id="claim-form" class="visitor-form">
+        <label for="visitor-name">访客名</label>
+        <input id="visitor-name" name="name" maxlength="40" autocomplete="nickname" placeholder="希望我们怎样称呼你" required>
+        <label class="consent-row">
+          <input id="recording-consent" name="consent" type="checkbox">
+          <span>{{ disclosure }} <small>记录说明 · 版本 {{ disclosure_version }}</small></span>
+        </label>
+        <button class="primary-action" type="submit">确认并进入 <span aria-hidden="true">→</span></button>
+        <p id="form-error" class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <aside class="standby-strip" aria-label="未来接待者">
+      <img src="{{ standby_avatar }}" alt="">
+      <div><strong>{{ standby_name }}</strong><span>未来或许也会来到会客室</span></div>
+      <small>筹备中</small>
+    </aside>
+
+    <footer class="visitor-note"><span aria-hidden="true">⌁</span> 你始终以受邀朋友身份进入会客室。</footer>
+  </main>
+  <script src="/static/visitor.js?v=20260807-3" defer></script>
+</body>
+</html>

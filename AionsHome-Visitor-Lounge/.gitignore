@@ -1,0 +1,12 @@
+.env
+.pytest_cache/
+__pycache__/
+*.py[cod]
+.runtime/
+.rollback-quarantine/
+logs/
+.codex-home/
+data/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal

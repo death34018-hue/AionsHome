@@ -77,6 +77,31 @@ class LastActiveChatRoutingTests(unittest.IsolatedAsyncioTestCase):
             "connor",
             "我看到你的朋友圈了。",
             attachments=[],
+            auto_tts=True,
+        )
+
+    async def test_connor_structured_report_can_disable_tts(self):
+        save_msg = AsyncMock(return_value={"id": "cm_report"})
+        attachment = {"type": "lounge_visit_report"}
+        with (
+            patch("autonomy.manager.get_connor_last_active", return_value="room_active"),
+            patch("autonomy._latest_connor_room_id", new=AsyncMock(return_value="room_latest")),
+            patch("routes.chatroom._save_msg", save_msg),
+        ):
+            result = await _save_private_message(
+                "connor",
+                "刚才接待了一位朋友。",
+                [attachment],
+                auto_tts=False,
+            )
+
+        self.assertEqual(result, {"id": "cm_report"})
+        save_msg.assert_awaited_once_with(
+            "room_active",
+            "connor",
+            "刚才接待了一位朋友。",
+            attachments=[attachment],
+            auto_tts=False,
         )
 
 

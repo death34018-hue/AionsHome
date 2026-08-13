@@ -117,6 +117,8 @@ async def init_db():
         await ensure_message_ingress_dedupe_table(db)
         from app_supervision_ai import ensure_app_supervision_tables
         await ensure_app_supervision_tables(db)
+        from lounge_visit_repository import ensure_lounge_visit_tables
+        await ensure_lounge_visit_tables(db)
         await _bootstrap_english_corner_schema(db)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS memories (

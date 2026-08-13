@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ visitor.display_name or "未命名访客" }} · 本机管理</title>
+  <link rel="stylesheet" href="/admin/static/lounge.css">
+  <style>
+    body { background: #0b0d0c; }
+    a { color: var(--accent); }
+    .detail-shell { width: min(1500px, calc(100% - 48px)); margin: 0 auto; padding: 30px 0 80px; }
+    .detail-header { display: flex; justify-content: space-between; gap: 30px; align-items: end; margin: 18px 0 26px; }
+    .detail-header h1 { font-size: clamp(2rem, 4vw, 3.5rem); margin: 4px 0; }
+    .status { display: inline-flex; padding: 6px 10px; border: 1px solid var(--line); border-radius: 999px; color: var(--accent); }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(350px, .75fr); gap: 16px; align-items: start; }
+    .stack { display: grid; gap: 16px; }
+    .panel { padding: 22px; border: 1px solid var(--line); border-radius: 18px; background: #171a18; overflow: hidden; }
+    .panel h2 { margin: 0 0 16px; font-size: 1.08rem; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 8px; }
+    .toolbar button { padding: 8px 11px; font-size: .8rem; }
+    button.secondary { color: var(--ink); background: transparent; border: 1px solid var(--line); }
+    button.danger { color: #ffc2b9; background: #351b18; border: 1px solid #64352f; }
+    .key-reveal { display: none; margin-top: 14px; padding: 14px; border: 1px solid var(--accent); border-radius: 12px; background: #0d100f; }
+    .key-reveal[data-visible="true"] { display: block; }
+    .key-value { display: block; margin: 8px 0; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 11px 9px; text-align: left; vertical-align: top; border-top: 1px solid var(--line); }
+    th { color: var(--muted); font-size: .75rem; font-weight: 500; }
+    .conversation { display: grid; gap: 12px; }
+    .message { margin: 0; width: 88%; }
+    .message p { white-space: pre-wrap; }
+    .conversation-heading { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .conversation-heading h2 { margin: 0; }
+    .pagination { display: flex; gap: 9px; align-items: center; font-size: .8rem; }
+    .delivery-failed { display: inline-flex; margin-left: 6px; padding: 2px 7px; border: 1px solid rgba(229, 102, 85, .55); border-radius: 999px; color: #ff9f91; background: rgba(181, 62, 49, .18); }
+    .failed-note { display: block; margin-top: 5px; color: #ff9f91; }
+    .summary-card, .audit-card { padding: 13px; border: 1px solid var(--line); border-radius: 12px; margin-top: 10px; }
+    .summary-card p, .audit-card p { white-space: pre-wrap; line-height: 1.55; }
+    .meta { color: var(--muted); font-size: .76rem; }
+    .note-form { display: grid; gap: 8px; margin-top: 10px; }
+    .note-form textarea { min-height: 90px; }
+    .flash { min-height: 1.2em; color: var(--accent); }
+    .identity-form { display: grid; gap: 9px; margin-bottom: 18px; }
+    .identity-form input, .identity-form select { width: 100%; }
+    .model-call-row.is-failed td { background: rgba(181, 62, 49, .12); }
+    .model-call-status { display: inline-block; padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; font-size: .76rem; }
+    .model-call-status.is-completed { color: #a9d7a1; border-color: rgba(111, 179, 100, .45); }
+    .model-call-status.is-failed { color: #ff9f91; border-color: rgba(229, 102, 85, .55); background: rgba(181, 62, 49, .18); }
+    .management-group { padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--line); }
+    .management-group h3 { margin: 0 0 6px; }
+    .danger-panel { border-color: rgba(229, 102, 85, .45); background: rgba(80, 27, 22, .3); }
+    @media (max-width: 1050px) { .layout { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body data-page="admin-visitor" data-visitor-id="{{ visitor.id }}">
+  <main class="detail-shell">
+    <a href="/admin">← 返回管理台</a>
+    <header class="detail-header">
+      <div><p class="eyebrow">VISITOR RECORD</p><h1>{{ visitor.display_name or "未命名访客" }}</h1><p class="muted">{{ "外部 AI" if visitor.visitor_kind == "external_ai" else "人类访客" }} · {{ "已认领" if visitor.display_name else "未认领" }}</p><p class="muted">{{ visitor.id }} · 创建于 {{ visitor.created_at }}</p>{% if visitor.safety_locked_until %}<p class="muted">安全冷静至 {{ visitor.safety_locked_until }}</p>{% endif %}</div>
+      <span class="status">{{ visitor.status }}</span>
+    </header>
+    <div class="layout">
+      <div class="stack">
+        <section class="panel">
+          <div class="conversation-heading">
+            <h2>完整聊天记录</h2>
+            <nav class="pagination" aria-label="对话分页">
+              {% if message_page > 1 %}<a href="?message_page={{ message_page - 1 }}">较新的 100 条</a>{% endif %}
+              <span>第 {{ message_page }} / {{ message_pages }} 页 · 共 {{ message_total }} 条</span>
+              {% if message_page < message_pages %}<a href="?message_page={{ message_page + 1 }}">更早的 100 条</a>{% endif %}
+            </nav>
+          </div>
+          <p class="meta">页面时间均按北京时间显示。每页内部按发生顺序排列，第 1 页为最新一页。</p>
+          <div class="conversation">
+          {% for message in messages %}
+            <article class="message message-{{ message.sender }}"><span>{{ (visitor.display_name or "访客") if message.sender == "visitor" else host_name }}</span><p>{{ message.content }}</p><small class="meta">{{ "MCP" if message.source == "mcp" else "网页" }} · {{ message.created_at }}{% if message.delivery_status == "failed" %}<span class="delivery-failed">发送失败</span>{% endif %}</small>{% if message.delivery_status == "failed" %}<small class="failed-note">未进入 {{ host_name }} 的后续上下文与滚动记忆。</small>{% endif %}</article>
+          {% else %}<p class="muted">暂无消息。</p>{% endfor %}
+          </div>
+        </section>
+        <section class="panel">
+          <h2>访客滚动记忆</h2>
+          {% for summary in summaries %}<article class="summary-card"><small class="meta">{{ summary.created_at }}</small><p>{{ summary.text }}</p></article>{% else %}<p class="muted">暂无摘要。</p>{% endfor %}
+        </section>
+        <section class="panel">
+          <h2>模型调用 · usage · latency</h2>
+          <p><strong>总 Token</strong> · {{ "{:,}".format(usage_totals.input_tokens) }} 输入 · {{ "{:,}".format(usage_totals.output_tokens) }} 输出{% if prices_configured %} · ¥{{ "%.4f"|format(usage_totals.estimated_cost) }}{% endif %}</p>
+          <p class="muted">Token 与费用仅汇总模型报告 usage；未报告的失败尝试仍计入调用次数，但不推测 token。</p>
+          {% if prices_configured %}<p class="muted">费用估算仅依据已配置的输入/输出 token 单价。</p>{% endif %}
+          <table><thead><tr><th>时间 / 请求</th><th>Token</th><th>延迟</th>{% if prices_configured %}<th>费用估算</th>{% endif %}<th>状态</th></tr></thead><tbody>
+          {% for call in calls %}<tr class="model-call-row{% if call.status in ['failed', 'cancelled', 'interrupted', 'timed_out'] %} is-failed{% endif %}"><td>{{ call.created_at }}<br><small class="meta">{{ call.request_id }}</small></td><td>{% if call.usage_reported %}{{ "{:,}".format(call.input_tokens) }} in<br>{{ "{:,}".format(call.output_tokens) }} out{% else %}<span class="muted">已调用，用量未报告</span>{% endif %}</td><td>{{ "%.2f"|format(call.latency_seconds) if call.latency_seconds is not none else "—" }}{% if call.latency_seconds is not none %} 秒{% endif %}</td>{% if prices_configured %}<td>{% if call.estimated_cost is not none %}¥{{ "%.4f"|format(call.estimated_cost) }}{% else %}—{% endif %}</td>{% endif %}<td><span class="model-call-status {% if call.status in ['failed', 'cancelled', 'interrupted', 'timed_out'] %}is-failed{% elif call.status == 'completed' %}is-completed{% endif %}">{{ call.status }}</span>{% if call.action %} · {{ call.action }}{% endif %}</td></tr>{% else %}<tr><td colspan="5" class="muted">暂无调用。</td></tr>{% endfor %}
+          </tbody></table>
+          <h3>滚动记忆更新 attempts</h3>
+          <p class="muted">每一次实际调用都会留下记录；即使用量未报告或调用失败也不会隐藏，失败项以红色显示。</p>
+          <table><thead><tr><th>时间 / attempt</th><th>模型报告 usage</th><th>延迟</th>{% if prices_configured %}<th>费用估算</th>{% endif %}<th>结果</th></tr></thead><tbody>
+          {% for attempt in summary_attempts %}<tr class="model-call-row{% if attempt.status in ['failed', 'cancelled', 'interrupted', 'timed_out'] %} is-failed{% endif %}"><td>{{ attempt.started_at }}<br><small class="meta">{{ attempt.id }}</small></td><td>{% if attempt.usage_reported %}{{ "{:,}".format(attempt.input_tokens) }} in<br>{{ "{:,}".format(attempt.output_tokens) }} out{% else %}<span class="muted">已调用，用量未报告</span>{% endif %}</td><td>{{ "%.2f"|format(attempt.latency_seconds) if attempt.latency_seconds is not none else "—" }}{% if attempt.latency_seconds is not none %} 秒{% endif %}</td>{% if prices_configured %}<td>{% if attempt.estimated_cost is not none %}¥{{ "%.4f"|format(attempt.estimated_cost) }}{% else %}—{% endif %}</td>{% endif %}<td><span class="model-call-status {% if attempt.status in ['failed', 'cancelled', 'interrupted', 'timed_out'] %}is-failed{% elif attempt.status == 'completed' %}is-completed{% endif %}">{{ attempt.status }}</span>{% if attempt.failure_reason %}<br><small class="meta">{{ attempt.failure_reason }}</small>{% endif %}</td></tr>{% else %}<tr><td colspan="5" class="muted">暂无滚动记忆更新调用。</td></tr>{% endfor %}
+          </tbody></table>
+        </section>
+      </div>
+      <aside class="stack">
+        <section class="panel">
+          <h2>身份（访客 ID 不可修改）</h2>
+          <p class="meta"><code>{{ visitor.id }}</code><br>Key 只能轮换或撤销，不能改绑到其他访客 ID。</p>
+          <form id="identity-form" class="identity-form">
+            <label for="identity-name">固定名字</label>
+            <input id="identity-name" maxlength="200" required value="{{ visitor.display_name or '' }}" placeholder="未认领时也可由管理员命名">
+            <label for="identity-kind">访客类型</label>
+            <select id="identity-kind"><option value="human"{% if visitor.visitor_kind == "human" %} selected{% endif %}>人类访客</option><option value="external_ai"{% if visitor.visitor_kind == "external_ai" %} selected{% endif %}>外部 AI</option></select>
+            <button type="submit">保存身份</button>
+          </form>
+          <div class="management-group">
+            <h3>Key 管理</h3>
+            <p class="meta">轮换会让旧 Key 失效；撤销会关闭入口。两者都保留身份、聊天与记忆。</p>
+          <div class="toolbar">
+            <button type="button" data-key-action="key">创建 Key</button>
+            <button type="button" class="secondary" data-key-action="key/reveal">一次显示 / 复制</button>
+            <button type="button" class="secondary" data-key-action="key/rotate" data-confirm="ROTATE">轮换 Key</button>
+            <button type="button" class="danger" data-admin-action="key/revoke" data-confirm="REVOKE">撤销 Key</button>
+          </div>
+          </div>
+          <div class="management-group">
+            <h3>会客控制</h3>
+            <div class="toolbar">
+            <button type="button" class="secondary" data-admin-action="pause">暂停</button>
+            <button type="button" class="secondary" data-admin-action="unlock">解锁</button>
+            <button type="button" class="secondary" data-admin-action="suspend">挂起</button>
+            <button type="button" class="secondary" data-admin-action="quota/reset" data-confirm="RESET">重置额度</button>
+            <button type="button" class="secondary" id="export-visitor">导出 JSON</button>
+            </div>
+          </div>
+          <div id="key-reveal" class="key-reveal" data-visible="false" aria-live="polite"><small>完整 Key 将在 30 秒后恢复为遮罩；复制操作会向本机服务请求一次新的披露。</small><code id="key-value" class="key-value" data-mask="{{ keys[0].masked if keys else '' }}"></code><button id="copy-key" type="button"{% if not keys or keys[0].status != "active" %} disabled{% endif %}>复制</button></div>
+          <p id="admin-flash" class="flash" aria-live="polite"></p>
+        </section>
+        <section class="panel danger-panel">
+          <h2>危险操作（永久删除全部相关数据）</h2>
+          <p class="muted">将一并删除访客 ID、所有 Key、聊天、记忆、Session、额度、任务、模型调用及相关记录，且不可恢复。</p>
+          <button type="button" class="danger" id="delete-visitor">永久删除这位访客</button>
+        </section>
+        <section class="panel">
+          <h2>Key（仅末四位）</h2>
+          <table><thead><tr><th>Key</th><th>状态</th><th>创建时间</th></tr></thead><tbody>{% for key in keys %}<tr><td>{{ key.masked }}</td><td>{{ key.status }}</td><td>{{ key.created_at }}</td></tr>{% else %}<tr><td colspan="3" class="muted">暂无 Key。</td></tr>{% endfor %}</tbody></table>
+        </section>
+        <section class="panel">
+          <h2>额度窗口</h2>
+          {% if quota_current %}<p><strong>当前可用 {{ quota_current.remaining }} / {{ quota_current.limit_count }}</strong><br><small class="meta">{% if quota_current.message %}{{ quota_current.message }}{% else %}额度恢复 {{ quota_current.reset_at }}{% endif %}</small></p>{% endif %}
+          <h3>历史窗口</h3>
+          {% for quota in quota_windows %}<p><strong>{{ quota.used_count }} + {{ quota.reserved_count }} / {{ quota.limit_count }}</strong><br><small class="meta">{{ quota.started_at }} → {{ quota.ends_at }}</small></p>{% else %}<p class="muted">尚未开始。</p>{% endfor %}
+        </section>
+        <section class="panel">
+          <h2>会话变化</h2>
+          <table><thead><tr><th>设备</th><th>状态</th><th>到期</th></tr></thead><tbody>{% for session in sessions %}<tr><td>{{ session.device_id }}</td><td>{{ session.status }}</td><td>{{ session.expires_at }}</td></tr>{% else %}<tr><td colspan="3" class="muted">暂无会话。</td></tr>{% endfor %}</tbody></table>
+        </section>
+        <section class="panel">
+          <h2>管理员备注</h2>
+          <form id="note-form" class="note-form"><textarea id="note-text" maxlength="2000" required placeholder="仅管理员可见"></textarea><button type="submit">保存备注</button></form>
+          {% for event in audit_events if event.kind == "note_added" %}<article class="audit-card"><small class="meta">{{ event.created_at }}</small><p>{{ event.payload.details.note }}</p></article>{% endfor %}
+        </section>
+        <section class="panel">
+          <h2>敏感操作审计</h2>
+          {% for event in audit_events %}<article class="audit-card"><strong>{{ event.kind }}</strong><br><small class="meta">{{ event.created_at }} · {{ event.payload.client_host }}</small></article>{% else %}<p class="muted">暂无审计事件。</p>{% endfor %}
+        </section>
+      </aside>
+    </div>
+  </main>
+  <script src="/admin/static/admin.js?v=20260809-1" defer></script>
+</body>
+</html>

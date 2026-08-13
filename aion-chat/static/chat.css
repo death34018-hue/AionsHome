@@ -346,7 +346,9 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 .typing-bubble .typing-dots span:nth-child(3) { animation-delay:0.32s; }
 
 /* ── 音乐播放卡片 ── */
-.music-card { display:flex; align-items:center; gap:12px; margin-top:8px; padding:10px 14px; background:linear-gradient(135deg, rgba(220,38,38,0.06), rgba(239,68,68,0.03)); border:1px solid rgba(220,38,38,0.15); border-radius:12px; max-width:360px; }
+.music-cards-container { align-self:flex-start; }
+.msg-row.user .music-cards-container { align-self:flex-end; }
+.music-card { display:flex; align-items:center; gap:12px; margin-top:8px; padding:10px 14px; background:linear-gradient(135deg, rgba(72,104,196,0.18), rgba(112,82,184,0.10)); border:1px solid rgba(132,160,255,0.28); border-radius:12px; max-width:360px; }
 .music-card .music-cover { width:56px; height:56px; border-radius:8px; object-fit:cover; flex-shrink:0; background:#f0f0f0; }
 .music-card .music-info { flex:1; min-width:0; }
 .music-card .music-name { font-size:14px; font-weight:600; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -362,8 +364,8 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 .music-candidates summary { font-size:11px; color:var(--text3); cursor:pointer; }
 .music-candidates .cand-item { font-size:12px; color:var(--text2); padding:3px 0; cursor:pointer; display:flex; align-items:center; gap:4px; }
 .music-candidates .cand-item:hover { color:var(--accent); }
-.music-capsule { display:inline-flex; align-items:center; gap:4px; margin-top:6px; padding:4px 12px; background:linear-gradient(135deg, rgba(220,38,38,0.06), rgba(239,68,68,0.03)); border:1px solid rgba(220,38,38,0.15); border-radius:16px; font-size:12px; color:var(--text2); cursor:pointer; transition:background 0.15s; }
-.music-capsule:hover { background:linear-gradient(135deg, rgba(220,38,38,0.12), rgba(239,68,68,0.08)); color:var(--text); }
+.music-capsule { display:inline-flex; align-items:center; gap:4px; margin-top:6px; padding:4px 12px; background:linear-gradient(135deg, rgba(72,104,196,0.18), rgba(112,82,184,0.10)); border:1px solid rgba(132,160,255,0.28); border-radius:16px; font-size:12px; color:var(--text2); cursor:pointer; transition:background 0.15s; }
+.music-capsule:hover { background:linear-gradient(135deg, rgba(72,104,196,0.28), rgba(112,82,184,0.18)); color:var(--text); }
 .toy-capsule { display:inline-flex; align-items:center; gap:4px; margin-top:6px; padding:4px 12px; background:linear-gradient(135deg, rgba(232,83,122,0.08), rgba(247,141,167,0.04)); border:1px solid rgba(232,83,122,0.2); border-radius:16px; font-size:12px; color:#e8537a; }
 .wish-card-bubbles { gap:0; }
 .wish-fulfill-card {
@@ -2125,3 +2127,17 @@ body[data-theme="light"] .date-summary-text { color: #42506d; }
 .msg-bubble:has(.transfer-card)::after {
   display: none !important;
 }
+.lounge-report-card {
+  width: min(420px, 100%);
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+}
+.lounge-report-card .lounge-report-kicker { color: var(--accent); font-size: 12px; margin-bottom: 5px; }
+.lounge-report-card p { margin: 8px 0; font-size: 14px; line-height: 1.65; }
+.lounge-report-card small { color: var(--text-muted); font-size: 10px; }
+body[data-theme="light"] .lounge-report-card { background: var(--surface); }

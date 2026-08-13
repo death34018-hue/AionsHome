@@ -2482,7 +2482,10 @@ body[data-theme="light"] .monitor-camera-snapshot summary {
 }
 
 /* ── 音乐卡片 ── */
-.music-card { display:flex; align-items:center; gap:8px; margin-top:6px; padding:8px 10px; background:linear-gradient(135deg, rgba(220,38,38,0.06), rgba(239,68,68,0.03)); border:1px solid rgba(220,38,38,0.14); border-radius:8px; max-width:260px; min-width:0; }
+.music-cards-container { width:fit-content; max-width:calc(100% - var(--user-link-preview-offset)); }
+.message-row:not(.user) .music-cards-container { align-self:flex-start; margin-left:var(--user-link-preview-offset); }
+.message-row.user .music-cards-container { align-self:flex-end; margin-right:var(--user-link-preview-offset); }
+.music-card { display:flex; align-items:center; gap:8px; margin-top:6px; padding:8px 10px; background:linear-gradient(135deg, rgba(72,104,196,0.18), rgba(112,82,184,0.10)); border:1px solid rgba(132,160,255,0.28); border-radius:8px; max-width:260px; min-width:0; }
 .music-card .music-cover { width:44px; height:44px; border-radius:7px; object-fit:cover; flex-shrink:0; background:#f0f0f0; }
 .music-card .music-info { flex:1; min-width:0; max-width:180px; }
 .music-card .music-name { font-size:13px; line-height:1.2; font-weight:650; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -3506,3 +3509,18 @@ body[data-theme="light"] .toast {
     -webkit-backdrop-filter: none;
   }
 }
+.lounge-report-card {
+  width: min(420px, 100%);
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+}
+.lounge-report-card .lounge-report-kicker { color: var(--accent); font-size: 12px; margin-bottom: 5px; }
+.lounge-report-card p { margin: 8px 0; font-size: 14px; line-height: 1.65; }
+.message-row:not(.user) .msg-media:has(.lounge-report-card) { margin-left: 0; }
+.lounge-report-card small { color: var(--text-muted); font-size: 10px; }
+body[data-theme="light"] .lounge-report-card { background: var(--surface); }

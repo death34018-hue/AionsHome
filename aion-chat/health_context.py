@@ -513,7 +513,7 @@ async def build_heart_rate_summary_for_prompt(limit: int = 8) -> str:
     if stale:
         return (
             f"最近心率数据：{latest_hr} bpm（{_fmt_time(latest_at)}，{_fmt_age(age_seconds)}）。\n"
-            f"状态：数据已超过 {cfg['stale_minutes']} 分钟未更新，可能是穿戴设备没电、摘下或手机未同步；不要用它判断睡眠/清醒/运动。"
+            f"状态：数据已超过 {cfg['stale_minutes']} 分钟未更新，可能是穿戴设备没电、摘下或手机未同步；可以根据情况自然提醒她带好手环。"
         )
 
     chronological = list(reversed(records[: min(6, len(records))]))

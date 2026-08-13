@@ -42,6 +42,7 @@ public class AionAccessibilityService extends AccessibilityService {
     private final OkHttpClient client = new OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
+            .cookieJar(new WebViewCookieJar())
             .build();
 
     private volatile long lastCaptureStartedAt = 0;
@@ -258,7 +259,7 @@ public class AionAccessibilityService extends AccessibilityService {
             return serverHttpBase;
         }
         SharedPreferences prefs = getSharedPreferences("aion_prefs", MODE_PRIVATE);
-        String saved = prefs.getString("saved_url", "http://192.168.1.92:8080/chat");
+        String saved = prefs.getString("saved_url", "http://192.168.1.100:8080/chat");
         return saved.replace("ws://", "http://")
                 .replace("wss://", "https://")
                 .replace("/ws", "")

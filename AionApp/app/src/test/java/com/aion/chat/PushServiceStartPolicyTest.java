@@ -12,10 +12,10 @@ public class PushServiceStartPolicyTest {
         assertFalse(PushServiceStartPolicy.canReturnAfterLightweightAction(
                 "set_foreground", null, false));
         assertFalse(PushServiceStartPolicy.canReturnAfterLightweightAction(
-                "set_foreground", "ws://100.117.195.40:8080/ws", false));
+                "set_foreground", "ws://100.64.0.1:8080/ws", false));
 
         assertTrue(PushServiceStartPolicy.canReturnAfterLightweightAction(
-                "set_foreground", "ws://100.117.195.40:8080/ws", true));
+                "set_foreground", "ws://100.64.0.1:8080/ws", true));
     }
 
     @Test
@@ -25,22 +25,22 @@ public class PushServiceStartPolicyTest {
 
         assertTrue(PushServiceStartPolicy.canReturnAfterLightweightAction(
                 AionPushService.ACTION_REFRESH_CLOUDFLARE_AUTH,
-                "wss://chat.aionshome.com/ws",
+                "wss://chat.example.com/ws",
                 true));
     }
 
     @Test
     public void fallbackUrlPrefersLastActiveRouteBeforeRememberedRoute() {
-        assertEquals("http://100.117.195.40:8080/chat",
+        assertEquals("http://100.64.0.1:8080/chat",
                 PushServiceStartPolicy.chooseFallbackPageUrl(
-                        "http://100.117.195.40:8080/chat",
-                        "http://192.168.1.92:8080/chat",
+                        "http://100.64.0.1:8080/chat",
+                        "http://192.168.1.100:8080/chat",
                         "http://127.0.0.1:8080/chat"));
 
-        assertEquals("http://192.168.1.92:8080/chat",
+        assertEquals("http://192.168.1.100:8080/chat",
                 PushServiceStartPolicy.chooseFallbackPageUrl(
                         "",
-                        "http://192.168.1.92:8080/chat",
+                        "http://192.168.1.100:8080/chat",
                         "http://127.0.0.1:8080/chat"));
     }
 }

@@ -35,7 +35,11 @@ aion-chat/data/chatroom_images/
 aion-chat/data/mcp_servers.json
 aion-chat/data/home_assistant_mcp.json
 aion-chat/data/home_assistant_aliases.json
+aion-chat/data/home_assistant_events.json
+aion-chat/data/home_assistant_events.jsonl
 aion-chat/data/homeassistant-config/
+aion-chat/data/xhs_lite_config.json
+aion-chat/data/xhs_lite_runs.jsonl
 aion-chat/data/wallpaper_config.json
 aion-chat/data/ghost_forest/*.json
 aion-chat/data/books/
@@ -51,6 +55,7 @@ Connor-Codex/uploads/
 Connor-Codex/node_modules/
 Connor-Codex/package-lock.json
 Connor-Codex/*.log
+Connor-Codex/*.txt
 
 # ── 保留空文件夹的 .gitkeep ──
 !aion-chat/data/chats/.gitkeep
@@ -89,3 +94,68 @@ AionApp/local.properties
 *.log
 .DS_Store
 Thumbs.db
+*.lnk
+
+# ── 本机工具状态 / 会话数据 ──
+.agents/
+.antigravitycli/
+.codex/
+.superpowers/
+.worktrees/
+
+# ── 环境变量、密钥与签名文件 ──
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+
+# ── 运行时生成的私人内容 ──
+aion-chat/data/model_raw_responses/
+aion-chat/data/english_corner_audio/
+aion-chat/data/cli_debug/
+aion-chat/data/*.db
+aion-chat/data/*.sqlite
+aion-chat/data/*.sqlite3
+aion-chat/data/*.log
+
+# data/ 默认全部是本机运行数据；只保留空目录占位
+aion-chat/data/*
+!aion-chat/data/chats/
+!aion-chat/data/chats/.gitkeep
+!aion-chat/data/monitor_logs/
+!aion-chat/data/monitor_logs/.gitkeep
+!aion-chat/data/activity_logs/
+!aion-chat/data/activity_logs/.gitkeep
+!aion-chat/data/screenshots/
+!aion-chat/data/screenshots/.gitkeep
+!aion-chat/data/uploads/
+!aion-chat/data/uploads/.gitkeep
+!aion-chat/data/tts_cache/
+!aion-chat/data/tts_cache/.gitkeep
+
+# ── 浏览器资料（含历史、Cookies、登录会话） ──
+Connor-BrowserTool/browser-profile/
+Connor-BrowserTool/node_modules/
+
+# ── 本地 QA、截图与临时产物 ──
+codex_art/
+cache/
+temp_wheel/
+temp_*.png
+temp_*.xml
+androguard.db
+
+# ── 非运行必需的私人设计资料 / 需求截图 ──
+界面美化/
+陪伴阅读功能需求/
+surprises/
+
+# Local backup plans contain machine-specific drive and archive locations
+docs/superpowers/plans/2026-07-29-seven-day-data-backup.md
+docs/superpowers/specs/2026-07-29-seven-day-data-backup-design.md

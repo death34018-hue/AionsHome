@@ -5,9 +5,9 @@ import java.net.URISyntaxException;
 
 /** Keeps public and private connection routes isolated. */
 final class ConnectionEndpoint {
-    static final String CLOUDFLARE_HOST = "chat.aionshome.com";
+    static final String CLOUDFLARE_HOST = "chat.example.com";
     static final String CLOUDFLARE_ACCESS_HOST = "cloudflareaccess.com";
-    static final String LEGACY_CLOUDFLARE_WS_HOST = "ws.aionshome.com";
+    static final String LEGACY_CLOUDFLARE_WS_HOST = "legacy-ws.example.com";
     static final String CLOUDFLARE_PAGE_URL = "https://" + CLOUDFLARE_HOST + "/chat";
     static final String CLOUDFLARE_COOKIE_URL = "https://" + CLOUDFLARE_HOST + "/";
 

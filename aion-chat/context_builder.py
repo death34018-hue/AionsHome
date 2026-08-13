@@ -133,7 +133,7 @@ async def build_health_summary() -> str:
                     cat = category_label(classify_heart_rate(int(hr), heart_cfg))
                     parts.append(f"心率:{hr}({cat})")
                 else:
-                    parts.append(f"心率:{hr}(数据过期，可能未佩戴/没电/未同步)")
+                    parts.append(f"心率:{hr}(手环数据过期，可能未佩戴或没电，可以提醒她带好，以便监测健康数据。)")
             except Exception:
                 parts.append(f"心率:{hr}")
 

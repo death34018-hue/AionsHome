@@ -174,6 +174,16 @@
       </div>
       <div class="cam-quiet-row">
         <div>
+          <span class="cam-toggle-label">包含电脑桌面</span>
+          <span class="cam-section-kicker">仅开启时，监控图片才会抓取并附带电脑桌面</span>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="includePcScreenToggle2" onchange="camApplyConfig()">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="cam-quiet-row">
+        <div>
           <span class="cam-toggle-label">静默时段</span>
           <span class="cam-section-kicker">这段时间继续巡逻，但不主动唤醒</span>
         </div>
@@ -273,6 +283,7 @@ async function syncCamModalState() {
     $("camIntervalMin2").value = status.auto_interval_min;
     $("camIntervalMax2").value = status.auto_interval_max;
     $("camMaxKeep2").value = status.max_screenshots;
+    $("includePcScreenToggle2").checked = !!status.include_pc_screen;
     $("camWakeAionOption").textContent = status.ai_name || "主 AI";
     $("camWakeConnorOption").textContent = status.connor_name || "第二 AI";
     $("camWakeMode2").value = status.wake_mode || "aion";
@@ -404,6 +415,7 @@ async function camApplyConfig() {
   $("quietHoursRange2").style.display = quietEnabled ? "" : "none";
   await api("PUT", "/api/cam/config", {
     auto_interval_min: intervalMin, auto_interval_max: intervalMax, max_screenshots: maxKeep,
+    include_pc_screen: $("includePcScreenToggle2").checked,
     quiet_hours_enabled: quietEnabled, quiet_hours_start: $("quietHoursStart2").value || "00:00", quiet_hours_end: $("quietHoursEnd2").value || "09:00",
     wake_mode: $("camWakeMode2").value
   });

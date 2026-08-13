@@ -1,7 +1,10 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+
+import aiosqlite
 
 
 ROOT = Path(__file__).resolve().parent
@@ -10,6 +13,63 @@ if str(ROOT) not in sys.path:
 
 
 class ScheduleWeChatBridgeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_background_chatroom_reply_creates_monitor_and_hides_command(self):
+        import schedule
+
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        db_path = Path(tempdir.name) / "schedule.db"
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                """
+                CREATE TABLE schedules (
+                    id TEXT PRIMARY KEY,
+                    type TEXT NOT NULL,
+                    trigger_at TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    origin TEXT DEFAULT 'aion',
+                    origin_room_id TEXT DEFAULT '',
+                    ended_at REAL
+                )
+                """
+            )
+            await db.commit()
+
+        def connection():
+            return aiosqlite.connect(db_path)
+
+        passthrough = AsyncMock(side_effect=lambda text, *args, **kwargs: text)
+        no_supervision = AsyncMock(side_effect=lambda text, **kwargs: (text, None))
+        with patch.object(schedule, "get_db", connection), \
+             patch("routes.chat._process_home_commands", passthrough), \
+             patch.object(schedule, "_process_background_wechat_commands", passthrough), \
+             patch.object(schedule, "process_band_vibration", passthrough), \
+             patch.object(schedule, "process_hug_pillow_commands", passthrough), \
+             patch("app_supervision_ai.queue_app_supervision_reply_command", no_supervision), \
+             patch("app_supervision_ai.broadcast_app_supervision_command", AsyncMock()):
+            cleaned = await schedule._process_background_reply_commands(
+                "先吃正餐。[Monitor:2030-08-07T12:35|确认已经吃午饭]",
+                target={"type": "chatroom", "room_id": "room-1"},
+                conv_id=None,
+                sender="connor",
+                ai_msg_id="msg-1",
+            )
+
+        async with aiosqlite.connect(db_path) as db:
+            row = await (
+                await db.execute(
+                    "SELECT type, trigger_at, content, origin, origin_room_id FROM schedules"
+                )
+            ).fetchone()
+
+        self.assertEqual(cleaned, "先吃正餐。")
+        self.assertEqual(
+            row,
+            ("monitor", "2030-08-07 12:35", "确认已经吃午饭", "connor", "room-1"),
+        )
+
     async def test_background_chatroom_reply_processes_wechat_command(self):
         import schedule
 

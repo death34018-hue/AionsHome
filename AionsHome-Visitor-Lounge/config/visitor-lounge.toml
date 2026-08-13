@@ -1,0 +1,28 @@
+[visitor]
+# The origin stays loopback-only; Cloudflare Tunnel publishes the visitor hostname.
+host = "127.0.0.1"
+port = 8001
+
+[admin]
+# The admin app has no network authentication and must remain loopback-only.
+host = "127.0.0.1"
+port = 8002
+timezone = "Asia/Shanghai"
+
+[queue]
+# max_generations is capped at 2 in code; max_waiting is capped at 3.
+max_generations = 1
+max_waiting = 3
+
+[identity]
+# These labels are local display configuration, not reusable personal names.
+host_display_name = "Connor"
+reserved_visitor_names = ["Connor", "接待人"]
+
+[visitor_ui]
+# Visible only as a future, unavailable receptionist in the visitor interface.
+standby_display_name = "Aion"
+
+[recording_disclosure]
+version = "1"
+text = "对话将被记录，以便保持交流连续。"

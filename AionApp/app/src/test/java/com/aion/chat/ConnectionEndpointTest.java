@@ -10,26 +10,26 @@ public class ConnectionEndpointTest {
     @Test
     public void migratesLegacyCloudflareHost() {
         assertEquals(ConnectionEndpoint.CLOUDFLARE_PAGE_URL,
-                ConnectionEndpoint.normalizePageUrl("https://ws.aionshome.com/chat"));
-        assertEquals("wss://chat.aionshome.com/ws",
-                ConnectionEndpoint.toWebSocketUrl("wss://ws.aionshome.com/ws"));
+                ConnectionEndpoint.normalizePageUrl("https://legacy-ws.example.com/chat"));
+        assertEquals("wss://chat.example.com/ws",
+                ConnectionEndpoint.toWebSocketUrl("wss://legacy-ws.example.com/ws"));
     }
 
     @Test
     public void buildsCloudflareWebSocketOnProtectedHost() {
-        assertEquals("wss://chat.aionshome.com/ws",
-                ConnectionEndpoint.toWebSocketUrl("https://chat.aionshome.com/chat"));
-        assertTrue(ConnectionEndpoint.isCloudflareHost("chat.aionshome.com"));
+        assertEquals("wss://chat.example.com/ws",
+                ConnectionEndpoint.toWebSocketUrl("https://chat.example.com/chat"));
+        assertTrue(ConnectionEndpoint.isCloudflareHost("chat.example.com"));
     }
 
     @Test
     public void preservesTailscaleAndLanRoutes() {
-        assertEquals("ws://100.117.195.40:8080/ws",
-                ConnectionEndpoint.toWebSocketUrl("http://100.117.195.40:8080/chat"));
-        assertEquals("ws://192.168.1.92:8080/ws",
-                ConnectionEndpoint.toWebSocketUrl("http://192.168.1.92:8080/chat"));
-        assertFalse(ConnectionEndpoint.isCloudflareHost("100.117.195.40"));
-        assertFalse(ConnectionEndpoint.isCloudflareHost("chat.aionshome.com.evil.example"));
+        assertEquals("ws://100.64.0.1:8080/ws",
+                ConnectionEndpoint.toWebSocketUrl("http://100.64.0.1:8080/chat"));
+        assertEquals("ws://192.168.1.100:8080/ws",
+                ConnectionEndpoint.toWebSocketUrl("http://192.168.1.100:8080/chat"));
+        assertFalse(ConnectionEndpoint.isCloudflareHost("100.64.0.1"));
+        assertFalse(ConnectionEndpoint.isCloudflareHost("chat.example.com.evil.example"));
     }
 
     @Test
@@ -60,24 +60,24 @@ public class ConnectionEndpointTest {
                 ConnectionEndpoint.CLOUDFLARE_PAGE_URL, true));
         assertFalse(ConnectionEndpoint.shouldBypassCloudflareMainDocument(
                 ConnectionEndpoint.CLOUDFLARE_PAGE_URL,
-                "https://chat.aionshome.com/static/chatroom.css", false));
+                "https://chat.example.com/static/chatroom.css", false));
         assertFalse(ConnectionEndpoint.shouldBypassCloudflareMainDocument(
-                "http://100.117.195.40:8080/chat",
-                "http://100.117.195.40:8080/chat", true));
+                "http://100.64.0.1:8080/chat",
+                "http://100.64.0.1:8080/chat", true));
         assertFalse(ConnectionEndpoint.shouldBypassCloudflareMainDocument(
                 ConnectionEndpoint.CLOUDFLARE_PAGE_URL,
-                "https://chat.aionshome.com.evil.example/chat", true));
+                "https://chat.example.com.evil.example/chat", true));
     }
 
     @Test
     public void allowsOnlyExactSelectedContentHost() {
-        String tailscalePage = "http://100.117.195.40:8080/chat";
-        assertTrue(ConnectionEndpoint.isAllowedContentHost("100.117.195.40", tailscalePage));
-        assertTrue(ConnectionEndpoint.isAllowedContentHost("chat.aionshome.com",
+        String tailscalePage = "http://100.64.0.1:8080/chat";
+        assertTrue(ConnectionEndpoint.isAllowedContentHost("100.64.0.1", tailscalePage));
+        assertTrue(ConnectionEndpoint.isAllowedContentHost("chat.example.com",
                 ConnectionEndpoint.CLOUDFLARE_PAGE_URL));
         assertFalse(ConnectionEndpoint.isAllowedContentHost(
-                "100.117.195.40.evil.example", tailscalePage));
+                "100.64.0.1.evil.example", tailscalePage));
         assertFalse(ConnectionEndpoint.isAllowedContentHost(
-                "evil192.168.1.92.example", "http://192.168.1.92:8080/chat"));
+                "evil192.168.1.100.example", "http://192.168.1.100:8080/chat"));
     }
 }

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aionshome-visitor-lounge"
+version = "0.1.0"
+description = "Standalone local visitor lounge for AionsHome"
+requires-python = ">=3.11"
+dependencies = [
+  "cryptography>=42.0",
+  "fastapi>=0.135.0,<1",
+  "jinja2>=3.1.0,<4",
+  "mcp>=2.0.0,<3",
+  "tiktoken>=0.12.0",
+  "tzdata>=2025.2",
+  "uvicorn>=0.41.0,<1",
+]
+
+[project.optional-dependencies]
+test = ["httpx>=0.28.0,<1", "pytest>=9.0.0,<10"]
+dev = ["httpx>=0.28.0,<1", "pytest>=9.0.0,<10"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/visitor_lounge"]

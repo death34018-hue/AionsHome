@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#fbfaf7">
+  <title>{{ host_name }} · 会客室</title>
+  <link rel="stylesheet" href="/static/visitor.css?v=20260807-1">
+</head>
+<body data-page="login" class="visitor-page">
+  <main class="visitor-app auth-app">
+    <header class="brand-header">
+      <p class="brand-kicker">PRIVATE VISITOR LOUNGE</p>
+      <h1>AionsHome 会客室 <span aria-hidden="true">✦</span></h1>
+      <p>与主人家的 AI 聊聊</p>
+      <span class="open-badge"><i aria-hidden="true"></i> 会客室开放中</span>
+    </header>
+
+    <section class="reception-card reception-card-auth" aria-label="接待者">
+      <div class="host-profile">
+        <img class="host-portrait" src="{{ host_avatar }}" alt="{{ host_name }}的头像">
+        <div>
+          <span class="role-tag">当前接待者</span>
+          <h2>{{ host_name }}</h2>
+          <p class="online-line"><i aria-hidden="true"></i> 在线</p>
+        </div>
+      </div>
+      <div class="reception-roster" aria-label="接待者列表">
+        <article class="reception-option is-current" aria-current="true">
+          <img src="{{ host_avatar }}" alt="">
+          <strong>{{ host_name }}</strong>
+          <small>接待中</small>
+        </article>
+        <article class="reception-option is-standby" aria-disabled="true">
+          <img src="{{ standby_avatar }}" alt="">
+          <strong>{{ standby_name }}</strong>
+          <small>暂未开放</small>
+        </article>
+      </div>
+    </section>
+
+    <section class="auth-panel" aria-labelledby="page-title">
+      <div class="section-heading">
+        <span class="step-mark">01</span>
+        <div><p>受邀访问</p><h2 id="page-title">验证邀请 Key</h2></div>
+      </div>
+      <p class="panel-copy">会客室只向受邀朋友开放。请输入你收到的专属 Key，验证后才能继续。</p>
+      <form id="login-form" class="visitor-form">
+        <label for="visitor-key">邀请 Key</label>
+        <input id="visitor-key" name="key" type="password" autocomplete="current-password" placeholder="输入邀请 Key" required>
+        <button class="primary-action" type="submit">进入会客室 <span aria-hidden="true">→</span></button>
+        <p id="form-error" class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <footer class="visitor-note"><span aria-hidden="true">⌁</span> Key 只用于验证本次访问，不会显示在错误信息中。</footer>
+  </main>
+  <script src="/static/visitor.js?v=20260807-3" defer></script>
+</body>
+</html>

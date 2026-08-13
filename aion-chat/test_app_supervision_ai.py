@@ -107,6 +107,32 @@ class AppSupervisionCapabilityTests(unittest.TestCase):
         self.assertIn("5.0 分钟", text)
         self.assertIn("快照于 60 秒前", text)
 
+    def test_normal_device_state_omits_stale_directive_details(self):
+        self.cache.replace_snapshot(
+            {
+                "deviceLock": {
+                    "effectiveState": "NORMAL",
+                    "lock": {
+                        "deadlineWallMs": 1_000_000,
+                        "roleId": "stale-role",
+                        "message": "旧的整机锁提示",
+                    },
+                    "temporaryUnlock": None,
+                },
+                "groups": [],
+            },
+            received_at=1_000.0,
+        )
+
+        with patch("app_supervision_ai.is_capability_enabled", return_value=True):
+            text = build_app_supervision_ability_text(self.cache, now=1_060.0)
+
+        self.assertIn("整机状态 NORMAL", text)
+        self.assertNotIn("负责角色", text)
+        self.assertNotIn("stale-role", text)
+        self.assertNotIn("剩余", text)
+        self.assertNotIn("旧的整机锁提示", text)
+
     def test_capability_prompt_builder_uses_in_memory_cache_synchronously(self):
         sentinel = "cached supervision text"
         with (

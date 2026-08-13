@@ -132,7 +132,11 @@ class MonthlyChatArchiveTests(unittest.TestCase):
         db.close()
 
     def test_archives_each_kind_by_local_month_without_losing_payloads(self):
-        report = archive_chat_windows(self.db_path, self.backup_dir)
+        report = archive_chat_windows(
+            self.db_path,
+            self.backup_dir,
+            window_labels={"aion": "Primary", "connor": "Companion", "group": "群聊"},
+        )
 
         self.assertTrue(report.backup_path.exists())
         self.assertEqual(report.before_counts, {"aion": 2, "connor": 2, "group": 2})
@@ -142,11 +146,11 @@ class MonthlyChatArchiveTests(unittest.TestCase):
         self.addCleanup(db.close)
         self.assertEqual(
             db.execute("SELECT title FROM conversations ORDER BY updated_at DESC").fetchall(),
-            [("Aion 26-7",), ("Aion 26-6",)],
+            [("Primary 26-7",), ("Primary 26-6",)],
         )
         self.assertEqual(
             db.execute("SELECT title FROM chatroom_rooms WHERE type='connor_1v1' ORDER BY updated_at DESC").fetchall(),
-            [("Connor 26-7",), ("Connor 26-6",)],
+            [("Companion 26-7",), ("Companion 26-6",)],
         )
         self.assertEqual(
             db.execute("SELECT title FROM chatroom_rooms WHERE type='group' ORDER BY updated_at DESC").fetchall(),

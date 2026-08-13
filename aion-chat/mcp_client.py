@@ -3,22 +3,75 @@ MCP 连接管理器：管理多个 MCP Server 的连接生命周期
 支持 Streamable HTTP（远程）和 stdio（本地进程）两种传输
 """
 
+import asyncio
 import json, logging
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
+import anyio
+import httpcore
 import httpx
 
-from mcp import ClientSession
+from mcp import ClientSession, McpError
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.client.stdio import stdio_client, StdioServerParameters
 from mcp.client.sse import sse_client
+from mcp.shared.session import CONNECTION_CLOSED
 
 from config import DATA_DIR
 
 logger = logging.getLogger("mcp_client")
 
 MCP_SERVERS_PATH = DATA_DIR / "mcp_servers.json"
+
+
+class MCPToolProtocolError(RuntimeError):
+    """The remote tool response cannot be interpreted as one JSON object."""
+
+
+class MCPToolTransportError(RuntimeError):
+    """The SDK call failed before a classifiable tool payload was returned."""
+
+
+_ANYIO_STREAM_ERRORS = (
+    anyio.BrokenResourceError,
+    anyio.ClosedResourceError,
+    anyio.EndOfStream,
+    anyio.IncompleteRead,
+)
+_HTTPX_TRANSIENT_TRANSPORT_ERRORS = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.ProxyError,
+    httpx.RemoteProtocolError,
+    httpx.CloseError,
+)
+_HTTPCORE_TRANSPORT_ERRORS = (
+    httpcore.NetworkError,
+    httpcore.TimeoutException,
+    httpcore.ConnectionNotAvailable,
+    httpcore.ProxyError,
+    httpcore.RemoteProtocolError,
+)
+
+
+def _is_known_tool_transport_failure(error: Exception) -> bool:
+    if isinstance(error, (TimeoutError,) + _HTTPX_TRANSIENT_TRANSPORT_ERRORS):
+        return True
+    if isinstance(error, _ANYIO_STREAM_ERRORS + _HTTPCORE_TRANSPORT_ERRORS):
+        return True
+    if isinstance(error, McpError):
+        code = error.error.code
+        message = error.error.message
+        return code == CONNECTION_CLOSED and message == "Connection closed"
+    if isinstance(error, ExceptionGroup):
+        return bool(error.exceptions) and all(
+            isinstance(child, Exception)
+            and _is_known_tool_transport_failure(child)
+            for child in error.exceptions
+        )
+    return False
 
 # ── 默认配置 ──────────────────────────────────────
 _DEFAULT_CONFIG = {
@@ -103,29 +156,46 @@ class MCPManager:
         else:
             raise ValueError(f"不支持的传输类型: {srv_type}")
 
+    async def connect_ephemeral(
+        self,
+        connection_id: str,
+        url: str,
+        headers: dict[str, str],
+    ) -> list[dict]:
+        if connection_id in self._connections:
+            return self._connections[connection_id]["tools"]
+        return await self._connect_http(connection_id, {
+            "name": connection_id,
+            "type": "streamablehttp",
+            "url": url,
+            "headers": dict(headers),
+            "ephemeral": True,
+        })
+
     async def _connect_http(self, name: str, cfg: dict) -> list[dict]:
         url = cfg["url"]
         headers = cfg.get("headers", {})
 
-        # streamablehttp_client 是一个 async context manager
-        transport_cm = streamablehttp_client(url=url, headers=headers)
-        streams = await transport_cm.__aenter__()
-        read_stream, write_stream, _ = streams
+        async with AsyncExitStack() as initialization:
+            transport_cm = streamablehttp_client(url=url, headers=headers)
+            streams = await initialization.enter_async_context(transport_cm)
+            read_stream, write_stream, _ = streams
 
-        session = ClientSession(read_stream, write_stream)
-        await session.__aenter__()
-        await session.initialize()
+            session = ClientSession(read_stream, write_stream)
+            await initialization.enter_async_context(session)
+            await session.initialize()
 
-        tools_result = await session.list_tools()
-        tools = [self._tool_to_dict(t) for t in tools_result.tools]
+            tools_result = await session.list_tools()
+            tools = [self._tool_to_dict(t) for t in tools_result.tools]
 
-        self._connections[name] = {
-            "session": session,
-            "transport_cm": transport_cm,
-            "tools": tools,
-        }
-        logger.info(f"[MCP] 已连接 {name}，{len(tools)} 个工具可用")
-        return tools
+            self._connections[name] = {
+                "session": session,
+                "transport_cm": transport_cm,
+                "tools": tools,
+            }
+            initialization.pop_all()
+            logger.info(f"[MCP] 已连接 {name}，{len(tools)} 个工具可用")
+            return tools
 
     async def _connect_sse(self, name: str, cfg: dict) -> list[dict]:
         url = cfg["url"]
@@ -188,12 +258,12 @@ class MCPManager:
             return
         try:
             await conn["session"].__aexit__(None, None, None)
-        except Exception as e:
-            logger.warning(f"[MCP] 关闭 session 异常: {e}")
+        except Exception:
+            logger.warning("[MCP] 关闭 session 异常")
         try:
             await conn["transport_cm"].__aexit__(None, None, None)
-        except Exception as e:
-            logger.warning(f"[MCP] 关闭 transport 异常: {e}")
+        except Exception:
+            logger.warning("[MCP] 关闭 transport 异常")
         logger.info(f"[MCP] 已断开 {server_name}")
 
     # ── 调用工具 ────────────────────────────
@@ -214,6 +284,43 @@ class MCPManager:
         return contents
 
     # ── 工具列表 → OpenAI function calling 格式 ──
+    async def call_tool_json(
+        self, connection_id: str, tool_name: str, arguments: dict
+    ) -> dict[str, object]:
+        conn = self._connections.get(connection_id)
+        if not conn:
+            raise MCPToolTransportError("MCP tool transport failed")
+        try:
+            result = await conn["session"].call_tool(tool_name, arguments)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            if _is_known_tool_transport_failure(error):
+                raise MCPToolTransportError("MCP tool transport failed") from None
+            raise MCPToolProtocolError("MCP tool payload is invalid") from None
+        structured = getattr(result, "structuredContent", None)
+        if isinstance(structured, dict):
+            return structured
+        if structured is not None:
+            raise MCPToolProtocolError("MCP tool payload is invalid")
+        content = getattr(result, "content", None)
+        if not isinstance(content, list):
+            raise MCPToolProtocolError("MCP tool payload is invalid")
+        texts = [
+            item.text
+            for item in content
+            if hasattr(item, "text") and isinstance(item.text, str)
+        ]
+        if len(texts) != 1:
+            raise MCPToolProtocolError("MCP tool payload is invalid")
+        try:
+            parsed = json.loads(texts[0])
+        except (TypeError, ValueError):
+            raise MCPToolProtocolError("MCP tool payload is invalid") from None
+        if not isinstance(parsed, dict):
+            raise MCPToolProtocolError("MCP tool payload is invalid")
+        return parsed
+
     def get_tools_for_ai(self, server_name: str) -> list[dict]:
         conn = self._connections.get(server_name)
         if not conn:

@@ -21,6 +21,10 @@ const _clientId = localStorage.getItem('aion_client_id') || (() => {
   localStorage.setItem('aion_client_id', id); return id;
 })();
 let ws = null;
+const _securityAlertUi = import('/static/security-alert.js')
+  .then(() => globalThis.AionSecurityAlerts?.init())
+  .then(() => globalThis.AionSecurityAlerts)
+  .catch(() => null);
 let pendingAttachments = [];  // [{url, type, name}]
 let worldBook = { ai_persona: "", user_persona: "", ai_name: "AI", user_name: "你" };
 let msgDebugData = {};  // { msgId: { model, recalled_memories, prompt_messages, prompt_count, usage } }
@@ -1463,9 +1467,13 @@ function connectWS() {
     reconcilePrivateSync();
   };
   ws.onmessage = e => {
-    const event = JSON.parse(e.data);
-    rememberPrivateSyncSeq(event);
-    handleSync(event);
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'security_alert') {
+      _securityAlertUi.then(ui => ui?.handleMessage(msg));
+      return;
+    }
+    rememberPrivateSyncSeq(msg);
+    handleSync(msg);
   };
   ws.onclose = () => setTimeout(connectWS, 2000);
 }
@@ -1817,12 +1825,13 @@ function renderMessages() {
     const hasVoiceAtt = messageAttachments.some(a => typeof a === 'object' && (a.type === 'voice' || a.type === 'video_clip'));
     const hasWishFulfillmentAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'wish_fulfillment');
     const hasDateSummaryAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'date_summary');
+    const hasLoungeReportAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'lounge_visit_report');
     const isEmptyMessage = !displayContent && messageAttachments.length === 0;
     // 转账标签前后强制换行，确保卡片独占一个气泡
     const splitContent = displayContent.replace(/(\[转账(?:给[^\uff1a:]+?)?[：:]\s*-?\d+(?:\.\d+)?\s*元\])/g, '\n$1\n');
     const parts = (isUser ? splitContent.split(/\n+/) : splitContent.split(/\n+/)).filter(p => p.trim());
     let bubblesHtml;
-    if (hasDateSummaryAtt) {
+    if (hasDateSummaryAtt || hasLoungeReportAtt) {
       bubblesHtml = `<div class="msg-bubbles date-summary-bubbles">${renderAttachments(messageAttachments)}</div>`;
     } else if (isEmptyMessage) {
       bubblesHtml = '<div class="msg-bubble empty-msg-bubble"></div>';
@@ -4027,9 +4036,19 @@ function renderAttachments(atts) {
   let voiceHtml = '';
   let wishHtml = '';
   const aiName = worldBook.ai_name || 'AI';
+  const actorName = escHtml(String(aiName));
   atts.forEach(item => {
     if (typeof item === 'object' && item.type === 'luckin_payment') {
       mediaHtml += buildLuckinPaymentCard(item);
+    } else if (typeof item === 'object' && item.type === 'lounge_visit_report') {
+      const inbound = item.direction === 'inbound';
+      const partner = escHtml(String(item.partner_name || '朋友'));
+      const title = inbound
+        ? `${actorName}刚刚接待了访客${partner}。`
+        : `${actorName}刚刚去${partner}那里串门回来了。`;
+      const summary = escHtml(String(item.summary || '这次会面已经结束。'));
+      const turns = Math.max(0, Number(item.turn_count) || 0);
+      mediaHtml += `<section class="lounge-report-card ${inbound ? 'inbound' : 'outbound'}"><div class="lounge-report-kicker">${title}</div><p>${summary}</p><small>共聊了 ${turns} 回合</small></section>`;
     } else if (typeof item === 'object' && item.type === 'date_summary') {
       mediaHtml += buildDateSummaryCard(item);
     } else if (typeof item === 'object' && item.type === 'link_preview') {

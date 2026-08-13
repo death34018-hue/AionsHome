@@ -149,6 +149,31 @@ function navigateSubPageBack() {
   }
 }
 
+function navigateCommonSubPage(path) {
+  const target = String(path || '/');
+  if (window.parent !== window && typeof window.parent.openSubPage === 'function') {
+    window.parent.openSubPage(target);
+  } else {
+    window.location.href = target;
+  }
+}
+
+function installLoungeFriendsShortcut() {
+  if (window.location.pathname !== '/settings' || document.getElementById('loungeFriendsShortcut')) return;
+  const topBar = document.querySelector('.top-bar');
+  if (!topBar) return;
+  const shortcut = document.createElement('button');
+  shortcut.id = 'loungeFriendsShortcut';
+  shortcut.type = 'button';
+  shortcut.className = 'action-btn secondary';
+  shortcut.textContent = 'AI 好友 / 串门';
+  shortcut.addEventListener('click', () => {
+    const returnTo = `${window.location.pathname}${window.location.search}`;
+    navigateCommonSubPage(`/lounge-friends?return=${encodeURIComponent(returnTo)}`);
+  });
+  topBar.appendChild(shortcut);
+}
+
 // iframe 子页面默认返回 Home；带 return 参数时回到指定的父页面功能。
 if (window.parent !== window) {
   document.addEventListener('DOMContentLoaded', () => {
@@ -156,6 +181,9 @@ if (window.parent !== window) {
     if (backBtn) backBtn.onclick = navigateSubPageBack;
   });
 }
+
+if (document.body) installLoungeFriendsShortcut();
+else document.addEventListener('DOMContentLoaded', installLoungeFriendsShortcut, { once: true });
 
 async function api(method, url, body, options = {}) {
   const controller = new AbortController();
@@ -212,6 +240,10 @@ function showToast(msg) {
 /* ── WebSocket（闹铃弹窗等全局事件） ── */
 let _commonWs = null;
 let _wsHandlers = {};
+const _securityAlertUi = import('/static/security-alert.js')
+  .then(() => globalThis.AionSecurityAlerts?.init())
+  .then(() => globalThis.AionSecurityAlerts)
+  .catch(() => null);
 
 const COMMON_SYNC_SEQ_KEY = `aion_sync_seq_v1:${location.pathname}`;
 let _commonSyncPromise = null;
@@ -256,6 +288,10 @@ function connectCommonWS(extraHandler) {
   _commonWs.onmessage = e => {
     const msg = JSON.parse(e.data);
     _commonRememberSyncSeq(msg);
+    if (msg.type === 'security_alert') {
+      _securityAlertUi.then(ui => ui?.handleMessage(msg));
+      return;
+    }
     // 闹铃弹窗 — 全局
     if (msg.type === "schedule_alarm") {
       showAlarmPopup(msg.data);

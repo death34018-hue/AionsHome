@@ -333,6 +333,7 @@ DEFAULT_CAM_CFG = {
     "auto_interval_min": 10,
     "auto_interval_max": 20,
     "max_screenshots": 200,
+    "include_pc_screen": False,
     "monitor_enabled": False,
     "quiet_hours_enabled": False,
     "quiet_hours_start": "00:00",

@@ -75,6 +75,7 @@ from web_search import (
     format_web_system_message,
     run_web_commands,
 )
+from lounge_visit_commands import LoungeVisitCommandStreamFilter, handle_lounge_visit_commands
 
 router = APIRouter(prefix="/api/chatroom", tags=["chatroom"])
 
@@ -86,14 +87,15 @@ async def _consume_chatroom_stream(
     chunk_type: str,
 ) -> StreamSafetyResult:
     stream_filter = WebCommandStreamFilter()
+    lounge_filter = LoungeVisitCommandStreamFilter()
 
     async def on_commit(chunk: str) -> None:
-        visible = stream_filter.feed(chunk)
+        visible = lounge_filter.feed(stream_filter.feed(chunk))
         if visible:
             await queue.put({"type": chunk_type, "content": visible})
 
     result = await consume_safe_stream(source, CHAT_STREAM_POLICY, on_commit)
-    visible_tail = stream_filter.flush()
+    visible_tail = lounge_filter.feed(stream_filter.flush()) + lounge_filter.flush()
     if visible_tail:
         await queue.put({"type": chunk_type, "content": visible_tail})
     if result.notice:
@@ -499,6 +501,19 @@ async def _process_chatroom_commands(full_text: str, room_id: str, who: str, msg
         triggered["app_supervision_command"] = supervision_command
         await broadcast_app_supervision_command(supervision_command)
 
+    full_text, _lounge_visits = await handle_lounge_visit_commands(
+        full_text,
+        actor_id=who_identity,
+        start_visit=lambda actor_id, friend_id, topic: _start_chatroom_lounge_visit(
+            actor_id,
+            friend_id,
+            topic,
+            room_id=room_id,
+            msg_id=msg_id,
+            queue=_q,
+        ),
+    )
+
     # ── 群聊悄悄话：只在 group 房间生效，内容投递到各自私聊窗口 ──
     private_whispers = PRIVATE_WHISPER_CMD_PATTERN.findall(full_text)
     if private_whispers:
@@ -821,6 +836,59 @@ async def _process_chatroom_commands(full_text: str, room_id: str, who: str, msg
     full_text = META_TAG_PATTERN.sub("", full_text)
 
     return _visible_chatroom_text(full_text), triggered
+
+
+async def _start_chatroom_lounge_visit(
+    actor_id: str,
+    friend_id: str,
+    topic: str,
+    *,
+    room_id: str,
+    msg_id: str,
+    queue: asyncio.Queue,
+) -> str:
+    """Start only an enabled friend owned by the chatroom reply's real actor."""
+    from lounge_visit import LoungeVisitCoordinator
+    from lounge_visit_reporting import publish_outbound_report
+    from mcp_client import mcp_manager
+    from routes.lounge_friends import (
+        compose_lounge_message,
+        configured_actors,
+        friend_store,
+        lounge_repository_provider,
+    )
+
+    try:
+        friend = friend_store.get_owned(actor_id, friend_id)
+    except KeyError:
+        return ""
+    if not friend.enabled or not topic:
+        return ""
+
+    def actor_name(known_actor_id: str) -> str:
+        return next(
+            (
+                actor["display_name"]
+                for actor in configured_actors()
+                if actor["id"] == known_actor_id
+            ),
+            "",
+        )
+
+    async def run() -> None:
+        async with lounge_repository_provider() as repository:
+            result = await LoungeVisitCoordinator(
+                friend_store,
+                repository,
+                mcp_manager,
+                actor_name_resolver=actor_name,
+            ).run_visit(actor_id, friend_id, "chat", topic, compose_lounge_message)
+            await publish_outbound_report(
+                actor_id, friend.display_name, result, repository
+            )
+
+    asyncio.create_task(run())
+    return friend.id
 
 
 def _toy_attachments_from_triggered(triggered: dict) -> list[dict]:

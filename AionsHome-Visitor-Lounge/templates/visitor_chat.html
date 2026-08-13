@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#fbfaf7">
+  <title>{{ host_name }} · 会客室</title>
+  <link rel="stylesheet" href="/static/visitor.css?v=20260807-2">
+</head>
+<body data-page="chat" class="visitor-page">
+  <main class="visitor-app chat-app">
+    <header class="brand-header chat-brand">
+      <div>
+        <p class="brand-kicker">AIONSHOME</p>
+        <h1>会客室 <span aria-hidden="true">✦</span></h1>
+      </div>
+      <div class="chat-header-actions">
+        <span class="open-badge"><i aria-hidden="true"></i> 开放中</span>
+        <button id="logout" class="exit-button" type="button">退出</button>
+      </div>
+    </header>
+
+    <section class="reception-card chat-reception" aria-label="接待者">
+      <div class="host-profile">
+        <img class="host-portrait" src="{{ host_avatar }}" alt="{{ host_name }}的头像">
+        <div>
+          <span class="role-tag">当前接待者</span>
+          <h2>{{ host_name }}</h2>
+          <p class="online-line"><i aria-hidden="true"></i> 在线</p>
+        </div>
+      </div>
+      <div class="reception-roster compact-roster" aria-label="接待者列表">
+        <article class="reception-option is-current" aria-current="true">
+          <img src="{{ host_avatar }}" alt="">
+          <strong>{{ host_name }}</strong>
+        </article>
+        <article class="reception-option is-standby" aria-disabled="true">
+          <img src="{{ standby_avatar }}" alt="">
+          <strong>{{ standby_name }}</strong>
+          <small>暂未开放</small>
+        </article>
+      </div>
+    </section>
+
+    <section class="visit-stats" aria-label="会客信息">
+      <div class="stat-item"><span class="stat-icon" aria-hidden="true">◇</span><p>访客身份<strong>{{ visitor_name }}</strong></p></div>
+      <div class="stat-item"><span class="stat-icon stat-icon-blue" aria-hidden="true">◷</span><p>本小时剩余<strong id="quota">{{ quota.remaining }} / {{ quota.limit }}</strong></p></div>
+      <div class="stat-item"><span class="stat-icon" aria-hidden="true">○</span><p>会客状态<strong id="visitor-status" data-status="{{ visitor_status }}">{{ "会客中" if visitor_status == "active" else "已挂起" if visitor_status == "suspended" else "已锁定" if visitor_status == "safety_lock" else visitor_status }}</strong></p></div>
+    </section>
+    <p id="quota-reset" class="quota-reset" data-reset-at="{{ quota.reset_at or '' }}">额度重置 {{ quota.reset_at or "尚未开始" }}</p>
+    {% if visitor_kind == "external_ai" %}<p class="external-ai-banner">当前以「{{ visitor_name }} · 外部 AI」身份来访；本页与 MCP 交流都会归入同一身份和同一份记忆。</p>{% endif %}
+
+    <section id="messages" class="messages" aria-live="polite" aria-label="对话记录">
+      <div class="conversation-date">今天 · 会客室</div>
+      {% for message in messages %}
+      <article class="message message-{{ message.sender }}" data-message-id="{{ message.id }}" data-sender="{{ message.sender }}" data-source="{{ message.source }}" data-delivery-status="{{ message.delivery_status }}">
+        {% if message.sender == "host" %}
+        <img class="message-avatar" src="{{ host_avatar }}" alt="">
+        {% else %}
+        <span class="message-avatar visitor-avatar" aria-hidden="true">{{ visitor_name[:1] }}</span>
+        {% endif %}
+        <div class="message-body">
+          <span class="message-author">{{ visitor_name if message.sender == "visitor" else host_name }}</span>
+          <p>{{ message.content }}</p>
+          <small class="message-meta">{{ "MCP" if message.source == "mcp" else "网页" }}{% if message.delivery_status == "failed" %}<span class="message-failed">发送失败 · 未进入后续上下文与记忆</span>{% endif %}</small>
+        </div>
+      </article>
+      {% endfor %}
+    </section>
+
+    <section class="composer">
+      <p id="job-status" class="job-status" aria-live="polite"></p>
+      <form id="message-form">
+        <label class="sr-only" for="message-text">给{{ host_name }}发消息</label>
+        <div class="composer-box">
+          <textarea id="message-text" rows="1" placeholder="给{{ host_name }}发消息…" required></textarea>
+          <button id="send-button" class="send-button" type="submit" aria-label="发送消息"><span aria-hidden="true">➤</span></button>
+        </div>
+        <div class="composer-footer">
+          <span><strong id="character-count">0</strong> / 500</span>
+          <p id="form-error" class="error" role="alert"></p>
+        </div>
+      </form>
+      <p class="ai-note"><span aria-hidden="true">⌁</span> 对话内容由 AI 生成，仅供轻松交流。</p>
+    </section>
+  </main>
+  <script>
+    window.LOUNGE_STATE = {{ {
+      "host_name": host_name,
+      "standby_name": standby_name,
+      "host_avatar": host_avatar,
+      "standby_avatar": standby_avatar,
+      "visitor_name": visitor_name,
+      "visitor_status": visitor_status,
+      "visitor_kind": visitor_kind,
+      "quota": quota,
+      "job": job
+    } | tojson }};
+  </script>
+  <script src="/static/visitor.js?v=20260809-1" defer></script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-@echo off
+﻿@echo off
 chcp 65001 >nul
 cd /d "%~dp0"
 
@@ -14,6 +14,7 @@ echo     - 摄像头截图 (screenshots/)
 echo     - 上传的图片/视频 (uploads/)
 echo     - 活动日志 (activity_logs/)
 echo     - TTS 语音缓存 (tts_cache/)
+echo     - 英语角语音缓存 (english_corner_audio/)
 echo     - 临时文件 (tmp/)
 echo     - 聊天状态 + 记忆锚点
 echo     - 日记本数据 (存放在 chat.db)
@@ -22,9 +23,12 @@ echo     - 世界书人设 (重置为空白)
 echo     - 小剧场角色预设 (theater_personas.json)
 echo     - 奥罗斯幽林游戏数据 (ghost_forest/)
 echo     - 阅读书籍数据 (books/)
-echo     - API Key (需要朋友自己填)
+echo     - API Key (Gemini / 硅基流动 / Tavily 等，需要朋友自己填)
 echo     - 虚拟环境 (朋友需重新安装)
 echo     - 源码中硬编码的 API Key (重置为空)
+echo     - Android App 中的局域网/Tailscale IP 与 Cloudflare 域名
+echo     - Android 构建产物（可能内嵌旧地址）
+echo     - AionsHome 服务日志 + Android 本机 SDK 路径
 echo     - 火山引擎 TTS 配置 + 输出
 echo     - 个人笔记/备份文件
 echo     - .vscode 配置
@@ -36,6 +40,9 @@ echo     - 壁纸配置
 echo     - SSL 证书
 echo     - Gemini CLI 调试日志 (cli_debug/)
 echo     - Connor-Codex 聊天记录 + 人设 + 上传图片 + 日志
+echo     - 会客室访客数据库、聊天/记忆、Visitor Key、OAuth 数据与日志
+echo     - AI 好友地址、出站 Visitor Key 与会客上下文桥凭据
+echo     - 会客室旧隔离备份、运行缓存和独立虚拟环境
 echo.
 echo   !! 请确认这是【复制出来的副本】!!
 echo   !! 不要在你自己的原始文件夹里运行 !!
@@ -59,6 +66,7 @@ if exist "aion-chat\data\location_status.json" del /q "aion-chat\data\location_s
 
 if exist "aion-chat\data\chats" rmdir /s /q "aion-chat\data\chats"
 mkdir "aion-chat\data\chats"
+type nul > "aion-chat\data\chats\.gitkeep"
 
 if exist "aion-chat\data\monitor_logs" rmdir /s /q "aion-chat\data\monitor_logs"
 mkdir "aion-chat\data\monitor_logs"
@@ -68,12 +76,18 @@ mkdir "aion-chat\data\screenshots"
 
 if exist "aion-chat\data\uploads" rmdir /s /q "aion-chat\data\uploads"
 mkdir "aion-chat\data\uploads"
+type nul > "aion-chat\data\uploads\.gitkeep"
 
 if exist "aion-chat\data\activity_logs" rmdir /s /q "aion-chat\data\activity_logs"
 mkdir "aion-chat\data\activity_logs"
+type nul > "aion-chat\data\activity_logs\.gitkeep"
 
 if exist "aion-chat\data\tts_cache" rmdir /s /q "aion-chat\data\tts_cache"
 mkdir "aion-chat\data\tts_cache"
+type nul > "aion-chat\data\tts_cache\.gitkeep"
+
+if exist "aion-chat\data\english_corner_audio" rmdir /s /q "aion-chat\data\english_corner_audio"
+mkdir "aion-chat\data\english_corner_audio"
 
 if exist "aion-chat\data\tmp" rmdir /s /q "aion-chat\data\tmp"
 mkdir "aion-chat\data\tmp"
@@ -118,8 +132,34 @@ if exist "aion-chat\data\wallpaper_config.json" del /q "aion-chat\data\wallpaper
 if exist "aion-chat\data\cert.pem" del /q "aion-chat\data\cert.pem"
 if exist "aion-chat\data\key.pem" del /q "aion-chat\data\key.pem"
 
+:: ── 清理服务运行日志（可能包含访问端 IP）──
+del /q "aion-chat\data\*.log" 2>nul
+del /q "aion-chat\*.log" 2>nul
+
 :: ── 清理 aion.db 旧数据库 ──
 if exist "aion-chat\data\aion.db" del /q "aion-chat\data\aion.db"
+
+:: ── AI 好友串门私密数据 ──
+:: lounge_friends.json 包含好友地址和原始 Visitor Key；上下文桥 Key 也不得打包。
+if exist "aion-chat\data\lounge_friends.json" del /q "aion-chat\data\lounge_friends.json"
+del /q "aion-chat\data\.lounge_friends.json.*.tmp" 2>nul
+if exist "aion-chat\data\lounge-context-bridge.key" del /q "aion-chat\data\lounge-context-bridge.key"
+
+:: ── Visitor Lounge 私密数据与本机运行文件 ──
+:: 保留程序、配置和头像，只清理密钥、访客资料、聊天记录、日志、备份与缓存。
+if exist "AionsHome-Visitor-Lounge\.env" del /q "AionsHome-Visitor-Lounge\.env"
+
+if exist "AionsHome-Visitor-Lounge\data" rmdir /s /q "AionsHome-Visitor-Lounge\data"
+mkdir "AionsHome-Visitor-Lounge\data"
+
+if exist "AionsHome-Visitor-Lounge\logs" rmdir /s /q "AionsHome-Visitor-Lounge\logs"
+mkdir "AionsHome-Visitor-Lounge\logs"
+
+if exist "AionsHome-Visitor-Lounge\.runtime" rmdir /s /q "AionsHome-Visitor-Lounge\.runtime"
+if exist "AionsHome-Visitor-Lounge\.rollback-quarantine" rmdir /s /q "AionsHome-Visitor-Lounge\.rollback-quarantine"
+if exist "AionsHome-Visitor-Lounge\.codex-home" rmdir /s /q "AionsHome-Visitor-Lounge\.codex-home"
+if exist "AionsHome-Visitor-Lounge\.pytest_cache" rmdir /s /q "AionsHome-Visitor-Lounge\.pytest_cache"
+if exist "AionsHome-Visitor-Lounge\.venv" rmdir /s /q "AionsHome-Visitor-Lounge\.venv"
 
 :: ── Connor-Codex 个人数据 ──
 if exist "Connor-Codex\messages.jsonl" del /q "Connor-Codex\messages.jsonl"
@@ -133,7 +173,7 @@ if exist "Connor-Codex\node_modules" rmdir /s /q "Connor-Codex\node_modules"
 if exist "Connor-Codex\package-lock.json" del /q "Connor-Codex\package-lock.json"
 del /q "Connor-Codex\*.log" 2>nul
 
-:: 重置 settings.json（清空所有 API Key）
+:: 重置 settings.json（清空所有 API Key，包含 Tavily 联网搜索 Key）
 echo {} > "aion-chat\data\settings.json"
 
 :: 重置世界书人设
@@ -155,17 +195,22 @@ mkdir "Active\screenshots"
 :: ── 删除 .vscode 配置 ──
 if exist ".vscode" rmdir /s /q ".vscode"
 
-:: ── 清理 Android App 硬编码 IP ──
-set "JAVA_DIR=AionApp\app\src\main\java\com\aion\chat"
-if exist "%JAVA_DIR%\LauncherActivity.java" (
-    powershell -Command "(Get-Content '%JAVA_DIR%\LauncherActivity.java' -Encoding UTF8) -replace 'http://[0-9.]+:8080/chat', 'http://192.168.xx.xxx:8080/chat' | Set-Content '%JAVA_DIR%\LauncherActivity.java' -Encoding UTF8"
+:: ── 清理 Android App 网络地址 ──
+:: 自动读取当前源码中的地址，再替换为 RFC/示例用途地址；脚本自身不保存个人地址。
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\sanitize-network-endpoints.ps1" -Root "%CD%"
+if errorlevel 1 (
+    echo.
+    echo [错误] 网络地址清理或复查失败，请根据上方提示处理后再提交。
+    pause
+    exit /b 1
 )
-if exist "%JAVA_DIR%\WebViewActivity.java" (
-    powershell -Command "(Get-Content '%JAVA_DIR%\WebViewActivity.java' -Encoding UTF8) -replace 'http://[0-9.]+:8080/chat', 'http://192.168.xx.xxx:8080/chat' | Set-Content '%JAVA_DIR%\WebViewActivity.java' -Encoding UTF8"
-)
-if exist "%JAVA_DIR%\AionPushService.java" (
-    powershell -Command "(Get-Content '%JAVA_DIR%\AionPushService.java' -Encoding UTF8) -replace 'http://[0-9.]+:8080/chat', 'http://192.168.xx.xxx:8080/chat' | Set-Content '%JAVA_DIR%\AionPushService.java' -Encoding UTF8"
-)
+
+:: 编译产物会内嵌清理前的地址，不应进入开源副本。
+if exist "AionApp\local.properties" del /q "AionApp\local.properties"
+if exist "AionApp\app\build" rmdir /s /q "AionApp\app\build"
+if exist "AionApp\build" rmdir /s /q "AionApp\build"
+if exist "AionApp\.gradle" rmdir /s /q "AionApp\.gradle"
+if exist "AionApp\.idea" rmdir /s /q "AionApp\.idea"
 
 :: ── 删除虚拟环境 ──
 if exist ".venv" rmdir /s /q ".venv"

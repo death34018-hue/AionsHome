@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{ host_name }} · 本机管理</title>
+  <link rel="stylesheet" href="/admin/static/lounge.css?v=20260809-1">
+</head>
+<body data-page="admin-dashboard">
+  <main class="admin-shell">
+    <header class="admin-header">
+      <div>
+        <p class="eyebrow">LOOPBACK CONSOLE</p>
+        <h1>访客管理台</h1>
+        <p class="muted">{{ host_name }}会客室 · 仅限本机</p>
+      </div>
+      <div class="admin-header-actions">
+        <a class="button-link secondary" href="/admin/settings">接待设置</a>
+        <label for="invitation-kind">邀请类型</label>
+        <select id="invitation-kind"><option value="human" selected>人类访客</option><option value="external_ai">外部 AI</option></select>
+        <button id="create-invitation" type="button">创建邀请</button>
+      </div>
+    </header>
+
+    <section id="invitation-reveal" class="admin-panel key-reveal-panel" hidden aria-live="polite">
+      <div><strong>新 Key（仅当前页面短暂显示）</strong><p id="invitation-status" class="muted"></p></div>
+      <code id="invitation-key" class="key-value"></code>
+      <button id="copy-invitation-key" type="button" disabled>复制 Key</button>
+    </section>
+
+    <section class="admin-metrics" aria-label="今日概览">
+      <article><span>会客室</span><strong>{{ "开放" if metrics.lounge_enabled else "暂停" }}</strong><small>生成 {{ metrics.active_generations }} · 排队 {{ metrics.queue_depth }}</small></article>
+      <article><span>今日任务</span><strong>{{ metrics.today_completed }} / {{ metrics.today_failed }}</strong><small>完成 / 失败</small></article>
+      <article><span>今日 Tokens</span><strong>{{ metrics.reported_input_tokens + metrics.reported_output_tokens }}</strong><small>仅已上报用量</small></article>
+      <article><span>今日访客</span><strong>{{ metrics.today_visitors }}</strong><small>北京时间</small></article>
+      <article><span>模型调用</span><strong>{{ metrics.model_calls }}</strong><small>聊天与记忆</small></article>
+      <article><span>未读记忆</span><strong>{{ metrics.unread_summaries }}</strong><small>{{ "资源暂停" if metrics.resource_status == "paused" else "资源可用" if metrics.resource_status == "available" else "资源状态未知" }}</small></article>
+    </section>
+
+    <section class="admin-panel visitor-management">
+      <div class="panel-heading">
+        <div><p class="eyebrow">VISITORS</p><h2>访客管理</h2><p class="muted">访客 ID 是固定身份；轮换或撤销 Key 都不会改变聊天与记忆。</p></div>
+        <span class="count-badge">{{ visitors|length }} 位</span>
+      </div>
+      <div class="visitor-management-toolbar">
+        <input id="visitor-search" type="search" placeholder="按名字或访客 ID 搜索" autocomplete="off">
+        <select id="visitor-kind-filter" aria-label="访客类型"><option value="">全部类型</option><option value="human">人类访客</option><option value="external_ai">外部 AI</option></select>
+        <label class="select-visible"><input id="select-visible-visitors" type="checkbox"> 选择当前显示</label>
+      </div>
+
+      {% if visitors %}
+      <div class="visitor-table-wrap">
+        <table class="visitor-table">
+          <thead><tr><th aria-label="选择"></th><th>访客身份</th><th>完整聊天</th><th>Key</th><th>状态与额度</th><th>操作</th></tr></thead>
+          <tbody>
+          {% for visitor in visitors %}
+            <tr data-visitor-row data-search="{{ ((visitor.display_name or '') ~ ' ' ~ visitor.id)|lower }}" data-kind="{{ visitor.visitor_kind }}" data-visitor-id="{{ visitor.id }}" data-visitor-name="{{ visitor.display_name or '未命名访客' }}" data-kind-label="{{ '外部 AI' if visitor.visitor_kind == 'external_ai' else '人类访客' }}" data-message-count="{{ visitor.message_count }}">
+              <td><input class="visitor-select" type="checkbox" value="{{ visitor.id }}" aria-label="选择 {{ visitor.display_name or '未命名访客' }}"></td>
+              <td>
+                <a class="visitor-name" href="/admin/visitors/{{ visitor.id }}">{{ visitor.display_name or "未命名访客" }}</a>
+                <span class="identity-badge">{{ "外部 AI" if visitor.visitor_kind == "external_ai" else "人类访客" }}</span>
+                {% if not visitor.identity_claimed %}<span class="identity-badge muted-badge">未认领</span>{% endif %}
+                <div class="visitor-id-line"><code>{{ visitor.id }}</code><button class="text-button" type="button" data-copy-id="{{ visitor.id }}">复制 ID</button></div>
+              </td>
+              <td>
+                <a class="button-link compact chat-link" href="/admin/visitors/{{ visitor.id }}">查看全部 {{ visitor.message_count }} 条聊天</a>
+                {% if visitor.latest_message_content %}
+                <p class="chat-preview"><span>{{ (visitor.display_name or "访客") if visitor.latest_message_sender == "visitor" else host_name }}：</span>{{ visitor.latest_message_content }}</p>
+                {% else %}<p class="muted compact-copy">尚未开始聊天</p>{% endif %}
+              </td>
+              <td>
+                {% if visitor.active_key_masked %}<code>{{ visitor.active_key_masked }}</code><span class="key-state is-active">有效</span>{% else %}<span class="key-state">已撤销</span>{% endif %}
+                <div class="visitor-row-actions">
+                  {% if visitor.active_key_masked %}
+                  <button type="button" class="secondary compact" data-key-command="copy" data-visitor-id="{{ visitor.id }}">复制</button>
+                  <button type="button" class="secondary compact" data-key-command="rotate" data-visitor-id="{{ visitor.id }}">轮换</button>
+                  <button type="button" class="secondary compact" data-key-command="revoke" data-visitor-id="{{ visitor.id }}">撤销</button>
+                  {% else %}
+                  <button type="button" class="secondary compact" data-key-command="create" data-visitor-id="{{ visitor.id }}">创建新 Key</button>
+                  {% endif %}
+                </div>
+              </td>
+              <td><span class="status-pill">{{ visitor.status }}</span>{% if visitor.quota_limit is not none %}<p class="compact-copy">剩余 {{ visitor.quota_remaining }} / {{ visitor.quota_limit }}</p>{% else %}<p class="muted compact-copy">额度尚未开始</p>{% endif %}<small>{{ visitor.last_activity_at or visitor.created_at }}</small></td>
+              <td><div class="visitor-row-actions vertical"><a class="button-link compact" href="/admin/visitors/{{ visitor.id }}">详情管理</a><button type="button" class="danger-button compact" data-delete-one="{{ visitor.id }}">永久删除</button></div></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="selection-bar">
+        <span>已选择 <strong id="selection-count">0</strong> 位</span>
+        <button id="delete-selected" class="danger-button" type="button" disabled>永久删除所选访客</button>
+      </div>
+      {% else %}<p class="empty">暂无访客记录。</p>{% endif %}
+    </section>
+
+    <section class="admin-lower-grid">
+      <article class="admin-panel">
+        <div class="panel-heading"><h2>最新访客记忆</h2></div>
+        <div class="summary-list">{% for summary in summaries %}<article class="summary"><small>{{ summary.display_name or "未命名访客" }} · {{ summary.created_at }}</small><p>{{ summary.text }}</p></article>{% else %}<p class="empty">暂无访客记忆。</p>{% endfor %}</div>
+      </article>
+      <article class="admin-panel">
+        <div class="panel-heading"><h2>最近安全 / 管理动态</h2></div>
+        <div class="compact-table-wrap"><table><thead><tr><th>事件</th><th>访客</th><th>时间</th></tr></thead><tbody>{% for event in recent_activity %}<tr><td>{{ event.label }}</td><td>{{ event.visitor_name }}</td><td>{{ event.created_at }}</td></tr>{% else %}<tr><td colspan="3" class="muted">暂无动态。</td></tr>{% endfor %}</tbody></table></div>
+      </article>
+    </section>
+
+    <section class="admin-panel model-activity-panel">
+      <div class="panel-heading"><h2>模型调用动态</h2><span class="muted">最近 {{ model_activity|length }} 次实际调用</span></div>
+      <div class="compact-table-wrap"><table><thead><tr><th>用途</th><th>访客</th><th>Token</th><th>状态</th><th>时间</th></tr></thead><tbody>
+      {% for call in model_activity %}<tr class="model-call-row {{ call.state_class }}"><td>{{ call.kind_label }}</td><td>{{ call.visitor_name }}</td><td>{% if call.usage_reported %}{{ "{:,}".format(call.input_tokens) }} in · {{ "{:,}".format(call.output_tokens) }} out{% else %}<span class="muted">已调用，用量未报告</span>{% endif %}</td><td><span class="model-call-status {{ call.state_class }}">{{ call.status }}</span>{% if call.failure_reason %}<small class="failure-reason">{{ call.failure_reason }}</small>{% endif %}</td><td>{{ call.started_at }}</td></tr>{% else %}<tr><td colspan="5" class="muted">暂无模型调用。</td></tr>{% endfor %}
+      </tbody></table></div>
+    </section>
+  </main>
+
+  <dialog id="delete-visitors-dialog" class="admin-dialog">
+    <form id="delete-visitors-form">
+      <p class="eyebrow">PERMANENT DELETE</p>
+      <h2>永久删除访客</h2>
+      <p>以下访客的 Key、ID、聊天、记忆、额度和相关记录都会永久删除，无法恢复：</p>
+      <ul id="delete-visitor-list" class="delete-visitor-list"></ul>
+      <label for="delete-confirmation">请输入 DELETE 确认</label>
+      <input id="delete-confirmation" autocomplete="off">
+      <p id="delete-error" class="error" role="alert"></p>
+      <div class="dialog-actions"><button id="cancel-delete" type="button" class="secondary">取消</button><button id="confirm-delete" type="submit" class="danger-button" disabled>确认永久删除</button></div>
+    </form>
+  </dialog>
+  <script src="/admin/static/admin.js?v=20260809-1" defer></script>
+</body>
+</html>

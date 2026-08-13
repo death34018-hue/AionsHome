@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>活动日志 - Aion</title>
+<title>活动日志</title>
 <link rel="stylesheet" href="/static/common.css">
 <link rel="manifest" href="/manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -295,6 +295,7 @@ let currentActivityTab = 'timeline';
 let timelineLoaded = false;
 let timelineItems = [];
 let timelinePressTimer = null;
+let timelinePopoverRequest = 0;
 let idleConfig = null;
 
 function switchActivityTab(tab) {
@@ -313,6 +314,83 @@ function switchActivityTab(tab) {
 function timelineDate(ts) {
   const d = new Date(ts * 1000);
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+function safeVisitLabel(value, fallback) {
+  let safe = String(value || '').replace(/https?:\/\/[^\s<>'"]+/gi, '链接');
+  safe = safe.replace(/\b(?:authorization|bearer|visitor[_ -]?key|oauth[_ -]?token)\b[^，。；;]*/gi, '保密信息');
+  safe = safe.replace(/\b(?:get_lounge_info|claim_identity|begin_visit|talk_to_host|get_visit_state|end_visit)\b/gi, '串门流程');
+  return safe.trim().slice(0, 80) || fallback;
+}
+
+function safeAutonomousVisitReason(visit) {
+  const raw = String(visit?.error || '');
+  const reasons = [
+    ['action_end', '这次聊天自然告一段落'],
+    ['max_turns', '聊到了本次回合上限'],
+    ['visitor_locked', '对方暂时不方便接待'],
+    ['visitor_paused', '对方暂时停止接待'],
+    ['quota_exhausted', '对方今天的接待额度已用完'],
+    ['lounge_closed', '对方的会客室暂未开放'],
+    ['visitor_busy', '对方当时正在接待别人'],
+    ['service_busy', '对方当时有些忙'],
+    ['request_conflict', '这次拜访与另一场会面冲突'],
+    ['visit_timeout', '这次拜访等待时间过长'],
+    ['connection_failed', '这次没有顺利联系上对方'],
+    ['generation_failed', '聊天生成中途停止'],
+    ['friend_disabled', '这位好友当前已停用'],
+  ];
+  const matched = reasons.find(([code]) => raw.includes(code));
+  if (matched) return matched[1];
+  return visit?.status === 'completed' ? '拜访顺利结束' : '拜访过程中出现了状况';
+}
+
+function autonomousVisitTimelineItems(directory, visitsByActor, cutoff) {
+  const actors = new Map((directory?.actors || []).map(actor => [actor.id, actor.display_name]));
+  const friends = new Map((directory?.friends || []).map(friend => [`${friend.actor_id}:${friend.id}`, friend.display_name]));
+  const items = [];
+  Object.entries(visitsByActor || {}).forEach(([actorId, visits]) => {
+    (Array.isArray(visits) ? visits : []).forEach(visit => {
+      const timestamp = Number(visit.finished_at || visit.started_at || 0);
+      if (visit.trigger_source !== 'autonomy' || !['completed', 'interrupted', 'rejected'].includes(visit.status) || timestamp < cutoff) return;
+      const actorName = safeVisitLabel(actors.get(actorId), 'AI');
+      const friendName = safeVisitLabel(friends.get(`${actorId}:${visit.friend_id}`), 'AI 好友');
+      const completed = visit.status === 'completed';
+      const status = completed ? '完成' : '中断';
+      const reason = safeAutonomousVisitReason(visit);
+      items.push({
+        timestamp,
+        time: new Date(timestamp * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }),
+        kind: 'friend_visit',
+        actor: actorName,
+        actor_id: actorId,
+        title: `${actorName}拜访“${friendName}”后回家了`,
+        detail: `好友：${friendName}；回合数：${Number(visit.turn_count || 0)}；状态：${status}；原因：${reason}`,
+        source_id: visit.id,
+        attachments: [],
+      });
+    });
+  });
+  return items.sort((left, right) => right.timestamp - left.timestamp);
+}
+
+async function loadAutonomousVisitTimeline(hours) {
+  try {
+    const directory = await api('GET', '/api/lounge-friends');
+    const actors = Array.isArray(directory?.actors) ? directory.actors : [];
+    const payloads = await Promise.all(actors.map(async actor => {
+      try {
+        const payload = await api('GET', `/api/lounge-visits?actor_id=${encodeURIComponent(actor.id)}&limit=50`);
+        return [actor.id, Array.isArray(payload?.visits) ? payload.visits : []];
+      } catch (_error) {
+        return [actor.id, []];
+      }
+    }));
+    const cutoff = Date.now() / 1000 - Number(hours || 24) * 60 * 60;
+    return autonomousVisitTimelineItems(directory, Object.fromEntries(payloads), cutoff);
+  } catch (_error) {
+    return [];
+  }
 }
 
 function renderTimelineImages(atts) {
@@ -371,6 +449,7 @@ function cancelTimelinePress() {
 }
 
 function hideTimelinePopover() {
+  timelinePopoverRequest += 1;
   const pop = $('timelinePopover');
   pop.classList.remove('show');
   pop.innerHTML = '';
@@ -398,6 +477,34 @@ function showTimelinePopover(event, idx) {
   }
   pop.style.left = `${left}px`;
   pop.style.top = `${top}px`;
+  if (item.kind === 'friend_visit' && item.actor_id && item.source_id) {
+    loadVisitTimelineDetail(item, pop);
+  }
+}
+
+async function loadVisitTimelineDetail(item, pop) {
+  const requestId = ++timelinePopoverRequest;
+  try {
+    const visit = await api(
+      'GET',
+      `/api/lounge-visits/${encodeURIComponent(item.source_id)}?actor_id=${encodeURIComponent(item.actor_id)}`
+    );
+    if (requestId !== timelinePopoverRequest || !pop.classList.contains('show')) return;
+    const messages = Array.isArray(visit?.messages) ? visit.messages : [];
+    const transcript = messages.length
+      ? messages.map(message => {
+          const sender = message.direction === 'inbound' ? '好友' : item.actor;
+          return `${sender}：${String(message.content || '')}`;
+        }).join('\n\n')
+      : '暂无往返内容';
+    pop.innerHTML = `
+      <div class="timeline-popover-time">${escHtml(timelineDate(item.timestamp))} ${escHtml(item.time || '')}</div>
+      <div class="timeline-popover-title">${escHtml(item.title || '')}</div>
+      <div class="timeline-popover-detail">${escHtml(item.detail || '')}\n\n${escHtml(transcript)}</div>
+    `;
+  } catch (_error) {
+    // 概要卡片已经可用；详情接口失败时保持概要，不覆盖它。
+  }
 }
 
 document.addEventListener('pointerdown', event => {
@@ -427,9 +534,14 @@ async function loadTimeline() {
   const el = $('timelineList');
   el.innerHTML = '<div class="timeline-empty">加载中...</div>';
   try {
-    const data = await api('GET', `/api/timeline?hours=${hours}&limit=500`);
+    const [data, friendVisits] = await Promise.all([
+      api('GET', `/api/timeline?hours=${hours}&limit=500`),
+      loadAutonomousVisitTimeline(hours),
+    ]);
     timelineLoaded = true;
-    renderTimeline(data.items || []);
+    const items = [...(data.items || []), ...friendVisits]
+      .sort((left, right) => Number(right.timestamp || 0) - Number(left.timestamp || 0));
+    renderTimeline(items);
     scrollTimelineToBottom();
   } catch(e) {
     el.innerHTML = '<div class="timeline-empty">加载失败</div>';

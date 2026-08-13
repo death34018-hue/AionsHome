@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>接待设置</title>
+  <link rel="stylesheet" href="/admin/static/lounge.css">
+</head>
+<body data-page="admin-settings">
+  <main class="admin-settings-shell">
+    <header class="settings-header">
+      <div><p class="eyebrow">LOCAL RECEPTION</p><h1>接待设置</h1><p class="muted">所有访客共用，保存后从下一条相关消息开始生效。</p></div>
+      <a class="button-link secondary" href="/admin">返回访客管理</a>
+    </header>
+    <form id="reception-settings-form" class="settings-form">
+      <section class="settings-card">
+        <label for="persona_text">{{ host_name }} 全局人设</label>
+        <textarea id="persona_text" name="persona_text" maxlength="12000" rows="15" required>{{ settings.persona_text }}</textarea>
+      </section>
+      <section class="settings-card">
+        <label for="hourly_quota_limit">每位访客每 12 小时聊天额度</label>
+        <input id="hourly_quota_limit" name="hourly_quota_limit" type="number" min="1" max="500" step="1" value="{{ settings.hourly_quota_limit }}" required>
+        <p class="muted">范围 1–500，默认 15。窗口从访客本轮第一次发言起计算 12 小时；保存后立即影响当前窗口，已使用条数不会被倒扣。</p>
+      </section>
+      <section class="settings-grid">
+        <label>首次欢迎语<textarea name="first_welcome" maxlength="1000" rows="4" required>{{ settings.first_welcome }}</textarea></label>
+        <label>再次来访欢迎语<textarea name="returning_welcome" maxlength="1000" rows="4" required>{{ settings.returning_welcome }}</textarea></label>
+        <label>额度用完<textarea name="quota_exhausted" maxlength="1000" rows="3" required>{{ settings.quota_exhausted }}</textarea></label>
+        <label>内容不当<textarea name="unsafe_request" maxlength="1000" rows="3" required>{{ settings.unsafe_request }}</textarea></label>
+        <label>检测到凭据<textarea name="credential_detected" maxlength="1000" rows="3" required>{{ settings.credential_detected }}</textarea></label>
+        <label>消息过长<textarea name="input_too_long" maxlength="1000" rows="3" required>{{ settings.input_too_long }}</textarea></label>
+        <label>会客室关闭<textarea name="lounge_closed" maxlength="1000" rows="3" required>{{ settings.lounge_closed }}</textarea></label>
+        <label>系统不可用<textarea name="system_unavailable" maxlength="1000" rows="3" required>{{ settings.system_unavailable }}</textarea></label>
+      </section>
+      <input name="idle_minutes" type="hidden" value="30">
+      <label class="switch-row"><input name="lounge_enabled" type="checkbox" {% if settings.lounge_enabled %}checked{% endif %}> 会客室允许访客发送新消息</label>
+      <p class="muted">无活动 30 分钟后挂起。欢迎语支持 <code>{访客名字}</code> 和 <code>{接待人名字}</code>。</p>
+      <p id="settings-status" aria-live="polite">{% if settings.updated_at %}上次保存：{{ settings.updated_at }}{% else %}当前使用默认配置{% endif %}</p>
+      <div class="toolbar"><button type="submit">保存设置</button><button id="restore-settings" class="secondary" type="button">恢复默认</button></div>
+    </form>
+  </main>
+  <script src="/admin/static/admin.js?v=20260807-3" defer></script>
+</body>
+</html>

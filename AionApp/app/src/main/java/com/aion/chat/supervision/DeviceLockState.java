@@ -27,6 +27,12 @@ public final class DeviceLockState {
     }
 
     public Snapshot snapshot(long nowElapsedMs) {
+        if (lock != null && !lock.isActive(nowElapsedMs)) {
+            lock = null;
+        }
+        if (temporaryUnlock != null && !temporaryUnlock.isActive(nowElapsedMs)) {
+            temporaryUnlock = null;
+        }
         return new Snapshot(lock, temporaryUnlock, effectiveState(nowElapsedMs));
     }
 

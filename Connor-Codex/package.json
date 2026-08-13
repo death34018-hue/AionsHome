@@ -12,6 +12,6 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "@openai/codex": "^0.128.0"
+    "@openai/codex": "0.144.1"
   }
 }

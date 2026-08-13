@@ -6,6 +6,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Mapping
 from zoneinfo import ZoneInfo
 
 
@@ -22,11 +23,18 @@ def local_month(timestamp: float, timezone_name: str) -> tuple[int, int]:
     return dt.year, dt.month
 
 
-def window_title(kind: str, year: int, month: int) -> str:
-    if kind == "group":
-        return f"群聊{year % 100:02d}-{month}"
-    prefix = {"aion": "Aion", "connor": "Connor"}[kind]
-    return f"{prefix} {year % 100:02d}-{month}"
+DEFAULT_WINDOW_LABELS = {"aion": "AI", "connor": "第二 AI", "group": "群聊"}
+
+
+def window_title(
+    kind: str,
+    year: int,
+    month: int,
+    window_labels: Mapping[str, str],
+) -> str:
+    prefix = window_labels[kind]
+    separator = "" if kind == "group" else " "
+    return f"{prefix}{separator}{year % 100:02d}-{month}"
 
 
 def _table_exists(db: sqlite3.Connection, table: str) -> bool:
@@ -80,6 +88,7 @@ def _make_targets(
     rows: list[tuple[str, float]],
     active_id: str,
     timezone_name: str,
+    window_labels: Mapping[str, str],
 ) -> dict[tuple[int, int], str]:
     months = sorted({local_month(ts, timezone_name) for _, ts in rows})
     if not months:
@@ -96,7 +105,7 @@ def _make_targets(
             db.execute(
                 "INSERT INTO conversations (id,title,model,created_at,updated_at) VALUES (?,?,?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET title=excluded.title, model=excluded.model",
-                (target_id, window_title(kind, year, month), model, 0.0, 0.0),
+                (target_id, window_title(kind, year, month, window_labels), model, 0.0, 0.0),
             )
     else:
         room_type = "connor_1v1" if kind == "connor" else "group"
@@ -114,7 +123,7 @@ def _make_targets(
                 "title=excluded.title,type=excluded.type",
                 (
                     target_id,
-                    window_title(kind, year, month),
+                    window_title(kind, year, month, window_labels),
                     room_type,
                     template[0],
                     template[1],
@@ -294,9 +303,11 @@ def archive_chat_windows(
     db_path: Path,
     backup_dir: Path,
     timezone_name: str = "Asia/Shanghai",
+    window_labels: Mapping[str, str] | None = None,
 ) -> ArchiveReport:
     db_path = Path(db_path)
     backup_dir = Path(backup_dir)
+    labels = {**DEFAULT_WINDOW_LABELS, **(window_labels or {})}
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     backup_path = backup_dir / f"chat-before-monthly-archive-{stamp}.db"
@@ -325,7 +336,14 @@ def archive_chat_windows(
         active_ids = {kind: _latest_id(db, kind) for kind in ("aion", "connor", "group")}
         rows_by_kind = {kind: _message_rows(db, kind) for kind in ("aion", "connor", "group")}
         targets = {
-            kind: _make_targets(db, kind, rows_by_kind[kind], active_ids[kind], timezone_name)
+            kind: _make_targets(
+                db,
+                kind,
+                rows_by_kind[kind],
+                active_ids[kind],
+                timezone_name,
+                labels,
+            )
             for kind in ("aion", "connor", "group")
         }
 

@@ -13,6 +13,8 @@ from config import DEFAULT_MODEL, SETTINGS, load_worldbook, save_settings
 from context_builder import fetch_merged_timeline, render_merged_timeline
 from database import get_db
 from link_preview import build_link_preview_attachments
+from lounge_friends import LoungeFriend, redact_visitor_key
+from lounge_visit_reporting import publish_outbound_report
 from tts import synthesize_message_tts_later
 from web_search import WEB_SEARCH_CMD_PATTERN, clean_web_command_text, is_web_search_available, run_web_commands
 from ws import manager
@@ -26,6 +28,7 @@ ACTION_DEFS = {
     "cam_check": "调取监控查看用户当前状态",
     "wish_pool": "查看许愿池并尝试实现用户的愿望",
     "xhs_roam": "去小红书查看指定账号最新帖子并按人设评论或回复",
+    "friend_visit": "拜访一位 AI 好友",
 }
 
 SEEKY_ACTIONS = {
@@ -231,6 +234,8 @@ def _idle_event_home_title(row, shown_diary_ids: set[str], shown_moment_ids: set
         "web_roam",
         "wish_pool",
         "xhs_roam",
+        "friend_visit_completed",
+        "friend_visit_interrupted",
         "error",
     ):
         return None
@@ -419,6 +424,17 @@ def _is_idle_web_roam_available() -> bool:
         return False
 
 
+def _lounge_friend_store():
+    from routes.lounge_friends import friend_store
+
+    return friend_store
+
+
+def eligible_lounge_friends(actor: str) -> list[LoungeFriend]:
+    """Return the shared store's currently eligible friends for one actor."""
+    return _lounge_friend_store().eligible_for_autonomy(actor)
+
+
 async def _select_action(actor: str, *, manual: bool = False) -> dict:
     cfg = get_idle_config()
     enabled = [key for key, value in cfg["actions"].items() if value]
@@ -426,6 +442,12 @@ async def _select_action(actor: str, *, manual: bool = False) -> dict:
         enabled.remove("wish_pool")
     if "web_roam" in enabled and not manual and not _is_idle_web_roam_available():
         enabled.remove("web_roam")
+    if "friend_visit" in enabled:
+        try:
+            if not eligible_lounge_friends(actor):
+                enabled.remove("friend_visit")
+        except Exception:
+            enabled.remove("friend_visit")
     if "xhs_roam" in enabled:
         try:
             from xhs_lite import is_ready_for_auto
@@ -434,7 +456,10 @@ async def _select_action(actor: str, *, manual: bool = False) -> dict:
         except Exception:
             enabled.remove("xhs_roam")
     if not enabled:
-        enabled = [key for key in ACTION_DEFS if key not in {"wish_pool", "web_roam", "xhs_roam"}]
+        enabled = [
+            key for key in ACTION_DEFS
+            if key not in {"wish_pool", "web_roam", "xhs_roam", "friend_visit"}
+        ]
     options = "\n".join(f"- {key}: {ACTION_DEFS[key]}" for key in enabled)
     data = await _ask_actor_json(actor, (
         "[空闲自主行动]\n"
@@ -459,7 +484,12 @@ async def _select_action(actor: str, *, manual: bool = False) -> dict:
     return {"action": action, "reason": str(data.get("reason") or "").strip(), "message": message}
 
 
-async def _save_aion_private_message(content: str, attachments: list | None = None) -> dict | None:
+async def _save_aion_private_message(
+    content: str,
+    attachments: list | None = None,
+    *,
+    auto_tts: bool = True,
+) -> dict | None:
     content = (content or "").strip()
     if not content:
         return None
@@ -482,7 +512,7 @@ async def _save_aion_private_message(content: str, attachments: list | None = No
         await db.commit()
     msg = {"id": msg_id, "conv_id": conv_id, "role": "assistant", "content": content, "created_at": now, "attachments": att_list}
     await manager.broadcast({"type": "msg_created", "data": msg})
-    if manager.any_tts_enabled():
+    if auto_tts and manager.any_tts_enabled():
         voice = manager.get_tts_voice()
         if voice:
             synthesize_message_tts_later(msg_id, content, voice, manager)
@@ -564,6 +594,7 @@ async def _save_private_message(
     attachments: list | None = None,
     *,
     force_private: bool = False,
+    auto_tts: bool = True,
 ) -> dict | None:
     if actor == "aion":
         if not force_private:
@@ -572,8 +603,18 @@ async def _save_private_message(
                 room_id = target.split(":", 1)[1]
                 if room_id:
                     from routes.chatroom import _save_msg
-                    return await _save_msg(room_id, "aion", content, attachments=attachments or [])
-        return await _save_aion_private_message(content, attachments)
+                    return await _save_msg(
+                        room_id,
+                        "aion",
+                        content,
+                        attachments=attachments or [],
+                        auto_tts=auto_tts,
+                    )
+        return await _save_aion_private_message(
+            content,
+            attachments,
+            auto_tts=auto_tts,
+        )
     if force_private:
         from routes.chatroom import _get_or_create_connor_private_room
         room_id = await _get_or_create_connor_private_room()
@@ -582,7 +623,168 @@ async def _save_private_message(
     if not room_id:
         return None
     from routes.chatroom import _save_msg
-    return await _save_msg(room_id, "connor", content, attachments=attachments or [])
+    return await _save_msg(
+        room_id,
+        "connor",
+        content,
+        attachments=attachments or [],
+        auto_tts=auto_tts,
+    )
+
+
+async def _choose_lounge_friend(
+    actor: str, friends: list[LoungeFriend]
+) -> tuple[str, str]:
+    if not friends:
+        return "", ""
+    now = time.time()
+    choices = [
+        {
+            "id": friend.id,
+            "display_name": redact_visitor_key(
+                friend.display_name, friend.visitor_key
+            ),
+            "relationship_note": redact_visitor_key(
+                friend.relationship_note, friend.visitor_key
+            ),
+            "last_visit_at": friend.last_visit_at,
+        }
+        for friend in friends
+    ]
+    data = await _ask_actor_json(
+        actor,
+        (
+            "[自主拜访 AI 好友]\n"
+            "请从下面当前可拜访的好友中选择一位，并决定这次想聊的主题。"
+            "候选资料只用于本次选择。只返回 JSON，不要解释。\n"
+            f"当前时间：{datetime.fromtimestamp(now).astimezone().isoformat(timespec='seconds')}\n"
+            f"好友：{json.dumps(choices, ensure_ascii=False)}\n"
+            '格式：{"friend_id":"候选 id","topic":"想聊的主题",'
+            '"reason":"为什么现在想去"}'
+        ),
+        limit=30,
+    )
+    friend_id = str(data.get("friend_id") or "").strip()
+    if friend_id not in {friend.id for friend in friends}:
+        return "", ""
+    topic = _clip(str(data.get("topic") or "").strip(), 500) or "聊聊近况"
+    return friend_id, topic
+
+
+_FRIEND_VISIT_REASON_LABELS = {
+    "action_end": "这次聊天自然告一段落",
+    "max_turns": "聊到了本次回合上限",
+    "visitor_locked": "对方暂时不方便接待",
+    "visitor_paused": "对方暂时停止接待",
+    "quota_exhausted": "对方今天的接待额度已用完",
+    "lounge_closed": "对方的会客室暂未开放",
+    "visitor_busy": "对方当时正在接待别人",
+    "service_busy": "对方当时有些忙",
+    "request_conflict": "这次拜访与另一场会面冲突",
+    "visit_timeout": "这次拜访等待时间过长",
+    "connection_failed": "这次没有顺利联系上对方",
+    "generation_failed": "聊天生成中途停止",
+    "friend_disabled": "这位好友当前已停用",
+}
+
+
+def _friend_visit_reason_label(status: str, reason: str) -> str:
+    label = _FRIEND_VISIT_REASON_LABELS.get(reason)
+    if label:
+        return label
+    if status == "completed":
+        return "拜访顺利结束"
+    return "拜访过程中出现了状况"
+
+
+def _safe_friend_visit_name(value: str) -> str:
+    safe = re.sub(r"(?i)https?://[^\s<>'\"]+", "链接", str(value or ""))
+    safe = re.sub(
+        r"(?i)\b(?:authorization|bearer|visitor[_ -]?key|oauth[_ -]?token)\b[^，。；;]*",
+        "保密信息",
+        safe,
+    )
+    safe = re.sub(
+        r"(?i)\b(?:get_lounge_info|claim_identity|begin_visit|talk_to_host|get_visit_state|end_visit)\b",
+        "串门流程",
+        safe,
+    )
+    return _clip(safe, 80) or "AI 好友"
+
+
+async def _run_friend_visit(actor: str) -> dict[str, object]:
+    store = _lounge_friend_store()
+    try:
+        friends = store.eligible_for_autonomy(actor)
+    except Exception:
+        return {"cancelled": True, "reason": "friend_unavailable"}
+    friend_id, topic = await _choose_lounge_friend(actor, friends)
+    if not friend_id:
+        return {"cancelled": True, "reason": "friend_unavailable"}
+
+    try:
+        owned_friend = store.get_owned(actor, friend_id)
+        eligible_ids = {
+            friend.id for friend in store.eligible_for_autonomy(actor)
+        }
+    except Exception:
+        return {"cancelled": True, "reason": "friend_unavailable"}
+    if owned_friend.id not in eligible_ids:
+        return {"cancelled": True, "reason": "friend_unavailable"}
+
+    from routes import lounge_friends as lounge_routes
+
+    async with lounge_routes.lounge_repository_provider() as repository:
+        visit = await lounge_routes.LoungeVisitCoordinator(
+            store,
+            repository,
+            lounge_routes.mcp_manager,
+            actor_name_resolver=_actor_label,
+        ).run_visit(
+            actor,
+            owned_friend.id,
+            "autonomy",
+            topic,
+            lounge_routes.compose_lounge_message,
+        )
+        message = await publish_outbound_report(
+            actor, owned_friend.display_name, visit, repository
+        )
+
+    status = "completed" if visit.status == "completed" else "interrupted"
+    status_label = "完成" if status == "completed" else "中断"
+    actor_name = _safe_friend_visit_name(_actor_label(actor))
+    friend_name = _safe_friend_visit_name(owned_friend.display_name)
+    reason_label = _friend_visit_reason_label(visit.status, visit.reason)
+    detail = (
+        f"好友：{friend_name}；回合数：{visit.turn_count}；"
+        f"状态：{status_label}；原因：{reason_label}"
+    )
+    event = await append_idle_event(
+        actor,
+        f"friend_visit_{status}",
+        f"{actor_name}拜访“{friend_name}”后回家了",
+        detail,
+        target_type="lounge_visit",
+        target_id=visit.visit_id,
+        result_type="message" if message else "",
+        result_id=(message or {}).get("id", ""),
+        metadata={
+            "friend_id": owned_friend.id,
+            "friend_name": friend_name,
+            "turn_count": visit.turn_count,
+            "status": status,
+            "reason": reason_label,
+        },
+    )
+    return {
+        "cancelled": False,
+        "visit_id": visit.visit_id,
+        "status": status,
+        "turn_count": visit.turn_count,
+        "event": event,
+        "message": message,
+    }
 
 
 async def _run_seeky_interaction(actor: str) -> dict:
@@ -1561,6 +1763,8 @@ async def _run_actor_once(actor: str, *, manual: bool = False) -> dict:
         result = await _run_wish_pool(actor)
     elif action == "xhs_roam":
         result = await _run_xhs_roam(actor)
+    elif action == "friend_visit":
+        result = await _run_friend_visit(actor)
     else:
         result = {}
     return {"ok": True, "actor": actor, "action": action, "result": result}

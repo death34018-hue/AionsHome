@@ -46,6 +46,19 @@ public class DeviceLockStateTest {
         assertEquals("temporary", snapshot.getTemporaryUnlock().getCommandId());
     }
 
+    @Test
+    public void snapshotClearsExpiredDeviceDirectives() {
+        DeviceLockState state = new DeviceLockState();
+        state.setLock(directive("lock", 1));
+        state.setTemporaryUnlock(directive("temporary", 1));
+
+        DeviceLockState.Snapshot snapshot = state.snapshot(MINUTE_MS);
+
+        assertEquals(EffectiveState.NORMAL, snapshot.getEffectiveState());
+        assertNull(snapshot.getLock());
+        assertNull(snapshot.getTemporaryUnlock());
+    }
+
     private static TimedDirective directive(String commandId, int minutes) {
         return TimedDirective.create(
                 0L, 1_800_000_000_000L, minutes,

@@ -26,6 +26,7 @@ class CamConfigUpdate(BaseModel):
     auto_interval_min: Optional[int] = None
     auto_interval_max: Optional[int] = None
     max_screenshots: Optional[int] = None
+    include_pc_screen: Optional[bool] = None
     quiet_hours_enabled: Optional[bool] = None
     quiet_hours_start: Optional[str] = None
     quiet_hours_end: Optional[str] = None
@@ -63,6 +64,7 @@ async def cam_status():
         "auto_interval_min": cam.cfg.get("auto_interval_min", 10),
         "auto_interval_max": cam.cfg.get("auto_interval_max", 20),
         "max_screenshots": cam.cfg["max_screenshots"],
+        "include_pc_screen": bool(cam.cfg.get("include_pc_screen", False)),
         "quiet_hours_enabled": cam.cfg.get("quiet_hours_enabled", False),
         "quiet_hours_start": cam.cfg.get("quiet_hours_start", "00:00"),
         "quiet_hours_end": cam.cfg.get("quiet_hours_end", "09:00"),
@@ -122,6 +124,8 @@ async def update_cam_config(body: CamConfigUpdate):
         cam.cfg["auto_interval_max"] = max(cam.cfg.get("auto_interval_min", 1), body.auto_interval_max)
     if body.max_screenshots is not None:
         cam.cfg["max_screenshots"] = max(0, body.max_screenshots)
+    if body.include_pc_screen is not None:
+        cam.cfg["include_pc_screen"] = body.include_pc_screen
     if body.quiet_hours_enabled is not None:
         cam.cfg["quiet_hours_enabled"] = body.quiet_hours_enabled
     if body.quiet_hours_start is not None:

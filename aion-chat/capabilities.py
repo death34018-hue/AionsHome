@@ -10,9 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from config import DEPRECATED_MODEL_PROVIDERS, MODELS, SETTINGS, UPLOADS_DIR, save_settings
+from config import DATA_DIR, DEPRECATED_MODEL_PROVIDERS, MODELS, SETTINGS, UPLOADS_DIR, save_settings
 from camera import CAM_CHECK_CMD
 from activity import is_activity_tracking_enabled
+from lounge_friends import redact_visitor_key
 from luckin import luckin_ability_text
 from song_gen import build_song_gen_ability_text
 
@@ -67,6 +68,7 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef("memory_write", "写入记忆", "social", "注入 [MEMORY:内容]，让模型可以记录重要记忆。"),
     CapabilityDef("inner_monologue", "内心旁白", "social", "注入可见的 [心里嘀咕：xxx] 角色化内心旁白标记。"),
     CapabilityDef("wish", "许愿", "social", "注入 [许愿：内容]，让模型可以把自己的愿望投进许愿池。"),
+    CapabilityDef("friend_visit", "拜访 AI 好友", "social", "注入 [LOUNGE_VISIT:好友 ID|话题]，让模型可在用户明确要求时拜访已配置好友。"),
     CapabilityDef("transfer", "钱包转账", "life", "注入 [转账：n元]，让模型可以在余额足够时转账。"),
     CapabilityDef("private_whisper", "群聊悄悄话", "special", "注入 [悄悄话：内容]，让群聊角色可以向私聊窗口发送悄悄话。", runtime_note="仅群聊上下文会注入。"),
     CapabilityDef("toy", "密语玩具", "special", "注入 [TOY:1]~[TOY:9] / [TOY:STOP]，让密语模式下可以控制玩具。", runtime_note="仅密语模式会注入。"),
@@ -279,6 +281,28 @@ def build_band_note_ability_text(user_name: str, *, passive: bool = False) -> st
     return text
 
 
+def lounge_visit_ability_text(actor_id: str, store) -> str:
+    """Return only the current actor's enabled friend metadata for the prompt."""
+    try:
+        friends = [friend for friend in store.list_for_actor(actor_id) if friend.enabled]
+    except Exception:
+        return ""
+    if not friends:
+        return ""
+    friend_lines = "\n".join(
+        f"- ID: {friend.id}; "
+        f"名称: {redact_visitor_key(friend.display_name, friend.visitor_key)}; "
+        f"备注: {redact_visitor_key(friend.relationship_note, friend.visitor_key)}"
+        for friend in friends
+    )
+    return (
+        "[LOUNGE_VISIT:好友ID|话题] — 仅当用户明确要求你去拜访某位 AI 好友时才输出；"
+        "不要在普通聊天中自行发起拜访。无人请求时的自主串门只允许由闲时自主行动触发。\n"
+        "可拜访好友：\n"
+        f"{friend_lines}"
+    )
+
+
 async def build_capability_prompt_items(
     user_name: str,
     *,
@@ -327,6 +351,15 @@ async def build_capability_prompt_items(
 
     if is_capability_enabled("band_vibration"):
         abilities.append(build_band_note_ability_text(user_name))
+
+    if is_capability_enabled("friend_visit"):
+        from lounge_friends import LoungeFriendStore
+
+        lounge_text = lounge_visit_ability_text(
+            who, LoungeFriendStore(DATA_DIR / "lounge_friends.json")
+        )
+        if lounge_text:
+            abilities.append(lounge_text)
 
     if is_capability_enabled("hug_pillow"):
         from hug_pillow_commands import build_hug_pillow_ability_text

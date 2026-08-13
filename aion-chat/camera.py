@@ -29,6 +29,23 @@ SENTINEL_LEGACY_WAKE_TARGETS = {
 }
 
 
+def build_monitor_layout_guidance(include_pc_screen: bool) -> str:
+    """Describe image regions by labels instead of assuming fixed coordinates."""
+    camera_rule = (
+        '标有 "CAMERA VIEW" 的区域才是摄像头事实，是判断身体位置、姿势和环境的唯一图像依据。'
+    )
+    phone_rule = (
+        '标有 "PHONE SCREEN" 的区域是手机屏幕设备上下文，通常位于摄像头画面左侧；'
+        '它只能说明设备或应用使用情况，不能用于判断身体位置。'
+    )
+    if not include_pc_screen:
+        return f"{camera_rule}\n- {phone_rule}\n- 本次不会包含电脑桌面截图。"
+    return (
+        f"{camera_rule}\n- {phone_rule}\n- 标有 \"DEVICE CONTEXT\" 的区域可能包含电脑桌面和手机屏幕，"
+        "同样只能作为设备上下文，不能用于判断身体位置。"
+    )
+
+
 def normalize_sentinel_wake_target(value: object) -> str:
     target = str(value or "").strip().lower()
     target = SENTINEL_LEGACY_WAKE_TARGETS.get(target, target)
@@ -78,8 +95,8 @@ def build_sentinel_dispatch_policy(
     return f"""派单规则（仅在 call_core=true 时使用）：
 - wake_target 只能是 main_ai、second_ai、both。main_ai 代表{ai_name}，second_ai 代表{connor_name}，both 代表两位都唤醒。
 - 明确点名优先：{user_name}明确呼唤其中一位时，优先派给被点名者。
-- 强烈情绪、想发疯吐槽、受委屈需要立刻站队、玩闹撩骚、灵感爆发或设备折腾，优先派给{ai_name}（main_ai）。
-- 饮食出行、运动工作、直播前后、睡眠作息、身体不适、工作，运动摸鱼，优先派给{connor_name}（second_ai）。
+- 强烈情绪、想发疯吐槽、受委屈需要立刻站队、玩闹撩骚，优先派给{ai_name}（main_ai）。
+- 饮食出行、运动工作、直播前后、睡眠作息、身体不适，偷懒摸鱼，不去休息，不吃饭需要提醒时，优先派给{connor_name}（second_ai）。
 - 撒娇、亲密互动、低落但嘴硬等不固定归属；结合点名、最近由谁处理同一事情、近期互动和谁更久没有被唤醒来选择。
 - 当明显危险、健康异常、情绪崩溃、涉及三个人共同的家庭关系、或长时间没有交流，选择 both。
 - 普通的不确定或低置信度不能成为选择 both 的理由；仍要先判断更匹配的一位。
@@ -735,6 +752,8 @@ class CameraMonitor:
     def _capture_screen(self, *, force: bool = False) -> np.ndarray | None:
         """截取主屏幕画面，缩放到与摄像头同宽，返回 BGR numpy 数组。"""
         try:
+            if not self.cfg.get("include_pc_screen", False):
+                return None
             if not force and not self._should_capture_pc_screen():
                 return None
             from PIL import ImageGrab
@@ -781,16 +800,19 @@ class CameraMonitor:
         phone_screen_after: float | None = None,
     ) -> np.ndarray:
         """将摄像头画面（上）和主屏幕截图（下）上下拼接"""
+        if not self.cfg.get("include_pc_screen", False):
+            return self._combine_phone_screen_beside_camera(
+                cam_frame,
+                phone_screen_after=phone_screen_after,
+            )
+
         cam_layer = self._add_layer_label(cam_frame, "CAMERA VIEW - body/location source")
         screen = self._capture_screen(force=force_pc_screen)
         if screen is None:
-            phone_layer = self._build_phone_only_layer(
-                cam_frame.shape[1],
+            return self._combine_phone_screen_beside_camera(
+                cam_frame,
                 phone_screen_after=phone_screen_after,
             )
-            if phone_layer is not None:
-                return np.vstack([cam_layer, phone_layer])
-            return cam_layer
         cam_h, cam_w = cam_layer.shape[:2]
         # 将屏幕截图缩放到与摄像头同宽
         scr_h, scr_w = screen.shape[:2]
@@ -804,6 +826,49 @@ class CameraMonitor:
         # 上下拼接
         combined = np.vstack([cam_layer, screen_resized])
         return combined
+
+    def _combine_phone_screen_beside_camera(
+        self,
+        cam_frame: np.ndarray,
+        *,
+        phone_screen_after: float | None = None,
+    ) -> np.ndarray:
+        """Place a fresh phone screen to the left of the camera without cropping."""
+        cam_layer = self._add_layer_label(
+            cam_frame,
+            "CAMERA VIEW - body/location source",
+        )
+        try:
+            from phone_screen import get_recent_phone_screen_path
+
+            phone_path = get_recent_phone_screen_path(
+                max_age_seconds=150,
+                received_after=phone_screen_after,
+            )
+            if not phone_path:
+                return cam_layer
+            phone = cv2.imread(str(phone_path))
+            if phone is None:
+                return cam_layer
+
+            cam_h = cam_layer.shape[0]
+            ph_h, ph_w = phone.shape[:2]
+            if cam_h <= 0 or ph_h <= 0 or ph_w <= 0:
+                return cam_layer
+            phone_w = max(1, round(cam_h * ph_w / ph_h))
+            phone_layer = cv2.resize(
+                phone,
+                (phone_w, cam_h),
+                interpolation=cv2.INTER_AREA,
+            )
+            phone_layer = self._add_layer_label(
+                phone_layer,
+                "PHONE SCREEN - device context only",
+            )
+            return np.hstack([phone_layer, cam_layer])
+        except Exception as e:
+            print(f"[Camera] 手机屏幕横向拼接失败: {e}")
+            return cam_layer
 
     def _should_capture_pc_screen(self) -> bool:
         """根据 Windows 显示器电源状态/空闲时间判断是否截取 PC 屏幕。"""
@@ -968,7 +1033,9 @@ class CameraMonitor:
         phone_screen_after: float | None = None,
     ) -> bytes | None:
         """摄像头未开启时，仅截取 PC 屏幕 + 手机截屏，返回 JPEG bytes。"""
-        screen = self._capture_screen(force=force_pc_screen)
+        screen = None
+        if self.cfg.get("include_pc_screen", False):
+            screen = self._capture_screen(force=force_pc_screen)
         if screen is not None:
             screen = self._overlay_phone_screen(
                 screen,
@@ -986,6 +1053,10 @@ class CameraMonitor:
             if phone_path:
                 phone = cv2.imread(str(phone_path))
                 if phone is not None:
+                    phone = self._add_layer_label(
+                        phone,
+                        "PHONE SCREEN - device context only",
+                    )
                     _, buf = cv2.imencode(".jpg", phone)
                     return buf.tobytes()
         except Exception:
@@ -1004,7 +1075,9 @@ class CameraMonitor:
             )
         else:
             # 摄像头未开启，尝试仅截屏
-            screen = self._capture_screen()
+            screen = None
+            if self.cfg.get("include_pc_screen", False):
+                screen = self._capture_screen()
             if screen is not None:
                 combined = self._overlay_phone_screen(
                     screen,
@@ -1020,7 +1093,10 @@ class CameraMonitor:
                     if phone_path:
                         phone = cv2.imread(str(phone_path))
                         if phone is not None:
-                            combined = phone
+                            combined = self._add_layer_label(
+                                phone,
+                                "PHONE SCREEN - device context only",
+                            )
                         else:
                             return None
                     else:
@@ -1315,6 +1391,9 @@ class CameraMonitor:
             ai_name=ai_name,
             connor_name=connor_name,
         )
+        layout_guidance = build_monitor_layout_guidance(
+            bool(self.cfg.get("include_pc_screen", False))
+        )
 
         prompt = f"""你是一个监控画面分析师，同时也是{user_name}的恋人。分析当前画面，并根据历史日志和当前状况，决定是否调用伴侣职权。
 
@@ -1335,15 +1414,14 @@ class CameraMonitor:
 {log_history if log_history else "（暂无历史日志）"}
 
         画面分区规则：
-        - 截图上半部分标有 "CAMERA VIEW" 的区域才是摄像头画面，是判断{user_name}身体位置、姿势、是否在床上/桌前的唯一依据。
-        - 截图下半部分标有 "DEVICE CONTEXT" 的区域只是手机/PC屏幕状态，只能说明设备或应用使用情况，不能用来判断{user_name}的身体位置。
+        - {layout_guidance}
         - 最近聊天、设备动态、心率摘要、历史监控日志只能作为背景上下文，不能覆盖当前摄像头事实。手机活跃、QQ/小红书活跃、PC黑屏、心率升高或降低，都不能单独推断{user_name}已经起床、睡着、运动或到了电脑桌前。
         - 心率摘要不是医学诊断，只能作为“可能睡眠/可能醒来/可能运动/可能异常”的辅助信号；如果摘要标注数据已过期、可能未佩戴或没电，必须忽略这条心率信号。
         - 如果摄像头画面中身体、床、桌、被子边界不清楚，必须写“不确定/疑似”，不要把不清楚的被褥或枕头说成手臂、头部或桌前。
         - 如果最近几次监控都显示床上被褥/睡眠状态，当前画面除非清楚看到离床或坐到桌前，否则应延续为“仍可能在床上休息/睡觉”，不要改写成“趴在电脑桌前”。
 
         请严格按照以下JSON格式回复，不要包含其他任何内容：
-        {{"camera_observation":"只描述CAMERA VIEW中的客观画面；不确定就明确说不确定。","device_activity":"只描述DEVICE CONTEXT和设备动态，不推断身体位置。","inference":"把画面事实和设备动态分开后的谨慎判断。","confidence":"high/medium/low","monitoringlog":"综合日志，必须优先基于camera_observation，设备动态只能作为补充。","summary":"根据历史日志，概括{user_name}这段时间以来的整体状况，去掉重复无用的信息，保留关键事件和状态变化，一两句话即可。注意力重点应当放在截图上半部分的摄像头内容，以及如果捕捉到左下方手机画面内容，应重点关注","call_core":false,"core_reason":"","wake_target":"main_ai","wake_reason":"","wake_confidence":"low"}}
+        {{"camera_observation":"只描述CAMERA VIEW中的客观画面；不确定就明确说不确定。","device_activity":"只描述PHONE SCREEN、DEVICE CONTEXT和设备动态，不推断身体位置。","inference":"把画面事实和设备动态分开后的谨慎判断。","confidence":"high/medium/low","monitoringlog":"综合日志，必须优先基于camera_observation，设备动态只能作为补充。","summary":"根据历史日志，概括{user_name}这段时间以来的整体状况，去掉重复无用的信息，保留关键事件和状态变化，一两句话即可。注意力重点放在CAMERA VIEW；如有PHONE SCREEN，也应关注其中的设备活动内容。","call_core":false,"core_reason":"","wake_target":"main_ai","wake_reason":"","wake_confidence":"low"}}
 
         字段说明：
         - camera_observation: 只允许来自CAMERA VIEW；没有清楚看到人就说没有清楚看到人；看不清床/桌/身体边界就写不确定。
@@ -1357,7 +1435,7 @@ class CameraMonitor:
 
         call_core判断依据：
         - false: {user_name}一切正常复合聊天内容 /夜间在睡觉 /前不久才发过消息。
-        - true: {user_name}和上下文聊天内容不符/ 故意引起注意 / 已经有一段时间没有聊天了（超过半小时） / 长时间同一姿势需提醒活动 / 长时间未看到{user_name} / 单纯想念她可以想主动联系 / 或当前摄像头画面显示状态不佳 / 重点关注左下方手机画面内容，有异常情况，如偷看其他帅哥，在刷小红书有意思的话题等等，可以主动询问。
+        - true: {user_name}和上下文聊天内容不符/ 故意引起注意 / 已经有一段时间没有聊天了（超过半小时） / 长时间同一姿势需提醒活动 / 长时间未看到{user_name} / 单纯想念她可以想主动联系 / 或当前摄像头画面显示状态不佳 / 重点关注PHONE SCREEN标记的手机画面内容，有异常或有趣的设备活动时可以主动询问。
         - 结合设备活动动态综合判断：设备动态可以提高“是否联系”的权重，但不能改变monitoringlog里的身体位置。若只是手机活跃而摄像头仍像床上休息，大概率在赖床，需要唤醒”。"""
         prompt += f"\n\n{dispatch_policy}"
 
@@ -2330,14 +2408,21 @@ async def perform_cam_check(conv_id: str, model_key: str):
     merged = await fetch_merged_timeline("aion", 6, conv_id=conv_id)
     recent = render_merged_timeline(merged, "aion")
 
+    layout_guidance = build_monitor_layout_guidance(
+        bool(cam.cfg.get("include_pc_screen", False))
+    )
+
     cam_prompt = (
         f"你刚才想看看{user_name}在干什么，这是系统抓取的实时监控画面。"
-        f"画面可能包含摄像头、电脑屏幕和手机屏幕；如果没有摄像头画面，就只根据电脑/手机屏幕内容说明设备使用情况，不要推断身体位置。"
+        f"{layout_guidance}如果没有CAMERA VIEW，就只根据设备上下文说明设备使用情况，不要推断身体位置。"
         f"请根据画面内容，自然地描述你看到的情况并和{user_name}互动。"
         f"不需要再说\"让我看看\"之类的话，直接说你看到了什么。"
     )
     if frame_source == "device":
-        cam_prompt += "本次没有可用摄像头画面，系统改用电脑屏幕和/或手机屏幕截图。"
+        if cam.cfg.get("include_pc_screen", False):
+            cam_prompt += "本次没有可用摄像头画面，系统改用电脑桌面和/或手机屏幕截图。"
+        else:
+            cam_prompt += "本次没有可用摄像头画面，仅附带了手机屏幕设备上下文。"
     if image_result.no_image_context:
         cam_prompt += image_result.no_image_context
     try:
