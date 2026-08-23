@@ -404,6 +404,7 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 .msg-row.system:hover .system-dots { display:inline; }
 .msg-row.system .msg-menu { left:50%; right:auto; top:calc(100% + 4px); transform:translateX(-50%); }
 body[data-theme="light"] .msg-row.system .system-notice { background: rgba(0,0,0,0.04); border-color: rgba(0,0,0,0.08); }
+.lounge-visit-status-line .system-notice { font-size:11px; opacity:0.82; padding:3px 11px; }
 .monitor-camera-snapshot { width:min(160px, 52vw); margin-top:5px; color:var(--text3); font-size:12px; user-select:none; -webkit-user-select:none; }
 .monitor-camera-snapshot summary { box-sizing:border-box; width:100%; cursor:pointer; list-style:none; padding:4px 8px; border-radius:12px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.10); text-align:center; white-space:nowrap; }
 .monitor-camera-snapshot summary::-webkit-details-marker { display:none; }

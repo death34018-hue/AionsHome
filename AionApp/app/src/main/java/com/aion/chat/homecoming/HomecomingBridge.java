@@ -50,6 +50,11 @@ public final class HomecomingBridge {
     }
 
     @JavascriptInterface
+    public void abandonHomecoming() {
+        activity.runOnUiThread(activity::abandonHomecoming);
+    }
+
+    @JavascriptInterface
     public String getReturnStateJson() {
         return activity.returnStateJson();
     }

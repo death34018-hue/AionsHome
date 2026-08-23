@@ -823,7 +823,11 @@ async def _call_core_location(
             pass
 
     merged = await fetch_merged_timeline("aion", 20, conv_id=conv_id)
-    history = render_merged_timeline(merged, "aion")
+    history = render_merged_timeline(
+        merged,
+        "aion",
+        include_image_attachments=False,
+    )
 
     prefix = []
     if wb.get("ai_persona"):
@@ -860,6 +864,10 @@ async def _call_core_location(
         ]
 
     messages = prefix + mem_inject + history + [{"role": "user", "content": core_prompt}]
+    from proactive_companionship import inject_proactive_ability
+    inject_proactive_ability(messages, "aion")
+    from autonomy_state import inject_autonomy_ability
+    await inject_autonomy_ability(messages, "aion")
 
     # 预生成 msg_id + TTS
     core_msg_id = f"msg_{int(time.time() * 1000)}_lr"

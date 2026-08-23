@@ -212,6 +212,43 @@ def test_visit_repository_does_not_delete_running_visit():
     asyncio.run(scenario())
 
 
+def test_finish_running_is_actor_scoped_and_idempotent():
+    async def scenario():
+        async with aiosqlite.connect(":memory:") as db:
+            await ensure_lounge_visit_tables(db)
+            repo = LoungeVisitRepository(db, clock=lambda: 42.0)
+            visit_id = await repo.start("actor-1", "friend-1", "manual", "Active")
+
+            assert await repo.finish_running("actor-2", visit_id, "user_cancelled") is False
+            assert await repo.finish_running("actor-1", visit_id, "user_cancelled") is True
+            assert await repo.finish_running("actor-1", visit_id, "user_cancelled") is False
+
+            visit = await repo.get("actor-1", visit_id)
+            assert visit["status"] == "interrupted"
+            assert visit["error"] == "Error: user_cancelled"
+            assert visit["finished_at"] == 42.0
+
+    asyncio.run(scenario())
+
+
+def test_interrupt_stale_running_leaves_terminal_visits_unchanged():
+    async def scenario():
+        async with aiosqlite.connect(":memory:") as db:
+            await ensure_lounge_visit_tables(db)
+            repo = LoungeVisitRepository(db, clock=lambda: 50.0)
+            stale_one = await repo.start("actor-1", "friend-1", "chat", "One")
+            stale_two = await repo.start("actor-2", "friend-2", "manual", "Two")
+            completed = await repo.start("actor-1", "friend-3", "manual", "Done")
+            await repo.finish(completed, "completed", 1)
+
+            assert await repo.interrupt_stale_running("restart_recovery") == 2
+            assert (await repo.get("actor-1", stale_one))["status"] == "interrupted"
+            assert (await repo.get("actor-2", stale_two))["status"] == "interrupted"
+            assert (await repo.get("actor-1", completed))["status"] == "completed"
+
+    asyncio.run(scenario())
+
+
 def test_sanitize_error_bounds_an_unusually_long_error_category():
     long_error_type = type("E" * 400, (Exception,), {})
 
@@ -240,3 +277,25 @@ def test_init_db_creates_lounge_visit_tables(tmp_path, monkeypatch):
             assert tables == {"lounge_visits", "lounge_visit_messages"}
 
     asyncio.run(scenario())
+
+
+def test_init_db_interrupts_orphaned_running_lounge_visits(tmp_path, monkeypatch):
+    db_path = tmp_path / "aion-chat.sqlite3"
+    monkeypatch.setattr(database, "DB_PATH", db_path)
+    asyncio.run(database.init_db())
+
+    async def seed_running():
+        async with aiosqlite.connect(db_path) as db:
+            repo = LoungeVisitRepository(db)
+            return await repo.start("actor-1", "friend-1", "chat", "Orphan")
+
+    visit_id = asyncio.run(seed_running())
+    asyncio.run(database.init_db())
+
+    async def verify():
+        async with aiosqlite.connect(db_path) as db:
+            visit = await LoungeVisitRepository(db).get("actor-1", visit_id)
+            assert visit["status"] == "interrupted"
+            assert visit["error"] == "Error: service_restarted"
+
+    asyncio.run(verify())

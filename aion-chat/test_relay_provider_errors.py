@@ -63,27 +63,61 @@ def fake_client_factory(response):
 
 
 class RelayProviderErrorPassthroughTests(unittest.IsolatedAsyncioTestCase):
-    def test_multimodal_messages_do_not_emit_non_standard_video_parts(self):
+    def test_multimodal_messages_ignore_video_when_model_does_not_support_it(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             video_path = Path(tmpdir) / "clip.mp4"
             video_path.write_bytes(b"unit video bytes")
 
             with patch("ai_providers._resolve_attachment_path", return_value=video_path):
-                messages = build_multimodal_messages([
-                    {
-                        "role": "user",
-                        "content": "please inspect",
-                        "attachments": ["/uploads/clip.mp4"],
-                    }
-                ])
+                messages = build_multimodal_messages([{
+                    "role": "user",
+                    "content": "please inspect",
+                    "attachments": ["/uploads/clip.mp4"],
+                }])
 
-        parts = messages[0]["content"]
-        self.assertIsInstance(parts, list)
-        self.assertEqual(parts[0], {"type": "text", "text": "please inspect"})
-        self.assertTrue(all(part.get("type") in {"text", "image_url"} for part in parts))
-        self.assertNotIn("video_url", {part.get("type") for part in parts})
-        self.assertIn("clip.mp4", parts[1]["text"])
-        self.assertIn("video/mp4", parts[1]["text"])
+        self.assertEqual(messages, [{"role": "user", "content": "please inspect"}])
+
+    async def test_custom_openai_includes_video_when_model_supports_it(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = Path(tmpdir) / "clip.mp4"
+            video_path.write_bytes(b"unit video bytes")
+            response = FakeStreamResponse(status_code=200, lines=["data: [DONE]"])
+            factory = fake_client_factory(response)
+            cfg = {
+                "base_url": "https://relay.example/v1",
+                "api_key": "test-key",
+                "model": "video-model",
+                "route_name": "Unit Relay",
+                "video": True,
+            }
+
+            with (
+                patch("ai_providers._resolve_attachment_path", return_value=video_path),
+                patch("ai_providers.httpx.AsyncClient", new=factory),
+            ):
+                chunks = [
+                    chunk
+                    async for chunk in call_custom_openai(
+                        [{
+                            "role": "user",
+                            "content": "please inspect",
+                            "attachments": ["/uploads/clip.mp4"],
+                        }],
+                        cfg,
+                    )
+                ]
+
+        self.assertEqual(chunks, [])
+        payload = factory.clients[0].calls[0][1]["json"]
+        self.assertEqual(payload["messages"][0]["content"], [
+            {"type": "text", "text": "please inspect"},
+            {
+                "type": "video_url",
+                "video_url": {
+                    "url": "data:video/mp4;base64,dW5pdCB2aWRlbyBieXRlcw==",
+                },
+            },
+        ])
 
     async def test_custom_openai_sends_standard_chat_completions_payload(self):
         response = FakeStreamResponse(status_code=200, lines=["data: [DONE]"])

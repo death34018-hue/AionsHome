@@ -658,7 +658,7 @@ function makeRouteId() {
 }
 
 function newCustomModel() {
-  return { key: "", model: "", vision: true, audio: false };
+  return { key: "", model: "", vision: true, audio: false, video: false };
 }
 
 function newCustomRoute() {
@@ -690,7 +690,8 @@ function normalizeRoutesForUi(routes, collapsedState) {
               key: model.key || model.name || model.model || "",
               model: model.model || model.model_id || "",
               vision: model.vision !== false,
-              audio: model.audio === true
+              audio: model.audio === true,
+              video: model.video === true
             };
           })
         : [newCustomModel()]
@@ -720,6 +721,10 @@ function renderCustomRoutes() {
               '<label class="vision-toggle">' +
                 '<input type="checkbox" ' + (model.audio === true ? "checked" : "") + ' onchange="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'audio\', this.checked)">' +
                 '可听音频' +
+              '</label>' +
+              '<label class="vision-toggle">' +
+                '<input type="checkbox" ' + (model.video === true ? "checked" : "") + ' onchange="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'video\', this.checked)">' +
+                '可看视频' +
               '</label>' +
               '<button class="ghost-btn danger-btn model-delete" type="button" title="删除模型" onclick="removeCustomModel(' + routeIndex + ', ' + modelIndex + ')">×</button>' +
             '</div>' +
@@ -833,7 +838,7 @@ function collectCustomRoutes() {
       if (!key || !modelId) throw new Error("第 " + (routeIndex + 1) + " 条线路的第 " + (modelIndex + 1) + " 个模型需要同时填写显示名和模型 ID");
       if (seenModelKeys.has(key)) throw new Error("模型显示名重复：" + key);
       seenModelKeys.add(key);
-      models.push({ key: key, model: modelId, vision: model.vision !== false, audio: model.audio === true });
+      models.push({ key: key, model: modelId, vision: model.vision !== false, audio: model.audio === true, video: model.video === true });
     });
     if (!models.length) throw new Error("第 " + (routeIndex + 1) + " 条线路至少需要一个模型");
     routes.push({

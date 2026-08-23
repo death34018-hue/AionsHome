@@ -14,13 +14,16 @@ from activity import (
     get_available_dates, cleanup_old_activity_logs, KEEP_HOURS,
     resolve_app_name, pc_tracker, generate_activity_summary,
     is_activity_tracking_enabled, set_activity_tracking_enabled,
-    pc_display_tracker,
+    pc_display_tracker, record_phone_context, record_notification,
+    remove_notification_context, get_device_context_snapshot,
+    get_device_context_for_prompt,
 )
 from ws import manager
 from database import get_db
 from config import load_worldbook
 from chatroom import load_chatroom_config
 from location import load_location_status
+from autonomy_state import wake_summary_timeline_title
 
 router = APIRouter()
 
@@ -42,6 +45,15 @@ class ActivityReport(BaseModel):
     app: str                # 应用名 / 进程名
     title: Optional[str] = ""   # 窗口标题 / 额外描述
     timestamp: Optional[float] = None  # 客户端时间戳，不传则用服务端时间
+
+
+class DeviceContextBody(BaseModel):
+    data: dict
+
+
+class NotificationRemoveBody(BaseModel):
+    key: str
+    observed_at: Optional[float] = None
 
 
 @router.post("/api/activity/report")
@@ -80,6 +92,55 @@ async def report_activity(report: ActivityReport):
     })
 
     return {"ok": True}
+
+
+@router.post("/api/device-context/phone")
+async def report_phone_context(body: DeviceContextBody):
+    changes = record_phone_context(body.data)
+    if changes:
+        try:
+            cleanup_old_activity_logs()
+        except Exception:
+            pass
+        await manager.broadcast({
+            "type": "device_context_changed",
+            "data": {"changed": len(changes)},
+        })
+    return {"ok": True, "changed": len(changes)}
+
+
+@router.post("/api/device-context/notification")
+async def report_notification_context(body: DeviceContextBody):
+    event = record_notification(body.data)
+    if event:
+        try:
+            cleanup_old_activity_logs()
+        except Exception:
+            pass
+        await manager.broadcast({
+            "type": "device_context_changed",
+            "data": {"notification": body.data.get("key", "")},
+        })
+    return {"ok": True, "accepted": bool(event)}
+
+
+@router.post("/api/device-context/notification/remove")
+async def remove_notification(body: NotificationRemoveBody):
+    event = remove_notification_context(body.key, body.observed_at)
+    if event:
+        await manager.broadcast({
+            "type": "device_context_changed",
+            "data": {"notification_removed": body.key},
+        })
+    return {"ok": True, "removed": bool(event)}
+
+
+@router.get("/api/device-context/status")
+async def device_context_status():
+    snapshot = get_device_context_snapshot()
+    snapshot["prompt"] = get_device_context_for_prompt()
+    snapshot["activity_tracking_enabled"] = is_activity_tracking_enabled()
+    return snapshot
 
 
 # ── 查询 ──────────────────────────────────────────
@@ -170,8 +231,12 @@ def _idle_event_timeline_title(row, actor: str, shown_diary_ids: set[str], shown
     except Exception:
         meta = {}
 
+    if meta.get("autonomy_wake_internal") and action != "wake_summary":
+        return None
     if action == "select":
         return None
+    if action == "wake_summary":
+        return wake_summary_timeline_title(row["title"], actor, meta)
     if action == "seeky_interaction":
         phrase = SEEKY_EVENT_PHRASES.get(str(meta.get("seeky_action") or ""))
         return f"{actor}对Seeky{phrase}" if phrase else row["title"]
@@ -190,10 +255,14 @@ def _idle_event_timeline_title(row, actor: str, shown_diary_ids: set[str], shown
         "home_dynamics",
         "memory_browse",
         "memory_browse_result",
+        "private_chat",
         "seeky_interaction",
         "role_chat",
         "cam_check",
         "web_roam",
+        "xhs_roam",
+        "friend_visit_completed",
+        "friend_visit_interrupted",
         "wish_pool",
         "error",
     ):

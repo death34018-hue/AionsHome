@@ -2,7 +2,7 @@
 全局配置：路径、常量、settings / worldbook / chat_status 读写
 """
 
-import json, time, re
+import atexit, json, os, re, shutil, sys, tempfile, time
 from pathlib import Path
 
 # ── 路径 ─────────────────────────────────────────
@@ -10,7 +10,25 @@ BASE_DIR = Path(__file__).parent
 PUBLIC_DIR = BASE_DIR.parent / "public"
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
-DB_PATH = DATA_DIR / "chat.db"
+
+
+def _is_test_process() -> bool:
+    entrypoint = Path(str(sys.argv[0] or "")).name.lower()
+    return (
+        "unittest" in sys.modules
+        or "pytest" in sys.modules
+        or entrypoint.startswith("test_")
+        or "pytest" in entrypoint
+        or "unittest" in entrypoint
+    )
+
+
+if _is_test_process():
+    _TEST_DB_DIR = Path(tempfile.mkdtemp(prefix=f"aionshome-tests-{os.getpid()}-"))
+    atexit.register(shutil.rmtree, _TEST_DB_DIR, ignore_errors=True)
+    DB_PATH = _TEST_DB_DIR / "chat.db"
+else:
+    DB_PATH = DATA_DIR / "chat.db"
 UPLOADS_DIR = DATA_DIR / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 SONGS_DIR = DATA_DIR / "songs"
@@ -205,6 +223,7 @@ BUILTIN_MODELS = {
     #  "硅基Kimi2.7":      {"provider": "siliconflow", "model": "moonshotai/Kimi-K2.7-Code", "vision": True},
     #  "硅基DS-v4":      {"provider": "siliconflow", "model": "deepseek-ai/DeepSeek-V4-Pro", "vision": False},
     "官Gem3.6flash":  {"provider": "gemini", "model": "gemini-3.6-flash", "vision": True},
+    "官Gem3.7flash":  {"provider": "gemini", "model": "gemini-3.7-flash", "vision": True},
     "官Gem3.1pro":  {"provider": "gemini", "model": "gemini-3.1-pro-preview", "vision": True},
     # "Codex-5.5":            {"provider": "codex_cli",  "model": "gpt-5.5", "vision": True},
     "Codex-Sol":      {"provider": "codex_cli",  "model": "gpt-5.6-sol", "vision": True},
@@ -247,11 +266,13 @@ def normalize_custom_model_routes(value) -> list[dict]:
                 model_key = model_id
                 vision = True
                 audio = False
+                video = False
             elif isinstance(raw_model, dict):
                 model_id = _clean_text(raw_model.get("model") or raw_model.get("model_id"))
                 model_key = _clean_text(raw_model.get("key") or raw_model.get("name") or model_id)
                 vision = bool(raw_model.get("vision", True))
                 audio = raw_model.get("audio") is True
+                video = raw_model.get("video") is True
             else:
                 continue
             if not model_id or not model_key:
@@ -264,6 +285,7 @@ def normalize_custom_model_routes(value) -> list[dict]:
                 "model": model_id,
                 "vision": vision,
                 "audio": audio,
+                "video": video,
             })
         if models:
             routes.append({
@@ -288,6 +310,7 @@ def refresh_custom_models() -> None:
                 "model": item["model"],
                 "vision": bool(item.get("vision", True)),
                 "audio": item.get("audio") is True,
+                "video": item.get("video") is True,
                 "base_url": route["base_url"],
                 "api_key": route.get("api_key", ""),
                 "route_id": route["id"],

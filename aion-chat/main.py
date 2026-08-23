@@ -368,6 +368,10 @@ async def diary_page():
 async def activity_logs_page():
     return FileResponse(BASE_DIR / "static" / "activity-logs.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
+@app.get("/family-dynamics")
+async def family_dynamics_page():
+    return FileResponse(BASE_DIR / "static" / "family-dynamics.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
 @app.get("/reading")
 async def reading_page():
     return FileResponse(BASE_DIR / "static" / "reading.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})

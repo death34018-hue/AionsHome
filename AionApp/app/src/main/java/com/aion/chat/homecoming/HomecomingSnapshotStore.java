@@ -6,12 +6,17 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
 
-import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CoderResult;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.ArrayList;
@@ -143,13 +148,11 @@ public final class HomecomingSnapshotStore {
                     return null;
                 }
             }
-            byte[] compressed = readBytes(snapshotFile);
             if (!constantTimeEquals(
-                    manifest.getString("file_sha256"), sha256Hex(compressed))) {
+                    manifest.getString("file_sha256"), sha256Hex(snapshotFile))) {
                 return null;
             }
-            String payloadText = new String(
-                    gunzip(compressed), StandardCharsets.UTF_8);
+            String payloadText = gunzipUtf8(snapshotFile);
             JSONObject payload = (JSONObject) new JSONTokener(payloadText).nextValue();
             if (payload.getInt("schema") != schema
                     || !snapshotId.equals(payload.getString("snapshot_id"))) {
@@ -160,13 +163,15 @@ public final class HomecomingSnapshotStore {
             if (sections.length() != sectionHashes.length()) {
                 return null;
             }
-            String rawSections = rawObjectMember(payloadText, "sections");
+            JsonRange rawSections = rawObjectMemberRange(
+                    payloadText, new JsonRange(0, payloadText.length()), "sections");
             Iterator<String> names = sections.keys();
             while (names.hasNext()) {
                 String name = names.next();
-                String rawSection = rawObjectMember(rawSections, name);
-                String actual = sha256Hex(
-                        rawSection.getBytes(StandardCharsets.UTF_8));
+                JsonRange rawSection = rawObjectMemberRange(
+                        payloadText, rawSections, name);
+                String actual = sha256HexUtf8(
+                        payloadText, rawSection.start, rawSection.end);
                 if (!sectionHashes.has(name)
                         || !constantTimeEquals(sectionHashes.getString(name), actual)) {
                     return null;
@@ -226,29 +231,85 @@ public final class HomecomingSnapshotStore {
         return bytes.toByteArray();
     }
 
-    private static byte[] gunzip(byte[] data) throws IOException {
-        GZIPInputStream gzip = new GZIPInputStream(new ByteArrayInputStream(data));
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        byte[] buffer = new byte[8192];
-        int count;
-        while ((count = gzip.read(buffer)) != -1) {
-            output.write(buffer, 0, count);
+    private static String gunzipUtf8(File file) throws IOException {
+        try (Reader reader = new InputStreamReader(
+                new GZIPInputStream(new FileInputStream(file)), StandardCharsets.UTF_8)) {
+            StringBuilder output = new StringBuilder();
+            char[] buffer = new char[8192];
+            int count;
+            while ((count = reader.read(buffer)) != -1) {
+                output.append(buffer, 0, count);
+            }
+            return output.toString();
         }
-        gzip.close();
-        return output.toByteArray();
     }
 
     static String sha256Hex(byte[] data) {
         try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(data);
-            StringBuilder value = new StringBuilder(digest.length * 2);
-            for (byte item : digest) {
-                value.append(String.format("%02x", item & 0xff));
-            }
-            return value.toString();
+            return hex(MessageDigest.getInstance("SHA-256").digest(data));
         } catch (Exception exception) {
             throw new IllegalStateException("SHA-256 unavailable", exception);
         }
+    }
+
+    public void discardAll() throws IOException {
+        for (String name : new String[]{"staging", "active", "previous"}) {
+            File target = directory(name);
+            if (target.exists() && !files.deleteTree(target)) {
+                throw new IOException("could not discard " + name + " snapshot");
+            }
+        }
+    }
+
+    private static String sha256Hex(File file) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (FileInputStream input = new FileInputStream(file)) {
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                digest.update(buffer, 0, count);
+            }
+        }
+        return hex(digest.digest());
+    }
+
+    static String sha256HexUtf8(String value, int start, int end) {
+        if (value == null || start < 0 || end < start || end > value.length()) {
+            throw new IllegalArgumentException("invalid UTF-8 digest range");
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            CharsetEncoder encoder = StandardCharsets.UTF_8.newEncoder();
+            CharBuffer chars = CharBuffer.wrap(value, start, end);
+            ByteBuffer bytes = ByteBuffer.allocate(8192);
+            while (true) {
+                CoderResult result = encoder.encode(chars, bytes, true);
+                updateDigest(digest, bytes);
+                if (result.isUnderflow()) break;
+                if (!result.isOverflow()) result.throwException();
+            }
+            while (true) {
+                CoderResult result = encoder.flush(bytes);
+                updateDigest(digest, bytes);
+                if (result.isUnderflow()) break;
+                if (!result.isOverflow()) result.throwException();
+            }
+            return hex(digest.digest());
+        } catch (Exception exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        }
+    }
+
+    private static void updateDigest(MessageDigest digest, ByteBuffer bytes) {
+        bytes.flip();
+        digest.update(bytes);
+        bytes.clear();
+    }
+
+    private static String hex(byte[] digest) {
+        StringBuilder value = new StringBuilder(digest.length * 2);
+        for (byte item : digest) value.append(String.format("%02x", item & 0xff));
+        return value.toString();
     }
 
     private static boolean constantTimeEquals(String expected, String actual) {
@@ -278,7 +339,7 @@ public final class HomecomingSnapshotStore {
                     result.append(',');
                 }
                 String key = keys.get(i);
-                result.append(JSONObject.quote(key))
+                result.append(canonicalQuote(key))
                         .append(':')
                         .append(canonicalJson(object.opt(key)));
             }
@@ -305,19 +366,26 @@ public final class HomecomingSnapshotStore {
         if (value instanceof Boolean) {
             return value.toString();
         }
-        return JSONObject.quote(String.valueOf(value));
+        return canonicalQuote(String.valueOf(value));
     }
 
-    static String rawObjectMember(String objectJson, String requestedName) throws Exception {
-        int length = objectJson.length();
-        int cursor = skipWhitespace(objectJson, 0);
-        if (cursor >= length || objectJson.charAt(cursor) != '{') {
+    private static String canonicalQuote(String value) {
+        // Python's canonical JSON leaves '/' unescaped. Android's JSONObject
+        // escapes it after '<', which otherwise changes return-package hashes.
+        return JSONObject.quote(value).replace("\\/", "/");
+    }
+
+    static JsonRange rawObjectMemberRange(
+            String objectJson, JsonRange objectRange, String requestedName) throws Exception {
+        int limit = objectRange.end;
+        int cursor = skipWhitespace(objectJson, objectRange.start);
+        if (cursor >= limit || objectJson.charAt(cursor) != '{') {
             throw new IllegalArgumentException("JSON value is not an object");
         }
         cursor++;
         while (true) {
             cursor = skipWhitespace(objectJson, cursor);
-            if (cursor >= length || objectJson.charAt(cursor) == '}') {
+            if (cursor >= limit || objectJson.charAt(cursor) == '}') {
                 break;
             }
             if (objectJson.charAt(cursor) != '"') {
@@ -327,20 +395,20 @@ public final class HomecomingSnapshotStore {
             String key = (String) new JSONTokener(
                     objectJson.substring(cursor, keyEnd)).nextValue();
             cursor = skipWhitespace(objectJson, keyEnd);
-            if (cursor >= length || objectJson.charAt(cursor) != ':') {
+            if (cursor >= limit || objectJson.charAt(cursor) != ':') {
                 throw new IllegalArgumentException("object separator is invalid");
             }
             int valueStart = skipWhitespace(objectJson, cursor + 1);
-            int valueEnd = valueEnd(objectJson, valueStart);
+            int valueEnd = valueEnd(objectJson, valueStart, limit);
             if (requestedName.equals(key)) {
-                return objectJson.substring(valueStart, valueEnd);
+                return new JsonRange(valueStart, valueEnd);
             }
             cursor = skipWhitespace(objectJson, valueEnd);
-            if (cursor < length && objectJson.charAt(cursor) == ',') {
+            if (cursor < limit && objectJson.charAt(cursor) == ',') {
                 cursor++;
                 continue;
             }
-            if (cursor < length && objectJson.charAt(cursor) == '}') {
+            if (cursor < limit && objectJson.charAt(cursor) == '}') {
                 break;
             }
             throw new IllegalArgumentException("object terminator is invalid");
@@ -371,8 +439,8 @@ public final class HomecomingSnapshotStore {
         throw new IllegalArgumentException("unterminated JSON string");
     }
 
-    private static int valueEnd(String value, int start) {
-        if (start >= value.length()) {
+    private static int valueEnd(String value, int start, int limit) {
+        if (start >= limit) {
             throw new IllegalArgumentException("missing JSON value");
         }
         char first = value.charAt(start);
@@ -381,7 +449,7 @@ public final class HomecomingSnapshotStore {
         }
         if (first != '{' && first != '[') {
             int cursor = start;
-            while (cursor < value.length()) {
+            while (cursor < limit) {
                 char current = value.charAt(cursor);
                 if (current == ',' || current == '}') {
                     break;
@@ -393,7 +461,7 @@ public final class HomecomingSnapshotStore {
         int depth = 0;
         boolean insideString = false;
         boolean escaped = false;
-        for (int i = start; i < value.length(); i++) {
+        for (int i = start; i < limit; i++) {
             char current = value.charAt(i);
             if (insideString) {
                 if (escaped) {
@@ -417,6 +485,16 @@ public final class HomecomingSnapshotStore {
             }
         }
         throw new IllegalArgumentException("unterminated JSON container");
+    }
+
+    static final class JsonRange {
+        final int start;
+        final int end;
+
+        JsonRange(int start, int end) {
+            this.start = start;
+            this.end = end;
+        }
     }
 
     interface FileOperations {

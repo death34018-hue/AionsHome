@@ -3,7 +3,7 @@ package com.aion.chat.homecoming;
 import java.util.List;
 
 public final class HomecomingReturnController {
-    private static final int MAX_FOREGROUND_APPLY_CALLS = 1000;
+    private static final int MAX_FOREGROUND_APPLY_CALLS = 20;
     private final ModePort mode;
     private final PackagePort packages;
     private final ClientPort client;
@@ -49,6 +49,10 @@ public final class HomecomingReturnController {
                 observer.onPhase("frozen");
                 mode.markFrozen(built.packageId);
                 route.stopHomecoming();
+                mode.deactivate();
+                observer.onPhase("saved");
+                route.openNormal();
+                return;
             }
 
             List<HomecomingReturnPackageRepository.ReturnPackage> pending =
@@ -127,6 +131,21 @@ public final class HomecomingReturnController {
         }
     }
 
+    public synchronized boolean abandon(ReturnRoute route) {
+        if (route == null) throw new IllegalArgumentException("route is required");
+        if (!mode.isActive()) return false;
+        route.stopHomecoming();
+        try {
+            packages.discardAllLocalData();
+            mode.deactivateAfterDiscard();
+            route.openNormal();
+            return true;
+        } catch (Exception exception) {
+            route.resumeHomecoming();
+            return false;
+        }
+    }
+
     public void cancel() {
         client.cancel();
     }
@@ -152,6 +171,7 @@ public final class HomecomingReturnController {
         void markFrozen(String packageId);
         void markReturning(String packageId);
         void deactivate();
+        void deactivateAfterDiscard();
     }
 
     public interface PackagePort {
@@ -163,6 +183,7 @@ public final class HomecomingReturnController {
                 HomecomingReturnPackageRepository.ReturnPackage value,
                 HomecomingReturnClient.Receipt receipt,
                 long now) throws Exception;
+        void discardAllLocalData() throws Exception;
     }
 
     public interface ClientPort {

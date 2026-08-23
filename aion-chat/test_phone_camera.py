@@ -7,7 +7,9 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from unittest.mock import patch
 
+import phone_camera
 from phone_camera import PhoneCameraCoordinator
 
 
@@ -29,6 +31,14 @@ async def _wait_for_count(items: list, count: int, timeout: float = 0.5) -> None
 
 
 class PhoneCameraCoordinatorTests(unittest.IsolatedAsyncioTestCase):
+    def test_default_phone_monitor_copy_uses_screenshots_not_uploads(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch.object(phone_camera, "SCREENSHOTS_DIR", root / "screenshots"):
+                coordinator = PhoneCameraCoordinator(capture_dir=root / "captures")
+
+            self.assertEqual(root / "screenshots", coordinator.upload_dir)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
@@ -88,6 +98,7 @@ class PhoneCameraCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(64, result.width)
         self.assertEqual(48, result.height)
         self.assertTrue(result.path.is_file())
+        self.assertEqual([], list(self.coordinator.capture_dir.glob("phone_camera_*.jpg")))
 
     async def test_duplicate_upload_is_idempotent(self):
         sent = []

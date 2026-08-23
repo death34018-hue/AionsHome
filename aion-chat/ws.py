@@ -195,6 +195,18 @@ class ConnectionManager:
         log.debug("TTS event dropped because no playable client is active: %s", data.get("type"))
 
     async def broadcast(self, data: dict, exclude: WebSocket = None):
+        proactive_changed = False
+        autonomy_changed = False
+        try:
+            from proactive_companionship import process_visible_message_event
+            data, proactive_changed = await process_visible_message_event(data)
+        except Exception as exc:
+            log.warning("proactive companionship event hook failed: %s", type(exc).__name__)
+        try:
+            from autonomy_state import process_persona_message_event
+            data, autonomy_changed = await process_persona_message_event(data)
+        except Exception as exc:
+            log.warning("autonomy state event hook failed: %s", type(exc).__name__)
         payload = _with_private_notification_sender(data)
         if "sync_seq" not in payload:
             try:
@@ -227,6 +239,18 @@ class ConnectionManager:
                 failed += 1
         log.info("broadcast type=%s sent=%d failed=%d total_clients=%d",
                  msg_type, sent, failed, len(self.active))
+        if proactive_changed:
+            try:
+                from proactive_companionship import proactive_status_event
+                await self.broadcast(await proactive_status_event())
+            except Exception as exc:
+                log.warning("proactive companionship status broadcast failed: %s", type(exc).__name__)
+        if autonomy_changed:
+            try:
+                from autonomy_state import autonomy_status_payload
+                await self.broadcast({"type": "autonomy_state_changed", "data": await autonomy_status_payload()})
+            except Exception as exc:
+                log.warning("autonomy status broadcast failed: %s", type(exc).__name__)
 
 
 manager = ConnectionManager()

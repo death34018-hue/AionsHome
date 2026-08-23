@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.lang.reflect.Method;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -96,6 +97,23 @@ public class HomecomingChatAssetContractTest {
     }
 
     @Test
+    public void mutedTtsStateIsVisibleAndAllSpeechUsesOnePermissionBoundary()
+            throws Exception {
+        String html = read("src/main/assets/homecoming/index.html");
+        String js = read("src/main/assets/homecoming/homecoming.js");
+        String runtime = read(
+                "src/main/java/com/aion/chat/homecoming/HomecomingRuntime.java");
+
+        assertTrue(html.contains("id=\"ttsQuickToggle\""));
+        assertTrue(js.contains("replay.className = \"tts-replay\""));
+        assertTrue(js.contains("TTS 已关闭"));
+        assertTrue(js.contains("renderTtsState"));
+        assertFalse(runtime.contains("\"homecoming_tts_enabled\", true"));
+        assertTrue(runtime.contains("speakIfEnabled("));
+        assertEquals(1, occurrences(runtime, "tts.enqueue("));
+    }
+
+    @Test
     public void memorySummaryIsManualAndRunsBothConfiguredOwners() throws Exception {
         String js = read("src/main/assets/homecoming/homecoming.js");
         String runtime = read(
@@ -113,5 +131,15 @@ public class HomecomingChatAssetContractTest {
 
     private static String read(String path) throws Exception {
         return new String(Files.readAllBytes(Paths.get(path)), StandardCharsets.UTF_8);
+    }
+
+    private static int occurrences(String value, String target) {
+        int count = 0;
+        int offset = 0;
+        while ((offset = value.indexOf(target, offset)) >= 0) {
+            count++;
+            offset += target.length();
+        }
+        return count;
     }
 }

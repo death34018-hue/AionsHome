@@ -13,6 +13,7 @@ public final class HomecomingModeStore {
     static final String KEY_ACTIVATED_AT = "activated_at";
     static final String KEY_PENDING_IMPORT = "pending_import_path";
     static final String KEY_PENDING_PACKAGE = "pending_return_package_id";
+    static final String KEY_TTS_ENABLED = "homecoming_tts_enabled";
 
     private static final String MODE_INACTIVE = "inactive";
     private static final String MODE_ACTIVE = "active";
@@ -65,6 +66,7 @@ public final class HomecomingModeStore {
         }
         backend.putString(KEY_EPOCH, epoch.trim());
         backend.putLong(KEY_ACTIVATED_AT, activatedAt);
+        backend.putBoolean(KEY_TTS_ENABLED, false);
         backend.putString(KEY_MODE, MODE_ACTIVE);
     }
 
@@ -98,6 +100,7 @@ public final class HomecomingModeStore {
     }
 
     public void deactivateAfterPackageSaved() {
+        backend.putBoolean(KEY_TTS_ENABLED, false);
         backend.putString(KEY_MODE, MODE_INACTIVE);
         backend.remove(KEY_EPOCH);
         backend.remove(KEY_ACTIVATED_AT);
@@ -107,6 +110,15 @@ public final class HomecomingModeStore {
         deactivateAfterPackageSaved();
         backend.remove(KEY_PENDING_PACKAGE);
         backend.remove(KEY_PENDING_IMPORT);
+    }
+
+    public void deactivateAfterDiscard() {
+        deactivateAfterSuccessfulReturn();
+        backend.remove("readiness_json");
+        backend.remove("portable_route_count");
+        backend.remove("last_checked_at");
+        backend.remove("last_error_code");
+        backend.remove("last_error_message");
     }
 
     public String currentEpoch() {
@@ -143,8 +155,10 @@ public final class HomecomingModeStore {
     interface Backend {
         String getString(String key, String defaultValue);
         long getLong(String key, long defaultValue);
+        boolean getBoolean(String key, boolean defaultValue);
         void putString(String key, String value);
         void putLong(String key, long value);
+        void putBoolean(String key, boolean value);
         void remove(String key);
     }
 
@@ -166,6 +180,11 @@ public final class HomecomingModeStore {
         }
 
         @Override
+        public boolean getBoolean(String key, boolean defaultValue) {
+            return preferences.getBoolean(key, defaultValue);
+        }
+
+        @Override
         public void putString(String key, String value) {
             preferences.edit().putString(key, value).apply();
         }
@@ -173,6 +192,11 @@ public final class HomecomingModeStore {
         @Override
         public void putLong(String key, long value) {
             preferences.edit().putLong(key, value).apply();
+        }
+
+        @Override
+        public void putBoolean(String key, boolean value) {
+            preferences.edit().putBoolean(key, value).apply();
         }
 
         @Override

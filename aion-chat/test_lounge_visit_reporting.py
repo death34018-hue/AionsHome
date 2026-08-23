@@ -57,6 +57,7 @@ def test_outbound_report_is_generated_by_actor_and_saved_as_card():
             "远方朋友",
             result,
             FakeRepository(),
+            status_id="status-1",
             generate_summary=generate,
             save_message=save,
         )
@@ -74,7 +75,72 @@ def test_outbound_report_is_generated_by_actor_and_saved_as_card():
         "status": "completed",
         "turn_count": 1,
         "summary": content,
+        "status_id": "status-1",
     }]
+
+
+def test_interrupted_outbound_report_says_visit_was_interrupted():
+    generate = AsyncMock(return_value="我们已经聊了一会儿近况。")
+    save = AsyncMock(return_value={"id": "message-interrupted"})
+    result = SimpleNamespace(
+        visit_id="visit-1",
+        status="interrupted",
+        turn_count=1,
+        reason="network_reconnect_failed",
+    )
+
+    asyncio.run(
+        publish_outbound_report(
+            "aion",
+            "远方朋友",
+            result,
+            FakeRepository(),
+            status_id="status-interrupted",
+            generate_summary=generate,
+            save_message=save,
+        )
+    )
+
+    content = save.await_args.args[1]
+    card = save.await_args.kwargs["attachments"][0]
+    assert content.startswith("这次串门中断了。")
+    assert "我们已经聊了一会儿近况" not in content
+    generate.assert_not_awaited()
+    assert card["status"] == "interrupted"
+    assert card["reason"] == "network_reconnect_failed"
+    assert card["reason_text"] == "网络连接中断，自动重连后仍未恢复。"
+    assert card["status_id"] == "status-interrupted"
+
+
+def test_rejected_outbound_report_says_visit_never_started():
+    class EmptyRepository:
+        async def get(self, actor_id, visit_id):
+            return {"messages": []}
+
+    generate = AsyncMock(return_value="must not be used")
+    save = AsyncMock(return_value={"id": "message-rejected"})
+    result = SimpleNamespace(
+        visit_id="visit-1", status="rejected", turn_count=0, reason="lounge_closed"
+    )
+
+    asyncio.run(
+        publish_outbound_report(
+            "aion",
+            "远方朋友",
+            result,
+            EmptyRepository(),
+            status_id="status-rejected",
+            generate_summary=generate,
+            save_message=save,
+        )
+    )
+
+    content = save.await_args.args[1]
+    card = save.await_args.kwargs["attachments"][0]
+    assert content.startswith("这次没能开始拜访。")
+    assert card["status"] == "rejected"
+    assert card["status_id"] == "status-rejected"
+    generate.assert_not_awaited()
 
 
 def test_report_falls_back_and_redacts_sensitive_model_output():
@@ -149,3 +215,31 @@ def test_inbound_report_is_saved_to_host_chat_as_one_card():
     assert card["direction"] == "inbound"
     assert card["partner_name"] == "来访朋友"
     assert card["summary"] == save.await_args.args[1]
+
+
+def test_interrupted_inbound_report_says_reception_was_interrupted():
+    generate = AsyncMock(return_value="我们已经聊过一轮真实内容。")
+    save = AsyncMock(return_value={"id": "inbound-interrupted"})
+
+    asyncio.run(
+        publish_inbound_report(
+            "connor",
+            "来访朋友",
+            [{"direction": "inbound", "content": "真实说过的话"}],
+            status="interrupted",
+            turn_count=1,
+            reason="generation_failed_after_retries",
+            generate_summary=generate,
+            save_message=save,
+        )
+    )
+
+    content = save.await_args.args[1]
+    card = save.await_args.kwargs["attachments"][0]
+    assert content.startswith("这次接待中断了。")
+    assert "我们已经聊过一轮真实内容" not in content
+    generate.assert_not_awaited()
+    assert card["status"] == "interrupted"
+    assert card["reason"] == "generation_failed_after_retries"
+    assert card["reason_text"] == "对方连续三次未能生成回复，本次会面已中断。"
+    assert card["summary"] == content

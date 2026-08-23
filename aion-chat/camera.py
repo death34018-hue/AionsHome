@@ -9,7 +9,7 @@ from pathlib import Path
 import cv2, httpx, numpy as np, aiosqlite
 
 from config import (
-    DB_PATH, SCREENSHOTS_DIR, MONITOR_LOGS_DIR, UPLOADS_DIR,
+    DB_PATH, SCREENSHOTS_DIR, MONITOR_LOGS_DIR,
     get_key, get_sentinel_config, load_worldbook, load_chat_status, load_cam_config,
     normalize_camera_wake_mode, save_cam_config, DEFAULT_MODEL, SETTINGS,
 )
@@ -1112,15 +1112,7 @@ class CameraMonitor:
         return filename
 
     def _cleanup(self):
-        max_keep = self.cfg.get("max_screenshots", 200)
-        if max_keep <= 0:
-            return
-        # 只清理监控截图(cam_YYYYMMDD_*)，不清理 Core 主动查看截图(cam_check_*)
-        files = sorted(f for f in SCREENSHOTS_DIR.glob("cam_*.jpg") if not f.name.startswith("cam_check_"))
-        if len(files) <= max_keep:
-            return
-        for f in files[:len(files) - max_keep]:
-            f.unlink(missing_ok=True)
+        cleanup_monitor_screenshots()
 
     def _random_interval_seconds(self) -> int:
         """根据配置的分钟区间随机生成一个间隔（秒）"""
@@ -1206,8 +1198,7 @@ class CameraMonitor:
                 if image_result.jpeg:
                     ts = time.strftime("%Y%m%d_%H%M%S")
                     filename = f"monitor_{ts}_{time.time_ns()}.jpg"
-                    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-                    (SCREENSHOTS_DIR / filename).write_bytes(image_result.jpeg)
+                    save_monitor_screenshot(image_result.jpeg, filename)
             else:
                 # 本地/ESP32 继续等待本轮新鲜的手机屏幕截图后再合成。
                 if self._loop:
@@ -1222,11 +1213,9 @@ class CameraMonitor:
                     phone_screen_after=phone_screen_requested_at,
                 )
                 if composite_jpeg:
-                    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
                     ts = time.strftime("%Y%m%d_%H%M%S")
                     filename = f"cam_{ts}.jpg"
-                    (SCREENSHOTS_DIR / filename).write_bytes(composite_jpeg)
-                    self._cleanup()
+                    save_monitor_screenshot(composite_jpeg, filename)
                 else:
                     filename = self.save_screenshot(
                         phone_screen_after=phone_screen_requested_at,
@@ -1366,8 +1355,8 @@ class CameraMonitor:
         activity_summary_text = ""
         user_dynamics_text = ""
         try:
-            from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prompt
-            activity_summary_text = get_activity_summary_for_prompt(6)
+            from activity import get_device_context_for_prompt, get_user_dynamics_for_prompt
+            activity_summary_text = get_device_context_for_prompt()
             user_dynamics_text = get_user_dynamics_for_prompt(hours=1)
         except Exception:
             pass
@@ -1731,12 +1720,14 @@ class CameraMonitor:
                 room_id,
                 [],
                 query_text=core_prompt,
+                include_image_attachments=False,
             )
         else:
             messages, digest_result = await build_connor_group_context(
                 room_id,
                 [],
                 query_text=core_prompt,
+                include_image_attachments=False,
             )
 
         fresh_fname = ""
@@ -1744,17 +1735,15 @@ class CameraMonitor:
             src_path = SCREENSHOTS_DIR / screenshot_filename
             if src_path.exists():
                 fresh_fname = screenshot_filename
-                dst_path = UPLOADS_DIR / screenshot_filename
-                if not dst_path.exists():
-                    import shutil
-                    shutil.copy2(src_path, dst_path)
         trigger_message = {"role": "user", "content": core_prompt}
         if fresh_fname:
-            trigger_message["attachments"] = [f"/uploads/{fresh_fname}"]
+            trigger_message["attachments"] = [f"/screenshots/{fresh_fname}"]
             trigger_message["content"] += (
                 "\n\n（附带了最新的监控截图，请结合画面内容回应。）"
             )
         messages.append(trigger_message)
+        from autonomy_state import inject_autonomy_ability
+        await inject_autonomy_ability(messages, "connor")
         inject_app_supervision_context(messages)
 
         cfg = load_chatroom_config()
@@ -1915,7 +1904,11 @@ class CameraMonitor:
         # 统一时间线：合并私聊 + 群聊消息
         from context_builder import fetch_merged_timeline, render_merged_timeline
         merged = await fetch_merged_timeline("aion", 20, conv_id=conv_id)
-        history = render_merged_timeline(merged, "aion")
+        history = render_merged_timeline(
+            merged,
+            "aion",
+            include_image_attachments=False,
+        )
 
         prefix = []
         if wb.get("ai_persona"):
@@ -1966,18 +1959,13 @@ class CameraMonitor:
         # 直接使用哨兵已截取的画面（提示音已在截图前播放）
         fresh_fname = ""
         if screenshot_filename:
-            from config import UPLOADS_DIR
             src_path = SCREENSHOTS_DIR / screenshot_filename
             if src_path.exists():
                 fresh_fname = screenshot_filename
-                dst_path = UPLOADS_DIR / screenshot_filename
-                if not dst_path.exists():
-                    import shutil
-                    shutil.copy2(src_path, dst_path)
 
         last_msg = {"role": "user", "content": core_prompt}
         if fresh_fname:
-            last_msg["attachments"] = [f"/uploads/{fresh_fname}"]
+            last_msg["attachments"] = [f"/screenshots/{fresh_fname}"]
             core_prompt += "\n\n（附带了最新的监控截图，请结合画面内容回应。）"
             last_msg["content"] = core_prompt
 
@@ -1990,6 +1978,10 @@ class CameraMonitor:
                 {"role": "assistant", "content": "收到，需要时我会使用手环纸条提醒。"},
             ]
         messages = prefix + mem_inject + history + passive_band_messages + [last_msg]
+        from proactive_companionship import inject_proactive_ability
+        inject_proactive_ability(messages, "aion")
+        from autonomy_state import inject_autonomy_ability
+        await inject_autonomy_ability(messages, "aion")
         from app_supervision_ai import inject_app_supervision_context
         inject_app_supervision_context(messages)
 
@@ -2165,6 +2157,13 @@ class MonitorImageResult:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class MonitorPromptContext:
+    image_result: MonitorImageResult
+    prompt_attachment: str = ""
+    snapshot_attachment: dict | None = None
+
+
 def _phone_result_to_monitor(
     result,
     *,
@@ -2278,6 +2277,61 @@ async def acquire_monitor_image(
     return MonitorImageResult(status="unavailable", source="device")
 
 
+async def acquire_prompt_monitor_context(
+    reason: str,
+    *,
+    alert_content: str,
+    alert_extra: dict | None = None,
+) -> MonitorPromptContext:
+    """Play the standard monitor alert and capture one fresh model context."""
+    await manager.broadcast({
+        "type": "monitor_alert",
+        "data": build_monitor_alert_data(alert_content, **(alert_extra or {})),
+    })
+
+    if cam.cfg.get("active_source", "local") == "phone":
+        image_result = await acquire_monitor_image(reason)
+    else:
+        phone_screen_requested_at = time.time()
+        from phone_screen import wait_for_phone_screen_after
+        await wait_for_phone_screen_after(phone_screen_requested_at)
+        jpg_bytes, camera_jpeg = cam.get_capture_jpegs(
+            phone_screen_after=phone_screen_requested_at,
+        )
+        if jpg_bytes:
+            image_result = MonitorImageResult(
+                status="ready",
+                source="camera",
+                jpeg=jpg_bytes,
+                camera_jpeg=camera_jpeg,
+            )
+        else:
+            jpg_bytes = cam.get_screen_only_jpeg(
+                phone_screen_after=phone_screen_requested_at,
+            )
+            image_result = (
+                MonitorImageResult(status="ready", source="device", jpeg=jpg_bytes)
+                if jpg_bytes else MonitorImageResult(status="unavailable", source="device")
+            )
+
+    prompt_attachment = ""
+    payload = bytes(image_result.jpeg or b"")
+    if payload:
+        safe_reason = re.sub(r"[^A-Za-z0-9_-]+", "_", str(reason or "capture"))[:40]
+        filename = f"monitor_{safe_reason}_{time.time_ns()}.jpg"
+        save_monitor_screenshot(payload, filename)
+        prompt_attachment = f"/screenshots/{filename}"
+
+    return MonitorPromptContext(
+        image_result=image_result,
+        prompt_attachment=prompt_attachment,
+        snapshot_attachment=save_monitor_camera_snapshot(
+            image_result.camera_jpeg,
+            reason,
+        ),
+    )
+
+
 def acquire_monitor_image_sync(
     reason: str,
     *,
@@ -2347,6 +2401,33 @@ def acquire_monitor_image_sync(
     return MonitorImageResult(status="unavailable", source="device")
 
 
+def cleanup_monitor_screenshots() -> None:
+    """Keep every monitoring capture in one bounded screenshots pool."""
+    max_keep = int(cam.cfg.get("max_screenshots", 200) or 0)
+    if max_keep <= 0:
+        return
+    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+    files = sorted(
+        (
+            path for pattern in ("cam_*.jpg", "monitor_*.jpg", "phone_camera_*.jpg")
+            for path in SCREENSHOTS_DIR.glob(pattern)
+        ),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+    )
+    for path in files[:-max_keep]:
+        path.unlink(missing_ok=True)
+
+
+def save_monitor_screenshot(payload: bytes, filename: str) -> Path:
+    SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+    target = SCREENSHOTS_DIR / filename
+    temp = target.with_suffix(".tmp")
+    temp.write_bytes(bytes(payload))
+    temp.replace(target)
+    cleanup_monitor_screenshots()
+    return target
+
+
 def save_monitor_camera_snapshot(
     camera_jpeg: bytes | None,
     prefix: str,
@@ -2357,16 +2438,19 @@ def save_monitor_camera_snapshot(
     if not payload:
         return None
     safe_prefix = re.sub(r"[^A-Za-z0-9_-]+", "_", str(prefix or "capture"))[:40]
-    target_dir = Path(upload_dir or UPLOADS_DIR)
-    target_dir.mkdir(parents=True, exist_ok=True)
     filename = f"monitor_camera_{safe_prefix}_{time.time_ns()}.jpg"
-    target = target_dir / filename
-    temp = target.with_suffix(".tmp")
-    temp.write_bytes(payload)
-    temp.replace(target)
+    if upload_dir is None:
+        save_monitor_screenshot(payload, filename)
+    else:
+        target_dir = Path(upload_dir)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / filename
+        temp = target.with_suffix(".tmp")
+        temp.write_bytes(payload)
+        temp.replace(target)
     return {
         "type": "monitor_camera_snapshot",
-        "url": f"/uploads/{filename}",
+        "url": f"/screenshots/{filename}",
     }
 
 async def perform_cam_check(conv_id: str, model_key: str):
@@ -2379,16 +2463,10 @@ async def perform_cam_check(conv_id: str, model_key: str):
     frame_source = image_result.source
     fname = None
 
-    from config import UPLOADS_DIR
     if jpg_bytes:
         ts = time.strftime("%Y%m%d_%H%M%S")
         fname = f"cam_check_{ts}_{time.time_ns()}.jpg"
-        fpath = UPLOADS_DIR / fname
-        fpath.write_bytes(jpg_bytes)
-
-        # 同时保存到 screenshots 目录
-        SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-        (SCREENSHOTS_DIR / fname).write_bytes(jpg_bytes)
+        save_monitor_screenshot(jpg_bytes, fname)
 
     wb = load_worldbook()
     user_name = wb.get("user_name") or "用户"
@@ -2406,7 +2484,11 @@ async def perform_cam_check(conv_id: str, model_key: str):
     # 获取最近对话上下文（统一时间线：合并私聊 + 群聊消息）
     from context_builder import fetch_merged_timeline, render_merged_timeline
     merged = await fetch_merged_timeline("aion", 6, conv_id=conv_id)
-    recent = render_merged_timeline(merged, "aion")
+    recent = render_merged_timeline(
+        merged,
+        "aion",
+        include_image_attachments=False,
+    )
 
     layout_guidance = build_monitor_layout_guidance(
         bool(cam.cfg.get("include_pc_screen", False))
@@ -2440,8 +2522,12 @@ async def perform_cam_check(conv_id: str, model_key: str):
         ]
     cam_message = {"role": "user", "content": cam_prompt}
     if fname:
-        cam_message["attachments"] = [f"/uploads/{fname}"]
+        cam_message["attachments"] = [f"/screenshots/{fname}"]
     messages = prefix + recent + passive_band_messages + [cam_message]
+    from proactive_companionship import inject_proactive_ability
+    inject_proactive_ability(messages, "aion")
+    from autonomy_state import inject_autonomy_ability
+    await inject_autonomy_ability(messages, "aion")
     from app_supervision_ai import inject_app_supervision_context
     inject_app_supervision_context(messages)
 

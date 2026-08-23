@@ -72,6 +72,24 @@ class ModelAudioCapabilityConfigTests(unittest.TestCase):
         self.assertIn("audio: model.audio === true", source)
 
 
+class ModelVideoCapabilityConfigTests(unittest.TestCase):
+    def test_video_capability_defaults_off_and_preserves_explicit_enablement(self):
+        routes = normalize_custom_model_routes([{
+            "id": "route-1",
+            "name": "test",
+            "base_url": "https://relay.example/v1",
+            "models": [
+                {"key": "legacy", "model": "legacy-model"},
+                {"key": "viewer", "model": "video-model", "video": True},
+            ],
+        }])
+
+        self.assertEqual(
+            [model.get("video") for model in routes[0]["models"]],
+            [False, True],
+        )
+
+
 class LatestUserVoiceRetentionTests(unittest.TestCase):
     def test_private_history_keeps_voice_on_latest_user_even_with_assistant_after_it(self):
         history = [

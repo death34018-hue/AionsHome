@@ -8,6 +8,7 @@ can replay those exact messages through ``/api/sync/changes``.
 from __future__ import annotations
 
 import json
+import copy
 import time
 from typing import Any
 
@@ -46,6 +47,16 @@ def is_sync_event_type(event_type: str) -> bool:
     return event_type in _ENTITY_BY_EVENT
 
 
+def sanitize_sync_event(event: dict) -> dict:
+    """Keep hidden persona metadata out of durable reconnect payloads."""
+    cleaned = copy.deepcopy(event)
+    data = cleaned.get("data") if isinstance(cleaned.get("data"), dict) else None
+    if data is not None and isinstance(data.get("content"), str):
+        from autonomy_state import strip_autonomy_state
+        data["content"] = strip_autonomy_state(data["content"])
+    return cleaned
+
+
 def _entity_id(event_type: str, data: Any) -> str:
     if not isinstance(data, dict):
         return ""
@@ -58,6 +69,7 @@ def _entity_id(event_type: str, data: Any) -> str:
 
 async def append_sync_event(db, event: dict) -> int | None:
     """Append a supported event using the caller's transaction."""
+    event = sanitize_sync_event(event)
     event_type = str(event.get("type") or "")
     entity_type = _ENTITY_BY_EVENT.get(event_type)
     if not entity_type:

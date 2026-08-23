@@ -66,12 +66,31 @@
     fillSelect(byId("scheduleOwner"), responders, "label", "id");
     fillSelect(byId("settingsOwner"), responders, "label", "id");
     fillSelect(byId("routeSelect"), routes, "label", "routeId");
-    byId("ttsEnabled").checked = Boolean(state.bootstrap.ttsEnabled);
+    renderTtsState();
     switchTimeline(state.timeline);
     switchPage(state.page);
     applyRoutePreference();
     updateModels();
     loadMessages();
+  }
+
+  function renderTtsState() {
+    const enabled = Boolean(state.bootstrap && state.bootstrap.ttsEnabled);
+    byId("ttsEnabled").checked = enabled;
+    const quick = byId("ttsQuickToggle");
+    quick.textContent = enabled ? "TTS 已开启" : "TTS 已关闭";
+    quick.setAttribute("aria-pressed", String(enabled));
+    document.querySelectorAll(".tts-replay").forEach(button => {
+      button.disabled = !enabled;
+      button.title = enabled ? "重新朗读这条消息" : "请先开启 TTS";
+    });
+  }
+
+  function updateTtsEnabled(enabled) {
+    if (!state.bootstrap) return;
+    state.bootstrap.ttsEnabled = Boolean(enabled);
+    api.setTtsEnabled(state.bootstrap.ttsEnabled);
+    renderTtsState();
   }
 
   function applyRoutePreference() {
@@ -152,7 +171,9 @@
     item.append(text, meta);
     if (row.assistant && row.id) {
       const replay = document.createElement("button");
+      replay.className = "tts-replay";
       replay.textContent = "重听";
+      replay.disabled = !Boolean(state.bootstrap && state.bootstrap.ttsEnabled);
       replay.addEventListener("click", () => api.replayTts(row.id));
       item.appendChild(replay);
     }
@@ -290,7 +311,8 @@
         failure: "local_package_unavailable",
         counts: {},
         canRetry: true,
-        canReturnWithoutSync: false
+        canReturnWithoutSync: false,
+        canAbandon: false
       };
     }
   }
@@ -305,6 +327,7 @@
       freezing: 0,
       building: 1,
       frozen: 1,
+      saved: 1,
       uploading: 2,
       returning: 2,
       planning: 3,
@@ -321,9 +344,11 @@
     const phaseLabels = {
       idle: "等待你手动开始",
       ready: "已准备好冻结并生成回归包",
+      discarding: "正在删除全部本机归巢数据",
       freezing: "正在停止归巢运行任务",
       building: "正在生成本机不可变回归包",
       frozen: "本机回归包已保存",
+      saved: "归巢数据已保存，正在返回正常模式",
       uploading: "正在上传服务器隔离区",
       returning: "正在回传",
       planning: "服务器正在只读预演",
@@ -342,7 +367,8 @@
       upload_package_mismatch: "服务器返回的包标识不一致，已停止回传",
       apply_incomplete: "本次前台回传未完成，请手动重试",
       no_pending_package: "没有找到可回传的本机数据包",
-      local_package_unavailable: "本机回归包暂不可读"
+      local_package_unavailable: "本机回归包暂不可读",
+      local_discard_failed: "本机归巢数据删除失败，仍停留在归巢模式"
     };
     byId("returnFailure").textContent =
       failureLabels[data.failure] || (data.failure ? "回传暂未完成" : "");
@@ -363,10 +389,15 @@
     });
     const mayStart = !data.inFlight && !data.failure
       && (data.mode === "active" || (data.pendingPackageCount || 0) > 0);
-    byId("startReturnSync").classList.toggle("hidden", !mayStart);
+    const startButton = byId("startReturnSync");
+    startButton.textContent = data.mode === "active"
+      ? "保存数据并返回正常模式"
+      : "开始回传";
+    startButton.classList.toggle("hidden", !mayStart);
     byId("retryReturnSync").classList.toggle("hidden", !data.canRetry);
     byId("returnWithoutSync").classList.toggle(
       "hidden", !data.canReturnWithoutSync);
+    byId("abandonHomecoming").classList.toggle("hidden", !data.canAbandon);
     byId("closeReturnPanel").classList.toggle(
       "hidden", data.mode !== "active" || data.inFlight);
   }
@@ -472,6 +503,12 @@
   document.querySelectorAll("[data-timeline]").forEach(button => {
     button.addEventListener("click", () => switchTimeline(button.dataset.timeline));
   });
+  byId("abandonHomecoming").addEventListener("click", () => {
+    if (window.confirm("确认永久删除全部本机归巢消息、修改和待回传包，并以服务器数据为准返回正常模式？")) {
+      state.returnDismissed = false;
+      api.abandonHomecoming();
+    }
+  });
   document.querySelectorAll("[data-page]").forEach(button => {
     button.addEventListener("click", () => switchPage(button.dataset.page));
   });
@@ -498,7 +535,9 @@
   byId("pickImage").addEventListener("click", () => api.pickImage());
   byId("captureImage").addEventListener("click", () => api.captureImage());
   byId("ttsEnabled").addEventListener("change", event =>
-    api.setTtsEnabled(event.currentTarget.checked));
+    updateTtsEnabled(event.currentTarget.checked));
+  byId("ttsQuickToggle").addEventListener("click", () =>
+    updateTtsEnabled(!Boolean(state.bootstrap && state.bootstrap.ttsEnabled)));
   byId("memoryOwner").addEventListener("change", renderMemories);
   byId("scheduleTab").addEventListener("click", () => {
     byId("scheduleTab").classList.add("active");

@@ -78,12 +78,12 @@ public class HomecomingSnapshotStoreTest {
     public void verificationPreservesPythonFloatLexemesWhenHashingSections() throws Exception {
         HomecomingSnapshotStore store = new HomecomingSnapshotStore(folder.getRoot());
         String identityJson = "{\"created_at\":1800000000.0,\"name\":\"Fixture\"}";
-        String payloadJson = "{\"schema\":1,\"sections\":{\"identity\":"
+        String payloadJson = "{\"schema\":2,\"sections\":{\"identity\":"
                 + identityJson + "},\"snapshot_id\":\"python-float\"}";
         byte[] compressed = HomecomingSnapshotStore.gzip(
                 payloadJson.getBytes(StandardCharsets.UTF_8));
         JSONObject manifest = new JSONObject()
-                .put("schema", 1)
+                .put("schema", 2)
                 .put("snapshot_id", "python-float")
                 .put("file_sha256", HomecomingSnapshotStore.sha256Hex(compressed))
                 .put("section_hashes", new JSONObject().put(
@@ -99,6 +99,56 @@ public class HomecomingSnapshotStoreTest {
         store.writeStagingFile("READY", new byte[0]);
 
         assertTrue(store.verifyStaging());
+    }
+
+    @Test
+    public void utf8RangeHashMatchesOriginalBytesWithoutCopyingWholeMember() {
+        String source = "prefix:{\"text\":\"鬣狗🐾\",\"value\":1800000000.0}:suffix";
+        int start = source.indexOf('{');
+        int end = source.lastIndexOf('}') + 1;
+
+        assertEquals(
+                HomecomingSnapshotStore.sha256Hex(
+                        source.substring(start, end).getBytes(StandardCharsets.UTF_8)),
+                HomecomingSnapshotStore.sha256HexUtf8(source, start, end));
+    }
+
+    @Test
+    public void largeRawSectionStillVerifiesAndRejectsChangedHash() throws Exception {
+        HomecomingSnapshotStore store = new HomecomingSnapshotStore(folder.getRoot());
+        StringBuilder text = new StringBuilder(24 * 1024 * 1024);
+        while (text.length() < 24 * 1024 * 1024) text.append("归巢-data-");
+        String identityJson = "{\"created_at\":1800000000.0,\"text\":"
+                + JSONObject.quote(text.toString()) + "}";
+        writeRawSnapshot(store, "large-section", identityJson,
+                HomecomingSnapshotStore.sha256Hex(
+                        identityJson.getBytes(StandardCharsets.UTF_8)));
+
+        assertTrue(store.verifyStaging());
+
+        writeRawSnapshot(store, "large-section", identityJson,
+                HomecomingSnapshotStore.sha256Hex("changed".getBytes(StandardCharsets.UTF_8)));
+        assertFalse(store.verifyStaging());
+    }
+
+    private void writeRawSnapshot(
+            HomecomingSnapshotStore store, String snapshotId,
+            String identityJson, String identityHash) throws Exception {
+        String payloadJson = "{\"schema\":2,\"sections\":{\"identity\":"
+                + identityJson + "},\"snapshot_id\":" + JSONObject.quote(snapshotId) + "}";
+        byte[] compressed = HomecomingSnapshotStore.gzip(
+                payloadJson.getBytes(StandardCharsets.UTF_8));
+        JSONObject manifest = new JSONObject()
+                .put("schema", 2)
+                .put("snapshot_id", snapshotId)
+                .put("file_sha256", HomecomingSnapshotStore.sha256Hex(compressed))
+                .put("section_hashes", new JSONObject().put("identity", identityHash));
+        store.beginStaging(snapshotId);
+        store.writeStagingFile("snapshot.json.gz", compressed);
+        store.writeStagingFile("manifest.json",
+                HomecomingSnapshotStore.canonicalJson(manifest)
+                        .getBytes(StandardCharsets.UTF_8));
+        store.writeStagingFile("READY", new byte[0]);
     }
 
     private void writeVerifiedSnapshot(

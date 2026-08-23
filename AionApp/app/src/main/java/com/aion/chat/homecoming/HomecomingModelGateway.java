@@ -41,6 +41,8 @@ public final class HomecomingModelGateway {
         if (cancellations.putIfAbsent(request.requestId, cancelled) != null) {
             throw new IllegalStateException("request is already running");
         }
+        HomecomingModelStreamNormalizer normalizer =
+                new HomecomingModelStreamNormalizer();
         StringBuilder complete = new StringBuilder();
         try {
             NetworkRequest network = build(route, model, request);
@@ -48,7 +50,13 @@ public final class HomecomingModelGateway {
                 if (cancelled.get()) {
                     return;
                 }
-                String chunk = parseChunk(route.provider, line);
+                ProviderFrame frame;
+                try {
+                    frame = parseFrame(route.provider, line);
+                } catch (Exception ignored) {
+                    return;
+                }
+                String chunk = normalizer.acceptVisible(frame.visibleText);
                 if (!chunk.isEmpty()) {
                     complete.append(chunk);
                     observer.onChunk(chunk);
@@ -57,7 +65,16 @@ public final class HomecomingModelGateway {
             if (cancelled.get()) {
                 observer.onFailure("cancelled");
             } else {
-                observer.onComplete(complete.toString());
+                String suffix = normalizer.finish();
+                if (!suffix.isEmpty()) {
+                    complete.append(suffix);
+                    observer.onChunk(suffix);
+                }
+                if (complete.length() == 0) {
+                    observer.onFailure("empty_model_reply");
+                } else {
+                    observer.onComplete(complete.toString());
+                }
             }
         } catch (Exception exception) {
             if (cancelled.get()) {
@@ -167,30 +184,51 @@ public final class HomecomingModelGateway {
                 headers);
     }
 
-    private static String parseChunk(String provider, String line) throws Exception {
+    private static ProviderFrame parseFrame(String provider, String line)
+            throws Exception {
         String value = line == null ? "" : line.trim();
         if (value.isEmpty() || !value.startsWith("data:")) {
-            return "";
+            return ProviderFrame.EMPTY;
         }
         value = value.substring(5).trim();
         if (value.isEmpty() || "[DONE]".equals(value)) {
-            return "";
+            return ProviderFrame.EMPTY;
         }
         JSONObject json = new JSONObject(value);
         if ("gemini".equals(provider)) {
             JSONArray candidates = json.optJSONArray("candidates");
             if (candidates == null || candidates.length() == 0) {
-                return "";
+                return ProviderFrame.EMPTY;
             }
-            JSONArray parts = candidates.getJSONObject(0)
-                    .getJSONObject("content").optJSONArray("parts");
-            return parts == null || parts.length() == 0
-                    ? "" : parts.getJSONObject(0).optString("text", "");
+            JSONObject candidate = candidates.optJSONObject(0);
+            JSONObject content = candidate == null
+                    ? null : candidate.optJSONObject("content");
+            JSONArray parts = content == null
+                    ? null : content.optJSONArray("parts");
+            JSONObject part = parts == null || parts.length() == 0
+                    ? null : parts.optJSONObject(0);
+            return new ProviderFrame(nullableString(part, "text"), "");
         }
         JSONArray choices = json.optJSONArray("choices");
-        return choices == null || choices.length() == 0
-                ? "" : choices.getJSONObject(0)
-                        .optJSONObject("delta").optString("content", "");
+        JSONObject choice = choices == null || choices.length() == 0
+                ? null : choices.optJSONObject(0);
+        JSONObject delta = choice == null ? null : choice.optJSONObject("delta");
+        return new ProviderFrame(
+                nullableString(delta, "content"),
+                firstNonEmpty(
+                        nullableString(delta, "reasoning_content"),
+                        nullableString(delta, "reasoning")));
+    }
+
+    private static String nullableString(JSONObject value, String key) {
+        if (value == null || !value.has(key) || value.isNull(key)) {
+            return "";
+        }
+        return value.optString(key, "");
+    }
+
+    private static String firstNonEmpty(String first, String second) {
+        return first.isEmpty() ? second : first;
     }
 
     private static String trimSlash(String value) {
@@ -216,6 +254,18 @@ public final class HomecomingModelGateway {
         void onChunk(String text);
         void onComplete(String text);
         void onFailure(String code);
+    }
+
+    private static final class ProviderFrame {
+        static final ProviderFrame EMPTY = new ProviderFrame("", "");
+
+        final String visibleText;
+        final String reasoningText;
+
+        ProviderFrame(String visibleText, String reasoningText) {
+            this.visibleText = visibleText == null ? "" : visibleText;
+            this.reasoningText = reasoningText == null ? "" : reasoningText;
+        }
     }
 
     public static final class OkHttpSseTransport implements Transport {

@@ -101,12 +101,34 @@ public final class HomecomingReturnClient
         TransportResponse response = transport.execute(
                 method, url, contentType, requestBody, headers);
         if (response.statusCode != expectedStatus) {
-            throw new IOException("return HTTP " + response.statusCode);
+            throw httpFailure(response);
         }
         if (response.body.length == 0 || response.body.length > MAX_RESPONSE_BYTES) {
             throw new IOException("return response size is invalid");
         }
         return new JSONObject(new String(response.body, StandardCharsets.UTF_8));
+    }
+
+    private static HttpFailure httpFailure(TransportResponse response) {
+        String detail = "";
+        if (response.body.length > 0 && response.body.length <= MAX_RESPONSE_BYTES) {
+            try {
+                detail = new JSONObject(
+                        new String(response.body, StandardCharsets.UTF_8))
+                        .optString("detail", "");
+            } catch (Exception ignored) {
+                // The status code remains useful when a proxy returns non-JSON.
+            }
+        }
+        detail = boundedDetail(detail);
+        return new HttpFailure(response.statusCode, detail);
+    }
+
+    private static String boundedDetail(String value) {
+        if (value == null) return "";
+        String normalized = value.replace('\r', ' ').replace('\n', ' ').trim();
+        return normalized.length() <= 240
+                ? normalized : normalized.substring(0, 240);
     }
 
     private static Receipt receipt(JSONObject body, String expectedPackageId)
@@ -246,6 +268,18 @@ public final class HomecomingReturnClient
         public ServerState(String packageId, String state) {
             this.packageId = packageId;
             this.state = state;
+        }
+    }
+
+    public static final class HttpFailure extends IOException {
+        public final int statusCode;
+        public final String detail;
+
+        HttpFailure(int statusCode, String detail) {
+            super("return HTTP " + statusCode
+                    + (detail == null || detail.isEmpty() ? "" : ": " + detail));
+            this.statusCode = statusCode;
+            this.detail = detail == null ? "" : detail;
         }
     }
 

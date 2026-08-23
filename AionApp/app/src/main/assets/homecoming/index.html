@@ -29,7 +29,11 @@
             <span id="chatTitle">当前会话</span><span aria-hidden="true">⌄</span>
           </button>
         </div>
-        <span class="local-dot" title="手机本地运行"></span>
+        <div class="header-status">
+          <button id="ttsQuickToggle" class="tts-quick" type="button"
+                  aria-pressed="false">TTS 已关闭</button>
+          <span class="local-dot" title="手机本地运行"></span>
+        </div>
       </header>
 
       <div id="conversationMenu" class="conversation-menu hidden">
@@ -156,10 +160,11 @@
       <p id="returnFailure" class="warning"></p>
       <div class="actions">
         <button id="startReturnSync" class="primary">开始回传并返回</button>
+        <button id="abandonHomecoming" class="danger">放弃全部归巢数据并返回</button>
         <button id="retryReturnSync" class="primary hidden">手动重试</button>
         <button id="returnWithoutSync" class="danger hidden">保留数据，直接返回正常模式</button>
       </div>
-      <p class="checkpoint">回传失败不会自动重试；直接返回也会保留本机回归包，之后可再次手动回传。</p>
+      <p class="checkpoint">放弃后将删除全部本机归巢数据，并以服务器数据为准；此操作不可撤销。</p>
     </aside>
   </main>
   <script src="homecoming.js"></script>

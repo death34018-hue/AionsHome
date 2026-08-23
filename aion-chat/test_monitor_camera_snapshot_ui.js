@@ -16,7 +16,7 @@ function escapeHtml(value) {
 
 const snapshot = {
   type: 'monitor_camera_snapshot',
-  url: '/uploads/monitor_camera_phone_123.jpg',
+  url: '/screenshots/monitor_camera_phone_123.jpg',
 };
 
 {
@@ -27,7 +27,7 @@ const snapshot = {
   assert.match(html, /<details class="monitor-camera-snapshot">/);
   assert.doesNotMatch(html, /<details[^>]*\sopen(?:\s|>)/);
   assert.match(html, /查看本次摄像头画面/);
-  assert.match(html, /\/uploads\/monitor_camera_phone_123\.jpg/);
+  assert.match(html, /\/screenshots\/monitor_camera_phone_123\.jpg/);
   assert.match(html, /data-image-interaction="enabled"/);
   assert.match(html, /loading="lazy"/);
 }
@@ -43,6 +43,14 @@ const snapshot = {
     renderMonitorCameraSnapshot(nonCameraAttachments, {escapeHtml}),
     '',
   );
+}
+
+{
+  const html = renderMonitorCameraSnapshot(
+    [{type: 'monitor_camera_snapshot', url: '/uploads/monitor_camera_legacy.jpg'}],
+    {escapeHtml},
+  );
+  assert.match(html, /\/uploads\/monitor_camera_legacy\.jpg/);
 }
 
 {

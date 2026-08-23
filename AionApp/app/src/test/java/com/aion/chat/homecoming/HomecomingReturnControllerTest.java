@@ -13,25 +13,24 @@ import static org.junit.Assert.assertTrue;
 
 public class HomecomingReturnControllerTest {
     @Test
-    public void successFreezesBeforeNetworkAndVerifiesBeforeConfirming() {
+    public void activeHomecomingSavesPackageAndReturnsBeforeAnyNetworkCall() {
         Fixture fixture = new Fixture(true);
         fixture.controller.synchronize(fixture.route, fixture.observer);
 
         assertEquals(Arrays.asList(
                 "phase:freezing", "freezing", "phase:building", "freeze", "build",
-                "phase:frozen", "frozen", "stop_homecoming",
-                "phase:uploading", "returning", "upload",
-                "phase:planning", "dry_run", "phase:applying", "apply", "status",
-                "phase:verifying", "phase:confirming", "confirm", "inactive",
-                "phase:complete", "open_normal"),
+                "phase:frozen", "frozen", "stop_homecoming", "inactive",
+                "phase:saved", "open_normal"),
                 fixture.events);
         assertFalse(fixture.mode.active);
-        assertTrue(fixture.packages.confirmed);
+        assertFalse(fixture.packages.confirmed);
+        assertEquals(1, fixture.packages.pendingInSequence().size());
+        assertEquals(0, fixture.client.networkCalls);
     }
 
     @Test
     public void uploadFailureAllowsReturnWithoutDeletingPackage() {
-        Fixture fixture = new Fixture(true);
+        Fixture fixture = pendingFixture();
         fixture.client.failUpload = true;
         fixture.controller.synchronize(fixture.route, fixture.observer);
 
@@ -63,7 +62,7 @@ public class HomecomingReturnControllerTest {
 
     @Test
     public void partialApplyPollsOnlyInsideExplicitSynchronization() {
-        Fixture fixture = new Fixture(true);
+        Fixture fixture = pendingFixture();
         fixture.client.receipts.add(receipt(false, false, 1L, ""));
         fixture.client.receipts.add(receipt(true, false, 2L, "summary"));
         fixture.controller.synchronize(fixture.route, fixture.observer);
@@ -74,7 +73,7 @@ public class HomecomingReturnControllerTest {
 
     @Test
     public void retryableServerResponseDoesNotRetryAutomatically() {
-        Fixture fixture = new Fixture(true);
+        Fixture fixture = pendingFixture();
         fixture.client.receipts.add(receipt(false, true, 0L, ""));
         fixture.controller.synchronize(fixture.route, fixture.observer);
 
@@ -85,7 +84,7 @@ public class HomecomingReturnControllerTest {
 
     @Test
     public void receiptMismatchNeverConfirmsOrReturns() {
-        Fixture fixture = new Fixture(true);
+        Fixture fixture = pendingFixture();
         fixture.client.receipts.add(receipt(true, false, 99L, "summary"));
         fixture.controller.synchronize(fixture.route, fixture.observer);
 
@@ -127,12 +126,62 @@ public class HomecomingReturnControllerTest {
         assertTrue(fixture.events.contains("open_normal"));
     }
 
+    @Test
+    public void foregroundAttemptStopsAfterTwentyIncompleteApplyBatches() {
+        Fixture fixture = pendingFixture();
+        for (int index = 0; index < 20; index++) {
+            fixture.client.receipts.add(receipt(false, false, 1L, ""));
+        }
+
+        fixture.controller.synchronize(fixture.route, fixture.observer);
+
+        assertEquals(20, Collections.frequency(fixture.events, "apply"));
+        assertTrue(fixture.events.contains("failure:apply_incomplete"));
+        assertFalse(fixture.packages.confirmed);
+        assertEquals(1, fixture.packages.pendingInSequence().size());
+    }
+
+    @Test
+    public void abandonDiscardsEverythingWithoutCallingServer() {
+        Fixture fixture = new Fixture(true);
+
+        assertTrue(fixture.controller.abandon(fixture.route));
+
+        assertEquals(Arrays.asList(
+                "stop_homecoming", "discard_all", "discarded",
+                "open_normal"), fixture.events);
+        assertFalse(fixture.mode.active);
+        assertEquals(0, fixture.client.networkCalls);
+    }
+
+    @Test
+    public void failedDiscardKeepsHomecomingActiveAndClosed() {
+        Fixture fixture = new Fixture(true);
+        fixture.packages.failDiscard = true;
+
+        assertFalse(fixture.controller.abandon(fixture.route));
+
+        assertTrue(fixture.mode.active);
+        assertEquals(Arrays.asList(
+                "stop_homecoming", "discard_all", "resume_homecoming"),
+                fixture.events);
+        assertFalse(fixture.events.contains("open_normal"));
+        assertEquals(0, fixture.client.networkCalls);
+    }
+
     private static HomecomingReturnClient.Receipt receipt(
             boolean complete, boolean retryable, long sequence, String hash) {
         return new HomecomingReturnClient.Receipt(
                 "plan", "package-one", sequence,
                 Collections.<String, Integer>emptyMap(),
                 hash, complete, retryable);
+    }
+
+    private static Fixture pendingFixture() {
+        Fixture fixture = new Fixture(false);
+        fixture.mode.frozen = true;
+        fixture.packages.values.add(packageValue("package-one", 2L));
+        return fixture;
     }
 
     private static HomecomingReturnPackageRepository.ReturnPackage packageValue(
@@ -211,6 +260,11 @@ public class HomecomingReturnControllerTest {
             active = false;
             frozen = false;
         }
+        @Override public void deactivateAfterDiscard() {
+            events.add("discarded");
+            active = false;
+            frozen = false;
+        }
     }
 
     private static final class FakePackages
@@ -219,6 +273,7 @@ public class HomecomingReturnControllerTest {
                 new ArrayList<>();
         List<String> events;
         boolean failBuild;
+        boolean failDiscard;
         boolean confirmed;
 
         @Override
@@ -248,6 +303,12 @@ public class HomecomingReturnControllerTest {
             values.remove(value);
             confirmed = true;
         }
+
+        @Override public void discardAllLocalData() throws Exception {
+            events.add("discard_all");
+            if (failDiscard) throw new Exception("discard failed");
+            values.clear();
+        }
     }
 
     private static final class FakeClient
@@ -260,12 +321,14 @@ public class HomecomingReturnControllerTest {
         int nextReceipt;
         long uploadedHighest;
         HomecomingReturnClient.Receipt latest;
+        int networkCalls;
 
         @Override
         public HomecomingReturnClient.ServerState upload(
                 String route,
                 HomecomingReturnPackageRepository.ReturnPackage value)
                 throws Exception {
+            networkCalls++;
             events.add("upload");
             uploaded.add(value.packageId);
             uploadedHighest = value.highestDeviceSeq;
@@ -276,6 +339,7 @@ public class HomecomingReturnControllerTest {
 
         @Override public HomecomingReturnClient.Plan dryRun(
                 String route, String packageId) {
+            networkCalls++;
             events.add("dry_run");
             return new HomecomingReturnClient.Plan(
                     "plan", Collections.<String, Integer>emptyMap());
@@ -283,6 +347,7 @@ public class HomecomingReturnControllerTest {
 
         @Override public HomecomingReturnClient.Receipt apply(
                 String route, String packageId) {
+            networkCalls++;
             events.add("apply");
             latest = nextReceipt < receipts.size()
                     ? receipts.get(nextReceipt++)
@@ -295,6 +360,7 @@ public class HomecomingReturnControllerTest {
 
         @Override public HomecomingReturnClient.Receipt status(
                 String route, String packageId) {
+            networkCalls++;
             events.add("status");
             return withPackage(latest, packageId);
         }

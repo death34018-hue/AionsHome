@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import os
 import re
 import threading
 import time
@@ -17,7 +16,7 @@ from typing import Callable
 import cv2
 import numpy as np
 
-from config import DATA_DIR, UPLOADS_DIR
+from config import DATA_DIR, SCREENSHOTS_DIR
 
 
 ALLOWED_CAPTURE_REASONS = frozenset({
@@ -67,7 +66,7 @@ class PhoneCameraCoordinator:
         retained_files: int = 64,
     ):
         self.capture_dir = Path(capture_dir or (DATA_DIR / "phone_camera"))
-        self.upload_dir = Path(upload_dir or UPLOADS_DIR)
+        self.upload_dir = Path(upload_dir or SCREENSHOTS_DIR)
         self.max_upload_bytes = max(1, int(max_upload_bytes))
         self.completed_limit = max(8, int(completed_limit))
         self.retained_files = max(1, int(retained_files))
@@ -371,16 +370,11 @@ class PhoneCameraCoordinator:
         received_at = time.time()
         safe_id = re.sub(r"[^A-Za-z0-9_-]+", "_", normalized_id)[:80]
         filename = f"phone_camera_{safe_id}_{time.time_ns()}.jpg"
-        self.capture_dir.mkdir(parents=True, exist_ok=True)
         self.upload_dir.mkdir(parents=True, exist_ok=True)
-        capture_path = self.capture_dir / filename
         upload_path = self.upload_dir / filename
-        capture_tmp = capture_path.with_suffix(".tmp")
         upload_tmp = upload_path.with_suffix(".tmp")
-        capture_tmp.write_bytes(payload)
         upload_tmp.write_bytes(payload)
-        os.replace(capture_tmp, capture_path)
-        os.replace(upload_tmp, upload_path)
+        upload_tmp.replace(upload_path)
 
         result = PhoneCameraResult(
             status="ready",
@@ -395,7 +389,6 @@ class PhoneCameraCoordinator:
         with self._lock:
             current = self._pending.pop(normalized_id, None)
             if current is None:
-                capture_path.unlink(missing_ok=True)
                 upload_path.unlink(missing_ok=True)
                 return PhoneCameraResult(
                     status="expired",

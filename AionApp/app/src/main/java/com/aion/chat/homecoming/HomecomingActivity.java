@@ -232,6 +232,24 @@ public final class HomecomingActivity extends AppCompatActivity {
         returnController.archiveAndReturn(returnRoute());
     }
 
+    void abandonHomecoming() {
+        if (!modeStore.isActive() || !returnInFlight.compareAndSet(false, true)) return;
+        returnPanelOpen = true;
+        returnPhase = "discarding";
+        returnFailure = "";
+        freezeRuntime();
+        notifyPageState();
+        returnExecutor.execute(() -> {
+            boolean discarded = returnController.abandon(returnRoute());
+            if (!discarded) {
+                returnPhase = "failed";
+                returnFailure = "local_discard_failed";
+            }
+            returnInFlight.set(false);
+            runOnUiThread(this::notifyPageState);
+        });
+    }
+
     String returnStateJson() {
         try {
             List<HomecomingReturnPackageRepository.ReturnPackage> pending =
@@ -256,13 +274,14 @@ public final class HomecomingActivity extends AppCompatActivity {
                     .put("canRetry", !returnInFlight.get() && !returnFailure.isEmpty())
                     .put("canReturnWithoutSync",
                             canReturnWithoutSync && !pending.isEmpty())
+                    .put("canAbandon", modeStore.isActive() && !returnInFlight.get())
                     .toString();
         } catch (Exception exception) {
             return "{\"open\":true,\"mode\":\"frozen\","
                     + "\"phase\":\"failed\",\"failure\":\"local_package_unavailable\","
                     + "\"pendingPackageCount\":0,\"counts\":{},"
                     + "\"inFlight\":false,\"canRetry\":true,"
-                    + "\"canReturnWithoutSync\":false}";
+                    + "\"canReturnWithoutSync\":false,\"canAbandon\":false}";
         }
     }
 
@@ -550,6 +569,10 @@ public final class HomecomingActivity extends AppCompatActivity {
                         } catch (Exception exception) {
                             modeStore.deactivateAfterPackageSaved();
                         }
+                    }
+
+                    @Override public void deactivateAfterDiscard() {
+                        modeStore.deactivateAfterDiscard();
                     }
                 };
         return new HomecomingReturnController(

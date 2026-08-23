@@ -11,6 +11,7 @@ from pathlib import Path
 import httpx
 
 from config import get_key, TTS_CACHE_DIR, TTS_CACHE_MAX_BYTES
+from link_preview import strip_urls_for_message
 
 log = logging.getLogger("tts")
 
@@ -62,6 +63,7 @@ _STRIP_PATTERNS = [
     re.compile(r'\[Monitor:[^\]]*\]'),
     re.compile(r'\[SCHEDULE_DEL:[^\]]*\]'),
     re.compile(r'\[SCHEDULE_LIST\]'),
+    re.compile(r'[\[［]\s*NEXT_CHAT\s*[:：]\s*[^\]］]+\s*[\]］]', re.IGNORECASE),
     re.compile(r'\[LUCKIN:[^\]]*\]', re.IGNORECASE),
     re.compile(r'\[TOY:[^\]]*\]'),
     re.compile(r'\[MOMENT:[^\]]*\]'),
@@ -76,6 +78,8 @@ _STRIP_PATTERNS = [
     re.compile(r'\[DATE_END_READY\]', re.IGNORECASE),
     re.compile(r'\[悄悄话[：:][^\]]*\]'),
     re.compile(r'<meta>[\s\S]*?</meta>'),
+    re.compile(r'<autonomy_state>[\s\S]*?</autonomy_state>', re.IGNORECASE),
+    re.compile(r'<autonomy_state\b[\s\S]*$', re.IGNORECASE),
 ]
 
 # 句子结束符（用于切分）
@@ -89,11 +93,11 @@ def _strip_tags(text: str) -> str:
     """去除所有特殊标签，只保留纯文本"""
     for p in _STRIP_PATTERNS:
         text = p.sub('', text)
-    return text.strip()
+    return strip_urls_for_message(text)
 
 
 def _has_unclosed_tag(text: str) -> bool:
-    """检查是否有未闭合的 [...] 或 <meta>"""
+    """检查是否有未闭合的特殊标签。"""
     # 检查 [TAG:... 没有闭合的 ]
     last_open = text.rfind('[')
     if last_open >= 0 and ']' not in text[last_open:]:
@@ -102,6 +106,9 @@ def _has_unclosed_tag(text: str) -> bool:
     meta_opens = text.count('<meta>')
     meta_closes = text.count('</meta>')
     if meta_opens > meta_closes:
+        return True
+    lowered = text.lower()
+    if lowered.count('<autonomy_state>') > lowered.count('</autonomy_state>'):
         return True
     return False
 

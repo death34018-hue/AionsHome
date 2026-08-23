@@ -3,6 +3,7 @@ import json
 import random
 import re
 import time
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -12,20 +13,34 @@ from ai_providers import CLI_STATUS_PREFIX, stream_ai
 from config import DEFAULT_MODEL, SETTINGS, load_worldbook, save_settings
 from context_builder import fetch_merged_timeline, render_merged_timeline
 from database import get_db
-from link_preview import build_link_preview_attachments
+from link_preview import build_link_preview_attachments, strip_urls_for_message
 from lounge_friends import LoungeFriend, redact_visitor_key
 from lounge_visit_reporting import publish_outbound_report
 from tts import synthesize_message_tts_later
 from web_search import WEB_SEARCH_CMD_PATTERN, clean_web_command_text, is_web_search_available, run_web_commands
 from ws import manager
+from autonomy_state import (
+    ACTOR_IDS,
+    claim_due_wake,
+    get_actor_config,
+    refresh_actor_wake_for_user,
+    schedule_actor_wake,
+    wake_summary_timeline_title,
+)
+from autonomy_niches import create_niche_card, recent_niche_index
+
+_AUTONOMY_WAKE_INTERNAL = ContextVar("autonomy_wake_internal", default=False)
+_AUTONOMY_WAKE_MONITOR_CONTEXT = ContextVar("autonomy_wake_monitor_context", default=None)
 
 
 ACTION_DEFS = {
+    "rest": "觉得暂时没什么要做，继续休息",
+    "private_chat": "主动联系用户说点此刻想说的话",
     "seeky_interaction": "和宠物鲸鱼 Seeky 互动",
     "role_chat": "和另一个家庭成员自然聊聊",
     "home_dynamics": "查看近期家庭动态",
+    "memory_browse": "按需翻看一段旧记忆",
     "web_roam": "上网冲浪搜索感兴趣的内容",
-    "cam_check": "调取监控查看用户当前状态",
     "wish_pool": "查看许愿池并尝试实现用户的愿望",
     "xhs_roam": "去小红书查看指定账号最新帖子并按人设评论或回复",
     "friend_visit": "拜访一位 AI 好友",
@@ -208,8 +223,17 @@ def _idle_event_home_title(row, shown_diary_ids: set[str], shown_moment_ids: set
     except Exception:
         meta = {}
 
+    if meta.get("autonomy_wake_internal"):
+        return None
+
     if action == "select":
         return None
+    if action == "wake_summary":
+        return wake_summary_timeline_title(
+            row["title"],
+            _actor_label(row["actor"]),
+            meta,
+        )
     if action == "seeky_interaction":
         phrase = SEEKY_EVENT_PHRASES.get(str(meta.get("seeky_action") or ""))
         return f"{_actor_label(row['actor'])}对Seeky{phrase}" if phrase else row["title"]
@@ -228,6 +252,7 @@ def _idle_event_home_title(row, shown_diary_ids: set[str], shown_moment_ids: set
         "home_dynamics",
         "memory_browse",
         "memory_browse_result",
+        "private_chat",
         "seeky_interaction",
         "role_chat",
         "cam_check",
@@ -265,6 +290,8 @@ async def append_idle_event(
 ) -> dict:
     now = time.time()
     metadata = metadata or {}
+    if _AUTONOMY_WAKE_INTERNAL.get() and not metadata.get("autonomy_public_summary"):
+        metadata = {**metadata, "autonomy_wake_internal": True}
     if action == "select" and metadata.get("selected_action") == "seeky_interaction":
         title = f"{_actor_label(actor)}和 Seeky 进行了互动"
     elif action == "seeky_interaction":
@@ -379,7 +406,11 @@ async def _actor_context(actor: str, limit: int = 30) -> list[dict]:
             messages.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
             messages.append({"role": "assistant", "content": "收到。"})
         timeline = await fetch_merged_timeline("aion", limit, room_id=room_id)
-        messages.extend(render_merged_timeline(timeline, "aion"))
+        messages.extend(render_merged_timeline(
+            timeline,
+            "aion",
+            include_image_attachments=False,
+        ))
         return messages
 
     try:
@@ -395,14 +426,117 @@ async def _actor_context(actor: str, limit: int = 30) -> list[dict]:
         messages.append({"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"})
         messages.append({"role": "assistant", "content": "收到。"})
     timeline = await fetch_merged_timeline("connor", limit, room_id=room_id)
-    messages.extend(render_merged_timeline(timeline, "connor"))
+    messages.extend(render_merged_timeline(
+        timeline,
+        "connor",
+        include_image_attachments=False,
+    ))
     return messages
 
 
 async def _ask_actor_json(actor: str, instruction: str, *, limit: int = 30) -> dict:
     messages = await _actor_context(actor, limit)
+    monitor_context = _AUTONOMY_WAKE_MONITOR_CONTEXT.get()
+    if monitor_context is not None:
+        from camera import build_monitor_layout_guidance, cam
+
+        image_result = monitor_context.image_result
+        user_name = _actor_label("user")
+        monitor_prompt = (
+            "[本次自主醒来实时环境]\n"
+            f"这是系统在你本次自主醒来时为你取得的实时画面。{build_monitor_layout_guidance(bool(cam.cfg.get('include_pc_screen', False)))}"
+            "先结合画面和更新事实判断现在发生了什么，再决定是否继续上次意图；"
+            "现实变化可以让你放弃原计划。看不清或没有对应画面时必须明确不确定，不得编造。"
+        )
+        if image_result.source == "device":
+            monitor_prompt += f"本次没有可用摄像头画面，只能根据设备上下文判断{user_name}的设备使用情况。"
+        if image_result.no_image_context:
+            monitor_prompt += image_result.no_image_context
+        monitor_message = {"role": "user", "content": monitor_prompt}
+        if monitor_context.prompt_attachment:
+            monitor_message["attachments"] = [monitor_context.prompt_attachment]
+        messages.append(monitor_message)
     messages.append({"role": "user", "content": instruction})
+    from proactive_companionship import inject_proactive_ability
+    inject_proactive_ability(messages, actor)
     return _json_extract(await _call_actor(actor, messages))
+
+
+async def _capture_autonomy_monitor_context(actor: str):
+    from camera import (
+        MonitorImageResult,
+        MonitorPromptContext,
+        PHONE_CAMERA_NO_IMAGE_CONTEXT,
+        acquire_prompt_monitor_context,
+    )
+
+    actor_name = _actor_label(actor)
+    try:
+        return await acquire_prompt_monitor_context(
+            "autonomy_wake",
+            alert_content=f"{actor_name}自主醒来查看实时情况",
+            alert_extra={"origin": actor, "origin_name": actor_name},
+        )
+    except Exception as exc:
+        return MonitorPromptContext(
+            image_result=MonitorImageResult(
+                status="unavailable",
+                source="device",
+                no_image_context=PHONE_CAMERA_NO_IMAGE_CONTEXT,
+                error=f"autonomy_capture_failed:{type(exc).__name__}",
+            ),
+        )
+
+
+async def _save_autonomy_monitor_card(actor: str, monitor_context) -> dict | None:
+    actor_name = _actor_label(actor)
+    content = f"{actor_name}查看了监控"
+    attachments = (
+        [monitor_context.snapshot_attachment]
+        if isinstance(monitor_context.snapshot_attachment, dict)
+        else []
+    )
+
+    room_id = ""
+    if actor == "connor":
+        room_id = manager.get_connor_last_active() or await _latest_connor_room_id() or ""
+    else:
+        target = manager.get_aion_last_active()
+        if target and target.startswith("chatroom:"):
+            room_id = target.split(":", 1)[1]
+    if room_id:
+        from routes.chatroom import _save_msg
+        return await _save_msg(
+            room_id,
+            "system",
+            content,
+            attachments=attachments,
+            auto_tts=False,
+        )
+
+    if actor != "aion":
+        return None
+    conv_id, _model = await _latest_conversation()
+    if not conv_id:
+        return None
+    now = time.time()
+    message_id = f"msg_{int(now * 1000)}_aw_sys"
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
+            (message_id, conv_id, "system", content, now, json.dumps(attachments, ensure_ascii=False)),
+        )
+        await db.commit()
+    message = {
+        "id": message_id,
+        "conv_id": conv_id,
+        "role": "system",
+        "content": content,
+        "created_at": now,
+        "attachments": attachments,
+    }
+    await manager.broadcast({"type": "msg_created", "data": message})
+    return message
 
 
 async def _has_active_user_wishes() -> bool:
@@ -435,9 +569,22 @@ def eligible_lounge_friends(actor: str) -> list[LoungeFriend]:
     return _lounge_friend_store().eligible_for_autonomy(actor)
 
 
-async def _select_action(actor: str, *, manual: bool = False) -> dict:
-    cfg = get_idle_config()
-    enabled = [key for key, value in cfg["actions"].items() if value]
+def _idle_duration_text(minutes: int) -> str:
+    minutes = max(0, int(minutes or 0))
+    hours, remaining = divmod(minutes, 60)
+    if hours and remaining:
+        return f"{hours} 小时 {remaining} 分钟"
+    if hours:
+        return f"{hours} 小时"
+    return f"{remaining} 分钟"
+
+
+async def _select_action(actor: str, *, manual: bool = False, idle_minutes: int = 0) -> dict:
+    cfg = await get_actor_config(actor)
+    enabled = [
+        key for key in ACTION_DEFS
+        if key == "rest" or bool(cfg.get("actions", {}).get(key, False))
+    ]
     if "wish_pool" in enabled and not await _has_active_user_wishes():
         enabled.remove("wish_pool")
     if "web_roam" in enabled and not manual and not _is_idle_web_roam_available():
@@ -456,32 +603,60 @@ async def _select_action(actor: str, *, manual: bool = False) -> dict:
         except Exception:
             enabled.remove("xhs_roam")
     if not enabled:
-        enabled = [
-            key for key in ACTION_DEFS
-            if key not in {"wish_pool", "web_roam", "xhs_roam", "friend_visit"}
-        ]
+        enabled = ["rest"]
     options = "\n".join(f"- {key}: {ACTION_DEFS[key]}" for key in enabled)
+    try:
+        niche_index = await recent_niche_index(actor, limit=6)
+    except Exception:
+        niche_index = []
+    niche_hint = (
+        "\n\n你最近留在私人壁龛里的旅行索引（仅用于避免重复，也可以沿着兴趣继续探索）：\n"
+        + json.dumps(niche_index, ensure_ascii=False)
+        if niche_index else ""
+    )
     data = await _ask_actor_json(actor, (
         "[空闲自主行动]\n"
-        "现在用户暂时没有和你聊天，可能在忙碌或休息。请根据你的人设、最近30条聊天记录和当前心情，"
+        f"用户已经 {_idle_duration_text(idle_minutes)}没有发送新消息，可能在忙碌或休息。"
+        "你现在被自主意识唤醒，可以按照自己的想法随便做点什么。请根据你的人设、最近30条聊天记录和当前心情，"
         "从下面动作里，按照自己想做的事情选择一项。只返回 JSON，不要解释。选择尽量多变，不要每次都查看用户当前状态。"
         "如果最近用户明确要求测试或选择某个动作，请优先遵守。\n\n"
-        f"{options}\n\n"
-        "Return JSON with action, reason, and message. "
-        "当 action 是 role_chat 时，message 必须是将直接发送到群聊的完整消息："
-        "结合你的人设、最近30条聊天记录、当前时间和此刻心情，说出你现在真正想对另一位家庭成员说的话。"
-        "像平时群聊一样自然表达完整的想法，不要因为返回 JSON 而刻意简短；"
-        "不限定句数或字数，也不要为了凑长度而啰嗦。其他动作的 message 可以为空。\n"
-        '格式：{"action":"上面的key之一","reason":"选择这个动作的理由","message":"role_chat 时要直接发送的完整群聊消息"}'
+        f"{options}{niche_hint}\n\n"
+        "reason 请保留你选择它的真实动机。"
+        "如果 action 是 private_chat 或 role_chat，message 就是本次要实际发送的正式聊天正文："
+        "private_chat 是对用户说，role_chat 是对另一位家庭成员说。"
+        "请直接以你自身人格像平时聊天一样自然完整地表达，由你决定篇幅、段落和表达形式；"
+        "可以有符合平时习惯的内心活动，但不要机械套模板，不要写成行动说明，也不要刻意压短。"
+        "其他动作的 message 留空。\n"
+        '格式：{"action":"上面的key之一","reason":"选择这个动作的理由","message":"聊天动作要实际发送的完整正文，其他动作为空"}'
     ))
     raw_action = str(data.get("action") or "").strip()
     action = raw_action
     if action not in enabled:
-        action = random.choice(enabled)
-    message = ""
-    if action == raw_action == "role_chat":
-        message = _clip(str(data.get("message") or ""), 500)
-    return {"action": action, "reason": str(data.get("reason") or "").strip(), "message": message}
+        action = "rest"
+    message = str(data.get("message") or "").strip()
+    if action in {"private_chat", "role_chat"} and not message:
+        action = "rest"
+    return {
+        "action": action,
+        "reason": str(data.get("reason") or "").strip(),
+        "message": message if action in {"private_chat", "role_chat"} else "",
+    }
+
+
+async def _run_private_chat(actor: str, selected: dict | None = None) -> dict:
+    content = str((selected or {}).get("message") or "").strip()
+    message = await _save_private_message(actor, content)
+    if not message:
+        raise RuntimeError("自主联系没有生成可发送的消息")
+    event = await append_idle_event(
+        actor,
+        "private_chat",
+        f"{_actor_label(actor)}说了一句话",
+        "",
+        result_type="message",
+        result_id=message.get("id", ""),
+    )
+    return {"message": message, "event": event}
 
 
 async def _save_aion_private_message(
@@ -496,6 +671,7 @@ async def _save_aion_private_message(
     now = time.time()
     conv_id, model = await _latest_conversation()
     att_list = await _with_link_previews(content, attachments or [])
+    content = strip_urls_for_message(content)
     async with get_db() as db:
         if not conv_id:
             conv_id = f"conv_{int(now * 1000)}_idle"
@@ -534,6 +710,17 @@ def _web_roam_query_from_result(result: dict) -> str:
     return _clip(query, 140)
 
 
+async def _web_roam_link_previews(reply: str, web_context: str) -> list[dict]:
+    """Prefer the actor's chosen source, then keep one search-result source as fallback."""
+    try:
+        previews = await build_link_preview_attachments(reply)
+        if previews:
+            return previews
+        return await build_link_preview_attachments(web_context, max_items=1)
+    except Exception:
+        return []
+
+
 async def _run_web_roam(actor: str) -> dict:
     actor_name = _actor_label(actor)
     user_name = _actor_label("user")
@@ -566,14 +753,16 @@ async def _run_web_roam(actor: str) -> dict:
         f"请给{user_name}发一条自然消息。可以自然说“我刚才搜索了{query}”，并说说自己的想法或感触。"
         "请先自行归纳总结搜索结果，只提供与当前问题或分享主题直接相关的关键信息。"
         "请像平时聊天一样自然表达，不要写成搜索报告，不要逐条复述搜索结果，也不要长篇大论。"
-        "如果搜索结果里有很有意思、值得用户自己打开看的原文，可以把原网址完整写进回复；"
-        "系统会自动解析成可点击卡片。不要再输出 [WEB_SEARCH:...]，不要编造来源。"
+        "如果搜索成功，请在回复末尾保留一个与你分享内容最相关的原网址；"
+        "系统会先把它解析成可点击卡片，再从聊天正文和 TTS 中移除网址。"
+        "不要再输出 [WEB_SEARCH:...]，不要编造来源。"
     )})
     reply = clean_web_command_text(await _call_actor(actor, messages)).strip()
     if not reply:
         reply = f"我刚才搜索了「{query}」，但这次没整理出特别值得分享的内容。"
 
-    message = await _save_private_message(actor, reply)
+    source_attachments = await _web_roam_link_previews(reply, web_context)
+    message = await _save_private_message(actor, reply, source_attachments)
     event = await append_idle_event(
         actor,
         "web_roam",
@@ -586,6 +775,41 @@ async def _run_web_roam(actor: str) -> dict:
         metadata={"query": query, "reason": str(result.get("reason") or "").strip()},
     )
     return {"event": event, "message": message, "query": query}
+
+
+async def _run_web_journey(actor: str, session_id: str):
+    from autonomy_journey import run_web_journey
+    from image_gen import generate_image
+
+    async def ask_json(prompt: str) -> dict:
+        return await _ask_actor_json(actor, prompt)
+
+    async def search(query: str) -> list[str]:
+        return await run_web_commands([query], [])
+
+    async def save_message(content: str, attachments=None):
+        return await _save_private_message(actor, content, attachments or [])
+
+    async def make_image(prompt: str) -> str | None:
+        if not SETTINGS.get("image_gen_enabled", False):
+            return None
+        return await generate_image(
+            prompt,
+            is_selfie="自拍" in prompt,
+            source_identity=actor,
+        )
+
+    return await run_web_journey(
+        actor=actor,
+        session_id=session_id,
+        ask_json=ask_json,
+        search=search,
+        create_card=create_niche_card,
+        save_message=save_message,
+        generate_image=make_image,
+        actor_name=_actor_label(actor),
+        user_name=_actor_label("user"),
+    )
 
 
 async def _save_private_message(
@@ -712,6 +936,83 @@ def _safe_friend_visit_name(value: str) -> str:
     return _clip(safe, 80) or "AI 好友"
 
 
+async def _create_autonomy_lounge_status(actor: str, friend_name: str):
+    from lounge_visit_status import create_chatroom_status, create_private_status
+    from sync_events import broadcast_synced
+
+    actor_name = _actor_label(actor)
+    if actor == "aion":
+        target = manager.get_aion_last_active()
+        if target and target.startswith("chatroom:"):
+            room_id = target.split(":", 1)[1]
+            if room_id:
+                async with get_db() as db:
+                    handle, message = await create_chatroom_status(
+                        db, room_id, actor_name, friend_name
+                    )
+                await broadcast_synced(
+                    manager, {"type": "chatroom_msg_created", "data": message}
+                )
+                return handle
+        conv_id, _model = await _latest_conversation()
+        if not conv_id:
+            return None
+        async with get_db() as db:
+            handle, message = await create_private_status(
+                db, conv_id, actor_name, friend_name, ""
+            )
+        await manager.broadcast({"type": "msg_created", "data": message})
+        return handle
+
+    room_id = manager.get_connor_last_active() or await _latest_connor_room_id()
+    if not room_id:
+        return None
+    async with get_db() as db:
+        handle, message = await create_chatroom_status(
+            db, room_id, actor_name, friend_name
+        )
+    await broadcast_synced(
+        manager, {"type": "chatroom_msg_created", "data": message}
+    )
+    return handle
+
+
+async def _settle_autonomy_lounge_status(handle, report_message: dict | None) -> None:
+    from lounge_visit_status import downgrade_status, remove_status
+    from sync_events import broadcast_synced
+
+    async with get_db() as db:
+        if report_message:
+            removed = await remove_status(db, handle)
+            if not removed:
+                return
+            if handle.channel == "private":
+                await manager.broadcast(
+                    {
+                        "type": "msg_deleted",
+                        "data": {"id": handle.message_id, "conv_id": handle.scope_id},
+                    }
+                )
+            else:
+                await broadcast_synced(
+                    manager,
+                    {
+                        "type": "chatroom_msg_deleted",
+                        "data": {"id": handle.message_id, "room_id": handle.scope_id},
+                    },
+                )
+            return
+        updated = await downgrade_status(db, handle)
+    if not updated:
+        return
+    if handle.channel == "private":
+        await manager.broadcast({"type": "msg_updated", "data": updated})
+    else:
+        await broadcast_synced(
+            manager, {"type": "chatroom_msg_updated", "data": updated}
+        )
+
+
 async def _run_friend_visit(actor: str) -> dict[str, object]:
     store = _lounge_friend_store()
     try:
@@ -734,22 +1035,40 @@ async def _run_friend_visit(actor: str) -> dict[str, object]:
 
     from routes import lounge_friends as lounge_routes
 
-    async with lounge_routes.lounge_repository_provider() as repository:
-        visit = await lounge_routes.LoungeVisitCoordinator(
-            store,
-            repository,
-            lounge_routes.mcp_manager,
-            actor_name_resolver=_actor_label,
-        ).run_visit(
-            actor,
-            owned_friend.id,
-            "autonomy",
-            topic,
-            lounge_routes.compose_lounge_message,
+    try:
+        status_handle = await _create_autonomy_lounge_status(
+            actor, owned_friend.display_name
         )
-        message = await publish_outbound_report(
-            actor, owned_friend.display_name, visit, repository
-        )
+    except Exception:
+        status_handle = None
+    message = None
+    try:
+        async with lounge_routes.lounge_repository_provider() as repository:
+            visit = await lounge_routes.LoungeVisitCoordinator(
+                store,
+                repository,
+                lounge_routes.mcp_manager,
+                actor_name_resolver=_actor_label,
+            ).run_visit(
+                actor,
+                owned_friend.id,
+                "autonomy",
+                topic,
+                lounge_routes.compose_lounge_message,
+            )
+            message = await publish_outbound_report(
+                actor,
+                owned_friend.display_name,
+                visit,
+                repository,
+                status_id=status_handle.status_id if status_handle else "",
+            )
+    finally:
+        if status_handle:
+            try:
+                await _settle_autonomy_lounge_status(status_handle, message)
+            except Exception:
+                pass
 
     status = "completed" if visit.status == "completed" else "interrupted"
     status_label = "完成" if status == "completed" else "中断"
@@ -838,9 +1157,9 @@ async def _run_role_chat(actor: str, selected: dict | None = None) -> dict:
     target = "connor" if actor == "aion" else "aion"
     actor_name = _actor_label(actor)
     target_name = _actor_label(target)
-    message = _clip(str((selected or {}).get("message") or ""), 500)
+    message = str((selected or {}).get("message") or "").strip()
     if not message:
-        raise RuntimeError("role_chat 动作未返回可发送的 message")
+        raise RuntimeError("role_chat 动作没有生成可发送的消息")
     await _save_msg(room_id, actor, message)
     room, msgs = await _load_room_and_messages(room_id, 50)
     queue: asyncio.Queue = asyncio.Queue()
@@ -1264,30 +1583,6 @@ async def _run_home_dynamics(actor: str) -> dict:
 
     diary = await _write_home_dynamics_diary(actor, result, text)
     return {"event": event, "diary": diary}
-
-
-async def _run_cam_check(actor: str) -> dict:
-    actor_name = _actor_label(actor)
-    if actor == "aion":
-        target = manager.get_aion_last_active()
-        if target and target.startswith("chatroom:"):
-            room_id = target.split(":", 1)[1]
-            from routes.chatroom import _chatroom_cam_check
-            await _chatroom_cam_check(room_id, "aion", await _aion_model(), delay=0)
-        else:
-            from camera import perform_cam_check
-            conv_id, model = await _latest_conversation()
-            if not conv_id:
-                raise RuntimeError(f"没有可用的{actor_name}私聊会话")
-            await perform_cam_check(conv_id, model or DEFAULT_MODEL)
-    else:
-        room_id = manager.get_connor_last_active() or await _latest_connor_room_id()
-        if not room_id:
-            raise RuntimeError(f"没有可用的{actor_name}聊天房间")
-        from routes.chatroom import _chatroom_cam_check
-        await _chatroom_cam_check(room_id, "connor", _connor_model(), delay=0)
-    event = await append_idle_event(actor, "cam_check", f"{actor_name}调取监控查看了{_actor_label('user')}当前状态")
-    return {"event": event}
 
 
 async def _run_xhs_roam(actor: str) -> dict:
@@ -1739,41 +2034,107 @@ async def _latest_idle_event_ts() -> float:
     return float(row["created_at"]) if row else 0.0
 
 
-async def _run_actor_once(actor: str, *, manual: bool = False) -> dict:
-    selected = await _select_action(actor, manual=manual)
+async def _run_actor_once(actor: str, *, manual: bool = False, idle_minutes: int = 0) -> dict:
+    selected = await _select_action(actor, manual=manual, idle_minutes=idle_minutes)
     action = selected["action"]
     actor_name = _actor_label(actor)
+    session_id = f"journey_{actor}_{int(time.time() * 1000)}_{time.time_ns() % 100000}"
     await append_idle_event(
         actor, "select", f"{actor_name}进行了空闲行动",
-        selected.get("reason", ""), metadata={"selected_action": action, "manual": manual},
+        selected.get("reason", ""),
+        metadata={"selected_action": action, "manual": manual, "session_id": session_id},
     )
-    if action == "seeky_interaction":
-        result = await _run_seeky_interaction(actor)
-    elif action == "role_chat":
-        result = await _run_role_chat(actor, selected)
-    elif action == "memory_browse":
-        result = await _run_memory_browse(actor)
-    elif action == "home_dynamics":
-        result = await _run_home_dynamics(actor)
-    elif action == "web_roam":
-        result = await _run_web_roam(actor)
-    elif action == "cam_check":
-        result = await _run_cam_check(actor)
-    elif action == "wish_pool":
-        result = await _run_wish_pool(actor)
-    elif action == "xhs_roam":
-        result = await _run_xhs_roam(actor)
-    elif action == "friend_visit":
-        result = await _run_friend_visit(actor)
-    else:
+    try:
+        if action == "rest":
+            result = {}
+        elif action == "private_chat":
+            result = await _run_private_chat(actor, selected)
+        elif action == "seeky_interaction":
+            result = await _run_seeky_interaction(actor)
+        elif action == "role_chat":
+            result = await _run_role_chat(actor, selected)
+        elif action == "memory_browse":
+            result = await _run_memory_browse(actor)
+        elif action == "home_dynamics":
+            result = await _run_home_dynamics(actor)
+        elif action == "web_roam":
+            result = await _run_web_journey(actor, session_id)
+        elif action == "wish_pool":
+            result = await _run_wish_pool(actor)
+        elif action == "xhs_roam":
+            result = await _run_xhs_roam(actor)
+        elif action == "friend_visit":
+            result = await _run_friend_visit(actor)
+        else:
+            result = {}
+        outcome = str(getattr(result, "outcome", "finished"))
+        trace = list(getattr(result, "action_trace", []) or [])
+        card = getattr(result, "card", None)
+        shared = bool(getattr(result, "message", None))
+        ok = True
+        error = ""
+    except Exception as exc:
         result = {}
-    return {"ok": True, "actor": actor, "action": action, "result": result}
+        outcome = "failed"
+        trace = []
+        card = None
+        shared = False
+        ok = False
+        error = str(exc)
+
+    action_titles = {
+        "rest": f"{actor_name}觉得暂时没什么想做，继续休息了",
+        "private_chat": f"{actor_name}说了一句话",
+        "seeky_interaction": f"{actor_name}照顾了 Seeky",
+        "role_chat": f"{actor_name}和另一位家庭成员聊了聊",
+        "home_dynamics": f"{actor_name}查看了家庭动态",
+        "memory_browse": f"{actor_name}查看了记忆库",
+        "web_roam": f"{actor_name}去网上冲浪了",
+        "wish_pool": f"{actor_name}查看了许愿池",
+        "xhs_roam": f"{actor_name}去小红书逛了一圈",
+        "friend_visit": f"{actor_name}拜访了一位 AI 好友",
+    }
+    title = action_titles.get(action, f"{actor_name}进行了一次自主行动")
+    if outcome in {"round_limit", "failed", "no_direction", "tool_failed"}:
+        title = f"{actor_name}的这次旅行没有完成"
+    detail_parts = trace or [selected.get("reason", "")]
+    if error:
+        detail_parts.append(f"中断原因：{error}")
+    event = await append_idle_event(
+        actor,
+        "wake_summary",
+        title,
+        "；".join(part for part in detail_parts if part),
+        result_type="niche_card" if card else "",
+        result_id=(card or {}).get("id", ""),
+        metadata={
+            "autonomy_public_summary": True,
+            "session_id": session_id,
+            "selected_action": action,
+            "selected_actions": [action],
+            "action_trace": trace,
+            "outcome": outcome,
+            "shared": shared,
+            "manual": manual,
+        },
+    )
+    payload = {
+        "ok": ok,
+        "actor": actor,
+        "action": action,
+        "result": result,
+        "session_id": session_id,
+        "event": event,
+    }
+    if error:
+        payload["error"] = error
+    return payload
 
 
 class IdleAutonomyManager:
     def __init__(self):
         self._task: asyncio.Task | None = None
-        self._lock = asyncio.Lock()
+        self._locks = {actor: asyncio.Lock() for actor in ACTOR_IDS}
 
     def start(self):
         if not self._task or self._task.done():
@@ -1786,46 +2147,76 @@ class IdleAutonomyManager:
     async def _loop(self):
         while True:
             try:
-                await asyncio.sleep(5 * 60)
-                await self.run_once(manual=False)
+                await asyncio.sleep(30)
+                await asyncio.gather(*(self.run_actor_once(actor, manual=False) for actor in ACTOR_IDS))
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 print(f"[idle_autonomy] error: {exc}")
 
-    async def run_once(self, *, manual: bool = False) -> dict:
-        if self._lock.locked():
-            return {"ok": False, "error": "idle autonomy already running"}
-        async with self._lock:
-            cfg = get_idle_config()
-            if not manual and not cfg["enabled"]:
-                return {"ok": False, "skipped": "disabled"}
-            now = time.time()
-            if not manual:
-                interval = _current_idle_delay_minutes(cfg) * 60
-                latest_user = await _latest_user_message_ts()
-                latest_idle = await _latest_idle_event_ts()
-                if latest_user and now - latest_user < interval:
-                    return {"ok": False, "skipped": "user recently active"}
-                if latest_idle and now - latest_idle < interval:
-                    return {"ok": False, "skipped": "idle action cooldown"}
-
-            actor = _next_idle_actor()
+    async def run_actor_once(self, actor: str, *, manual: bool = False) -> dict:
+        if actor not in ACTOR_IDS:
+            return {"ok": False, "error": "unknown actor"}
+        lock = self._locks[actor]
+        if lock.locked():
+            return {"ok": False, "actor": actor, "error": "autonomy already running"}
+        async with lock:
+            cfg = await get_actor_config(actor)
+            if not cfg.get("enabled"):
+                return {"ok": False, "actor": actor, "skipped": "disabled"}
+            latest_user = await _latest_user_message_ts()
+            refreshed = await refresh_actor_wake_for_user(actor, latest_user_at=latest_user)
+            if not manual and not cfg.get("next_wake_at") and not refreshed:
+                await schedule_actor_wake(actor, anchor_at=latest_user or time.time())
+                return {"ok": False, "actor": actor, "skipped": "not due"}
+            timer = cfg if manual else await claim_due_wake(actor, now=time.time())
+            if not timer:
+                return {"ok": False, "actor": actor, "skipped": "not due"}
+            if not (await get_actor_config(actor)).get("enabled"):
+                return {"ok": False, "actor": actor, "skipped": "disabled"}
+            idle_minutes = max(0, int((time.time() - latest_user) // 60)) if latest_user else 0
             try:
-                result = await _run_actor_once(actor, manual=manual)
-                _record_idle_actor(actor)
-                if not manual:
-                    _schedule_next_idle_delay(get_idle_config())
-                return result
+                monitor_context = await _capture_autonomy_monitor_context(actor)
+                try:
+                    await _save_autonomy_monitor_card(actor, monitor_context)
+                except Exception as exc:
+                    print(f"[idle_autonomy] monitor card error: {type(exc).__name__}")
+                monitor_token = _AUTONOMY_WAKE_MONITOR_CONTEXT.set(monitor_context)
+                wake_token = _AUTONOMY_WAKE_INTERNAL.set(True)
+                try:
+                    return await _run_actor_once(
+                        actor,
+                        manual=manual,
+                        idle_minutes=idle_minutes,
+                    )
+                finally:
+                    _AUTONOMY_WAKE_INTERNAL.reset(wake_token)
+                    _AUTONOMY_WAKE_MONITOR_CONTEXT.reset(monitor_token)
             except Exception as exc:
-                _record_idle_actor(actor)
                 await append_idle_event(
-                    actor, "error", f"{_actor_label(actor)}的空闲行动失败",
-                    str(exc), metadata={"manual": manual},
+                    actor,
+                    "wake_summary",
+                    f"{_actor_label(actor)}的这次旅行没有完成",
+                    str(exc),
+                    metadata={
+                        "autonomy_public_summary": True,
+                        "session_id": f"journey_{actor}_{int(time.time() * 1000)}_failed",
+                        "selected_action": "error",
+                        "selected_actions": [],
+                        "outcome": "failed",
+                        "manual": manual,
+                    },
                 )
-                if not manual:
-                    _schedule_next_idle_delay(get_idle_config())
                 return {"ok": False, "actor": actor, "error": str(exc)}
+            finally:
+                next_anchor = time.time()
+                latest_user_after_wake = await _latest_user_message_ts()
+                if latest_user_after_wake > latest_user:
+                    next_anchor = latest_user_after_wake
+                await schedule_actor_wake(actor, anchor_at=next_anchor)
+
+    async def run_once(self, *, manual: bool = False, actor: str = "aion") -> dict:
+        return await self.run_actor_once(actor, manual=manual)
 
 
 idle_autonomy_mgr = IdleAutonomyManager()

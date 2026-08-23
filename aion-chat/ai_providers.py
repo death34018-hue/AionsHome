@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 import tempfile
 
-from config import get_key, MODELS, UPLOADS_DIR, CODEX_UPLOADS_DIR, SETTINGS, get_sentinel_config, DATA_DIR, resolve_model_key, is_model_deprecated
+from config import get_key, MODELS, UPLOADS_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, SETTINGS, get_sentinel_config, DATA_DIR, resolve_model_key, is_model_deprecated
 from codex_app_server import (
     CodexAppServerEvent,
     build_codex_app_server_command,
@@ -351,6 +351,8 @@ def _resolve_attachment_path(att) -> Path | None:
         return CODEX_UPLOADS_DIR / rel
     elif att.startswith("/uploads/"):
         return UPLOADS_DIR / att[len("/uploads/"):]
+    elif att.startswith("/screenshots/"):
+        return SCREENSHOTS_DIR / att[len("/screenshots/"):]
     else:
         # fallback: 只取文件名去主 uploads 找
         return UPLOADS_DIR / Path(att).name
@@ -409,7 +411,7 @@ def _openai_input_audio_format(fpath: Path, mime: str) -> str:
     return ""
 
 
-def build_multimodal_messages(history: list, *, include_audio: bool = False):
+def build_multimodal_messages(history: list, *, include_audio: bool = False, include_video: bool = False):
     """将带附件的历史记录转换为 OpenAI 兼容多模态格式"""
     result = []
     for m in history:
@@ -436,6 +438,13 @@ def build_multimodal_messages(history: list, *, include_audio: bool = False):
                             parts.append({
                                 "type": "input_audio",
                                 "input_audio": {"data": b64, "format": audio_format},
+                            })
+                            has_file_parts = True
+                    elif mime.startswith("video/"):
+                        if include_video:
+                            parts.append({
+                                "type": "video_url",
+                                "video_url": {"url": f"data:{mime};base64,{b64}"},
                             })
                             has_file_parts = True
                     else:
@@ -640,7 +649,11 @@ async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None
     api_key = (cfg.get("api_key") or "").strip()
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    api_messages = build_multimodal_messages(messages, include_audio=bool(cfg.get("audio", False)))
+    api_messages = build_multimodal_messages(
+        messages,
+        include_audio=bool(cfg.get("audio", False)),
+        include_video=bool(cfg.get("video", False)),
+    )
     payload = {"model": model, "messages": api_messages, "stream": True}
     if temperature is not None:
         payload["temperature"] = temperature
@@ -1994,6 +2007,7 @@ async def simple_ai_call(
     temperature: float | None = None,
     *,
     trace_label: str = "simple_ai_call",
+    include_device_context: bool = False,
 ) -> str:
     """收集 stream_ai 的全部 chunk并留存三天原始响应，返回过滤状态行后的正文。"""
     model_key = resolve_model_key(model_key)
@@ -2002,7 +2016,12 @@ async def simple_ai_call(
     raw_chunks = []
     error = ""
     try:
-        async for chunk in stream_ai(messages, model_key, temperature=temperature):
+        async for chunk in stream_ai(
+            messages,
+            model_key,
+            temperature=temperature,
+            include_device_context=include_device_context,
+        ):
             raw_chunks.append(chunk)
             if chunk.startswith(CLI_STATUS_PREFIX):
                 continue
@@ -2108,7 +2127,33 @@ async def _sentinel_describe_images(messages: list) -> list:
 
 
 # ── 统一调度 ──────────────────────────────────────
-async def stream_ai(messages: list, model_key: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, cancel_event=None):
+def with_current_device_context(messages: list) -> list:
+    prepared = [dict(message) for message in messages]
+    if any(
+        "【设备当前状态】" in str(message.get("content") or "")
+        for message in prepared
+    ):
+        return prepared
+    try:
+        from activity import get_device_context_for_prompt
+        device_context = get_device_context_for_prompt()
+    except Exception:
+        device_context = ""
+    if not device_context:
+        return prepared
+
+    for index in range(len(prepared) - 1, -1, -1):
+        if prepared[index].get("role") in ("user", "cam_user", "cam_trigger"):
+            content = str(prepared[index].get("content") or "").rstrip()
+            prepared[index]["content"] = f"{content}\n\n{device_context}".strip()
+            return prepared
+    prepared.append({"role": "user", "content": device_context})
+    return prepared
+
+
+async def stream_ai(messages: list, model_key: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, cancel_event=None, *, include_device_context: bool = True):
+    if include_device_context:
+        messages = with_current_device_context(messages)
     model_key = resolve_model_key(model_key)
     normalized = []
     for m in messages:

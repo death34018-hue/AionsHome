@@ -9,6 +9,10 @@ import httpx
 
 
 URL_RE = re.compile(r"https?://[^\s<>'\"`，。；：！？、]+", re.IGNORECASE)
+MARKDOWN_HTTP_LINK_RE = re.compile(
+    r"(?<!!)\[([^\]\n]+)\]\(\s*(https?://[^\s<>]+)\s*\)",
+    re.IGNORECASE,
+)
 TRAILING_PUNCTUATION = ".,;:!?，。；：！？、"
 TRAILING_BRACKETS = ")]}）】》」』"
 MAX_PREVIEW_ITEMS = 3
@@ -41,6 +45,34 @@ def extract_urls(text: str, limit: int = MAX_PREVIEW_ITEMS) -> list[str]:
         if len(urls) >= limit:
             break
     return urls
+
+
+def strip_urls_for_message(text: str) -> str:
+    """Keep readable Markdown labels while removing raw web addresses."""
+    cleaned = MARKDOWN_HTTP_LINK_RE.sub(lambda match: match.group(1).strip(), text or "")
+
+    def _remove_bare_url(match: re.Match) -> str:
+        raw = match.group(0)
+        url = _clean_url(raw)
+        suffix = raw[len(url):]
+        return "".join(char for char in suffix if char in TRAILING_PUNCTUATION)
+
+    cleaned = URL_RE.sub(_remove_bare_url, cleaned)
+    lines: list[str] = []
+    empty_link_label = re.compile(
+        r"^(?:原始资料|原文|来源|网址|链接|参考|参考资料|参考链接)\s*[：:]?\s*[。.]?$"
+    )
+    for line in cleaned.splitlines():
+        line = re.sub(r"[ \t]+", " ", line).strip()
+        line = re.sub(r"\s+([，。；：！？、,.])", r"\1", line)
+        if empty_link_label.fullmatch(line):
+            continue
+        if not line:
+            if lines and lines[-1]:
+                lines.append("")
+            continue
+        lines.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
 
 
 def _host_for_url(url: str) -> str:

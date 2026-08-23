@@ -1,11 +1,13 @@
 package com.aion.chat;
 
 import android.accessibilityservice.AccessibilityService;
+import android.app.Notification;
 import android.content.ComponentName;
 import android.graphics.Bitmap;
 import android.graphics.ColorSpace;
 import android.hardware.HardwareBuffer;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -20,9 +22,13 @@ import android.util.Log;
 import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
 
+import androidx.core.content.ContextCompat;
+
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.MediaType;
@@ -36,9 +42,11 @@ public class AionAccessibilityService extends AccessibilityService {
     private static final long MIN_CAPTURE_INTERVAL_MS = 8_000;
     private static final long FORCE_CAPTURE_INTERVAL_MS = 2_500;
     private static final long FOREGROUND_RECONCILE_DELAY_MS = 400L;
+    private static final String SUPERX_PREFIX = "notification.superx.";
     private static volatile AionAccessibilityService instance;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final ConcurrentHashMap<String, String> forwardedLivePayloads = new ConcurrentHashMap<>();
     private final OkHttpClient client = new OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
@@ -134,6 +142,10 @@ public class AionAccessibilityService extends AccessibilityService {
     public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event == null || event.getPackageName() == null) return;
         int type = event.getEventType();
+        if (type == AccessibilityEvent.TYPE_NOTIFICATION_STATE_CHANGED) {
+            forwardLiveNotification(event);
+            return;
+        }
         if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
                 && type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
             return;
@@ -144,6 +156,136 @@ public class AionAccessibilityService extends AccessibilityService {
         if (runtime == null) return;
         mainHandler.removeCallbacks(foregroundReconcile);
         mainHandler.postDelayed(foregroundReconcile, FOREGROUND_RECONCILE_DELAY_MS);
+    }
+
+    private void forwardLiveNotification(AccessibilityEvent event) {
+        if (!(event.getParcelableData() instanceof Notification)) return;
+        try {
+            Notification notification = (Notification) event.getParcelableData();
+            Bundle extras = notification.extras == null ? new Bundle() : notification.extras;
+            String packageName = clean(event.getPackageName(), 220);
+            String targetPackage = firstNonEmpty(
+                    stringValue(extras.get("targetApp")),
+                    stringValue(extras.get("override_pkgname")));
+            if (!targetPackage.isEmpty()) packageName = targetPackage;
+            if (packageName.isEmpty() || getPackageName().equals(packageName)) return;
+
+            CharSequence titleValue = extras.getCharSequence(Notification.EXTRA_TITLE);
+            CharSequence textValue = extras.getCharSequence(Notification.EXTRA_BIG_TEXT);
+            if (TextUtils.isEmpty(textValue)) {
+                textValue = extras.getCharSequence(Notification.EXTRA_TEXT);
+            }
+            boolean liveCard = isSuperX(extras);
+            if (TextUtils.isEmpty(titleValue)) titleValue = superXValue(extras, "title");
+            if (TextUtils.isEmpty(textValue)) textValue = superXValue(extras, "content");
+
+            List<CharSequence> eventText = event.getText();
+            if (TextUtils.isEmpty(titleValue) && eventText != null && !eventText.isEmpty()) {
+                titleValue = eventText.get(0);
+            }
+            if (TextUtils.isEmpty(textValue) && eventText != null && eventText.size() > 1) {
+                textValue = eventText.get(1);
+            }
+
+            String title = clean(titleValue, 220);
+            String text = clean(textValue, 500);
+            if (!NotificationContextPolicy.shouldForwardAccessibility(liveCard, title, text)) return;
+
+            String category = notification.category == null ? "" : notification.category;
+            boolean ongoing = (notification.flags & Notification.FLAG_ONGOING_EVENT) != 0;
+            String scene = stringValue(extras.get("notification.superx.scene"));
+            String identity = NotificationContextPolicy.liveIdentity(packageName, scene);
+            String fingerprint = NotificationContextPolicy.fingerprint(title, text, category, ongoing);
+            String previous = forwardedLivePayloads.put(identity, fingerprint);
+            if (fingerprint.equals(previous)) return;
+
+            long nowMs = System.currentTimeMillis();
+            JSONObject data = new JSONObject();
+            data.put("key", identity);
+            data.put("package_name", packageName);
+            data.put("app_name", appName(packageName));
+            data.put("posted_at", nowMs / 1000.0);
+            data.put("observed_at", nowMs / 1000.0);
+            data.put("title", title);
+            data.put("text", text);
+            data.put("category", category);
+            data.put("channel_id", Build.VERSION.SDK_INT >= 26 ? notification.getChannelId() : "");
+            data.put("ongoing", ongoing);
+            data.put("group_summary", false);
+            data.put("noise", false);
+
+            Intent intent = new Intent(this, AionPushService.class);
+            intent.putExtra("action", AionPushService.ACTION_DEVICE_NOTIFICATION_POSTED);
+            intent.putExtra(AionPushService.EXTRA_DEVICE_NOTIFICATION_JSON, data.toString());
+            try {
+                ContextCompat.startForegroundService(this, intent);
+                Log.d(TAG, "forwarded live notification package=" + packageName
+                        + " scene=" + scene);
+            } catch (RuntimeException error) {
+                restoreLiveFingerprint(identity, fingerprint, previous);
+                throw error;
+            }
+        } catch (Exception error) {
+            Log.d(TAG, "live notification event skipped: " + error.getMessage());
+        }
+    }
+
+    private void restoreLiveFingerprint(String identity, String fingerprint, String previous) {
+        if (previous == null) {
+            forwardedLivePayloads.remove(identity, fingerprint);
+        } else {
+            forwardedLivePayloads.replace(identity, fingerprint, previous);
+        }
+    }
+
+    private String appName(String packageName) {
+        try {
+            return getPackageManager().getApplicationLabel(
+                    getPackageManager().getApplicationInfo(packageName, 0)).toString();
+        } catch (Exception ignored) {
+            return packageName;
+        }
+    }
+
+    private static boolean isSuperX(Bundle extras) {
+        for (String key : extras.keySet()) {
+            if (key != null && key.startsWith(SUPERX_PREFIX)) return true;
+        }
+        return false;
+    }
+
+    private static CharSequence superXValue(Bundle extras, String field) {
+        String[] containers = {
+                "notification.superx.baseInfos",
+                "notification.superx.capsule",
+                "notification.superx.shortInfos"
+        };
+        for (String container : containers) {
+            Object nested = extras.get(container);
+            if (!(nested instanceof Bundle)) continue;
+            Bundle bundle = (Bundle) nested;
+            Object value = bundle.get("notification.superx." + container.substring(container.lastIndexOf('.') + 1)
+                    + "." + field);
+            if (!(value instanceof CharSequence)) value = bundle.get(field);
+            if (value instanceof CharSequence && !TextUtils.isEmpty((CharSequence) value)) {
+                return (CharSequence) value;
+            }
+        }
+        return null;
+    }
+
+    private static String firstNonEmpty(String first, String second) {
+        return first == null || first.isEmpty() ? (second == null ? "" : second) : first;
+    }
+
+    private static String stringValue(Object value) {
+        return value instanceof CharSequence ? value.toString().trim() : "";
+    }
+
+    private static String clean(CharSequence value, int limit) {
+        if (value == null) return "";
+        String text = value.toString().replaceAll("\\s+", " ").trim();
+        return text.length() <= limit ? text : text.substring(0, limit);
     }
 
     @Override

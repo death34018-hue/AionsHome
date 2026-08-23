@@ -15,7 +15,13 @@ from memory import (
     get_embedding, cosine_similarity, _pack_embedding, _unpack_embedding, _keyword_match_score,
     _memory_time_payload, _format_raw_evidence_block,
 )
-from ai_providers import call_codex_cli, stream_ai, CLI_STATUS_PREFIX, _build_cli_prompt
+from ai_providers import (
+    CLI_STATUS_PREFIX,
+    _build_cli_prompt,
+    call_codex_cli,
+    stream_ai,
+    with_current_device_context,
+)
 from context_builder import build_ability_block, build_memory_blocks, fetch_merged_timeline, render_merged_timeline
 from ws import manager
 
@@ -268,6 +274,7 @@ async def stream_connor_cli(prompt: str = None, *, messages: list[dict] = None, 
             persona = _read_connor_persona()
             if persona:
                 messages = [{"role": "system", "content": persona}] + messages
+    messages = with_current_device_context(messages)
     codex_model = (MODELS.get("Codex") or {}).get("model", "")
     async for chunk in call_codex_cli(messages, codex_model, meta):
         yield chunk
@@ -292,7 +299,12 @@ async def simple_connor_cli_call(
     else:
         from ai_providers import simple_ai_call
         messages = [{"role": "user", "content": prompt}]
-        full_text = await simple_ai_call(messages, model_key, trace_label=trace_label)
+        full_text = await simple_ai_call(
+            messages,
+            model_key,
+            trace_label=trace_label,
+            include_device_context=True,
+        )
     return full_text.strip() or None
 
 
@@ -1065,6 +1077,7 @@ async def build_aion_group_context(
     query_text: str = "",
     query_keywords: list[str] = None,
     *,
+    include_image_attachments: bool = True,
     digest_result: dict = None,
     whisper_mode: bool = False,
 ) -> list[dict]:
@@ -1134,7 +1147,11 @@ async def build_aion_group_context(
     history.append({"role": "assistant", "content": "明白了。"})
 
     # 6. 统一时间线（合并私聊 + 群聊消息）
-    timeline_history = render_merged_timeline(merged, "aion")
+    timeline_history = render_merged_timeline(
+        merged,
+        "aion",
+        include_image_attachments=include_image_attachments,
+    )
     history.extend(timeline_history)
 
     return history, mem_result.get("digest_result", {})
@@ -1147,6 +1164,7 @@ async def build_connor_group_context(
     query_text: str = "",
     query_keywords: list[str] = None,
     *,
+    include_image_attachments: bool = True,
     digest_result: dict = None,
     whisper_mode: bool = False,
 ) -> list[dict]:
@@ -1229,7 +1247,11 @@ async def build_connor_group_context(
 
     # 5. 统一时间线（合并 Connor 1v1 + 群聊消息）
     merged = await fetch_merged_timeline("connor", context_limit, room_id=room_id)
-    timeline_history = render_merged_timeline(merged, "connor")
+    timeline_history = render_merged_timeline(
+        merged,
+        "connor",
+        include_image_attachments=include_image_attachments,
+    )
     history.extend(timeline_history)
 
     return history, mem_result.get("digest_result", {})
@@ -1242,6 +1264,7 @@ async def build_connor_1v1_context(
     query_text: str = "",
     query_keywords: list[str] = None,
     *,
+    include_image_attachments: bool = True,
     digest_result: dict = None,
     whisper_mode: bool = False,
 ) -> tuple[list[dict], dict]:
@@ -1314,7 +1337,11 @@ async def build_connor_1v1_context(
     messages.append({"role": "assistant", "content": "明白了。"})
 
     # 统一时间线（合并 Connor 1v1 + 群聊消息，保留附件）
-    timeline_history = render_merged_timeline(merged, "connor")
+    timeline_history = render_merged_timeline(
+        merged,
+        "connor",
+        include_image_attachments=include_image_attachments,
+    )
     messages.extend(timeline_history)
 
     return messages, mem_result.get("digest_result", {})

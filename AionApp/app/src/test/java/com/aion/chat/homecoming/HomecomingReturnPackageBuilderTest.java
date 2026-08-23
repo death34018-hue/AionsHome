@@ -61,6 +61,19 @@ public class HomecomingReturnPackageBuilderTest {
     }
 
     @Test
+    public void canonicalPayloadMatchesServerForClosingTags() throws Exception {
+        JSONObject payload = new JSONObject().put("text", "</think>");
+
+        String canonical = HomecomingSnapshotStore.canonicalJson(payload);
+
+        assertEquals("{\"text\":\"</think>\"}", canonical);
+        assertEquals(
+                "41b78658acca1a17ce62b18a8269509df77c4eb2ee112711ec725abf12926849",
+                HomecomingSnapshotStore.sha256Hex(
+                        canonical.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
     public void rejectsSequenceGapsAndUnknownOperationKinds() {
         MemoryPackages packages = new MemoryPackages();
         assertThrows(IllegalStateException.class, () -> builder(

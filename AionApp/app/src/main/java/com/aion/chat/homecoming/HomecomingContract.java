@@ -1,7 +1,7 @@
 package com.aion.chat.homecoming;
 
 public final class HomecomingContract {
-    public static final int SCHEMA_VERSION = 1;
+    public static final int SCHEMA_VERSION = 2;
     public static final String[] SECTION_NAMES = {
             "identity",
             "memories",

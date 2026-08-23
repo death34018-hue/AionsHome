@@ -10,7 +10,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#050923">
-<link rel="stylesheet" href="/static/chatroom.css?v=system-event-mobile-width-20260706b-chatroom-mobile-focus-20260704-band-vibration-note-20260717-persona-mobile-performance-20260721-monitor-camera-thumb-20260731">
+<link rel="stylesheet" href="/static/chatroom.css?v=system-event-mobile-width-20260706b-chatroom-mobile-focus-20260704-band-vibration-note-20260717-persona-mobile-performance-20260721-monitor-camera-thumb-20260731-mobile-no-x-20260820-video-attachments-20260822">
+<link rel="stylesheet" href="/static/proactive-orbit.css?v=20260817f">
 <link rel="stylesheet" href="/static/voice-call.css?v=voice-call-polish-20260704g">
 </head>
 <body>
@@ -81,12 +82,42 @@
 
       <div class="bottom-fade-overlay" aria-hidden="true"></div>
       <div class="preview-area" id="previewArea"></div>
-      <form class="composer" id="composer" style="display:none">
-        <input type="file" id="fileInput" accept="image/*,audio/*" multiple hidden>
+      <form class="composer proactive-orbit-host" id="composer" style="display:none">
+        <div class="proactive-orbit" aria-hidden="true">
+          <span class="proactive-orb proactive-orb-aion" data-proactive-orb="aion" hidden>
+            <svg class="proactive-flow-svg" aria-hidden="true" focusable="false">
+              <g class="proactive-flow-runner">
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+              </g>
+            </svg>
+          </span>
+          <span class="proactive-orb proactive-orb-connor" data-proactive-orb="connor" hidden>
+            <svg class="proactive-flow-svg" aria-hidden="true" focusable="false">
+              <g class="proactive-flow-runner">
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+                <rect class="proactive-flow-step" pathLength="100"></rect><rect class="proactive-flow-step" pathLength="100"></rect>
+              </g>
+            </svg>
+          </span>
+        </div>
+        <input type="file" id="fileInput" accept="image/*,video/*" multiple hidden>
         <div class="plus-menu-wrap">
           <button type="button" class="plus-btn" onclick="crTogglePlusMenu()" title="更多功能">＋</button>
           <div class="plus-menu" id="crPlusMenu">
-            <div class="plus-menu-item" onclick="crClosePlusMenu();document.getElementById('fileInput').click()"><span class="pm-icon">🖼</span>上传图片</div>
+            <div class="plus-menu-item" onclick="crClosePlusMenu();document.getElementById('fileInput').click()"><span class="pm-icon">📎</span>上传附件</div>
             <div class="plus-menu-item" onclick="crClosePlusMenu();crOpenCamera()"><span class="pm-icon">📷</span>拍照</div>
             <div class="plus-menu-item" onclick="crClosePlusMenu();if(window.VoiceCall)VoiceCall.openChatroom()"><span class="pm-icon">◉</span>语音通话</div>
             <div class="plus-menu-item" onclick="crClosePlusMenu();crToggleVoiceMode()"><span class="pm-icon">🎤</span>语音消息</div>
@@ -434,9 +465,11 @@
   </div>
 
   <script src="/static/hug_pillow_ai.js?v=hug-pillow-ai-20260726"></script>
-  <script src="/static/monitor-camera-snapshot.js?v=20260731"></script>
-  <script src="/static/schedule-command-filter.js?v=20260805"></script>
-  <script src="/static/chatroom.js?v=chatroom-mobile-focus-20260704-band-vibration-note-20260717-persona-mobile-performance-20260721-composer-mobile-performance-20260724-hug-pillow-ai-20260726-monitor-camera-20260731-schedule-command-tolerance-20260805-voice-message-actions-20260805"></script>
+  <script src="/static/monitor-camera-snapshot.js?v=20260820"></script>
+  <script src="/static/schedule-command-filter.js?v=20260805-next-chat-20260816"></script>
+  <script src="/static/lounge-visit-ui.js?v=20260815"></script>
+  <script src="/static/proactive-orbit.js?v=20260816"></script>
+  <script src="/static/chatroom.js?v=chatroom-mobile-focus-20260704-band-vibration-note-20260717-persona-mobile-performance-20260721-composer-mobile-performance-20260724-hug-pillow-ai-20260726-monitor-camera-20260731-schedule-command-tolerance-20260805-voice-message-actions-20260805-lounge-status-20260815-next-chat-finish-20260816-proactive-orbit-20260816-video-attachments-20260822"></script>
   <script src="/static/voice-call.js?v=voice-call-polish-20260704g"></script>
 </body>
 </html>

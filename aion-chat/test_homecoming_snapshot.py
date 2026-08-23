@@ -176,8 +176,8 @@ class HomecomingSnapshotTests(unittest.IsolatedAsyncioTestCase):
             set(sections["timelines"]),
         )
         main = sections["timelines"]["main_private"]["messages"]
-        self.assertEqual(3000, len(main))
-        self.assertEqual("msg-0002", main[0]["id"])
+        self.assertEqual(500, len(main))
+        self.assertEqual("msg-2502", main[0]["id"])
         self.assertEqual("msg-3001", main[-1]["id"])
         serialized = json.dumps(sections, ensure_ascii=False)
         self.assertNotIn("msg-too-old", serialized)
@@ -205,6 +205,19 @@ class HomecomingSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             ["second-active"],
             [row["id"] for row in sections["memories"]["second"]],
+        )
+        self.assertEqual(
+            {
+                "id", "content", "type", "created_at", "source_conv",
+                "keywords", "importance", "source_start_ts", "source_end_ts",
+                "unresolved", "source_msg_id", "evidence_summary",
+                "evidence_detail_level",
+            },
+            set(sections["memories"]["main"][0]),
+        )
+        self.assertNotIn(
+            "embedding",
+            json.dumps(sections["memories"], ensure_ascii=False),
         )
         self.assertEqual(
             ["schedule-active"],

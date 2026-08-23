@@ -681,7 +681,12 @@ async def _ask_seeky_for_memory_review(batch: list[dict], model_key: str) -> tup
         f"{_format_memory_batch_for_prompt(batch)}"
     )
     full_text = ""
-    async for chunk in stream_ai([{"role": "user", "content": prompt}], model_key, {}):
+    async for chunk in stream_ai(
+        [{"role": "user", "content": prompt}],
+        model_key,
+        {},
+        include_device_context=False,
+    ):
         if chunk.startswith(CLI_STATUS_PREFIX):
             continue
         full_text += chunk
@@ -767,7 +772,12 @@ async def _ask_seeky_for_source_review(
         f"{_format_source_batch_for_prompt(batch)}"
     )
     full_text = ""
-    async for chunk in stream_ai([{"role": "user", "content": prompt}], model_key, {}):
+    async for chunk in stream_ai(
+        [{"role": "user", "content": prompt}],
+        model_key,
+        {},
+        include_device_context=False,
+    ):
         if chunk.startswith(CLI_STATUS_PREFIX):
             continue
         full_text += chunk
@@ -812,7 +822,12 @@ async def _reduce_source_review_items(
         f"{_format_candidate_items_for_prompt(items)}"
     )
     full_text = ""
-    async for chunk in stream_ai([{"role": "user", "content": prompt}], model_key, {}):
+    async for chunk in stream_ai(
+        [{"role": "user", "content": prompt}],
+        model_key,
+        {},
+        include_device_context=False,
+    ):
         if chunk.startswith(CLI_STATUS_PREFIX):
             continue
         full_text += chunk
@@ -935,7 +950,12 @@ async def _ask_seeky_for_memory_compression(
         f"{await _format_memory_candidates_for_prompt(memories)}"
     )
     full_text = ""
-    async for chunk in stream_ai([{"role": "user", "content": prompt}], model_key, {}):
+    async for chunk in stream_ai(
+        [{"role": "user", "content": prompt}],
+        model_key,
+        {},
+        include_device_context=False,
+    ):
         if chunk.startswith(CLI_STATUS_PREFIX):
             continue
         full_text += chunk

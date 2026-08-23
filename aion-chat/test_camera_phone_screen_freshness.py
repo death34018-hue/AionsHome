@@ -44,13 +44,18 @@ class CameraPhoneScreenFreshnessTests(unittest.TestCase):
         self.assertIn("wait_for_phone_screen_after_sync", patrol)
         self.assertNotIn("time.sleep(5)", patrol)
 
+        context_start = camera_source.index("async def acquire_prompt_monitor_context")
+        context_end = camera_source.index("\ndef acquire_monitor_image_sync", context_start)
+        shared_monitor_context = camera_source[context_start:context_end]
+        self.assertIn("wait_for_phone_screen_after", shared_monitor_context)
+        self.assertNotIn("await asyncio.sleep(5)", shared_monitor_context)
+
         schedule_path = Path(camera.__file__).with_name("schedule.py")
         schedule_source = schedule_path.read_text(encoding="utf-8")
         monitor_start = schedule_source.index("    async def _fire_monitor")
         monitor_end = schedule_source.index("async def process_schedule_commands", monitor_start)
         scheduled_monitor = schedule_source[monitor_start:monitor_end]
-        self.assertIn("wait_for_phone_screen_after", scheduled_monitor)
-        self.assertNotIn("await asyncio.sleep(5)", scheduled_monitor)
+        self.assertIn("acquire_prompt_monitor_context", scheduled_monitor)
 
 
 if __name__ == "__main__":

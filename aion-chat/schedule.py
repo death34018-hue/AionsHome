@@ -28,6 +28,12 @@ from stream_safety import (
 from tts import TTSStreamer
 from web_search import WebCommandStreamFilter
 from capabilities import build_band_note_ability_text
+from proactive_companionship import (
+    PROACTIVE_TYPE,
+    claim_proactive_timer,
+    proactive_ability_text,
+)
+from autonomy_state import autonomy_prompt_text
 from wechat_bridge import (
     dispatch_wechat_message,
     process_wechat_outbound_commands,
@@ -36,6 +42,10 @@ from wechat_bridge import (
 
 log = logging.getLogger("schedule")
 BACKGROUND_CLI_META = {"antigravity_print_timeout": "90s"}
+
+
+def proactive_monitor_card_title(actor_name: str, snapshot_attachment) -> str:
+    return f"{actor_name}查看了监控" if snapshot_attachment else ""
 
 
 async def _consume_background_stream(
@@ -250,9 +260,16 @@ class ScheduleManager:
                 (now_iso,),
             )
             due_monitors = [dict(r) for r in await cur.fetchall()]
+            cur = await db.execute(
+                "SELECT * FROM schedules WHERE status='active' AND type=? AND trigger_at <= ?",
+                (PROACTIVE_TYPE, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+            due_proactive = [dict(r) for r in await cur.fetchall()]
         for item in due_alarms:
             await self._fire_alarm(item)
         for item in due_monitors:
+            await self._fire_monitor(item)
+        for item in due_proactive:
             await self._fire_monitor(item)
 
     def _resolve_target(self, item: dict) -> dict:
@@ -334,29 +351,30 @@ class ScheduleManager:
         system_atts: list | None = None,
     ):
         """将系统消息和 AI 回复保存到 Aion 私聊"""
-        now = time.time()
-        sys_msg_id = f"msg_{int(now*1000)}_st"
         system_atts = list(system_atts or [])
-        system_att_json = (
-            json.dumps(system_atts, ensure_ascii=False) if system_atts else "[]"
-        )
-        async with get_db() as db:
-            await db.execute(
-                "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-                (
-                    sys_msg_id,
-                    conv_id,
-                    "system",
-                    sys_content,
-                    now,
-                    system_att_json,
-                ),
+        if sys_content:
+            now = time.time()
+            sys_msg_id = f"msg_{int(now*1000)}_st"
+            system_att_json = (
+                json.dumps(system_atts, ensure_ascii=False) if system_atts else "[]"
             )
-            await db.commit()
-        sys_msg = {"id": sys_msg_id, "conv_id": conv_id, "role": "system",
-                   "content": sys_content, "created_at": now,
-                   "attachments": system_atts}
-        await manager.broadcast({"type": "msg_created", "data": sys_msg})
+            async with get_db() as db:
+                await db.execute(
+                    "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
+                    (
+                        sys_msg_id,
+                        conv_id,
+                        "system",
+                        sys_content,
+                        now,
+                        system_att_json,
+                    ),
+                )
+                await db.commit()
+            sys_msg = {"id": sys_msg_id, "conv_id": conv_id, "role": "system",
+                       "content": sys_content, "created_at": now,
+                       "attachments": system_atts}
+            await manager.broadcast({"type": "msg_created", "data": sys_msg})
 
         now2 = time.time()
         music_atts = await with_band_vibration_attachment(ai_msg_id, music_atts)
@@ -389,29 +407,30 @@ class ScheduleManager:
         system_atts: list | None = None,
     ):
         """将系统消息和 AI 回复保存到聊天室（群聊/Connor 私聊）"""
-        now = time.time()
-        sys_msg_id = f"cm_{int(now*1000)}_sys"
         system_atts = list(system_atts or [])
-        system_att_json = (
-            json.dumps(system_atts, ensure_ascii=False) if system_atts else "[]"
-        )
-        async with get_db() as db:
-            await db.execute(
-                "INSERT INTO chatroom_messages (id, room_id, sender, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-                (
-                    sys_msg_id,
-                    room_id,
-                    "system",
-                    sys_content,
-                    now,
-                    system_att_json,
-                ),
+        if sys_content:
+            now = time.time()
+            sys_msg_id = f"cm_{int(now*1000)}_sys"
+            system_att_json = (
+                json.dumps(system_atts, ensure_ascii=False) if system_atts else "[]"
             )
-            await db.commit()
-        sys_msg = {"id": sys_msg_id, "room_id": room_id, "sender": "system",
-                   "content": sys_content, "created_at": now,
-                   "attachments": system_atts}
-        await manager.broadcast({"type": "chatroom_msg_created", "data": sys_msg})
+            async with get_db() as db:
+                await db.execute(
+                    "INSERT INTO chatroom_messages (id, room_id, sender, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
+                    (
+                        sys_msg_id,
+                        room_id,
+                        "system",
+                        sys_content,
+                        now,
+                        system_att_json,
+                    ),
+                )
+                await db.commit()
+            sys_msg = {"id": sys_msg_id, "room_id": room_id, "sender": "system",
+                       "content": sys_content, "created_at": now,
+                       "attachments": system_atts}
+            await manager.broadcast({"type": "chatroom_msg_created", "data": sys_msg})
 
         now2 = time.time()
         music_atts = await with_band_vibration_attachment(ai_msg_id, music_atts)
@@ -434,6 +453,7 @@ class ScheduleManager:
         content = item["content"]
         trigger_at = item["trigger_at"]
         origin = item.get("origin", "aion")
+        is_proactive = item.get("type") == PROACTIVE_TYPE
         is_app_checkpoint = bool(item.get("_app_supervision_checkpoint"))
         checkpoint_display = str(item.get("_app_supervision_display") or "").strip()
         checkpoint_phone_attachment = str(
@@ -443,7 +463,10 @@ class ScheduleManager:
         log.info("firing alarm %s: %s @%s (origin=%s)", sid, content, trigger_at, origin)
 
         # 标记为已触发
-        if not is_app_checkpoint:
+        if is_proactive:
+            if not await claim_proactive_timer(sid):
+                return
+        elif not is_app_checkpoint:
             async with aiosqlite.connect(DB_PATH) as db:
                 changed = await finish_schedule(db, sid, "triggered")
                 await db.commit()
@@ -451,7 +474,7 @@ class ScheduleManager:
                 return
 
         # 广播给前端弹窗
-        if not is_app_checkpoint:
+        if not is_app_checkpoint and not is_proactive:
             await manager.broadcast({
                 "type": "schedule_alarm",
                 "data": {"id": sid, "content": content, "trigger_at": trigger_at, "origin": origin, "origin_name": origin_name},
@@ -507,17 +530,33 @@ class ScheduleManager:
             room_type = room.get("type", "group")
 
             if room_type == "connor_1v1":
-                messages_ctx, _ = await build_connor_1v1_context(room_id, [], query_text=content)
+                messages_ctx, _ = await build_connor_1v1_context(
+                    room_id,
+                    [],
+                    query_text=content,
+                    include_image_attachments=False,
+                )
             else:
-                messages_ctx, _ = await build_connor_group_context(room_id, [], query_text=content)
+                messages_ctx, _ = await build_connor_group_context(
+                    room_id,
+                    [],
+                    query_text=content,
+                    include_image_attachments=False,
+                )
 
             now_str = datetime.now().strftime("%Y年%m月%d日  %H:%M:%S")
-            trigger_prompt = (
-                f"{'[应用使用检查点触发]' if is_app_checkpoint else '[日程闹铃触发]'}\n"
-                f"日程内容：{trigger_at} — {content}\n"
-                f"现在时间已经到了（当前 {now_str}），请提醒【{user_name}】。"
-                f"{heart_rate_block}"
-            )
+            if is_proactive:
+                trigger_prompt = (
+                    f"[主动陪伴触发]\n截至当前 {now_str}，这段时间没有新的对话消息。"
+                    f"请结合最新上下文，自然地主动和【{user_name}】继续聊下去。"
+                )
+            else:
+                trigger_prompt = (
+                    f"{'[应用使用检查点触发]' if is_app_checkpoint else '[日程闹铃触发]'}\n"
+                    f"日程内容：{trigger_at} — {content}\n"
+                    f"现在时间已经到了（当前 {now_str}），请提醒【{user_name}】。"
+                    f"{heart_rate_block}"
+                )
             if checkpoint_phone_attachment:
                 trigger_prompt += "\n系统附带了本次检查点刚刚截取的手机屏幕，请结合画面判断。"
             elif is_app_checkpoint:
@@ -530,7 +569,11 @@ class ScheduleManager:
             # Aion 来源 → 沿用原有逻辑
             from context_builder import fetch_merged_timeline, render_merged_timeline
             merged = await fetch_merged_timeline("aion", 20, conv_id=conv_id)
-            history = render_merged_timeline(merged, "aion")
+            history = render_merged_timeline(
+                merged,
+                "aion",
+                include_image_attachments=False,
+            )
 
             prefix = []
             if wb.get("ai_persona"):
@@ -553,6 +596,12 @@ class ScheduleManager:
             passive_band_ability = build_band_note_ability_text(user_name, passive=True)
             if passive_band_ability:
                 abilities.append(passive_band_ability)
+            proactive_text = proactive_ability_text(origin)
+            if proactive_text:
+                abilities.append(proactive_text)
+            autonomy_text = await autonomy_prompt_text(origin)
+            if autonomy_text:
+                abilities.append(autonomy_text)
             ability_block = "[系统能力] 你可以在回复中根据对话氛围，善用以下指令：\n" + "\n".join(f"{i+1}. {a}" for i, a in enumerate(abilities))
 
             active_schedules = await get_active_schedules()
@@ -563,12 +612,18 @@ class ScheduleManager:
             history.insert(cap_idx, {"role": "user", "content": ability_block})
             history.insert(cap_idx + 1, {"role": "assistant", "content": "好的，需要时我会使用这些指令。"})
 
-            trigger_prompt = (
-                f"{'[应用使用检查点触发]' if is_app_checkpoint else '[日程闹铃触发]'}\n"
-                f"日程内容：{trigger_at} — {content}\n"
-                f"现在时间已经到了（当前 {now_str}），请提醒【{user_name}】。"
-                f"{heart_rate_block}"
-            )
+            if is_proactive:
+                trigger_prompt = (
+                    f"[主动陪伴触发]\n截至当前 {now_str}，这段时间没有新的对话消息。"
+                    f"请结合最新上下文，自然地主动和【{user_name}】继续聊下去。"
+                )
+            else:
+                trigger_prompt = (
+                    f"{'[应用使用检查点触发]' if is_app_checkpoint else '[日程闹铃触发]'}\n"
+                    f"日程内容：{trigger_at} — {content}\n"
+                    f"现在时间已经到了（当前 {now_str}），请提醒【{user_name}】。"
+                    f"{heart_rate_block}"
+                )
             if checkpoint_phone_attachment:
                 trigger_prompt += "\n系统附带了本次检查点刚刚截取的手机屏幕，请结合画面判断。"
             elif is_app_checkpoint:
@@ -692,7 +747,7 @@ class ScheduleManager:
         reasoning_content = (usage_meta.get("reasoning_content") or "").strip()
 
         # ── 保存到目标窗口 ──
-        sys_content = (
+        sys_content = "" if is_proactive else (
             checkpoint_display or f"应用使用检查点触发：{content}"
             if is_app_checkpoint else f"⏰ 日程闹铃触发：{content}"
         )
@@ -728,16 +783,21 @@ class ScheduleManager:
         content = item["content"]
         trigger_at = item["trigger_at"]
         origin = item.get("origin", "aion")
+        is_proactive = item.get("type") == PROACTIVE_TYPE
         origin_name = get_schedule_origin_name(origin)
         log.info("firing monitor %s: %s @%s (origin=%s)", sid, content, trigger_at, origin)
 
         # 标记为已触发
-        async with aiosqlite.connect(DB_PATH) as db:
-            changed = await finish_schedule(db, sid, "triggered")
-            await db.commit()
-        if not changed:
-            return
-        await manager.broadcast({"type": "schedule_changed"})
+        if is_proactive:
+            if not await claim_proactive_timer(sid):
+                return
+        else:
+            async with aiosqlite.connect(DB_PATH) as db:
+                changed = await finish_schedule(db, sid, "triggered")
+                await db.commit()
+            if not changed:
+                return
+            await manager.broadcast({"type": "schedule_changed"})
 
         # ── 确定响应目标 ──
         target = self._resolve_target(item)
@@ -746,49 +806,16 @@ class ScheduleManager:
 
         # 尝试截图。手机源必须等待本轮 request_id 对应的新照片。
         from camera import (
-            acquire_monitor_image,
-            build_monitor_alert_data,
-            cam,
-            save_monitor_camera_snapshot,
+            acquire_prompt_monitor_context,
         )
-        fname = None
-        camera_jpeg = None
-        await manager.broadcast({
-            "type": "monitor_alert",
-            "data": build_monitor_alert_data(
-                content,
-                origin=origin,
-                origin_name=origin_name,
-            ),
-        })
-        no_image_context = ""
-        if cam.cfg.get("active_source", "local") == "phone":
-            image_result = await acquire_monitor_image("scheduled_monitor")
-            jpg_bytes = image_result.jpeg
-            camera_jpeg = image_result.camera_jpeg
-            no_image_context = image_result.no_image_context
-        else:
-            # 本地/ESP32 路径仍合成一次本轮新鲜的手机屏幕截图。
-            phone_screen_requested_at = time.time()
-            from phone_screen import wait_for_phone_screen_after
-            await wait_for_phone_screen_after(phone_screen_requested_at)
-            jpg_bytes, camera_jpeg = cam.get_capture_jpegs(
-                phone_screen_after=phone_screen_requested_at,
-            )
-            if not jpg_bytes:
-                jpg_bytes = cam.get_screen_only_jpeg(
-                    phone_screen_after=phone_screen_requested_at,
-                )
-        if jpg_bytes:
-            from config import UPLOADS_DIR, SCREENSHOTS_DIR
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            fname = f"monitor_{ts}.jpg"
-            fpath = UPLOADS_DIR / fname
-            fpath.write_bytes(jpg_bytes)
-
-            # 同时保存到 screenshots 目录
-            SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-            (SCREENSHOTS_DIR / fname).write_bytes(jpg_bytes)
+        monitor_context = await acquire_prompt_monitor_context(
+            "scheduled_monitor",
+            alert_content=content or "主动陪伴",
+            alert_extra={"origin": origin, "origin_name": origin_name},
+        )
+        image_result = monitor_context.image_result
+        fname = monitor_context.prompt_attachment.rsplit("/", 1)[-1] if monitor_context.prompt_attachment else None
+        no_image_context = image_result.no_image_context
 
         # 获取最新对话
         wb = load_worldbook()
@@ -817,8 +844,8 @@ class ScheduleManager:
         activity_summary_text = ""
         user_dynamics_text = ""
         try:
-            from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prompt
-            activity_summary_text = get_activity_summary_for_prompt(6)
+            from activity import get_device_context_for_prompt, get_user_dynamics_for_prompt
+            activity_summary_text = get_device_context_for_prompt()
             user_dynamics_text = get_user_dynamics_for_prompt(hours=1)
         except Exception:
             pass
@@ -834,11 +861,17 @@ class ScheduleManager:
             heart_rate_block = ""
 
         # 触发提示词（两种来源共用）
-        trigger_prompt = (
-            f"[定时监控触发]\n"
-            f"你之前设置了在 {trigger_at.replace('T', ' ')} 查看【{user_name}】的状态。\n"
-            f"监控目的：{content}\n"
-        )
+        if is_proactive:
+            trigger_prompt = (
+                f"[主动陪伴触发]\n截至当前 {now_str}，这段时间没有新的对话消息。\n"
+                f"请结合最新对话和本次实时画面，自然地主动和【{user_name}】继续聊下去。\n"
+            )
+        else:
+            trigger_prompt = (
+                f"[定时监控触发]\n"
+                f"你之前设置了在 {trigger_at.replace('T', ' ')} 查看【{user_name}】的状态。\n"
+                f"监控目的：{content}\n"
+            )
         if fname:
             trigger_prompt += f"这是系统在当前时间（{now_str}）自动从摄像头截取的实时画面。\n"
         else:
@@ -871,20 +904,34 @@ class ScheduleManager:
             room_type = room.get("type", "group")
 
             if room_type == "connor_1v1":
-                messages_ctx, _ = await build_connor_1v1_context(room_id, [], query_text=content)
+                messages_ctx, _ = await build_connor_1v1_context(
+                    room_id,
+                    [],
+                    query_text=content,
+                    include_image_attachments=False,
+                )
             else:
-                messages_ctx, _ = await build_connor_group_context(room_id, [], query_text=content)
+                messages_ctx, _ = await build_connor_group_context(
+                    room_id,
+                    [],
+                    query_text=content,
+                    include_image_attachments=False,
+                )
 
             trigger_msg = {"role": "user", "content": trigger_prompt}
             if fname:
-                trigger_msg["attachments"] = [f"/uploads/{fname}"]
+                trigger_msg["attachments"] = [monitor_context.prompt_attachment]
             messages_ctx.append(trigger_msg)
             messages = messages_ctx
         else:
             # Aion 来源 → 沿用原有逻辑
             from context_builder import fetch_merged_timeline, render_merged_timeline
             merged = await fetch_merged_timeline("aion", 20, conv_id=conv_id)
-            history = render_merged_timeline(merged, "aion")
+            history = render_merged_timeline(
+                merged,
+                "aion",
+                include_image_attachments=False,
+            )
 
             prefix = []
             if wb.get("ai_persona"):
@@ -906,6 +953,12 @@ class ScheduleManager:
             passive_band_ability = build_band_note_ability_text(user_name, passive=True)
             if passive_band_ability:
                 abilities.append(passive_band_ability)
+            proactive_text = proactive_ability_text(origin)
+            if proactive_text:
+                abilities.append(proactive_text)
+            autonomy_text = await autonomy_prompt_text(origin)
+            if autonomy_text:
+                abilities.append(autonomy_text)
             ability_block = "[系统能力] 你可以在回复中根据对话氛围，善用以下指令：\n" + "\n".join(f"{i+1}. {a}" for i, a in enumerate(abilities))
 
             active_schedules = await get_active_schedules()
@@ -918,7 +971,7 @@ class ScheduleManager:
 
             trigger_msg = {"role": "user", "content": trigger_prompt}
             if fname:
-                trigger_msg["attachments"] = [f"/uploads/{fname}"]
+                trigger_msg["attachments"] = [monitor_context.prompt_attachment]
             messages = prefix + history + [trigger_msg]
 
         from app_supervision_ai import inject_app_supervision_context
@@ -1021,14 +1074,13 @@ class ScheduleManager:
         music_atts = [{"type": "music", "name": s["name"], "artist": s["artist"], "id": s["id"]} for s in music_cards] if music_cards else []
         att_json = json.dumps(music_atts, ensure_ascii=False) if music_atts else "[]"
         reasoning_content = (usage_meta.get("reasoning_content") or "").strip()
-        snapshot_attachment = save_monitor_camera_snapshot(
-            camera_jpeg,
-            "scheduled_monitor",
-        )
+        snapshot_attachment = monitor_context.snapshot_attachment
         system_atts = [snapshot_attachment] if snapshot_attachment else []
 
         # ── 保存到目标窗口 ──
-        if origin == "connor":
+        if is_proactive:
+            sys_content = proactive_monitor_card_title(origin_name, snapshot_attachment)
+        elif origin == "connor":
             from chatroom import load_chatroom_config
             _cname = load_chatroom_config().get("connor_name", "AI")
             sys_content = f"{_cname}查看了监控"
@@ -1353,7 +1405,9 @@ async def get_active_schedules() -> list[dict]:
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "SELECT id, type, trigger_at, content, origin, origin_room_id FROM schedules WHERE status='active' ORDER BY trigger_at",
+            "SELECT id, type, trigger_at, content, origin, origin_room_id FROM schedules "
+            "WHERE status='active' AND type!=? ORDER BY trigger_at",
+            (PROACTIVE_TYPE,),
         )
         return [dict(r) for r in await cur.fetchall()]
 

@@ -2,6 +2,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from capabilities import capabilities_payload, set_capability_enabled
+from proactive_companionship import (
+    proactive_status_payload,
+    set_proactive_enabled,
+)
 from ws import manager
 
 
@@ -36,3 +40,19 @@ async def update_capability(key: str, body: CapabilityToggle):
             "data": {"health_share_enabled": item["enabled"]},
         })
     return {"ok": True, "capability": item, "payload": capabilities_payload()}
+
+
+@router.get("/api/proactive-companionship")
+async def get_proactive_companionship():
+    return await proactive_status_payload()
+
+
+@router.put("/api/proactive-companionship/{actor}")
+async def update_proactive_companionship(actor: str, body: CapabilityToggle):
+    actor = actor.strip().lower()
+    if actor not in ("aion", "connor"):
+        raise HTTPException(status_code=404, detail="unknown actor")
+    set_proactive_enabled(actor, body.enabled)
+    payload = await proactive_status_payload()
+    await manager.broadcast({"type": "proactive_companionship_changed", "data": payload})
+    return {"ok": True, "data": payload}

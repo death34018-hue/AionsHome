@@ -32,6 +32,20 @@ _SECRET_SETTING_KEYS = {
     "embedding_api_key",
 }
 
+_PORTABLE_MEMORY_COLUMNS = {
+    "memories": (
+        "id", "content", "type", "created_at", "source_conv", "keywords",
+        "importance", "source_start_ts", "source_end_ts", "unresolved",
+        "source_msg_id", "evidence_summary", "evidence_detail_level",
+    ),
+    "chatroom_memories": (
+        "id", "room_id", "scope", "content", "keywords", "importance",
+        "source_start_ts", "source_end_ts", "created_at", "unresolved",
+        "source_msg_id", "evidence_summary", "evidence_detail_level",
+        "memory_kind",
+    ),
+}
+
 
 async def _rows(db, query: str, parameters: tuple = ()) -> list[dict]:
     cursor = await db.execute(query, parameters)
@@ -147,12 +161,19 @@ async def _timeline_messages(
 
 async def _memory_rows(db, table: str) -> list[dict]:
     columns = await _table_columns(db, table)
+    selected = [
+        name for name in _PORTABLE_MEMORY_COLUMNS[table]
+        if name in columns
+    ]
     where = (
         " WHERE COALESCE(archive_state, 'active')='active'"
         if "archive_state" in columns
         else ""
     )
-    rows = await _rows(db, f"SELECT * FROM {table}{where} ORDER BY created_at ASC")
+    rows = await _rows(
+        db,
+        f"SELECT {','.join(selected)} FROM {table}{where} ORDER BY created_at ASC",
+    )
     return [_portable_row(row) for row in rows]
 
 

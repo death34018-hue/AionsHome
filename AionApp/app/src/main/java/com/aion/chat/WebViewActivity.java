@@ -171,6 +171,7 @@ public class WebViewActivity extends AppCompatActivity
         webView.addJavascriptInterface(
                 new AppSupervisionBridge(this, AppSupervisionRuntime.get()),
                 "AionAppSupervision");
+        webView.addJavascriptInterface(new DeviceContextBridge(this), "AionDeviceContext");
 
         // 状态栏图标样式桥接（让网页可以根据主题动态切换深色/浅色图标）
         webView.addJavascriptInterface(new Object() {

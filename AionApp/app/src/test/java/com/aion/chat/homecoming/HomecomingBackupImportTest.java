@@ -23,7 +23,7 @@ public class HomecomingBackupImportTest {
         HomecomingSnapshotStore store = new HomecomingSnapshotStore(
                 Files.createTempDirectory("homecoming-signing").toFile());
         FakeTransport transport = new FakeTransport(
-                snapshotBody("snap-signing", 1, false), null);
+                snapshotBody("snap-signing", 2, false), null);
 
         refresh(store, transport);
 
@@ -34,7 +34,7 @@ public class HomecomingBackupImportTest {
     @Test
     public void hashMismatchKeepsOldActiveSnapshot() throws Exception {
         HomecomingSnapshotStore store = storeWithOldActive();
-        byte[] body = snapshotBody("snap-new", 1, true);
+        byte[] body = snapshotBody("snap-new", 2, true);
         RecordingCallback callback = refresh(store, new FakeTransport(body, null));
 
         assertEquals("snap-old", store.activeManifest().snapshotId);
@@ -44,7 +44,7 @@ public class HomecomingBackupImportTest {
     @Test
     public void schemaMismatchKeepsOldActiveSnapshot() throws Exception {
         HomecomingSnapshotStore store = storeWithOldActive();
-        byte[] body = snapshotBody("snap-new", 2, false);
+        byte[] body = snapshotBody("snap-new", 1, false);
         RecordingCallback callback = refresh(store, new FakeTransport(body, null));
 
         assertEquals("snap-old", store.activeManifest().snapshotId);
@@ -64,7 +64,7 @@ public class HomecomingBackupImportTest {
     @Test
     public void successfulImportReportsCountsAndActivatesOnlyAfterImport() throws Exception {
         HomecomingSnapshotStore store = storeWithOldActive();
-        byte[] body = snapshotBody("snap-new", 1, false);
+        byte[] body = snapshotBody("snap-new", 2, false);
         RecordingImporter importer = new RecordingImporter();
         RecordingCallback callback = new RecordingCallback();
         HomecomingBackupClient client = new HomecomingBackupClient(
@@ -100,6 +100,37 @@ public class HomecomingBackupImportTest {
         assertEquals("", modeStore.currentEpoch());
     }
 
+    @Test
+    public void compressedSnapshotOverTwoMiBIsRejectedBeforeInflation() throws Exception {
+        byte[] oversized = new byte[2 * 1024 * 1024 + 1];
+
+        try {
+            HomecomingBackupClient.parseCompressedSnapshot(oversized);
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage().contains("compressed snapshot exceeds limit"));
+            return;
+        }
+        throw new AssertionError("oversized compressed snapshot was accepted");
+    }
+
+    @Test
+    public void expandedSnapshotOverEightMiBIsRejected() throws Exception {
+        StringBuilder oversized = new StringBuilder(8 * 1024 * 1024 + 128);
+        oversized.append("{\"padding\":\"");
+        while (oversized.length() <= 8 * 1024 * 1024) oversized.append('x');
+        oversized.append("\"}");
+        byte[] compressed = HomecomingSnapshotStore.gzip(
+                oversized.toString().getBytes(StandardCharsets.UTF_8));
+
+        try {
+            HomecomingBackupClient.parseCompressedSnapshot(compressed);
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage().contains("snapshot exceeds size limit"));
+            return;
+        }
+        throw new AssertionError("oversized expanded snapshot was accepted");
+    }
+
     private RecordingCallback refresh(
             HomecomingSnapshotStore store, HomecomingBackupClient.Transport transport) {
         RecordingCallback callback = new RecordingCallback();
@@ -114,7 +145,7 @@ public class HomecomingBackupImportTest {
 
     private HomecomingSnapshotStore storeWithOldActive() throws Exception {
         HomecomingSnapshotStore store = new HomecomingSnapshotStore(folder.getRoot());
-        byte[] body = snapshotBody("snap-old", 1, false);
+        byte[] body = snapshotBody("snap-old", 2, false);
         install(store, body, "snap-old");
         assertTrue(store.activateStaging());
         return store;
@@ -249,8 +280,13 @@ public class HomecomingBackupImportTest {
             Object value = values.get(key);
             return value instanceof Long ? (Long) value : fallback;
         }
+        @Override public boolean getBoolean(String key, boolean fallback) {
+            Object value = values.get(key);
+            return value instanceof Boolean ? (Boolean) value : fallback;
+        }
         @Override public void putString(String key, String value) { values.put(key, value); }
         @Override public void putLong(String key, long value) { values.put(key, value); }
+        @Override public void putBoolean(String key, boolean value) { values.put(key, value); }
         @Override public void remove(String key) { values.remove(key); }
     }
 }

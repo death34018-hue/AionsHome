@@ -117,6 +117,7 @@ class ChatRegenerateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_regenerate_discards_unvalidated_tail_when_stream_breaks(self):
         stream_creations = 0
+        lounge_commands = AsyncMock(side_effect=lambda text, **kwargs: (text, []))
 
         async def interrupted_stream(*args, **kwargs):
             nonlocal stream_creations
@@ -149,9 +150,11 @@ class ChatRegenerateTests(unittest.IsolatedAsyncioTestCase):
             patch("routes.chat.process_schedule_commands", new=AsyncMock(side_effect=lambda text, *a, **k: text)),
             patch("routes.chat._process_home_commands", new=AsyncMock(side_effect=lambda text: text)),
             patch("routes.chat.handle_luckin_commands", new=AsyncMock(side_effect=lambda text: (text, []))),
+            patch("routes.chat.handle_lounge_visit_commands", new=lounge_commands),
             patch("routes.chat._process_wish_commands", new=AsyncMock(side_effect=lambda text, **k: text)),
             patch("routes.chat._extract_reply_image_attachments", side_effect=lambda text: (text, [])),
             patch("routes.chat.luckin_payment_attachments", return_value=[]),
+            patch("routes.chat.with_band_vibration_attachment", new=AsyncMock(side_effect=lambda _id, attachments: attachments)),
             patch("routes.chat.export_conversation", new=AsyncMock()),
             patch.object(chat_routes.manager, "broadcast", new=AsyncMock()),
             patch.object(chat_routes.manager, "set_tts_fallback", new=Mock()),
@@ -180,6 +183,10 @@ class ChatRegenerateTests(unittest.IsolatedAsyncioTestCase):
             ["\n\n[回复连接中断，已自动停止生成。]"],
         )
         self.assertNotIn("regenerated partial", "".join(visible_chunks))
+        self.assertEqual(
+            lounge_commands.await_args.kwargs["user_text"],
+            "latest user prompt",
+        )
         debug_event = next(event for event in events if event.get("type") == "debug")
         self.assertEqual(debug_event["error_text"], "peer closed connection")
 

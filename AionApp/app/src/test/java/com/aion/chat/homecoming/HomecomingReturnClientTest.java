@@ -78,6 +78,23 @@ public class HomecomingReturnClientTest {
         assertEquals(1L, receipt.acceptedHighestDeviceSeq);
     }
 
+    @Test
+    public void rejectedRequestExposesBoundedServerDetail() throws Exception {
+        RecordingTransport transport = new RecordingTransport();
+        transport.responses.add(response(422,
+                "{\"detail\":\"return sequence gap: expected 7\"}"));
+
+        try {
+            new HomecomingReturnClient(transport).upload(
+                    "https://house.example/chat", returnPackage());
+        } catch (HomecomingReturnClient.HttpFailure expected) {
+            assertEquals(422, expected.statusCode);
+            assertEquals("return sequence gap: expected 7", expected.detail);
+            return;
+        }
+        throw new AssertionError("HTTP rejection lost its typed detail");
+    }
+
     private static HomecomingReturnClient.TransportResponse response(
             int code, String body) {
         return new HomecomingReturnClient.TransportResponse(

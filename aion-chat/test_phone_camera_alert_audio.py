@@ -46,7 +46,7 @@ class PhoneCameraAlertPayloadTests(unittest.TestCase):
             2,
         )
         self.assertIn(
-            "build_monitor_alert_data(",
+            "acquire_prompt_monitor_context(",
             sources["schedule"],
         )
         self.assertIn(

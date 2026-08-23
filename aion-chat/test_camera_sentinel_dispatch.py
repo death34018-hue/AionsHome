@@ -299,6 +299,11 @@ class CameraActorRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("reply", result)
         connor_core.assert_awaited_once_with(target, "trigger", 1.0)
 
+    def test_connor_sentinel_core_injects_autonomy_ability(self):
+        source = inspect.getsource(camera.CameraMonitor._call_connor_core)
+
+        self.assertIn('await inject_autonomy_ability(messages, "connor")', source)
+
     async def test_sentinel_recent_context_includes_second_ai_private_window(self):
         with patch.object(camera, "get_db", side_effect=self._get_db):
             text = await camera.async_get_recent_aion_timeline_text(

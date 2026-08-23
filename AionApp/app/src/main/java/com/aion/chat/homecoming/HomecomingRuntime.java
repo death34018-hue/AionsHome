@@ -137,7 +137,7 @@ final class HomecomingRuntime {
                 .put("identity", identity)
                 .put("routes", routes)
                 .put("routePreferences", routePreferences)
-                .put("ttsEnabled", preferences.getBoolean("homecoming_tts_enabled", true))
+                .put("ttsEnabled", isTtsEnabled())
                 .put("scheduleExactness", alarms.exactness())
                 .put("pendingScheduleCount", schedules.listActive().size())
                 .toString();
@@ -274,15 +274,9 @@ final class HomecomingRuntime {
             }
             @Override public void onComplete(String messageId, String completeText) {
                 sink.emit(event("complete", requestId, completeText, messageId));
-                if (preferences.getBoolean("homecoming_tts_enabled", true)) {
-                    try {
-                        HomecomingRouteVault.Service service = vault.resolveService("tts");
-                        String voice = "second".equals(responderOwner)
-                                ? service.secondVoice : service.mainVoice;
-                        tts.enqueue(timelineId, messageId, voice, completeText);
-                    } catch (RuntimeException ignored) {
-                    }
-                }
+                speakIfEnabled(
+                        timelineId, responderOwner,
+                        messageId, completeText);
             }
             @Override public void onFailure(String code) {
                 sink.emit(event("failure", requestId, "", code));
@@ -331,7 +325,7 @@ final class HomecomingRuntime {
                                     }
                                     @Override public void onComplete(
                                             String messageId, String completeText) {
-                                        playTts(
+                                        speakIfEnabled(
                                                 "group", ownerId,
                                                 messageId, completeText);
                                         completion.onComplete(
@@ -395,10 +389,15 @@ final class HomecomingRuntime {
         }
     }
 
-    private void playTts(
+    private boolean isTtsEnabled() {
+        return preferences.getBoolean(
+                HomecomingModeStore.KEY_TTS_ENABLED, false);
+    }
+
+    private synchronized void speakIfEnabled(
             String timelineId, String ownerId,
             String messageId, String text) {
-        if (!preferences.getBoolean("homecoming_tts_enabled", true)) return;
+        if (!isTtsEnabled()) return;
         try {
             HomecomingRouteVault.Service service = vault.resolveService("tts");
             String voice = "second".equals(ownerId)
@@ -484,17 +483,9 @@ final class HomecomingRuntime {
                                     schedule, identity.companionName, text);
                         } catch (RuntimeException ignored) {
                         }
-                        if (preferences.getBoolean("homecoming_tts_enabled", true)) {
-                            try {
-                                HomecomingRouteVault.Service service =
-                                        vault.resolveService("tts");
-                                String voice = "second".equals(schedule.ownerId)
-                                        ? service.secondVoice : service.mainVoice;
-                                tts.enqueue(
-                                        schedule.timelineId, messageId, voice, text);
-                            } catch (RuntimeException ignored) {
-                            }
-                        }
+                        speakIfEnabled(
+                                schedule.timelineId, schedule.ownerId,
+                                messageId, text);
                         completion.onComplete(messageId, text);
                     }
                     @Override public void onFailure(String code) {
@@ -597,16 +588,8 @@ final class HomecomingRuntime {
                             notifications.post(event.eventId, configuredName, text);
                         } catch (RuntimeException ignored) {
                         }
-                        if (preferences.getBoolean("homecoming_tts_enabled", true)) {
-                            try {
-                                HomecomingRouteVault.Service service =
-                                        vault.resolveService("tts");
-                                String voice = "second".equals(ownerId)
-                                        ? service.secondVoice : service.mainVoice;
-                                tts.enqueue(timelineId, messageId, voice, text);
-                            } catch (RuntimeException ignored) {
-                            }
-                        }
+                        speakIfEnabled(
+                                timelineId, ownerId, messageId, text);
                         completion.onComplete(messageId, text);
                     }
 
@@ -703,8 +686,10 @@ final class HomecomingRuntime {
         }
     }
 
-    void setTtsEnabled(boolean enabled) {
-        preferences.edit().putBoolean("homecoming_tts_enabled", enabled).apply();
+    synchronized void setTtsEnabled(boolean enabled) {
+        preferences.edit()
+                .putBoolean(HomecomingModeStore.KEY_TTS_ENABLED, enabled)
+                .apply();
         if (!enabled) {
             for (String timeline : new String[]{
                     "main_private", "companion_private", "group"}) {
@@ -719,11 +704,9 @@ final class HomecomingRuntime {
                 "SELECT timeline_id,sender_id,text_content FROM chat_message WHERE id=?",
                 new String[]{messageId})) {
             if (!cursor.moveToFirst()) return;
-            HomecomingRouteVault.Service service = vault.resolveService("tts");
-            String sender = cursor.getString(1);
-            String voice = "second".equals(sender)
-                    ? service.secondVoice : service.mainVoice;
-            tts.enqueue(cursor.getString(0), messageId, voice, cursor.getString(2));
+            speakIfEnabled(
+                    cursor.getString(0), cursor.getString(1),
+                    messageId, cursor.getString(2));
         }
     }
 

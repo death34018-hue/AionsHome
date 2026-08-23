@@ -16,8 +16,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class HomecomingBackupScheduler {
     public static final int JOB_ID = 0x48434d31;
-    private static final long DEBOUNCE_MS = 5 * 60 * 1000L;
-    private static final long PERIODIC_MS = 15 * 60 * 1000L;
+    private static final boolean BACKUP_ENABLED = true;
+    private static final long MIN_REFRESH_INTERVAL_MS = 10 * 60 * 1000L;
+    private static final long PERIODIC_MS = 6 * 60 * 60 * 1000L;
     static final String KEY_LAST_SERVER_BASE = "backup_server_base";
     static final String KEY_DEVICE_ID = "device_id";
 
@@ -25,6 +26,7 @@ public final class HomecomingBackupScheduler {
     private final RequestSink requests;
     private final ModeState modeState;
     private final NetworkState networkState;
+    private final boolean enabled;
     private final AtomicBoolean inFlight = new AtomicBoolean(false);
     private long lastRequestAt = Long.MIN_VALUE;
     private String lastBaseUrl = "";
@@ -34,46 +36,65 @@ public final class HomecomingBackupScheduler {
             RequestSink requests,
             ModeState modeState,
             NetworkState networkState) {
+        this(clock, requests, modeState, networkState, BACKUP_ENABLED);
+    }
+
+    HomecomingBackupScheduler(
+            Clock clock,
+            RequestSink requests,
+            ModeState modeState,
+            NetworkState networkState,
+            boolean enabled) {
         this.clock = clock;
         this.requests = requests;
         this.modeState = modeState;
         this.networkState = networkState;
+        this.enabled = enabled;
     }
 
     public void onLauncherForeground(String serverBaseUrl) {
+        if (!enabled) return;
         String base = normalize(serverBaseUrl);
         if (base.isEmpty() || modeState.isActive()) {
             return;
         }
         lastBaseUrl = base;
-        long now = clock.nowMs();
-        if (lastRequestAt != Long.MIN_VALUE && now - lastRequestAt < DEBOUNCE_MS) {
-            return;
-        }
-        request(base, HomecomingBackupClient.RefreshReason.FOREGROUND, now);
+        requestIfDue(base, HomecomingBackupClient.RefreshReason.FOREGROUND);
     }
 
     public void onNormalRouteSelected(String serverBaseUrl) {
+        if (!enabled) return;
         String base = normalize(serverBaseUrl);
         if (base.isEmpty() || modeState.isActive()) {
             return;
         }
         lastBaseUrl = base;
-        request(base, HomecomingBackupClient.RefreshReason.ROUTE_SWITCH, clock.nowMs());
+        requestIfDue(base, HomecomingBackupClient.RefreshReason.ROUTE_SWITCH);
     }
 
     public void markDirty() {
+        if (!enabled) return;
         if (!lastBaseUrl.isEmpty() && !modeState.isActive()) {
-            request(lastBaseUrl, HomecomingBackupClient.RefreshReason.CONFIG_EVENT, clock.nowMs());
+            requestIfDue(lastBaseUrl, HomecomingBackupClient.RefreshReason.CONFIG_EVENT);
         }
     }
 
     public void runPeriodicFallback() {
+        if (!enabled) return;
         if (!lastBaseUrl.isEmpty() && !modeState.isActive() && networkState.isAvailable()) {
-            request(lastBaseUrl,
-                    HomecomingBackupClient.RefreshReason.PERIODIC_FALLBACK,
-                    clock.nowMs());
+            requestIfDue(lastBaseUrl,
+                    HomecomingBackupClient.RefreshReason.PERIODIC_FALLBACK);
         }
+    }
+
+    private void requestIfDue(
+            String baseUrl, HomecomingBackupClient.RefreshReason reason) {
+        long now = clock.nowMs();
+        if (lastRequestAt != Long.MIN_VALUE
+                && now - lastRequestAt < MIN_REFRESH_INTERVAL_MS) {
+            return;
+        }
+        request(baseUrl, reason, now);
     }
 
     private void request(
@@ -87,6 +108,14 @@ public final class HomecomingBackupScheduler {
 
     public static HomecomingBackupScheduler create(Context context) {
         Context app = context.getApplicationContext();
+        if (!BACKUP_ENABLED) {
+            cancelPeriodic(app);
+            return new HomecomingBackupScheduler(
+                    System::currentTimeMillis,
+                    (baseUrl, reason, completion) -> completion.run(),
+                    () -> false,
+                    () -> false);
+        }
         SharedPreferences preferences = app.getSharedPreferences(
                 HomecomingModeStore.PREFERENCES_NAME, Context.MODE_PRIVATE);
         HomecomingModeStore modeStore = new HomecomingModeStore(app);
@@ -167,6 +196,10 @@ public final class HomecomingBackupScheduler {
         if (scheduler == null) {
             return;
         }
+        if (!BACKUP_ENABLED) {
+            scheduler.cancel(JOB_ID);
+            return;
+        }
         JobInfo job = new JobInfo.Builder(
                 JOB_ID,
                 new ComponentName(context, HomecomingBackupJobService.class))
@@ -175,6 +208,16 @@ public final class HomecomingBackupScheduler {
                 .setPeriodic(PERIODIC_MS)
                 .build();
         scheduler.schedule(job);
+    }
+
+    static boolean isBackupEnabled() {
+        return BACKUP_ENABLED;
+    }
+
+    private static void cancelPeriodic(Context context) {
+        JobScheduler scheduler =
+                (JobScheduler) context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
+        if (scheduler != null) scheduler.cancel(JOB_ID);
     }
 
     private static String normalize(String value) {

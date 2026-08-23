@@ -9,17 +9,22 @@
     root.ScheduleCommandFilter = api;
   }
 }(typeof window !== 'undefined' ? window : null, function createScheduleCommandFilter() {
-  const COMPLETE_COMMAND = /[\[［]\s*(?:(?:ALARM|REMINDER|MONITOR)\s*[:：]\s*[^\]］]*?\s*[|｜]\s*[^\]］]*?|SCHEDULE_DEL\s*[:：]\s*[^\]］]*?|SCHEDULE_LIST)\s*[\]］]/gi;
+  const COMPLETE_COMMAND = /[\[［]\s*(?:(?:ALARM|REMINDER|MONITOR)\s*[:：]\s*[^\]］]*?\s*[|｜]\s*[^\]］]*?|SCHEDULE_DEL\s*[:：]\s*[^\]］]*?|SCHEDULE_LIST|NEXT_CHAT\s*[:：]\s*[^\]］]*?)\s*[\]］]/gi;
   const COMMAND_NAMES = [
     'ALARM',
     'REMINDER',
     'MONITOR',
+    'NEXT_CHAT',
     'SCHEDULE_DEL',
     'SCHEDULE_LIST',
   ];
 
   function stripScheduleCommands(value) {
-    const text = String(value || '').replace(COMPLETE_COMMAND, '');
+    let text = String(value || '')
+      .replace(COMPLETE_COMMAND, '')
+      .replace(/\s*<autonomy_state>[\s\S]*?<\/autonomy_state>\s*/gi, '');
+    const autonomyOpening = text.toLowerCase().lastIndexOf('<autonomy_state');
+    if (autonomyOpening >= 0) text = text.slice(0, autonomyOpening);
     const openingIndex = Math.max(text.lastIndexOf('['), text.lastIndexOf('［'));
     if (openingIndex < 0) return text;
 

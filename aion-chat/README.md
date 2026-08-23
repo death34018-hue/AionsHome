@@ -7,8 +7,8 @@
 - **后端**：Python FastAPI + SQLite (aiosqlite) + WebSocket
 - **前端**：多页面架构（原生 JS，无框架），暖光主题，手机/PC 自适应。chat.html/css/js 为主聊天页（结构/样式/逻辑分离），独立功能页通过 common.css/common.js 共享样式和工具函数
 - **摄像头**：OpenCV (`cv2`) DirectShow 后端后台线程采集 + ESP32-CAM HTTP 远程抓帧（双摄切换 + App 桥接模式）
-- **语音**：WebRTC VAD 语音检测 + 硬基流动 ASR (SenseVoiceSmall) + TTS (CosyVoice2) + 语音消息（按住录制）
-- **AI 接口**：硬基流动（OpenAI 兼容）、Google Gemini（REST API）、AiPro 中转站（OpenAI 兼容）、Gemini CLI（本地子进程调用，免费 OAuth 认证）、Codex CLI（本地子进程调用，Connor 专用）、Antigravity CLI（本地子进程调用，Google OAuth 认证，PowerShell Start-Transcript 捕获输出）
+- **语音**：WebRTC VAD 语音检测 + 硅基流动 ASR (SenseVoiceSmall) + TTS (CosyVoice2) + 语音消息（按住录制）
+- **AI 接口**：硅基流动（OpenAI 兼容）、Google Gemini（REST API）、AiPro 中转站（OpenAI 兼容）、Gemini CLI（本地子进程调用，免费 OAuth 认证）、Codex CLI（本地子进程调用，Connor 专用）、Antigravity CLI（本地子进程调用，Google OAuth 认证，PowerShell Start-Transcript 捕获输出）
 - **AI 生图**：Gemini `gemini-3.1-flash-lite-image`（REST API generateContent，responseModalities=["IMAGE", "TEXT"]）
 - **AI 生成歌曲**：Gemini Lyria `lyria-3-pro-preview`（REST API generateContent，返回 audio inlineData，保存到 `data/songs/`）
 - **联网搜索/网页读取**：Tavily Search/Extract API（通过 httpx 调用），模型输出 `[WEB_SEARCH:...]` / `[WEB_EXTRACT:...]` 后由服务端清洗结果并回灌上下文
@@ -18,7 +18,7 @@
 - **EPUB 解析**：ebooklib（EPUB 读取）+ BeautifulSoup4 / lxml（HTML 解析）
 - **基金监控**：akshare（A股/基金数据拉取）+ chinese-calendar（中国节假日/交易日判断）
 - **MCP 娱乐室**：mcp（Python MCP SDK，支持 Streamable HTTP / stdio 传输，接入外部服务如 AI 小镇）
-- **聊天室**：三人群聊（用户 + Aion + Connor-Codex），Connor 代理通过 HTTP 轮询接入 Codex CLI 服务，随机回复顺序，统一时间线上下文（私聊+群聊合并排序，场景切换标记），统一记忆总结（Aion/Connor 各自合并私聊+群聊消息总结，独立锚点，1小时无新消息自动触发），图片收发（用户发图→CLI 管线通过本地绝对路径传递、API 管线通过 base64 内嵌，Codex 回复 `[[image:...]]` 标记→前端渲染，图片存储于 `Connor-Codex/uploads/YYYY-MM-DD/`），＋展开菜单（上传图片/拍照/语音消息/密语时刻，复用 Android 原生桥 AionCamera/AionAudio，iframe 穿透访问），拍照功能（getUserMedia + AionCamera 原生桥回退，前后摄切换），语音消息（按住说话 + 上滑取消 + MediaRecorder / AionAudio 原生桥录制 → 上传 → ASR 转写 → 橙色语音气泡 + 转写小字 + 播放动画，音频文件同时发送给 AI 模型），TTS 语音合成（Aion/Connor 独立音色配置，硬基流动 CosyVoice2 服务端流式切分+并行合成，通过 SSE 推送音频分段顺序播放，配置持久化服务端 `chatroom_config.json` + localStorage 双存），侧栏群聊/私聊分 Tab 筛选 + 新建房间自动日期命名，Connor 名字/人设统一配置（`chatroom_config.json` 中 `connor_name` + `connor_persona`，侧栏🎭人设按钮统一管理，所有群聊/私聊房间共享），聊天室内 [CAM_CHECK] 摄像头查看独立实现（提示音→延迟→截图→AI 分析→回复写入聊天室），日程/闹铃/定时监控按来源窗口路由回复（origin + origin_room_id 追踪，Connor 来源使用 Connor TTS 音色），音乐点歌（[MUSIC:xxx] 指令检测 + 音乐卡片 + 在线播放器 + 自动播放），密语时刻 BLE 控制（完整 BLE 连接/预设/编辑器 + 跨页面 BLE 状态同步 + 密语模式开关 + AI [TOY:x] 指令执行 + 胶囊气泡）
+- **聊天室**：三人群聊（用户 + Aion + Connor-Codex），Connor 代理通过 HTTP 轮询接入 Codex CLI 服务，随机回复顺序，统一时间线上下文（私聊+群聊合并排序，场景切换标记），统一记忆总结（Aion/Connor 各自合并私聊+群聊消息总结，独立锚点，1小时无新消息自动触发），图片收发（用户发图→CLI 管线通过本地绝对路径传递、API 管线通过 base64 内嵌，Codex 回复 `[[image:...]]` 标记→前端渲染，图片存储于 `Connor-Codex/uploads/YYYY-MM-DD/`），＋展开菜单（上传图片/拍照/语音消息/密语时刻，复用 Android 原生桥 AionCamera/AionAudio，iframe 穿透访问），拍照功能（getUserMedia + AionCamera 原生桥回退，前后摄切换），语音消息（按住说话 + 上滑取消 + MediaRecorder / AionAudio 原生桥录制 → 上传 → ASR 转写 → 橙色语音气泡 + 转写小字 + 播放动画，音频文件同时发送给 AI 模型），TTS 语音合成（Aion/Connor 独立音色配置，硅基流动 CosyVoice2 服务端流式切分+并行合成，通过 SSE 推送音频分段顺序播放，配置持久化服务端 `chatroom_config.json` + localStorage 双存），侧栏群聊/私聊分 Tab 筛选 + 新建房间自动日期命名，Connor 名字/人设统一配置（`chatroom_config.json` 中 `connor_name` + `connor_persona`，侧栏🎭人设按钮统一管理，所有群聊/私聊房间共享），聊天室内 [CAM_CHECK] 摄像头查看独立实现（提示音→延迟→截图→AI 分析→回复写入聊天室），日程/闹铃/定时监控按来源窗口路由回复（origin + origin_room_id 追踪，Connor 来源使用 Connor TTS 音色），音乐点歌（[MUSIC:xxx] 指令检测 + 音乐卡片 + 在线播放器 + 自动播放），密语时刻 BLE 控制（完整 BLE 连接/预设/编辑器 + 跨页面 BLE 状态同步 + 密语模式开关 + AI [TOY:x] 指令执行 + 胶囊气泡）
 - **依赖库**：fastapi, uvicorn, httpx, aiosqlite, opencv-python, Pillow, sounddevice, numpy, webrtcvad-wheels, pyncm, pywin32, psutil, ebooklib, beautifulsoup4, lxml, akshare, chinese-calendar, mcp
 
 ## 模块化文件结构
@@ -63,7 +63,7 @@
     ├── memory.py                 # 向量记忆：embedding（Gemini/OpenAI兼容）、综合评分召回、手动/自动总结（合并私聊+群聊消息）、即时哨兵(RAG路由)、原文追溯、重建向量索引
     ├── camera.py                 # 摄像头：CameraMonitor 类、Sentinel 分析（注入设备活动摘要）、Core 唤醒、[CAM_CHECK]、ESP32-CAM 双摄切换+App桥接
     ├── location.py               # 高德地图定位：GPS心跳处理、三级研判、状态机(at_home/outside)、哨兵通知、POI搜索
-    ├── voice.py                  # 语音唤醒 + 半双工通话（WebRTC VAD + 硬基流动 ASR），通话中自动携带 TTS 参数
+    ├── voice.py                  # 语音唤醒 + 半双工通话（WebRTC VAD + 硅基流动 ASR），通话中自动携带 TTS 参数
     ├── tts.py                    # 服务端流式 TTS：按句切分（100-200字）+ 异步并行合成 + WebSocket/SSE 推送音频分片
     ├── schedule.py               # 日程/闹铃/定时监控管理器：ScheduleManager、文本指令解析、闹铃触发Core唤醒、定时监控截图+Core分析（注入设备活动摘要）、origin来源路由（回复自动投递到原始窗口）
     ├── ghost_forest.py            # 奥罗斯幽林 TRPG 引擎：会话管理、AI 对话历史压缩、D20 骰子判定、角色属性/道具系统
@@ -2043,6 +2043,8 @@ python main.py
 538. **钱包结算** — 斗地主按阵营结算虚拟货币：地主赢则两个农民按剩牌扣款给地主；农民赢则地主按剩牌扣款并均分给两个农民。用户金额只展示，不写入钱包；Aion/Connor 金额写入各自 `bookkeeping` 钱包记录
 
 ## AI 好友 / 串门
+
+普通聊天只会向当前 AI 提供“已启用”且勾选了“允许自主串门”的好友。若当前 AI 没有任何符合条件的好友，好友资料、会客室说明和串门指令都不会进入聊天上下文；未勾选的好友仍可在「AI 好友 / 串门」页面由用户手动发起拜访。聊天或闲时自主串门真正开始后，聊天窗口会暂时显示一条小型出发提示；报告卡片成功返回后提示自动删除，若报告无法保存则提示会改为中断说明。
 
 本地 AI 可以通过对方会客室的 MCP 服务进行短暂的纯文字拜访。使用前双方交换会客室地址和专用凭据：
 

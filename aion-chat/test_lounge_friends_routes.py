@@ -123,6 +123,15 @@ class FakeRepository:
         self.visits.remove(visit)
         return True
 
+    async def finish_running(self, actor_id: str, visit_id: str, reason: str) -> bool:
+        visit = await self.get(actor_id, visit_id)
+        if visit is None or visit["status"] != "running":
+            return False
+        visit["status"] = "interrupted"
+        visit["error"] = f"Error: {reason}"
+        visit["finished_at"] = 20.0
+        return True
+
 
 class FakeCoordinator:
     def __init__(self) -> None:
@@ -162,6 +171,7 @@ def route_env(tmp_path):
     coordinator = FakeCoordinator()
     coordinator.report_calls = []
     coordinator.active_manual_actors = set()
+    task_registry = types.SimpleNamespace(cancel_calls=[], cancel=lambda actor_id: task_registry.cancel_calls.append(actor_id) or True)
 
     async def report_publisher(actor_id, partner_name, result, report_repository):
         coordinator.report_calls.append(
@@ -189,10 +199,12 @@ def route_env(tmp_path):
                 compose_next=lambda *_args: None,
                 report_publisher=report_publisher,
                 active_manual_actors=coordinator.active_manual_actors,
+                task_registry=task_registry,
             )
         )
     client = TestClient(app)
     try:
+        coordinator.task_registry = task_registry
         yield client, store, manager, repository, coordinator
     finally:
         client.close()
@@ -365,6 +377,63 @@ def test_visit_history_delete_is_actor_scoped_and_rejects_running(route_env):
     assert running.status_code == 409
     assert deleted.status_code == 200
     assert repository.visits == []
+
+
+def test_cancel_running_visit_is_actor_scoped_and_idempotent(route_env):
+    client, _store, _manager, repository, coordinator = route_env
+    friend = client.post("/api/lounge-friends", json=friend_body()).json()
+    repository.visits[0].update(
+        {
+            "friend_id": friend["id"],
+            "status": "running",
+            "turn_count": 2,
+            "finished_at": None,
+        }
+    )
+
+    forbidden = client.post(
+        "/api/lounge-visits/visit-primary/cancel",
+        json={"actor_id": "connor"},
+    )
+    first = client.post(
+        "/api/lounge-visits/visit-primary/cancel",
+        json={"actor_id": "aion"},
+    )
+    repeated = client.post(
+        "/api/lounge-visits/visit-primary/cancel",
+        json={"actor_id": "aion"},
+    )
+
+    assert forbidden.status_code == 404
+    assert first.status_code == 200
+    assert first.json()["status"] == "interrupted"
+    assert repeated.status_code == 200
+    assert repeated.json()["status"] == "interrupted"
+    assert coordinator.task_registry.cancel_calls == ["aion"]
+    assert coordinator.report_calls == []
+
+
+def test_cancel_orphaned_running_visit_publishes_one_fallback_report(route_env):
+    client, _store, _manager, repository, coordinator = route_env
+    friend = client.post("/api/lounge-friends", json=friend_body()).json()
+    repository.visits[0].update(
+        {
+            "friend_id": friend["id"],
+            "status": "running",
+            "turn_count": 2,
+            "finished_at": None,
+        }
+    )
+    coordinator.task_registry.cancel = lambda _actor_id: False
+
+    response = client.post(
+        "/api/lounge-visits/visit-primary/cancel",
+        json={"actor_id": "aion"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "interrupted"
+    assert len(coordinator.report_calls) == 1
 
 
 def test_manual_visit_rejects_duplicate_request_for_same_actor(route_env):

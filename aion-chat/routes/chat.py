@@ -78,7 +78,7 @@ from luckin import (
     luckin_payment_attachments,
     query_luckin_order_detail,
 )
-from link_preview import build_link_preview_attachments
+from link_preview import build_link_preview_attachments, strip_urls_for_message
 from web_search import (
     WEB_EXTRACT_CMD_PATTERN,
     WEB_SEARCH_CMD_PATTERN,
@@ -87,7 +87,11 @@ from web_search import (
     format_web_system_message,
     run_web_commands,
 )
-from lounge_visit_commands import LoungeVisitCommandStreamFilter, handle_lounge_visit_commands
+from lounge_visit_commands import (
+    LoungeVisitCommandStreamFilter,
+    handle_lounge_visit_commands,
+    is_chat_visit_friend_allowed,
+)
 
 
 def _process_voice_attachments_in_history(history: list, keep_idx: int = -1):
@@ -755,6 +759,11 @@ async def _start_private_lounge_visit(
     """Validate an explicit command, then publish its background homecoming report."""
     from lounge_visit import LoungeVisitCoordinator
     from lounge_visit_reporting import publish_outbound_report
+    from lounge_visit_status import (
+        create_private_status,
+        downgrade_status,
+        remove_status,
+    )
     from routes.lounge_friends import (
         compose_lounge_message,
         configured_actors,
@@ -766,7 +775,7 @@ async def _start_private_lounge_visit(
         friend = friend_store.get_owned(actor_id, friend_id)
     except KeyError:
         return ""
-    if not friend.enabled or not topic:
+    if not is_chat_visit_friend_allowed(friend) or not topic:
         return ""
 
     def actor_name(known_actor_id: str) -> str:
@@ -779,17 +788,63 @@ async def _start_private_lounge_visit(
             "",
         )
 
-    async def run() -> None:
-        async with lounge_repository_provider() as repository:
-            result = await LoungeVisitCoordinator(
-                friend_store,
-                repository,
-                mcp_manager,
-                actor_name_resolver=actor_name,
-            ).run_visit(actor_id, friend_id, "chat", topic, compose_lounge_message)
-            await publish_outbound_report(
-                actor_id, friend.display_name, result, repository
+    status_handle = None
+    try:
+        async with get_db() as db:
+            status_handle, status_message = await create_private_status(
+                db,
+                conv_id,
+                actor_name(actor_id),
+                friend.display_name,
+                ai_msg_id,
             )
+        await manager.broadcast({"type": "msg_created", "data": status_message})
+    except Exception:
+        status_handle = None
+
+    async def run() -> None:
+        report_message = None
+        try:
+            async with lounge_repository_provider() as repository:
+                result = await LoungeVisitCoordinator(
+                    friend_store,
+                    repository,
+                    mcp_manager,
+                    actor_name_resolver=actor_name,
+                ).run_visit(actor_id, friend_id, "chat", topic, compose_lounge_message)
+                report_message = await publish_outbound_report(
+                    actor_id,
+                    friend.display_name,
+                    result,
+                    repository,
+                    status_id=status_handle.status_id if status_handle else "",
+                )
+        except Exception:
+            report_message = None
+        if status_handle is None:
+            return
+        try:
+            async with get_db() as db:
+                if report_message:
+                    removed = await remove_status(db, status_handle)
+                    if removed:
+                        await manager.broadcast(
+                            {
+                                "type": "msg_deleted",
+                                "data": {
+                                    "id": status_handle.message_id,
+                                    "conv_id": status_handle.scope_id,
+                                },
+                            }
+                        )
+                else:
+                    updated = await downgrade_status(db, status_handle)
+                    if updated:
+                        await manager.broadcast(
+                            {"type": "msg_updated", "data": updated}
+                        )
+        except Exception:
+            pass
 
     asyncio.create_task(run())
     return friend.id
@@ -1140,7 +1195,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     merged = await fetch_merged_timeline("aion", body.context_limit, conv_id=conv_id)
     history = render_merged_timeline(merged, "aion")
 
-    # 只保留最后一条用户消息的图片附件 + 语音消息处理
+    # 图片保留最近两轮用户上下文 + 语音消息处理
     _process_voice_attachments_in_history(history)
 
     actual_recent = [m for m in history if m["role"] in ("user", "assistant")][-3:]
@@ -1390,6 +1445,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
             full_text, _lounge_visits = await handle_lounge_visit_commands(
                 full_text,
                 actor_id="aion",
+                user_text=body.content,
                 start_visit=lambda actor_id, friend_id, topic: _start_private_lounge_visit(
                     actor_id, friend_id, topic, conv_id=conv_id, ai_msg_id=ai_msg_id
                 ),
@@ -1488,6 +1544,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
             full_text, image_atts = _extract_reply_image_attachments(full_text)
             reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts)
             reply_atts = await _with_link_previews(full_text, reply_atts)
+            full_text = strip_urls_for_message(full_text)
             reply_atts = await with_band_vibration_attachment(ai_msg_id, reply_atts)
             att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else ""
 
@@ -1706,7 +1763,7 @@ async def send_message(conv_id: str, body: MsgCreate):
     merged = await fetch_merged_timeline("aion", body.context_limit, conv_id=conv_id)
     history = render_merged_timeline(merged, "aion")
 
-    # 只保留当前（最后一条）用户消息的图片附件，历史图片不带入上下文
+    # 图片保留发图当轮和后续一轮用户上下文
     # 语音消息处理：历史语音消息用转写文本替代音频文件，当前消息保留音频原件
     _process_voice_attachments_in_history(history)
 
@@ -2034,6 +2091,7 @@ async def send_message(conv_id: str, body: MsgCreate):
             full_text, _lounge_visits = await handle_lounge_visit_commands(
                 full_text,
                 actor_id="aion",
+                user_text=body.content,
                 start_visit=lambda actor_id, friend_id, topic: _start_private_lounge_visit(
                     actor_id, friend_id, topic, conv_id=conv_id, ai_msg_id=ai_msg_id
                 ),
@@ -2176,6 +2234,7 @@ async def send_message(conv_id: str, body: MsgCreate):
             full_text, image_atts = _extract_reply_image_attachments(full_text)
             reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts)
             reply_atts = await _with_link_previews(full_text, reply_atts)
+            full_text = strip_urls_for_message(full_text)
             reply_atts = await with_band_vibration_attachment(ai_msg_id, reply_atts)
             att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else ""
 
@@ -2954,12 +3013,15 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
     merged = await fetch_merged_timeline("aion", context_limit, conv_id=conv_id)
     history = render_merged_timeline(merged, "aion")
 
-    # 只保留最后一条用户消息的图片附件 + 语音消息处理（与 send_message 一致）
+    # 图片保留最近两轮用户上下文 + 语音消息处理（与 send_message 一致）
     last_user_idx = -1
     for i in range(len(history) - 1, -1, -1):
         if history[i]["role"] == "user":
             last_user_idx = i
             break
+    lounge_request_text = (
+        history[last_user_idx].get("content", "") if last_user_idx >= 0 else ""
+    )
     _process_voice_attachments_in_history(history, keep_idx=last_user_idx)
 
     # 即时哨兵：取最近实际对话用于状态更新 + 关键词提取
@@ -3232,6 +3294,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             full_text, _lounge_visits = await handle_lounge_visit_commands(
                 full_text,
                 actor_id="aion",
+                user_text=lounge_request_text,
                 start_visit=lambda actor_id, friend_id, topic: _start_private_lounge_visit(
                     actor_id, friend_id, topic, conv_id=conv_id, ai_msg_id=ai_msg_id
                 ),
@@ -3327,6 +3390,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             full_text, image_atts = _extract_reply_image_attachments(full_text)
             reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts)
             reply_atts = await _with_link_previews(full_text, reply_atts)
+            full_text = strip_urls_for_message(full_text)
             reply_atts = await with_band_vibration_attachment(ai_msg_id, reply_atts)
             att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else ""
 

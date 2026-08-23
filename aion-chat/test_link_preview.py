@@ -1,9 +1,30 @@
 import unittest
 
+import link_preview
 from link_preview import extract_urls, link_preview_from_html, link_preview_fallback
+from tts import _strip_tags
 
 
 class LinkPreviewTests(unittest.TestCase):
+    def test_strip_urls_keeps_markdown_label_and_removes_bare_address(self):
+        clean = getattr(link_preview, "strip_urls_for_message", lambda text: text)
+        text = (
+            "可以参考[症状与原因](https://example.com/health/symptoms)。\n"
+            "原始资料：https://example.org/a/very/long/path?q=1"
+        )
+
+        self.assertEqual(clean(text), "可以参考症状与原因。")
+
+    def test_tts_strips_link_addresses_but_reads_markdown_label(self):
+        text = "看看[这份资料](https://example.com/very/long/path)，备用 https://example.org/raw"
+
+        self.assertEqual(_strip_tags(text), "看看这份资料，备用")
+
+    def test_strip_urls_preserves_paragraph_breaks(self):
+        text = "第一段。\n\n第二段参考[资料](https://example.com/doc)。"
+
+        self.assertEqual(link_preview.strip_urls_for_message(text), "第一段。\n\n第二段参考资料。")
+
     def test_extract_urls_strips_trailing_punctuation_and_dedupes(self):
         text = "看看 http://hyena-home.com/，还有 https://example.com/path?q=1。重复：https://example.com/path?q=1"
 

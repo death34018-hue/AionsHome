@@ -43,4 +43,10 @@ public class PushServiceStartPolicyTest {
                         "http://192.168.1.100:8080/chat",
                         "http://127.0.0.1:8080/chat"));
     }
+
+    @Test
+    public void keepAliveTextPreservesOnlineStateWhenServiceRestarts() {
+        assertEquals("在线 ✨", PushServiceStartPolicy.keepAliveText(true));
+        assertEquals("连接中...", PushServiceStartPolicy.keepAliveText(false));
+    }
 }

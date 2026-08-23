@@ -39,6 +39,8 @@ async def _actor_memory_blocks(
             recent_messages=recent_messages,
             use_main_memories=True,
             always_include_recalled=True,
+            include_source_details=False,
+            max_recalled_memories=3,
         )
 
     from autonomy import _latest_group_room_id
@@ -63,6 +65,8 @@ async def _actor_memory_blocks(
         chatroom_surfacing_fn=build_surfacing_chatroom_memories,
         chatroom_source_fn=fetch_chatroom_source_details,
         always_include_recalled=True,
+        include_source_details=False,
+        max_recalled_memories=3,
     )
 
 
@@ -82,18 +86,53 @@ async def build_lounge_actor_context(
         for item in (visit_timeline or [])[-6:]
         if _safe_text(item.get("content"), 500)
     ]
-    context = list(await _base_actor_context(actor_id, limit))
+    base_context = list(await _base_actor_context(actor_id, limit))
+    context: list[dict] = []
+    persona_pair_open = False
+    for item in base_context:
+        content = str(item.get("content") or "")
+        is_persona = content.startswith("[系统设定 -")
+        if is_persona:
+            persona_pair_open = True
+        kind = "persona" if is_persona or persona_pair_open else "home_chat"
+        context.append({**item, "lounge_context_kind": kind})
+        if persona_pair_open and item.get("role") == "assistant":
+            persona_pair_open = False
     memory = await _actor_memory_blocks(actor_id, safe_query, safe_visit[-3:])
     if memory.get("time_block"):
         context.extend([
-            {"role": "user", "content": memory["time_block"]},
-            {"role": "assistant", "content": "收到。"},
+            {
+                "role": "user",
+                "content": memory["time_block"],
+                "lounge_context_kind": "dynamic_state",
+            },
+            {
+                "role": "assistant",
+                "content": "收到。",
+                "lounge_context_kind": "dynamic_state",
+            },
         ])
     if memory.get("memory_block"):
         context.extend([
-            {"role": "user", "content": memory["memory_block"]},
-            {"role": "assistant", "content": "收到，我会自然参考相关记忆。"},
+            {
+                "role": "user",
+                "content": memory["memory_block"],
+                "lounge_context_kind": "memory_summary",
+            },
+            {
+                "role": "assistant",
+                "content": "收到，我会自然参考相关记忆。",
+                "lounge_context_kind": "memory_summary",
+            },
         ])
-    context.append({"role": "user", "content": _PRIVACY_RULE})
-    context.append({"role": "assistant", "content": "明白。"})
+    context.append({
+        "role": "user",
+        "content": _PRIVACY_RULE,
+        "lounge_context_kind": "safety",
+    })
+    context.append({
+        "role": "assistant",
+        "content": "明白。",
+        "lounge_context_kind": "safety",
+    })
     return context

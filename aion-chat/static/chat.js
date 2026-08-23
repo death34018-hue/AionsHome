@@ -11,6 +11,21 @@ let camCheckMsgId = null;
 let poiSearchMsgId = null;
 let poiSearchCategories = null;
 let chatroomConfig = {};
+let proactiveCompanionshipStatus = { aion: false, connor: false };
+
+function applyProactiveCompanionshipStatus(data) {
+  for (const role of (data?.roles || [])) {
+    proactiveCompanionshipStatus[role.actor] = !!role.active;
+  }
+  window.ProactiveOrbit?.applyStatus(proactiveCompanionshipStatus, ['aion']);
+}
+
+async function loadProactiveCompanionshipStatus() {
+  try {
+    const res = await fetch('/api/proactive-companionship', { cache: 'no-store' });
+    if (res.ok) applyProactiveCompanionshipStatus(await res.json());
+  } catch (_) {}
+}
 
 // 客户端唯一 ID（持久化）— 不用 crypto.randomUUID() 因为 WebView 非安全上下文不支持
 const _clientId = localStorage.getItem('aion_client_id') || (() => {
@@ -104,6 +119,7 @@ async function init() {
   renderModelSelect();
   worldBook = await api("GET", "/api/worldbook");
   try { chatroomConfig = await api("GET", "/api/chatroom/config"); } catch(e) { chatroomConfig = {}; }
+  await loadProactiveCompanionshipStatus();
   conversations = await api("GET", "/api/conversations");
   const initParams = new URLSearchParams(location.search);
   const targetConvId = initParams.get('conv');
@@ -1481,7 +1497,10 @@ function connectWS() {
 function handleSync(msg) {
   const { type, data } = msg;
 
-  if (type === "hug_pillow_command") {
+  if (type === "proactive_companionship_changed") {
+    applyProactiveCompanionshipStatus(data);
+    return;
+  } else if (type === "hug_pillow_command") {
     window.HugPillowAI?.handleCommandEvent(data);
     return;
   } else if (type === "conv_created") {
@@ -1781,6 +1800,7 @@ function renderMessages() {
 
     // 系统提示消息（居中显示）
     if (m.role === "system") {
+      const loungeStatus = window.LoungeVisitUI && window.LoungeVisitUI.isStatusMessage(m);
       const afterMsgId = systemNoticeAfterMsgId(m);
       const afterAttr = afterMsgId ? ` data-after-msg-id="${escHtml(afterMsgId)}"` : "";
       const snapshotHtml = window.MonitorCameraSnapshot
@@ -1793,7 +1813,7 @@ function renderMessages() {
           )
         : "";
       return `
-      <div class="msg-row system" id="m_${m.id}" data-msg-id="${m.id}"${afterAttr}>
+      <div class="msg-row system${loungeStatus ? ' lounge-visit-status-line' : ''}" id="m_${m.id}" data-msg-id="${m.id}"${afterAttr}>
         <div class="system-notice">
           <span class="system-notice-text">${escHtml(m.content)}</span>
           <button class="msg-dots system-dots" onclick="event.stopPropagation();toggleMsgMenu('${m.id}')">&#8943;</button>
@@ -2813,7 +2833,7 @@ async function _processSSEStream(res) {
             if (aiFinalAlreadyReceived) continue;
             _stopTypingAnim();
             aiContent = data.type === "replace" ? data.content : aiContent + data.content;
-            const display = aiContent.replace(/\[CAM_CHECK\]/g, '').replace(/\[POI_SEARCH:[^\]]*\]/g, '').replace(/\[MUSIC:[^\]]*\]/g, '').replace(/\[ALARM:[^\]]*\]/g, '').replace(/\[REMINDER:[^\]]*\]/g, '').replace(/\[Monitor:[^\]]*\]/g, '').replace(/\[SCHEDULE_DEL:[^\]]*\]/g, '').replace(/\[SCHEDULE_LIST\]/g, '').replace(/\[TOY:[^\]]*\]/g, '').replace(/\[HEART:[^\]]*\]/g, '').replace(/\[MEMORY:[^\]]*\]/g, '').replace(/\[查看动态:\d+\]/g, '').replace(/\[视频电话\]/g, '').replace(/\[SELFIE:\s*[^\]]*\]/g, '').replace(/\[DRAW:\s*[^\]]*\]/g, '').replace(/\[SONG\][\s\S]*?\[\/SONG\]/gi, '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
+            const display = aiContent.replace(/\[CAM_CHECK\]/g, '').replace(/\[POI_SEARCH:[^\]]*\]/g, '').replace(/\[MUSIC:[^\]]*\]/g, '').replace(/\[ALARM:[^\]]*\]/g, '').replace(/\[REMINDER:[^\]]*\]/g, '').replace(/\[Monitor:[^\]]*\]/g, '').replace(/\[SCHEDULE_DEL:[^\]]*\]/g, '').replace(/\[SCHEDULE_LIST\]/g, '').replace(/\[NEXT_CHAT:[^\]]*\]/gi, '').replace(/\[TOY:[^\]]*\]/g, '').replace(/\[HEART:[^\]]*\]/g, '').replace(/\[MEMORY:[^\]]*\]/g, '').replace(/\[查看动态:\d+\]/g, '').replace(/\[视频电话\]/g, '').replace(/\[SELFIE:\s*[^\]]*\]/g, '').replace(/\[DRAW:\s*[^\]]*\]/g, '').replace(/\[SONG\][\s\S]*?\[\/SONG\]/gi, '').replace(/<meta>[\s\S]*?<\/meta>/g, '').replace(/\s*<autonomy_state>[\s\S]*$/gi, '').trim();
             const mi = currentMessages.findIndex(m => m.id === aiMsgId);
             if (mi >= 0) currentMessages[mi].content = display;
             const container = document.getElementById(`m_${aiMsgId}`);
@@ -2985,7 +3005,7 @@ async function saveEdit(id) {
           } else if (data.type === 'chunk' || data.type === 'replace') {
             _stopTypingAnim();
             aiContent = data.type === 'replace' ? data.content : aiContent + data.content;
-            const display = aiContent.replace(/\[CAM_CHECK\]/g, '').replace(/\[POI_SEARCH:[^\]]*\]/g, '').replace(/\[MUSIC:[^\]]*\]/g, '').replace(/\[ALARM:[^\]]*\]/g, '').replace(/\[REMINDER:[^\]]*\]/g, '').replace(/\[Monitor:[^\]]*\]/g, '').replace(/\[SCHEDULE_DEL:[^\]]*\]/g, '').replace(/\[SCHEDULE_LIST\]/g, '').replace(/\[TOY:[^\]]*\]/g, '').replace(/\[HEART:[^\]]*\]/g, '').replace(/\[MEMORY:[^\]]*\]/g, '').replace(/\[查看动态:\d+\]/g, '').replace(/\[视频电话\]/g, '').replace(/\[SELFIE:\s*[^\]]*\]/g, '').replace(/\[DRAW:\s*[^\]]*\]/g, '').replace(/\[SONG\][\s\S]*?\[\/SONG\]/gi, '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
+            const display = aiContent.replace(/\[CAM_CHECK\]/g, '').replace(/\[POI_SEARCH:[^\]]*\]/g, '').replace(/\[MUSIC:[^\]]*\]/g, '').replace(/\[ALARM:[^\]]*\]/g, '').replace(/\[REMINDER:[^\]]*\]/g, '').replace(/\[Monitor:[^\]]*\]/g, '').replace(/\[SCHEDULE_DEL:[^\]]*\]/g, '').replace(/\[SCHEDULE_LIST\]/g, '').replace(/\[NEXT_CHAT:[^\]]*\]/gi, '').replace(/\[TOY:[^\]]*\]/g, '').replace(/\[HEART:[^\]]*\]/g, '').replace(/\[MEMORY:[^\]]*\]/g, '').replace(/\[查看动态:\d+\]/g, '').replace(/\[视频电话\]/g, '').replace(/\[SELFIE:\s*[^\]]*\]/g, '').replace(/\[DRAW:\s*[^\]]*\]/g, '').replace(/\[SONG\][\s\S]*?\[\/SONG\]/gi, '').replace(/<meta>[\s\S]*?<\/meta>/g, '').replace(/\s*<autonomy_state>[\s\S]*$/gi, '').trim();
             const mi = currentMessages.findIndex(m => m.id === aiMsgId);
             if (mi >= 0) currentMessages[mi].content = display;
             const container = document.getElementById(`m_${aiMsgId}`);
@@ -3120,7 +3140,7 @@ async function regenerateMsg(aiMsgId) {
           } else if (d.type === "chunk" || d.type === "replace") {
             _stopTypingAnim();
             aiContent = d.type === "replace" ? d.content : aiContent + d.content;
-            const display = aiContent.replace(/\[CAM_CHECK\]/g, '').replace(/\[POI_SEARCH:[^\]]*\]/g, '').replace(/\[MUSIC:[^\]]*\]/g, '').replace(/\[ALARM:[^\]]*\]/g, '').replace(/\[REMINDER:[^\]]*\]/g, '').replace(/\[Monitor:[^\]]*\]/g, '').replace(/\[SCHEDULE_DEL:[^\]]*\]/g, '').replace(/\[SCHEDULE_LIST\]/g, '').replace(/\[TOY:[^\]]*\]/g, '').replace(/\[HEART:[^\]]*\]/g, '').replace(/\[MEMORY:[^\]]*\]/g, '').replace(/\[查看动态:\d+\]/g, '').replace(/\[视频电话\]/g, '').replace(/\[SELFIE:\s*[^\]]*\]/g, '').replace(/\[DRAW:\s*[^\]]*\]/g, '').replace(/\[SONG\][\s\S]*?\[\/SONG\]/gi, '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
+            const display = aiContent.replace(/\[CAM_CHECK\]/g, '').replace(/\[POI_SEARCH:[^\]]*\]/g, '').replace(/\[MUSIC:[^\]]*\]/g, '').replace(/\[ALARM:[^\]]*\]/g, '').replace(/\[REMINDER:[^\]]*\]/g, '').replace(/\[Monitor:[^\]]*\]/g, '').replace(/\[SCHEDULE_DEL:[^\]]*\]/g, '').replace(/\[SCHEDULE_LIST\]/g, '').replace(/\[NEXT_CHAT:[^\]]*\]/gi, '').replace(/\[TOY:[^\]]*\]/g, '').replace(/\[HEART:[^\]]*\]/g, '').replace(/\[MEMORY:[^\]]*\]/g, '').replace(/\[查看动态:\d+\]/g, '').replace(/\[视频电话\]/g, '').replace(/\[SELFIE:\s*[^\]]*\]/g, '').replace(/\[DRAW:\s*[^\]]*\]/g, '').replace(/\[SONG\][\s\S]*?\[\/SONG\]/gi, '').replace(/<meta>[\s\S]*?<\/meta>/g, '').replace(/\s*<autonomy_state>[\s\S]*$/gi, '').trim();
             const mi = currentMessages.findIndex(m => m.id === newId);
             if (mi >= 0) currentMessages[mi].content = display;
             const b = document.querySelector(`#m_${newId} .msg-bubble`);
@@ -4040,6 +4060,18 @@ function renderAttachments(atts) {
   atts.forEach(item => {
     if (typeof item === 'object' && item.type === 'luckin_payment') {
       mediaHtml += buildLuckinPaymentCard(item);
+    } else if (typeof item === 'object' && item.type === 'lounge_visit_report' && window.LoungeVisitUI) {
+      const inbound = item.direction === 'inbound';
+      const status = String(item.status || 'completed');
+      const title = escHtml(window.LoungeVisitUI.reportTitle(
+        String(aiName), String(item.partner_name || '朋友'),
+        inbound ? 'inbound' : 'outbound', status,
+      ));
+      const summary = escHtml(String(item.summary || '这次会面已经结束。'));
+      const meta = escHtml(window.LoungeVisitUI.reportMeta(
+        status, item.turn_count, item.reason,
+      ));
+      mediaHtml += `<section class="lounge-report-card ${inbound ? 'inbound' : 'outbound'}"><div class="lounge-report-kicker">${title}</div><p>${summary}</p><small>${meta}</small></section>`;
     } else if (typeof item === 'object' && item.type === 'lounge_visit_report') {
       const inbound = item.direction === 'inbound';
       const partner = escHtml(String(item.partner_name || '朋友'));

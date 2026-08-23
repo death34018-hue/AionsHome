@@ -12,6 +12,9 @@ public final class HomecomingBackupJobService extends JobService {
 
     @Override
     public boolean onStartJob(JobParameters parameters) {
+        if (!HomecomingBackupScheduler.isBackupEnabled()) {
+            return false;
+        }
         SharedPreferences preferences = getSharedPreferences(
                 HomecomingModeStore.PREFERENCES_NAME, MODE_PRIVATE);
         String baseUrl = preferences.getString(

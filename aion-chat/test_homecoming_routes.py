@@ -161,7 +161,7 @@ class HomecomingRouteTests(unittest.TestCase):
             payload["snapshot_id"],
             response.headers["X-Homecoming-Snapshot-Id"],
         )
-        self.assertEqual(1, payload["schema"])
+        self.assertEqual(2, payload["schema"])
         self.assertEqual(
             set(self.sections),
             set(payload["section_hashes"]),

@@ -274,7 +274,11 @@ async def maybe_compress_history(sid: str):
 
     try:
         summary = ""
-        async for chunk in stream_ai(messages, COMPRESS_MODEL):
+        async for chunk in stream_ai(
+            messages,
+            COMPRESS_MODEL,
+            include_device_context=False,
+        ):
             summary += chunk
 
         if not summary.strip():

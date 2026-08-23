@@ -48,7 +48,7 @@ from schedule import (
 from music import search_songs, get_audio_url
 from camera import cam, CAM_CHECK_CMD
 from luckin import handle_luckin_commands, luckin_payment_attachments
-from link_preview import build_link_preview_attachments
+from link_preview import build_link_preview_attachments, strip_urls_for_message
 from song_gen import clean_song_visible_reply
 from stream_reply import resolve_stream_failure
 from stream_safety import (
@@ -75,7 +75,11 @@ from web_search import (
     format_web_system_message,
     run_web_commands,
 )
-from lounge_visit_commands import LoungeVisitCommandStreamFilter, handle_lounge_visit_commands
+from lounge_visit_commands import (
+    LoungeVisitCommandStreamFilter,
+    handle_lounge_visit_commands,
+    is_chat_visit_friend_allowed,
+)
 
 router = APIRouter(prefix="/api/chatroom", tags=["chatroom"])
 
@@ -482,7 +486,15 @@ async def _send_private_whisper(who_identity: str, content: str):
         await _send_aion_private_whisper(content)
 
 
-async def _process_chatroom_commands(full_text: str, room_id: str, who: str, msg_id: str, _q: asyncio.Queue) -> tuple[str, dict]:
+async def _process_chatroom_commands(
+    full_text: str,
+    room_id: str,
+    who: str,
+    msg_id: str,
+    _q: asyncio.Queue,
+    *,
+    user_text: str = "",
+) -> tuple[str, dict]:
     """处理 AI 回复中的工具指令，执行副作用，返回 (清理后的文本, 触发的后续动作信息)。
     who: 内部身份 aion 或 connor"""
     from ws import manager as ws_manager
@@ -504,6 +516,7 @@ async def _process_chatroom_commands(full_text: str, room_id: str, who: str, msg
     full_text, _lounge_visits = await handle_lounge_visit_commands(
         full_text,
         actor_id=who_identity,
+        user_text=user_text,
         start_visit=lambda actor_id, friend_id, topic: _start_chatroom_lounge_visit(
             actor_id,
             friend_id,
@@ -850,6 +863,11 @@ async def _start_chatroom_lounge_visit(
     """Start only an enabled friend owned by the chatroom reply's real actor."""
     from lounge_visit import LoungeVisitCoordinator
     from lounge_visit_reporting import publish_outbound_report
+    from lounge_visit_status import (
+        create_chatroom_status,
+        downgrade_status,
+        remove_status,
+    )
     from mcp_client import mcp_manager
     from routes.lounge_friends import (
         compose_lounge_message,
@@ -862,7 +880,7 @@ async def _start_chatroom_lounge_visit(
         friend = friend_store.get_owned(actor_id, friend_id)
     except KeyError:
         return ""
-    if not friend.enabled or not topic:
+    if not is_chat_visit_friend_allowed(friend) or not topic:
         return ""
 
     def actor_name(known_actor_id: str) -> str:
@@ -875,17 +893,68 @@ async def _start_chatroom_lounge_visit(
             "",
         )
 
-    async def run() -> None:
-        async with lounge_repository_provider() as repository:
-            result = await LoungeVisitCoordinator(
-                friend_store,
-                repository,
-                mcp_manager,
-                actor_name_resolver=actor_name,
-            ).run_visit(actor_id, friend_id, "chat", topic, compose_lounge_message)
-            await publish_outbound_report(
-                actor_id, friend.display_name, result, repository
+    status_handle = None
+    try:
+        async with get_db() as db:
+            status_handle, status_message = await create_chatroom_status(
+                db,
+                room_id,
+                actor_name(actor_id),
+                friend.display_name,
+                msg_id,
             )
+        await queue.put({"type": "system_msg", "message": status_message})
+        await broadcast_synced(
+            manager, {"type": "chatroom_msg_created", "data": status_message}
+        )
+    except Exception:
+        status_handle = None
+
+    async def run() -> None:
+        report_message = None
+        try:
+            async with lounge_repository_provider() as repository:
+                result = await LoungeVisitCoordinator(
+                    friend_store,
+                    repository,
+                    mcp_manager,
+                    actor_name_resolver=actor_name,
+                ).run_visit(actor_id, friend_id, "chat", topic, compose_lounge_message)
+                report_message = await publish_outbound_report(
+                    actor_id,
+                    friend.display_name,
+                    result,
+                    repository,
+                    status_id=status_handle.status_id if status_handle else "",
+                )
+        except Exception:
+            report_message = None
+        if status_handle is None:
+            return
+        try:
+            async with get_db() as db:
+                if report_message:
+                    removed = await remove_status(db, status_handle)
+                    if removed:
+                        await broadcast_synced(
+                            manager,
+                            {
+                                "type": "chatroom_msg_deleted",
+                                "data": {
+                                    "id": status_handle.message_id,
+                                    "room_id": status_handle.scope_id,
+                                },
+                            },
+                        )
+                else:
+                    updated = await downgrade_status(db, status_handle)
+                    if updated:
+                        await broadcast_synced(
+                            manager,
+                            {"type": "chatroom_msg_updated", "data": updated},
+                        )
+        except Exception:
+            pass
 
     asyncio.create_task(run())
     return friend.id
@@ -982,7 +1051,7 @@ async def _chatroom_cam_check(
     system_msg_id: str = "",
 ):
     """聊天室版监控查看：播放提示音 → 延迟截图 → AI 追加回复到聊天室"""
-    from config import load_worldbook, SETTINGS, UPLOADS_DIR, SCREENSHOTS_DIR
+    from config import load_worldbook, SETTINGS
     from camera import cam, build_monitor_alert_data
 
     # 播放摄像头调起提示音，给用户反应时间
@@ -995,7 +1064,7 @@ async def _chatroom_cam_check(
 
     await _broadcast_chatroom_ai_status(room_id, sender, "正在获取监控画面...")
 
-    from camera import acquire_monitor_image, save_monitor_camera_snapshot
+    from camera import acquire_monitor_image, save_monitor_camera_snapshot, save_monitor_screenshot
     image_result = await acquire_monitor_image(
         "ai_cam_check",
         force_pc_screen=True,
@@ -1029,10 +1098,7 @@ async def _chatroom_cam_check(
     if jpg_bytes:
         ts = time.strftime("%Y%m%d_%H%M%S")
         fname = f"cam_check_{ts}_{time.time_ns()}.jpg"
-        fpath = UPLOADS_DIR / fname
-        fpath.write_bytes(jpg_bytes)
-        SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
-        (SCREENSHOTS_DIR / fname).write_bytes(jpg_bytes)
+        save_monitor_screenshot(jpg_bytes, fname)
 
     wb = load_worldbook()
     user_name = wb.get("user_name", "用户")
@@ -1063,7 +1129,7 @@ async def _chatroom_cam_check(
 
     cam_message = {"role": "user", "content": cam_prompt}
     if fname:
-        cam_message["attachments"] = [f"/uploads/{fname}"]
+        cam_message["attachments"] = [f"/screenshots/{fname}"]
     messages = prefix_msgs + recent + [cam_message]
 
     full_text = ""
@@ -1440,7 +1506,8 @@ _MD_IMG_RE = re.compile(r'!\[.*?\]\((https?://\S+?)\)')
 
 ALLOWED_IMG_TYPES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
 ALLOWED_AUDIO_TYPES = {'audio/webm', 'audio/wav', 'audio/mp4', 'audio/mpeg', 'audio/ogg', 'audio/x-wav'}
-ALLOWED_UPLOAD_TYPES = ALLOWED_IMG_TYPES | ALLOWED_AUDIO_TYPES
+ALLOWED_VIDEO_TYPES = {'video/mp4', 'video/webm', 'video/quicktime'}
+ALLOWED_UPLOAD_TYPES = ALLOWED_IMG_TYPES | ALLOWED_AUDIO_TYPES | ALLOWED_VIDEO_TYPES
 
 
 def _cr_upload_dir() -> Path:
@@ -2251,12 +2318,12 @@ async def connor_status():
 
 
 # ══════════════════════════════════════════════════
-#  聊天室图片上传
+#  聊天室附件上传
 # ══════════════════════════════════════════════════
 
 @router.post("/upload")
 async def chatroom_upload(file: UploadFile = File(...)):
-    """聊天室专用上传，保存到 Connor-Codex/uploads/YYYY-MM-DD/"""
+    """聊天室专用附件上传，保存到 Connor-Codex/uploads/YYYY-MM-DD/"""
     base_type = (file.content_type or "").split(";")[0].strip()
     if base_type not in ALLOWED_UPLOAD_TYPES:
         return {"error": f"不支持的文件类型: {file.content_type}"}
@@ -2264,8 +2331,8 @@ async def chatroom_upload(file: UploadFile = File(...)):
     if ext == ".jpe":
         ext = ".jpg"
     content = await file.read()
-    if len(content) > 20 * 1024 * 1024:
-        return {"error": "文件太大，最大 20MB"}
+    if len(content) > 100 * 1024 * 1024:
+        return {"error": "文件太大，最大 100MB"}
     day_dir = _cr_upload_dir()
     fname = f"{int(time.time()*1000)}{ext}"
     fpath = day_dir / fname
@@ -2600,6 +2667,8 @@ async def _save_msg(
     att_list = attachments or []
     if sender != "system":
         att_list = await _with_link_previews(content, att_list)
+        if sender in ("aion", "connor"):
+            content = strip_urls_for_message(content)
     else:
         att_list = _dedupe_chatroom_attachments(list(att_list))
     att_list = await with_band_vibration_attachment(msg_id, att_list)
@@ -3204,7 +3273,14 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
 
     # 工具指令处理（从文本中剥离并执行，与群聊保持一致）
     try:
-        clean_text, triggered = await _process_chatroom_commands(full_text, room_id, "connor", connor_msg_id, _q)
+        clean_text, triggered = await _process_chatroom_commands(
+            full_text,
+            room_id,
+            "connor",
+            connor_msg_id,
+            _q,
+            user_text=query_text,
+        )
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -3319,6 +3395,7 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
     ai_label = _name_for_identity("aion")
     aion_history, digest_out = await build_aion_group_context(
         room_id, msgs, context_limit, query_text,
+        include_image_attachments=not bool(ambient_context),
         digest_result=digest_result,
         whisper_mode=whisper_mode,
     )
@@ -3354,7 +3431,14 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
 
     # 工具指令处理（从文本中剥离并执行）
     try:
-        clean_text, triggered = await _process_chatroom_commands(full_text, room_id, "aion", aion_msg_id, _q)
+        clean_text, triggered = await _process_chatroom_commands(
+            full_text,
+            room_id,
+            "aion",
+            aion_msg_id,
+            _q,
+            user_text=query_text,
+        )
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -3402,6 +3486,7 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
     connor_label = _name_for_identity("connor")
     connor_history, digest_out = await build_connor_group_context(
         room_id, msgs, context_limit, query_text,
+        include_image_attachments=not bool(ambient_context),
         digest_result=digest_result,
         whisper_mode=whisper_mode,
     )
@@ -3441,7 +3526,14 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
 
     # 工具指令处理
     try:
-        clean_text, triggered = await _process_chatroom_commands(full_text, room_id, "connor", connor_msg_id, _q)
+        clean_text, triggered = await _process_chatroom_commands(
+            full_text,
+            room_id,
+            "connor",
+            connor_msg_id,
+            _q,
+            user_text=query_text,
+        )
     except Exception as e:
         import traceback
         traceback.print_exc()

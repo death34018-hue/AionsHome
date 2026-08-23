@@ -24,8 +24,8 @@ import okhttp3.Response;
 import okhttp3.ResponseBody;
 
 public final class HomecomingBackupClient {
-    static final int MAX_COMPRESSED_BYTES = 64 * 1024 * 1024;
-    static final int MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024;
+    static final int MAX_COMPRESSED_BYTES = 2 * 1024 * 1024;
+    static final int MAX_DECOMPRESSED_BYTES = 8 * 1024 * 1024;
     private static final Object REFRESH_LOCK = new Object();
 
     public enum RefreshReason {
@@ -61,8 +61,8 @@ public final class HomecomingBackupClient {
 
     private void refreshSnapshotLocked(
             String serverBaseUrl, RefreshReason reason, Callback callback) {
-        String previousId = snapshotStore.activeManifest() == null
-                ? "" : snapshotStore.activeManifest().snapshotId;
+        HomecomingSnapshotStore.SnapshotManifest active = snapshotStore.activeManifest();
+        String previousId = active == null ? "" : active.snapshotId;
         String stage = "download";
         try {
             Download download = transport.download(

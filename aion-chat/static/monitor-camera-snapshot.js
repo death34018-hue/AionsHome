@@ -6,7 +6,7 @@
   'use strict';
 
   const SAFE_CAMERA_URL =
-    /^\/uploads\/monitor_camera_[A-Za-z0-9_-]+(?:_[A-Za-z0-9_-]+)*\.jpe?g$/i;
+    /^\/(?:uploads|screenshots)\/monitor_camera_[A-Za-z0-9_-]+(?:_[A-Za-z0-9_-]+)*\.jpe?g$/i;
 
   function renderMonitorCameraSnapshot(attachments, options) {
     const items = Array.isArray(attachments) ? attachments : [];

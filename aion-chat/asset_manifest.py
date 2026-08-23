@@ -30,6 +30,7 @@ _DOCUMENT_ROUTES = {
     "/moments": "moments.html",
     "/diary": "diary.html",
     "/activity-logs": "activity-logs.html",
+    "/family-dynamics": "family-dynamics.html",
     "/reading": "reading.html",
     "/theater": "theater.html",
     "/date-theater": "date_theater.html",

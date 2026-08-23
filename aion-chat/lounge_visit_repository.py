@@ -166,6 +166,31 @@ class LoungeVisitRepository:
         )
         await self.db.commit()
 
+    async def finish_running(
+        self, actor_id: str, visit_id: str, reason: str
+    ) -> bool:
+        cursor = await self.db.execute(
+            "UPDATE lounge_visits SET status='interrupted',error=?,finished_at=? "
+            "WHERE id=? AND actor_id=? AND status='running'",
+            (
+                sanitize_error(reason),
+                float(self.clock()),
+                visit_id,
+                actor_id,
+            ),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def interrupt_stale_running(self, reason: str) -> int:
+        cursor = await self.db.execute(
+            "UPDATE lounge_visits SET status='interrupted',error=?,finished_at=? "
+            "WHERE status='running'",
+            (sanitize_error(reason), float(self.clock())),
+        )
+        await self.db.commit()
+        return cursor.rowcount
+
     async def update_progress(self, visit_id: str, turn_count: int) -> None:
         await self.db.execute(
             "UPDATE lounge_visits SET turn_count=? WHERE id=? AND status='running'",

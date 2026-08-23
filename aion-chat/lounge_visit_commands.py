@@ -15,18 +15,41 @@ LOUNGE_VISIT_PATTERN = re.compile(
 _LOUNGE_VISIT_TOKEN_PATTERN = re.compile(r"\[LOUNGE_VISIT:[^\]]*\]", re.IGNORECASE)
 _LOUNGE_VISIT_TRAILING_PATTERN = re.compile(r"\[LOUNGE_VISIT:[^\]]*$", re.IGNORECASE)
 _LOUNGE_VISIT_PREFIX = "[LOUNGE_VISIT:"
+_IMMEDIATE_VISIT_MARKER = re.compile(r"(?:现在|马上|立刻|这就|出发)")
+_VISIT_ACTION = re.compile(r"(?:拜访|串门|去找.{0,20}聊)")
+
+
+def is_immediate_lounge_visit_request(text: str) -> bool:
+    """Return whether the user's current turn clearly requests departure now."""
+    normalized = re.sub(r"\s+", "", str(text or ""))
+    return bool(
+        _IMMEDIATE_VISIT_MARKER.search(normalized)
+        and _VISIT_ACTION.search(normalized)
+    )
+
+
+def is_chat_visit_friend_allowed(friend: object) -> bool:
+    """Enforce the chat-visible lounge permission again at execution time."""
+    return bool(
+        getattr(friend, "enabled", False)
+        and getattr(friend, "allow_autonomous", False)
+    )
 
 
 async def handle_lounge_visit_commands(
     text: str,
     *,
     actor_id: str,
+    user_text: str,
     start_visit: Callable[[str, str, str], Awaitable[str]],
 ) -> tuple[str, list[str]]:
     """Start valid, explicitly emitted visit commands and hide every protocol tag."""
     source = text or ""
     started: list[str] = []
-    for match in LOUNGE_VISIT_PATTERN.finditer(source):
+    matches = LOUNGE_VISIT_PATTERN.finditer(source)
+    if not is_immediate_lounge_visit_request(user_text):
+        matches = ()
+    for match in matches:
         friend_id = match.group(1).lower()
         topic = match.group(2).strip()
         if topic:

@@ -38,6 +38,40 @@
 .activity-pane.active {
   display:flex; flex-direction:column; flex:1; min-height:0;
 }
+.context-pane.active { overflow-y:auto; padding:2px 12px 12px; }
+.context-panel {
+  margin:0; overflow:visible; background:transparent; padding:2px;
+}
+.context-head { display:flex; align-items:center; gap:10px; margin:4px 0 12px; }
+.context-head strong { font-size:17px; }
+.context-head span { color:var(--text3); font-size:12px; flex:1; }
+.context-head button {
+  border:1px solid var(--border); background:var(--surface); color:var(--text);
+  border-radius:8px; padding:7px 12px; font-size:12px; cursor:pointer;
+}
+.context-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.context-card {
+  background:var(--surface); border:1px solid var(--border); border-radius:12px;
+  padding:14px; min-width:0; box-shadow:0 2px 8px rgba(0,0,0,.04);
+}
+.context-card.context-wide { grid-column:1 / -1; }
+.context-card h4 { margin:0 0 8px; color:var(--accent); font-size:13px; }
+.context-card div, .context-card pre {
+  margin:0; color:var(--text); font-size:13px; line-height:1.65; white-space:pre-wrap;
+  word-break:break-word; font-family:inherit;
+}
+.context-card pre { color:var(--text2); }
+.context-permission { margin:10px 2px 0; color:var(--text3); font-size:11px; }
+.context-permission button { margin-left:6px; }
+@media (max-width:520px) {
+  .context-pane.active { padding:2px 7px 8px; }
+  .context-head { margin-bottom:8px; }
+  .context-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:7px; }
+  .context-card { padding:9px; border-radius:9px; }
+  .context-card h4 { margin-bottom:5px; font-size:12px; }
+  .context-card div, .context-card pre { font-size:11px; line-height:1.5; }
+  .context-card.context-wide { grid-column:1 / -1; }
+}
 
 /* ── 统计信息 ── */
 .stats-bar {
@@ -218,15 +252,31 @@
     </div>
   </div>
   <div class="activity-tabs">
-    <button class="activity-tab" id="tabLogs" onclick="switchActivityTab('logs')">日志</button>
-    <button class="activity-tab active" id="tabTimeline" onclick="switchActivityTab('timeline')">家庭动态</button>
+    <button class="activity-tab active" id="tabContext" onclick="switchActivityTab('context')">当前状态</button>
+    <button class="activity-tab" id="tabLogs" onclick="switchActivityTab('logs')">设备记录</button>
   </div>
   <div class="page-content">
+    <div class="activity-pane context-pane active" id="contextPane">
+      <section class="context-panel">
+        <div class="context-head">
+          <strong>🧭 当前设备情境</strong>
+          <span id="contextUpdated">等待数据</span>
+          <button onclick="loadDeviceContext()">刷新</button>
+        </div>
+        <div class="context-grid">
+          <article class="context-card"><h4>💻 电脑状态</h4><div id="contextPc">暂无电脑状态</div></article>
+          <article class="context-card"><h4>📱 手机状态</h4><div id="contextPhone">暂无手机状态</div></article>
+          <article class="context-card context-wide"><h4>🔔 重要通知</h4><div id="contextNotifications">暂无近期通知</div></article>
+          <article class="context-card context-wide"><h4>✨ 实际注入 Prompt</h4><pre id="contextPrompt">当前不会注入</pre></article>
+        </div>
+        <div class="context-permission" id="contextPermission"></div>
+      </section>
+    </div>
     <div class="activity-pane" id="logsPane">
     <!-- 筛选 -->
     <div class="filter-row">
       <select id="viewMode" onchange="onViewModeChange()">
-        <option value="recent" selected>最近 3 小时</option>
+        <option value="recent" selected>最近 8 小时</option>
         <option value="date">按日期查看</option>
       </select>
       <select id="dateSelect" onchange="loadByDate()" style="display:none"></select>
@@ -241,31 +291,6 @@
     <div class="stats-bar" id="statsBar"></div>
     <!-- 日志 -->
     <div class="log-list" id="logList"><div class="log-empty">暂无活动记录</div></div>
-    </div>
-    <div class="activity-pane active" id="timelinePane">
-      <div class="timeline-toolbar">
-        <select id="timelineHours" onchange="loadTimeline()">
-          <option value="6">最近 6 小时</option>
-          <option value="24" selected>今天 / 最近 24 小时</option>
-          <option value="72">最近 3 天</option>
-          <option value="168">最近 7 天</option>
-        </select>
-        <button onclick="loadTimeline()">刷新</button>
-      </div>
-      <div class="timeline-toolbar">
-        <span class="idle-toolbar-label">AI空闲</span>
-        <input id="idleIntervalMinMinutes" type="number" min="5" step="5" value="90" title="自动触发最短间隔（分钟）">
-        <span class="idle-toolbar-label">-</span>
-        <input id="idleIntervalMaxMinutes" type="number" min="5" step="5" value="150" title="自动触发最长间隔（分钟）">
-        <button onclick="saveIdleConfig()">保存</button>
-        <button id="idleTestBtn" class="idle-test-btn" onclick="runIdleTest()">测试触发</button>
-      </div>
-      <div class="timeline-toolbar">
-        <label class="idle-toolbar-label"><input id="idleEnabledToggle" type="checkbox"> 闲时自主行动</label>
-      </div>
-      <div class="timeline-list" id="timelineList">
-        <div class="timeline-empty">加载中...</div>
-      </div>
     </div>
   </div>
 </div>
@@ -291,24 +316,104 @@
 <script>
 let allEntries = [];
 let deviceFilter = 'all';
-let currentActivityTab = 'timeline';
+let currentActivityTab = 'context';
+let logsLoaded = false;
 let timelineLoaded = false;
 let timelineItems = [];
 let timelinePressTimer = null;
 let timelinePopoverRequest = 0;
 let idleConfig = null;
+let deviceContextTimer = null;
+
+const contextValueLabels = {
+  on:'亮屏', off:'熄屏', active:'刚有输入', recent:'近期有输入', idle:'已空闲', unavailable:'不可用',
+  portrait:'竖屏', portrait_upside_down:'倒竖屏', landscape_left:'左横屏', landscape_right:'右横屏',
+  face_up:'正面朝上', face_down:'扣放', tilted:'倾斜', still:'静止', slight:'轻微移动',
+  moving:'移动中', strong:'明显晃动', dark:'黑暗', dim:'较暗', normal:'正常光线', bright:'明亮',
+  near:'被遮挡/靠近', far:'未遮挡'
+};
+const contextFieldLabels = {
+  posture:'姿态', motion:'动作', light:'环境光线', proximity:'距离传感器',
+  screen:'屏幕', foreground_app:'前台应用'
+};
+
+function contextLabel(value) { return contextValueLabels[value] || value || '未知'; }
+
+function contextAge(timestamp) {
+  const seconds = Math.max(0, Date.now() / 1000 - Number(timestamp || 0));
+  if (!timestamp || seconds < 60) return '刚刚';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
+  return `${Math.floor(seconds / 3600)} 小时前`;
+}
+
+async function loadDeviceContext() {
+  try {
+    const data = await api('GET', '/api/device-context/status');
+    const pc = data.pc || {};
+    const phone = data.phone || {};
+    const pcLines = [
+      `显示器：${contextLabel(pc.display)}`,
+      `键鼠：${contextLabel(pc.input_state)}${Number.isFinite(pc.idle_seconds) ? `（${contextAge(Date.now() / 1000 - pc.idle_seconds)}）` : ''}`,
+      pc.app ? `前台应用：${pc.app}` : '',
+      pc.title ? `窗口：${pc.title}` : ''
+    ].filter(Boolean);
+    const phoneLines = Object.entries(phone).map(([key, slot]) =>
+      `${contextFieldLabels[key] || key}：${contextLabel(slot?.value)}（${contextAge(slot?.observed_at)}）`);
+    $('contextPc').textContent = pcLines.join('\n') || '暂无电脑状态';
+    $('contextPhone').textContent = phoneLines.join('\n') || '暂无手机状态';
+
+    const notifications = data.notifications || [];
+    const filtered = data.filtered_notifications || [];
+    const notificationLines = notifications.map(item => {
+      const title = item.title || '通知';
+      const detail = item.text && item.text !== item.title ? `：${item.text}` : '';
+      return `${item.app_name || item.package_name || '通知'} · ${title}${detail}（${contextAge(item.observed_at || item.posted_at)}）`;
+    });
+    filtered.slice(0, 3).forEach(item => notificationLines.push(
+      `已过滤：${item.app_name || item.package_name || '通知'}（${item.filter_reason || '低价值'}）`));
+    $('contextNotifications').textContent = notificationLines.join('\n') || '暂无近期通知';
+    $('contextPrompt').textContent = data.prompt || '当前不会注入';
+    $('contextUpdated').textContent = data.updated_at
+      ? `更新 ${new Date(data.updated_at * 1000).toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit'})}`
+      : '等待数据';
+    renderDeviceContextPermission();
+  } catch (_error) {
+    $('contextUpdated').textContent = '加载失败';
+  }
+}
+
+function renderDeviceContextPermission() {
+  const el = $('contextPermission');
+  if (window.AionDeviceContext) {
+    let enabled = false;
+    try { enabled = !!window.AionDeviceContext.hasNotificationAccess(); } catch (_error) {}
+    el.innerHTML = enabled
+      ? '通知读取权限：已开启'
+      : '通知读取权限：未开启 <button onclick="openNotificationContextSettings()">去授权</button>';
+  } else {
+    el.textContent = '通知读取权限需要在手机 App 的活动日志页授权';
+  }
+}
+
+function openNotificationContextSettings() {
+  try { window.AionDeviceContext?.openNotificationAccessSettings(); } catch (_error) {}
+}
+
+function syncDeviceContextTimer() {
+  if (deviceContextTimer) clearInterval(deviceContextTimer);
+  deviceContextTimer = null;
+  if (!document.hidden) deviceContextTimer = setInterval(loadDeviceContext, 15000);
+}
 
 function switchActivityTab(tab) {
   hideTimelinePopover();
   currentActivityTab = tab;
+  $('tabContext').classList.toggle('active', tab === 'context');
   $('tabLogs').classList.toggle('active', tab === 'logs');
-  $('tabTimeline').classList.toggle('active', tab === 'timeline');
+  $('contextPane').classList.toggle('active', tab === 'context');
   $('logsPane').classList.toggle('active', tab === 'logs');
-  $('timelinePane').classList.toggle('active', tab === 'timeline');
-  if (tab === 'timeline') {
-    if (!timelineLoaded) loadTimeline();
-    else scrollTimelineToBottom();
-  }
+  if (tab === 'context') loadDeviceContext();
+  if (tab === 'logs' && !logsLoaded) loadRecent();
 }
 
 function timelineDate(ts) {
@@ -565,6 +670,7 @@ connectCommonWS(msg => {
   if (msg.type === 'idle_event' && currentActivityTab === 'timeline') {
     loadTimeline();
   }
+  if (msg.type === 'device_context_changed') loadDeviceContext();
 });
 
 /* ── 视图切换 ── */
@@ -592,6 +698,7 @@ async function loadRecent() {
   try {
     const data = await api('GET', '/api/activity/recent');
     allEntries = data.entries || [];
+    logsLoaded = true;
     renderEntries();
     scrollElementToBottom($('logList'));
   } catch(e) {
@@ -687,6 +794,7 @@ function renderEntries() {
 
 /* ── 刷新 ── */
 function refresh() {
+  loadDeviceContext();
   if (currentActivityTab === 'timeline') {
     loadTimeline();
     return;
@@ -829,11 +937,13 @@ async function toggleActivityTracking(enabled) {
 }
 
 /* ── 初始化 ── */
-loadTimeline();
-loadRecent();
 loadActivityConfig();
-loadIdleConfig();
-$('idleEnabledToggle')?.addEventListener('change', e => saveIdleEnabled(e.target.checked));
+loadDeviceContext();
+syncDeviceContextTimer();
+document.addEventListener('visibilitychange', () => {
+  syncDeviceContextTimer();
+  if (!document.hidden) loadDeviceContext();
+});
 </script>
 </body>
 </html>

@@ -126,6 +126,11 @@ public class AionPushService extends Service {
     public static final String ACTION_ACQUIRE_RING_FOR_BACKGROUND = "acquire_ring_for_background";
     public static final String ACTION_RING_FEATURE_CHANGED = "ring_feature_changed";
     public static final String ACTION_MI_BAND_SETTINGS_CHANGED = "mi_band_settings_changed";
+    public static final String ACTION_DEVICE_NOTIFICATION_POSTED = "device_notification_posted";
+    public static final String ACTION_DEVICE_NOTIFICATION_REMOVED = "device_notification_removed";
+    public static final String EXTRA_DEVICE_NOTIFICATION_JSON = "device_notification_json";
+    public static final String EXTRA_DEVICE_NOTIFICATION_KEY = "device_notification_key";
+    public static final String EXTRA_DEVICE_NOTIFICATION_OBSERVED_AT = "device_notification_observed_at";
     public static final String ACTION_ARM_PHONE_CAMERA = "arm_phone_camera";
     public static final String ACTION_DISARM_PHONE_CAMERA = "disarm_phone_camera";
     public static final String EXTRA_PHONE_CAMERA_FACING = "phone_camera_facing";
@@ -221,6 +226,9 @@ public class AionPushService extends Service {
     private volatile long lastReportedTime = 0;
     private volatile boolean screenOn = true;
     private BroadcastReceiver screenReceiver;
+    private PhoneContextCollector phoneContextCollector;
+    private final ExecutorService deviceContextExecutor = Executors.newSingleThreadExecutor();
+    private SuperXNotificationMonitor superXNotificationMonitor;
 
     // ── 无障碍服务自动恢复（需 WRITE_SECURE_SETTINGS 权限，通过 ADB 授予）──
     private volatile long lastAccessibilityRecoverAt = 0;
@@ -303,6 +311,7 @@ public class AionPushService extends Service {
 
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (pm != null) {
+            screenOn = pm.isInteractive();
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AionChat:Push");
             wakeLock.acquire();
             Log.i(TAG, "WakeLock acquired");
@@ -321,6 +330,19 @@ public class AionPushService extends Service {
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .cookieJar(new WebViewCookieJar())
                 .build();
+        phoneContextCollector = new PhoneContextCollector(this, this::postDeviceContext);
+        superXNotificationMonitor = new SuperXNotificationMonitor(
+                this,
+                deviceContextExecutor,
+                new SuperXNotificationMonitor.Sink() {
+                    @Override public void onPosted(JSONObject data) {
+                        postNotificationContext(data.toString());
+                    }
+
+                    @Override public void onRemoved(String key, double observedAt) {
+                        postNotificationRemoval(key, observedAt);
+                    }
+                });
 
         miBandRuntime = MiBandRuntime.get(this);
         miBandRuntime.setSampleSink(new MiBandHealthUploader(client, this::getHttpBase));
@@ -466,6 +488,7 @@ public class AionPushService extends Service {
         }
 
         Log.i(TAG, "onStartCommand url=" + serverUrl);
+        String keepAliveText = PushServiceStartPolicy.keepAliveText(wsConnected.get());
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             // Android 14+: 需要声明所有用到的前台服务类型
@@ -486,17 +509,30 @@ public class AionPushService extends Service {
                     == PackageManager.PERMISSION_GRANTED) {
                 serviceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
             }
-            startForeground(NOTIF_FOREGROUND, buildKeepAlive("连接中..."), serviceType);
+            startForeground(NOTIF_FOREGROUND, buildKeepAlive(keepAliveText), serviceType);
         } else {
-            startForeground(NOTIF_FOREGROUND, buildKeepAlive("连接中..."));
+            startForeground(NOTIF_FOREGROUND, buildKeepAlive(keepAliveText));
         }
 
         shouldRun = true;
         startHeartbeatThread();
         startLocationThread();
         startActivityThread();
+        if (phoneContextCollector != null) {
+            if (screenOn) phoneContextCollector.startForScreenOn();
+            else phoneContextCollector.onScreenOff();
+        }
+        if (superXNotificationMonitor != null) superXNotificationMonitor.discoverNow();
         startRingSyncThread();
         startMiBandSyncThread();
+        if (intent != null && ACTION_DEVICE_NOTIFICATION_POSTED.equals(action)) {
+            postNotificationContext(intent.getStringExtra(EXTRA_DEVICE_NOTIFICATION_JSON));
+        } else if (intent != null && ACTION_DEVICE_NOTIFICATION_REMOVED.equals(action)) {
+            postNotificationRemoval(
+                    intent.getStringExtra(EXTRA_DEVICE_NOTIFICATION_KEY),
+                    intent.getDoubleExtra(EXTRA_DEVICE_NOTIFICATION_OBSERVED_AT,
+                            System.currentTimeMillis() / 1000.0));
+        }
         if (endpointChanged) connectWebSocket();
         return START_STICKY;
     }
@@ -544,6 +580,9 @@ public class AionPushService extends Service {
         if (phoneCameraController != null) phoneCameraController.close();
         phoneCameraStateSync.shutdownNow();
         unregisterScreenReceiver();
+        if (phoneContextCollector != null) phoneContextCollector.close();
+        if (superXNotificationMonitor != null) superXNotificationMonitor.close();
+        deviceContextExecutor.shutdownNow();
         if (sensorManager != null) sensorManager.unregisterListener(stepListener);
         if (webSocket != null) try { webSocket.cancel(); } catch (Exception ignored) {}
         if (client != null) client.dispatcher().executorService().shutdown();
@@ -627,6 +666,9 @@ public class AionPushService extends Service {
                 if (!shouldRun) break;
 
                 try {
+                    if (superXNotificationMonitor != null) {
+                        superXNotificationMonitor.refreshActive();
+                    }
                     com.aion.chat.supervision.AppSupervisionRuntime supervisionRuntime =
                             com.aion.chat.supervision.AppSupervisionRuntime.get();
                     if (supervisionRuntime != null) {
@@ -3674,6 +3716,11 @@ public class AionPushService extends Service {
 
         if (pkgName == null) return;
 
+        if (phoneContextCollector != null) phoneContextCollector.setForegroundApp(pkgName);
+        if (superXNotificationMonitor != null) {
+            superXNotificationMonitor.discoverForForegroundApp(pkgName);
+        }
+
         // 仅过滤自身
         if (pkgName.equals(getPackageName())) {
             return;
@@ -3714,6 +3761,73 @@ public class AionPushService extends Service {
             }
         } catch (Exception e) {
             Log.e(TAG, "📱 activity report failed: " + e.getMessage());
+        }
+    }
+
+    void postDeviceContext(JSONObject snapshot) {
+        if (snapshot == null || snapshot.length() == 0 || serverUrl == null || client == null) return;
+        deviceContextExecutor.execute(() -> {
+            try {
+                String httpBase = serverUrl
+                        .replace("ws://", "http://")
+                        .replace("wss://", "https://")
+                        .replace("/ws", "");
+                JSONObject body = new JSONObject();
+                body.put("data", snapshot);
+                Request request = new Request.Builder()
+                        .url(httpBase + "/api/device-context/phone")
+                        .post(RequestBody.create(body.toString(),
+                                MediaType.get("application/json; charset=utf-8")))
+                        .build();
+                try (Response response = client.newCall(request).execute()) {
+                    Log.d(TAG, "device context posted: " + response.code());
+                }
+            } catch (Exception error) {
+                Log.d(TAG, "device context post skipped: " + error.getMessage());
+            }
+        });
+    }
+
+    private void postNotificationContext(String rawJson) {
+        if (rawJson == null || rawJson.isEmpty()) return;
+        deviceContextExecutor.execute(() -> {
+            try {
+                JSONObject body = new JSONObject();
+                body.put("data", new JSONObject(rawJson));
+                postDeviceContextBody("/api/device-context/notification", body);
+            } catch (Exception error) {
+                Log.d(TAG, "notification context skipped: " + error.getMessage());
+            }
+        });
+    }
+
+    private void postNotificationRemoval(String key, double observedAt) {
+        if (key == null || key.isEmpty()) return;
+        deviceContextExecutor.execute(() -> {
+            try {
+                JSONObject body = new JSONObject();
+                body.put("key", key);
+                body.put("observed_at", observedAt);
+                postDeviceContextBody("/api/device-context/notification/remove", body);
+            } catch (Exception error) {
+                Log.d(TAG, "notification removal skipped: " + error.getMessage());
+            }
+        });
+    }
+
+    private void postDeviceContextBody(String path, JSONObject body) throws Exception {
+        if (serverUrl == null || client == null) return;
+        String httpBase = serverUrl
+                .replace("ws://", "http://")
+                .replace("wss://", "https://")
+                .replace("/ws", "");
+        Request request = new Request.Builder()
+                .url(httpBase + path)
+                .post(RequestBody.create(body.toString(),
+                        MediaType.get("application/json; charset=utf-8")))
+                .build();
+        try (Response response = client.newCall(request).execute()) {
+            Log.d(TAG, "device context endpoint " + path + ": " + response.code());
         }
     }
 
@@ -3798,6 +3912,7 @@ public class AionPushService extends Service {
                     case Intent.ACTION_SCREEN_OFF:
                         Log.i(TAG, "📱 Screen OFF");
                         screenOn = false;
+                        if (phoneContextCollector != null) phoneContextCollector.onScreenOff();
                         com.aion.chat.supervision.AppSupervisionRuntime runtime =
                                 com.aion.chat.supervision.AppSupervisionRuntime.get();
                         if (runtime != null) runtime.onScreenOff();
@@ -3811,6 +3926,7 @@ public class AionPushService extends Service {
                     case Intent.ACTION_SCREEN_ON:
                         Log.i(TAG, "📱 Screen ON");
                         screenOn = true;
+                        if (phoneContextCollector != null) phoneContextCollector.startForScreenOn();
                         com.aion.chat.supervision.AppSupervisionRuntime screenOnRuntime =
                                 com.aion.chat.supervision.AppSupervisionRuntime.get();
                         if (screenOnRuntime != null) screenOnRuntime.onScreenOn();

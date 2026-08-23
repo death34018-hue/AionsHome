@@ -8,6 +8,15 @@ from config import DB_PATH
 from message_dedup import ensure_message_ingress_dedupe_table
 
 
+async def _recover_lounge_runtime_state(db):
+    """Converge locally persisted visits and their temporary UI status lines."""
+    from lounge_visit_repository import LoungeVisitRepository
+    from lounge_visit_status import recover_stale_statuses
+
+    await LoungeVisitRepository(db).interrupt_stale_running("service_restarted")
+    return await recover_stale_statuses(db)
+
+
 async def _table_has_rows(db, table_name: str) -> bool:
     cursor = await db.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -119,6 +128,11 @@ async def init_db():
         await ensure_app_supervision_tables(db)
         from lounge_visit_repository import ensure_lounge_visit_tables
         await ensure_lounge_visit_tables(db)
+        from autonomy_state import ensure_autonomy_tables, expire_overdue_packets
+        await ensure_autonomy_tables(db)
+        await expire_overdue_packets(db)
+        from autonomy_niches import ensure_autonomy_niche_tables
+        await ensure_autonomy_niche_tables(db)
         await _bootstrap_english_corner_schema(db)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS memories (
@@ -1009,6 +1023,7 @@ async def init_db():
                 updated_at REAL NOT NULL
             )
         """)
+        await _recover_lounge_runtime_state(db)
         await db.commit()
 
 

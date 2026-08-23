@@ -168,6 +168,45 @@ test('single visit deletion is blocked while running and stays actor scoped', as
 });
 
 
+test('visit history maps stable interruption reasons to Chinese', () => {
+  const ui = require(SCRIPT_PATH);
+
+  assert.equal(
+    ui.visitReasonText({ error: 'Error: network_reconnect_failed' }),
+    '网络连接中断，自动重连后仍未恢复。',
+  );
+  assert.equal(
+    ui.visitReasonText({ error: 'Error: prompt_budget_exceeded' }),
+    '本次回复所需上下文超过会客室容量限制。',
+  );
+});
+
+
+test('running visit can be ended through the actor-scoped cancel endpoint', async () => {
+  const ui = require(SCRIPT_PATH);
+  const calls = [];
+
+  assert.equal(ui.canCancelVisit({ status: 'running' }), true);
+  assert.equal(ui.canCancelVisit({ status: 'completed' }), false);
+  const result = await ui.requestCancelVisit({
+    visit: { id: 'visit-1', status: 'running' },
+    actorId: 'actor-primary',
+    confirmCancel: () => true,
+    request: async (method, url, body) => {
+      calls.push([method, url, body]);
+      return { id: 'visit-1', status: 'interrupted' };
+    },
+  });
+
+  assert.deepEqual(result, { id: 'visit-1', status: 'interrupted' });
+  assert.deepEqual(calls, [[
+    'POST',
+    '/api/lounge-visits/visit-1/cancel',
+    { actor_id: 'actor-primary' },
+  ]]);
+});
+
+
 test('same actor is busy only while its immediate visit request is pending', async () => {
   const ui = require(SCRIPT_PATH);
   const visitingActorIds = new Set();

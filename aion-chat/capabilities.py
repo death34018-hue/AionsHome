@@ -16,6 +16,8 @@ from activity import is_activity_tracking_enabled
 from lounge_friends import redact_visitor_key
 from luckin import luckin_ability_text
 from song_gen import build_song_gen_ability_text
+from proactive_companionship import proactive_ability_text
+from autonomy_state import autonomy_prompt_text
 
 
 CAPABILITY_SETTINGS_KEY = "ai_prompt_capabilities"
@@ -284,7 +286,11 @@ def build_band_note_ability_text(user_name: str, *, passive: bool = False) -> st
 def lounge_visit_ability_text(actor_id: str, store) -> str:
     """Return only the current actor's enabled friend metadata for the prompt."""
     try:
-        friends = [friend for friend in store.list_for_actor(actor_id) if friend.enabled]
+        friends = [
+            friend
+            for friend in store.list_for_actor(actor_id)
+            if friend.enabled and friend.allow_autonomous
+        ]
     except Exception:
         return ""
     if not friends:
@@ -338,6 +344,7 @@ async def build_capability_prompt_items(
                 "也可以当做下一次主动发送消息来使用，根据对话内容可以随时设定。鼓励积极使用该能力，不限于主动问候，表达思念。"
             ),
             "[SCHEDULE_DEL:日程id] — 删除指定日程/闹铃/定时监控。",
+            "修改已有定时监督时，可以在同一回复中先使用 [SCHEDULE_DEL:旧日程id]，再使用 [Monitor:新时间|新内容]。",
         ])
 
     if is_capability_enabled("app_supervision"):
@@ -492,5 +499,13 @@ async def build_capability_prompt_items(
                 "先查看近期对话；如果刚提醒过就不要每轮重复，否则应找机会实际提醒。"
                 "提醒要简短、具体并符合你的人设，可以哄、逗、轻微激将，或者提出陪学，但不要说教、羞辱或制造焦虑。"
             )
+
+    proactive_text = proactive_ability_text(who)
+    if proactive_text:
+        abilities.append(proactive_text)
+
+    autonomy_text = await autonomy_prompt_text(who)
+    if autonomy_text:
+        abilities.append(autonomy_text)
 
     return abilities

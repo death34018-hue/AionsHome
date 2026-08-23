@@ -76,6 +76,22 @@ public class HomecomingEntryPolicyTest {
     }
 
     @Test
+    public void ttsIsMutedAtEveryHomecomingSessionBoundary() {
+        MemoryBackend backend = new MemoryBackend();
+        HomecomingModeStore store = new HomecomingModeStore(backend);
+        backend.putBoolean("homecoming_tts_enabled", true);
+
+        store.activate("epoch-test", 10L);
+
+        assertFalse(backend.getBoolean("homecoming_tts_enabled", true));
+
+        backend.putBoolean("homecoming_tts_enabled", true);
+        store.deactivateAfterPackageSaved();
+
+        assertFalse(backend.getBoolean("homecoming_tts_enabled", true));
+    }
+
+    @Test
     public void activityReadinessUsesImportedMetadataWithoutInflatingSnapshot()
             throws Exception {
         String source = new String(
@@ -104,6 +120,12 @@ public class HomecomingEntryPolicyTest {
         }
 
         @Override
+        public boolean getBoolean(String key, boolean defaultValue) {
+            Object value = values.get(key);
+            return value instanceof Boolean ? (Boolean) value : defaultValue;
+        }
+
+        @Override
         public void putString(String key, String value) {
             values.put(key, value);
         }
@@ -118,13 +140,9 @@ public class HomecomingEntryPolicyTest {
             values.remove(key);
         }
 
-        void putBoolean(String key, boolean value) {
+        @Override
+        public void putBoolean(String key, boolean value) {
             values.put(key, value);
-        }
-
-        boolean getBoolean(String key, boolean defaultValue) {
-            Object value = values.get(key);
-            return value instanceof Boolean ? (Boolean) value : defaultValue;
         }
     }
 }

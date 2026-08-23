@@ -2149,6 +2149,7 @@ async function selectRoom(roomId) {
   const room = rooms.find(r => r.id === roomId);
   if (!room) return;
   currentRoom = room;
+  crRenderProactiveOrbit();
   // 自动切换到对应 tab
   if (activeTab !== room.type) switchTab(room.type);
   else renderRoomList();
@@ -2680,6 +2681,29 @@ function crMessageContentItems(raw, isUser = false) {
   return items;
 }
 
+let crProactiveCompanionshipStatus = { aion: false, connor: false };
+
+function crRenderProactiveOrbit() {
+  const visibleActors = currentRoom?.type === 'group'
+    ? ['aion', 'connor']
+    : (currentRoom?.type === 'connor_1v1' ? ['connor'] : []);
+  window.ProactiveOrbit?.applyStatus(crProactiveCompanionshipStatus, visibleActors);
+}
+
+function crApplyProactiveCompanionshipStatus(data) {
+  for (const role of (data?.roles || [])) {
+    crProactiveCompanionshipStatus[role.actor] = !!role.active;
+  }
+  crRenderProactiveOrbit();
+}
+
+async function crLoadProactiveCompanionshipStatus() {
+  try {
+    const res = await fetch('/api/proactive-companionship', { cache: 'no-store' });
+    if (res.ok) crApplyProactiveCompanionshipStatus(await res.json());
+  } catch (_) {}
+}
+
 function crBubbleUnitHtml({ sender, name, avatar, msgId, msg, html, showHeader, includeActions, deleteOnly = false, preBubbleHtml = '' }) {
   const senderLine = showHeader
     ? crMsgSenderLineHtml(sender, name, msgId, msg, {
@@ -2747,6 +2771,7 @@ function crBandVibrationNoteHtml(atts) {
 
 function msgHTML(m) {
   const sender = m.sender || 'user';
+  const loungeStatus = window.LoungeVisitUI && window.LoungeVisitUI.isStatusMessage(m);
 
   // 系统事件消息（点歌、闹钟等）
   if (sender === 'system') {
@@ -2762,7 +2787,7 @@ function msgHTML(m) {
           },
         )
       : '';
-    return `<div class="system-event-msg" data-msg-id="${msgId}"${afterAttr}>
+    return `<div class="system-event-msg${loungeStatus ? ' lounge-visit-status-line' : ''}" data-msg-id="${msgId}"${afterAttr}>
       <div class="system-event-line">
         <span class="system-event-text">${esc(m.content || '')}</span>
         ${crMsgMenuHtml('system', msgId)}
@@ -3264,12 +3289,16 @@ function startStreamingBubble(sender, id) {
   scrollToBottom();
 }
 
+function crStripScheduleCommands(text) {
+  return window.ScheduleCommandFilter
+    ? window.ScheduleCommandFilter.stripScheduleCommands(text)
+    : text;
+}
+
 function feedStreamingChunk(text) {
   if (!streamingBubble) return;
   streamingText += text;
-  streamingBubble.textContent = window.ScheduleCommandFilter
-    ? window.ScheduleCommandFilter.stripScheduleCommands(streamingText)
-    : streamingText;
+  streamingBubble.textContent = crStripScheduleCommands(streamingText);
   scrollToBottom();
 }
 
@@ -3438,8 +3467,9 @@ function handleSSE(data) {
       pendingStreamSender = null;
       pendingStreamId = null;
       // 用服务端清理后的干净文本替换流式累积的原始文本（包含工具指令）
-      if (data.message && data.message.content != null && streamingBubble) {
-        streamingText = data.message.content;
+      if (data.message && data.message.content != null) {
+        data.message.content = crStripScheduleCommands(data.message.content);
+        if (streamingBubble) streamingText = data.message.content;
       }
       if (data.message?.id) crRememberTTSMsgSender(data.message.id, 'aion');
       endStreamingBubble(data.message);
@@ -3466,8 +3496,9 @@ function handleSSE(data) {
       pendingStreamSender = null;
       pendingStreamId = null;
       // 用服务端清理后的干净文本替换流式累积的原始文本
-      if (data.message && data.message.content != null && streamingBubble) {
-        streamingText = data.message.content;
+      if (data.message && data.message.content != null) {
+        data.message.content = crStripScheduleCommands(data.message.content);
+        if (streamingBubble) streamingText = data.message.content;
       }
       if (data.message?.id) crRememberTTSMsgSender(data.message.id, 'connor');
       endStreamingBubble(data.message);
@@ -5321,6 +5352,11 @@ function connectWS() {
       crRememberSyncSeq(data);
       if (data.type === 'pong') return;
 
+      if (data.type === 'proactive_companionship_changed') {
+        crApplyProactiveCompanionshipStatus(data.data);
+        return;
+      }
+
       if (data.type === 'hug_pillow_command') {
         window.HugPillowAI?.handleCommandEvent(data.data);
         return;
@@ -6025,6 +6061,18 @@ function renderAttachments(atts, options = {}) {
     const type = (typeof item === 'object' && item.type) || '';
     if (type === 'luckin_payment') {
       html += buildLuckinPaymentCard(item);
+    } else if (type === 'lounge_visit_report' && window.LoungeVisitUI) {
+      const inbound = item.direction === 'inbound';
+      const status = String(item.status || 'completed');
+      const title = esc(window.LoungeVisitUI.reportTitle(
+        String(options.actorName || 'AI'), String(item.partner_name || '朋友'),
+        inbound ? 'inbound' : 'outbound', status,
+      ));
+      const summary = esc(String(item.summary || '这次会面已经结束。'));
+      const meta = esc(window.LoungeVisitUI.reportMeta(
+        status, item.turn_count, item.reason,
+      ));
+      html += `<section class="lounge-report-card ${inbound ? 'inbound' : 'outbound'}"><div class="lounge-report-kicker">${title}</div><p>${summary}</p><small>${meta}</small></section>`;
     } else if (type === 'lounge_visit_report') {
       const inbound = item.direction === 'inbound';
       const actorName = esc(String(options.actorName || 'AI'));
@@ -6058,7 +6106,9 @@ function renderAttachments(atts, options = {}) {
       </div>`;
       if (item.transcript) html += `<div class="vb-transcript">${esc(item.transcript)}</div>`;
     } else if (url) {
-      if (/\.(mp3|wav|m4a|aac|ogg)$/i.test(url)) {
+      if (/\.(mp4|webm|mov)(?:[?#].*)?$/i.test(url)) {
+        html += `<video src="${esc(url)}" controls preload="metadata" playsinline></video>`;
+      } else if (/\.(mp3|wav|m4a|aac|ogg)(?:[?#].*)?$/i.test(url)) {
         html += `<audio src="${esc(url)}" controls preload="metadata"></audio>`;
       } else {
         html += `<img src="${esc(url)}" ${imageInteractionAttrs()}>`;
@@ -6093,7 +6143,11 @@ function renderPreview() {
   if (!pendingAttachments.length) { area.className = 'preview-area'; area.innerHTML = ''; return; }
   area.className = 'preview-area has-files';
   area.innerHTML = pendingAttachments.map((a, i) => {
-    return `<div class="preview-item"><img src="${a.url}"><button class="preview-remove" onclick="removeChatroomAttachment(${i})">✕</button></div>`;
+    const isVideo = String(a.type || '').startsWith('video/') || /\.(mp4|webm|mov)(?:[?#].*)?$/i.test(a.url || '');
+    const media = isVideo
+      ? `<video src="${a.url}" muted preload="metadata" playsinline></video>`
+      : `<img src="${a.url}">`;
+    return `<div class="preview-item">${media}<button class="preview-remove" onclick="removeChatroomAttachment(${i})">✕</button></div>`;
   }).join('');
 }
 
@@ -6991,6 +7045,7 @@ function crToyCloseEditor() { document.getElementById('crToyEditorOverlay').clas
   } catch(e) {}
   await listenerPromise;
   await modelPromise;
+  await crLoadProactiveCompanionshipStatus();
   try {
     rooms = await roomPromise;
     renderRoomList();

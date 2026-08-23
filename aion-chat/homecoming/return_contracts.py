@@ -104,7 +104,12 @@ def verify_return_envelope(raw_gzip: bytes, device: dict) -> VerifiedPackage:
         raise InvalidReturnPackage("return package id does not match payload hash")
     canonical = canonical_json_bytes(payload)
     if sha256_hex(canonical) != digest:
-        raise InvalidReturnPackage("return package payload hash mismatch")
+        # Android's JSONObject.quote historically emitted '<\\/' inside
+        # strings. Accept that signed canonical form so already-frozen local
+        # packages remain retryable after the client canonicalizer is fixed.
+        android_legacy = canonical.replace(b"</", b"<\\/")
+        if sha256_hex(android_legacy) != digest:
+            raise InvalidReturnPackage("return package payload hash mismatch")
     if envelope.get("signature_algorithm") != "SHA256withRSA/PSS":
         raise InvalidReturnPackage("unsupported return signature algorithm")
 

@@ -28,6 +28,10 @@ final class PushServiceStartPolicy {
         return defaultUrl;
     }
 
+    static String keepAliveText(boolean connected) {
+        return connected ? "在线 ✨" : "连接中...";
+    }
+
     private static boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
     }

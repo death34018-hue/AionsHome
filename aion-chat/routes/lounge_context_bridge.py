@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hmac
-from typing import Callable
+from typing import Callable, Literal
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,7 +28,8 @@ class HostContextBody(BaseModel):
 class ReceptionReportBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     visitor_name: str = Field(min_length=1, max_length=80)
-    status: str = Field(default="completed", max_length=24)
+    status: Literal["completed", "interrupted"] = "completed"
+    reason: str | None = Field(default=None, max_length=80)
     turn_count: int = Field(default=0, ge=0, le=100)
     messages: list[ContextMessage] = Field(default_factory=list, max_length=16)
 
@@ -56,10 +57,15 @@ def create_router(
             for item in body.recent_messages
         ]
         context = await context_builder(body.actor_id, body.query_text, timeline)
-        trusted = "\n".join(
-            str(item.get("content") or "") for item in context if item.get("content")
-        )[:12000]
-        return {"trusted_home_context": trusted}
+        trusted_blocks = [
+            {
+                "kind": str(item.get("lounge_context_kind") or "home_chat"),
+                "content": str(item.get("content") or "")[:12000],
+            }
+            for item in context
+            if item.get("content")
+        ]
+        return {"trusted_home_context_blocks": trusted_blocks}
 
     @router.post("/api/internal/lounge/reception-report")
     async def reception_report(
@@ -79,6 +85,7 @@ def create_router(
             messages,
             status=body.status,
             turn_count=body.turn_count,
+            reason=body.reason,
         )
         return {"ok": True, "message_id": (message or {}).get("id", "")}
 

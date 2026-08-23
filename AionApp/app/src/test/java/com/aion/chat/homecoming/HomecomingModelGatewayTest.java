@@ -67,6 +67,74 @@ public class HomecomingModelGatewayTest {
     }
 
     @Test
+    public void reasoningFramesAndJsonNullNeverBecomeVisibleText() throws Exception {
+        FakeTransport transport = new FakeTransport(Arrays.asList(
+                "data: {\"choices\":[{\"delta\":{\"content\":null,"
+                        + "\"reasoning_content\":\"原生秘密\"}}]}",
+                "data: {\"choices\":[{\"delta\":{\"reasoning\":\"备用秘密\"}}]}",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"前<thi\"}}]}",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"nk>标签秘密</th\"}}]}",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"ink>可见\"}}]}",
+                "data: [DONE]"));
+        RecordingObserver observer = new RecordingObserver();
+
+        new HomecomingModelGateway(vault, transport)
+                .stream(request("openai-route", "model-openai", false), observer);
+
+        assertEquals(Arrays.asList("前", "可见"), observer.chunks);
+        assertEquals("前可见", observer.complete);
+        assertEquals(null, observer.failure);
+    }
+
+    @Test
+    public void reasoningOnlyStreamFailsWithoutCompletingMessage() throws Exception {
+        FakeTransport transport = new FakeTransport(Arrays.asList(
+                "data: {\"choices\":[{\"delta\":{\"content\":null,"
+                        + "\"reasoning_content\":\"不能展示\"}}]}",
+                "data: [DONE]"));
+        RecordingObserver observer = new RecordingObserver();
+
+        new HomecomingModelGateway(vault, transport)
+                .stream(request("openai-route", "model-openai", false), observer);
+
+        assertTrue(observer.chunks.isEmpty());
+        assertEquals(null, observer.complete);
+        assertEquals("empty_model_reply", observer.failure);
+    }
+
+    @Test
+    public void unclosedThinkRegionIsDiscardedBeforeCompletion() throws Exception {
+        FakeTransport transport = new FakeTransport(Arrays.asList(
+                "data: {\"choices\":[{\"delta\":{\"content\":"
+                        + "\"正文<think>不能展示\"}}]}",
+                "data: [DONE]"));
+        RecordingObserver observer = new RecordingObserver();
+
+        new HomecomingModelGateway(vault, transport)
+                .stream(request("openai-route", "model-openai", false), observer);
+
+        assertEquals(Arrays.asList("正文"), observer.chunks);
+        assertEquals("正文", observer.complete);
+        assertEquals(null, observer.failure);
+    }
+
+    @Test
+    public void malformedSseFrameDoesNotPoisonLaterVisibleText() throws Exception {
+        FakeTransport transport = new FakeTransport(Arrays.asList(
+                "data: {not-json",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"仍然可见\"}}]}",
+                "data: [DONE]"));
+        RecordingObserver observer = new RecordingObserver();
+
+        new HomecomingModelGateway(vault, transport)
+                .stream(request("openai-route", "model-openai", false), observer);
+
+        assertEquals(Arrays.asList("仍然可见"), observer.chunks);
+        assertEquals("仍然可见", observer.complete);
+        assertEquals(null, observer.failure);
+    }
+
+    @Test
     public void visionInputIsRejectedBeforeNetworkForTextOnlyModel() {
         FakeTransport transport = new FakeTransport(new ArrayList<>());
         HomecomingModelGateway gateway = new HomecomingModelGateway(vault, transport);

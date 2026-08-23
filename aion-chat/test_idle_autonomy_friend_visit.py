@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
 import autonomy
 from lounge_friends import LoungeFriend, LoungeFriendStore
 from lounge_visit import LoungeVisitResult
+from lounge_visit_status import VisitStatusHandle
 
 
 def test_activity_timeline_builds_safe_autonomous_visit_cards():
@@ -249,7 +250,18 @@ def test_run_friend_visit_uses_autonomy_trigger_and_saves_safe_homecoming(monkey
     )
     monkeypatch.setattr(autonomy, "append_idle_event", fake_append)
     publish_report = AsyncMock(return_value=saved_message)
+    status_handle = VisitStatusHandle(
+        "private", "conv-1", "status-message", "status-autonomy"
+    )
+    create_status = AsyncMock(return_value=status_handle)
+    settle_status = AsyncMock()
     monkeypatch.setattr(autonomy, "publish_outbound_report", publish_report)
+    monkeypatch.setattr(
+        autonomy, "_create_autonomy_lounge_status", create_status, raising=False
+    )
+    monkeypatch.setattr(
+        autonomy, "_settle_autonomy_lounge_status", settle_status, raising=False
+    )
     monkeypatch.setattr(lounge_routes, "lounge_repository_provider", repository_provider)
     monkeypatch.setattr(lounge_routes, "LoungeVisitCoordinator", FakeCoordinator)
     monkeypatch.setattr(lounge_routes, "compose_lounge_message", "compose-next")
@@ -273,6 +285,9 @@ def test_run_friend_visit_uses_autonomy_trigger_and_saves_safe_homecoming(monkey
     assert publish_report.await_args.args[0] == "aion"
     assert publish_report.await_args.args[1] == selected_friend.display_name
     assert publish_report.await_args.args[3] == "repository"
+    assert publish_report.await_args.kwargs["status_id"] == "status-autonomy"
+    create_status.assert_awaited_once_with("aion", selected_friend.display_name)
+    settle_status.assert_awaited_once_with(status_handle, saved_message)
     for unsafe in ("https://", "Authorization", "secret", "talk_to_host"):
         assert unsafe not in events[0][0][3]
     assert result["message"] == saved_message

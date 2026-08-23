@@ -22,6 +22,7 @@ from capabilities import (
     is_capability_enabled,
 )
 from app_supervision_ai import APP_COMMAND_PATTERN
+from activity import get_device_context_for_prompt
 from memory import (
     instant_digest, recall_memories, build_surfacing_memories,
     fetch_source_details, format_recalled_memories_for_prompt,
@@ -238,6 +239,10 @@ async def build_ability_block(
         except Exception:
             pass
 
+    device_context_text = get_device_context_for_prompt()
+    if device_context_text:
+        parts.append(device_context_text)
+
     cli_file_text = build_cli_file_storage_text(model_key)
     if cli_file_text:
         parts.append(cli_file_text.strip())
@@ -310,6 +315,8 @@ async def build_memory_blocks(
     skip_digest: bool = False,
     digest_result: dict = None,
     always_include_recalled: bool = False,
+    include_source_details: bool = True,
+    max_recalled_memories: int = 8,
 ) -> dict:
     """
     执行 instant_digest + 记忆召回，返回注入用的文本块和调试信息。
@@ -429,12 +436,14 @@ async def build_memory_blocks(
                 if m.get("content", "")[:100] not in seen_content:
                     recalled.append(m)
                     seen_content.add(m["content"][:100])
-            recalled = recalled[:8]
+            recalled = recalled[:max_recalled_memories]
 
     if recalled:
         mem_lines = format_recalled_memories_for_prompt(recalled, limit=200)
         memory_block = f"[相关记忆]\n你脑海中与当前话题相关的记忆：\n{mem_lines}"
-        if is_search_needed or digest_result.get("require_detail"):
+        if include_source_details and (
+            is_search_needed or digest_result.get("require_detail")
+        ):
             detail_text = ""
             if use_main_memories:
                 detail_text = await fetch_source_details(
@@ -482,7 +491,7 @@ SYSTEM_MSG_CONTEXT_KEYWORDS = ('搜索了', '点歌', '点了一首', '推荐了
 # 这些标记会泄漏文件路径到 LLM 上下文，污染 instant_digest 关键词，
 # 也会触发 Gemini CLI 的 agent 模式扫描文件，必须替换为干净占位符。
 _CHATROOM_IMG_TAG_RE = re.compile(r'\[\[image:[^\]]+\]\]')
-TIMELINE_IMAGE_CONTEXT_USER_TURNS = 3
+TIMELINE_IMAGE_CONTEXT_USER_TURNS = 2
 _TIMELINE_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp"})
 
 
@@ -735,6 +744,8 @@ async def count_merged_timeline(
 def render_merged_timeline(
     merged: list[dict],
     who: str,
+    *,
+    include_image_attachments: bool = True,
 ) -> list[dict]:
     """
     将合并时间线转换为 AI 上下文 history 格式。
@@ -772,7 +783,7 @@ def render_merged_timeline(
     current_source = None
     pending_scene_marker = ""   # 待并入下一条消息内容的场景切换提示
 
-    # 图片按用户发言计轮：发图当轮 + 后续两次用户发言，共三轮。
+    # 图片按用户发言计轮：发图当轮 + 后续一次用户发言，共两轮。
     # AI 与系统消息不会消耗图片上下文轮数。
     user_message_indices = [
         idx for idx, message in enumerate(merged)
@@ -828,11 +839,23 @@ def render_merged_timeline(
 
         entry = {"role": role, "content": content}
 
-        # ── 附件：当前用户消息完整保留；前两轮用户消息只延续图片 ──
+        # ── 附件：普通对话保留最近两轮用户图片；后台唤醒可完全关闭历史图片 ──
         attachments = []
         if idx == last_user_idx:
-            attachments = message_attachments
-        elif idx in retained_image_user_indices and sender == "user":
+            attachments = (
+                message_attachments
+                if include_image_attachments
+                else [
+                    attachment
+                    for attachment in message_attachments
+                    if not _is_timeline_image_attachment(attachment)
+                ]
+            )
+        elif (
+            include_image_attachments
+            and idx in retained_image_user_indices
+            and sender == "user"
+        ):
             attachments = [
                 attachment
                 for attachment in message_attachments

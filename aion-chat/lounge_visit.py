@@ -11,6 +11,7 @@ from typing import Awaitable, Callable, Literal
 
 from lounge_friends import LoungeFriend, LoungeFriendStore, redact_visitor_key
 from lounge_visit_repository import LoungeVisitRepository
+from lounge_visit_tasks import lounge_visit_tasks
 from mcp_client import MCPManager, MCPToolProtocolError, MCPToolTransportError
 
 
@@ -31,6 +32,7 @@ class LoungeVisitResult:
 _OUTBOUND_VISIT_LOCK = asyncio.Lock()
 _TOTAL_TIMEOUT_SECONDS = 600
 _TOOL_TIMEOUT_SECONDS = 120
+_DISCONNECT_TIMEOUT_SECONDS = 5
 _MAX_MESSAGE_CHARS = 500
 _MAX_TURNS = 8
 _MAX_TIMELINE_ENTRIES = 20
@@ -62,9 +64,45 @@ _REJECTED_REMOTE_STATUSES = frozenset(
 _INTERRUPTED_REMOTE_STATUSES = frozenset(
     {
         "generation_failed",
+        "prompt_budget_exceeded",
         "visitor_busy",
         "service_busy",
         "request_conflict",
+    }
+)
+_TERMINAL_REASON_CODES = frozenset(
+    {
+        "network_reconnect_failed",
+        "request_timeout",
+        "generation_failed_after_retries",
+        "prompt_budget_exceeded",
+        "response_too_long",
+        "lounge_closed",
+        "quota_exhausted",
+        "user_cancelled",
+        "service_restarted",
+        "repository_failed",
+        "remote_protocol_error",
+        "unexpected_failure",
+        "visitor_locked",
+        "visitor_paused",
+        "visitor_busy",
+        "service_busy",
+        "request_conflict",
+        "friend_not_found",
+        "local_state_failed",
+        "invalid_trigger_source",
+        "invalid_topic",
+        "friend_disabled",
+        "identity_name_unavailable",
+        "unsupported_server",
+        "invalid_message",
+        "message_too_long",
+        "identity_unclaimed",
+        "consent_required",
+        "invalid_name",
+        "credential_rejected",
+        "invalid_request_id",
     }
 )
 _SAFE_TIMELINE_FIELDS = (
@@ -97,6 +135,24 @@ class _VisitStopped(Exception):
         self.reason = reason
 
 
+def _consume_late_task(task: asyncio.Task) -> None:
+    if not task.cancelled():
+        try:
+            task.exception()
+        except BaseException:
+            pass
+
+
+async def _await_hard_deadline(awaitable, timeout: float):
+    task = asyncio.ensure_future(awaitable)
+    done, _ = await asyncio.wait({task}, timeout=timeout)
+    if task in done:
+        return task.result()
+    task.cancel()
+    task.add_done_callback(_consume_late_task)
+    raise TimeoutError()
+
+
 class LoungeVisitCoordinator:
     def __init__(
         self,
@@ -120,9 +176,31 @@ class LoungeVisitCoordinator:
         topic: str,
         compose_next: ComposeNextMessage,
     ) -> LoungeVisitResult:
+        task = asyncio.current_task()
+        if task is not None:
+            lounge_visit_tasks.register(actor_id, task)
+        try:
+            return await self._run_registered_visit(
+                actor_id, friend_id, trigger_source, topic, compose_next
+            )
+        finally:
+            if task is not None:
+                lounge_visit_tasks.unregister(actor_id, task)
+
+    async def _run_registered_visit(
+        self,
+        actor_id: str,
+        friend_id: str,
+        trigger_source: Literal["manual", "chat", "autonomy"],
+        topic: str,
+        compose_next: ComposeNextMessage,
+    ) -> LoungeVisitResult:
         progress = {"visit_id": "", "turn_count": 0, "final_reply": ""}
         async with _OUTBOUND_VISIT_LOCK:
             try:
+                cancel_deadline = (
+                    asyncio.get_running_loop().time() + _TOTAL_TIMEOUT_SECONDS
+                )
                 async with asyncio.timeout(_TOTAL_TIMEOUT_SECONDS):
                     return await self._run_locked(
                         actor_id,
@@ -131,13 +209,14 @@ class LoungeVisitCoordinator:
                         topic,
                         compose_next,
                         progress,
+                        cancel_deadline,
                     )
             except TimeoutError:
                 return await self._finish_without_details(
                     str(progress["visit_id"]),
                     "interrupted",
                     int(progress["turn_count"]),
-                    "visit_timeout",
+                    "request_timeout",
                     str(progress["final_reply"]),
                 )
 
@@ -149,6 +228,7 @@ class LoungeVisitCoordinator:
         topic: str,
         compose_next: ComposeNextMessage,
         progress: dict[str, object],
+        cancel_deadline: float,
     ) -> LoungeVisitResult:
         try:
             friend = self.friend_store.get_owned(actor_id, friend_id)
@@ -190,13 +270,10 @@ class LoungeVisitCoordinator:
         reason = "unexpected_failure"
         visit_begun = False
         end_attempted = False
+        locally_settled = False
 
         try:
-            tools = await self.mcp_manager.connect_ephemeral(
-                connection_id,
-                friend.lounge_url,
-                {"Authorization": f"Bearer {friend.visitor_key}"},
-            )
+            tools = await self._connect_with_one_retry(connection_id, friend)
             self._require_approved_protocol(tools)
 
             lounge_info = await self._call_tool(
@@ -240,7 +317,9 @@ class LoungeVisitCoordinator:
                         turn,
                     )
                 except Exception:
-                    raise _VisitStopped("interrupted", "generation_failed")
+                    raise _VisitStopped(
+                        "interrupted", "generation_failed_after_retries"
+                    )
                 message, local_action = self._parse_composed_message(composed)
                 self._validate_outbound_message(message)
 
@@ -252,8 +331,6 @@ class LoungeVisitCoordinator:
                 except Exception:
                     raise _VisitStopped("interrupted", "repository_failed")
 
-                turn_count = turn
-                progress["turn_count"] = turn_count
                 response, reconnected = await self._talk_with_one_reconnect(
                     connection_id,
                     friend,
@@ -285,6 +362,8 @@ class LoungeVisitCoordinator:
                         final_reply,
                         remote_message_id=remote_message_id,
                     )
+                    turn_count += 1
+                    progress["turn_count"] = turn_count
                     await self.repository.update_progress(visit_id, turn_count)
                 except Exception:
                     raise _VisitStopped("interrupted", "repository_failed")
@@ -308,7 +387,9 @@ class LoungeVisitCoordinator:
                             turn + 1,
                         )
                     except Exception:
-                        raise _VisitStopped("interrupted", "generation_failed")
+                        raise _VisitStopped(
+                            "interrupted", "generation_failed_after_retries"
+                        )
                     final_message, _ = self._parse_composed_message(
                         composed_final
                     )
@@ -320,10 +401,13 @@ class LoungeVisitCoordinator:
                     except Exception:
                         raise _VisitStopped("interrupted", "repository_failed")
                     end_attempted = True
-                    ended = await self._call_tool(
+                    ended = await self._end_with_one_reconnect(
                         connection_id,
-                        "end_visit",
-                        {"final_message": final_message},
+                        friend,
+                        {
+                            "final_message": final_message,
+                            "status": "completed",
+                        },
                     )
                     self._require_status(ended, {"ok"})
                     reason = "action_end"
@@ -334,38 +418,68 @@ class LoungeVisitCoordinator:
 
             if not end_attempted:
                 end_attempted = True
-                ended = await self._call_tool(connection_id, "end_visit", {})
+                ended = await self._end_with_one_reconnect(
+                    connection_id,
+                    friend,
+                    {"status": "completed"},
+                )
                 self._require_status(ended, {"ok"})
                 status = "completed"
+        except asyncio.CancelledError:
+            status = "interrupted"
+            reason = (
+                "request_timeout"
+                if asyncio.get_running_loop().time() >= cancel_deadline
+                else "user_cancelled"
+            )
         except _VisitStopped as stopped:
-            status = stopped.status
+            status = "interrupted" if visit_begun else stopped.status
             reason = stopped.reason
         except Exception:
             status = "interrupted"
-            reason = "connection_failed"
+            reason = "unexpected_failure"
         finally:
+            if status != "completed":
+                try:
+                    await self.repository.finish(
+                        visit_id,
+                        status,
+                        turn_count,
+                        error=reason,
+                    )
+                    locally_settled = True
+                except Exception:
+                    pass
             if visit_begun and not end_attempted:
                 end_attempted = True
                 try:
-                    await self._call_tool(connection_id, "end_visit", {})
-                except Exception:
+                    await self._end_with_one_reconnect(
+                        connection_id,
+                        friend,
+                        {
+                            "status": "interrupted",
+                            "reason": self._remote_terminal_reason(reason),
+                        },
+                    )
+                except BaseException:
                     pass
             try:
-                await self.mcp_manager.disconnect(connection_id)
+                await self._disconnect_bounded(connection_id)
             except Exception:
                 pass
 
-        try:
-            await self.repository.finish(
-                visit_id,
-                status,
-                turn_count,
-                error="" if status == "completed" else reason,
-            )
-        except Exception:
-            return LoungeVisitResult(
-                visit_id, "interrupted", turn_count, final_reply, "repository_failed"
-            )
+        if not locally_settled:
+            try:
+                await self.repository.finish(
+                    visit_id,
+                    status,
+                    turn_count,
+                    error="" if status == "completed" else reason,
+                )
+            except Exception:
+                return LoungeVisitResult(
+                    visit_id, "interrupted", turn_count, final_reply, "repository_failed"
+                )
         return LoungeVisitResult(
             visit_id, status, turn_count, final_reply, reason
         )
@@ -391,18 +505,34 @@ class LoungeVisitCoordinator:
             raise
         except (MCPToolTransportError, TimeoutError):
             if not allow_reconnect:
-                raise _VisitStopped("interrupted", "connection_failed")
+                raise _VisitStopped(
+                    "interrupted", "network_reconnect_failed"
+                )
             try:
-                await self.mcp_manager.disconnect(connection_id)
-            except Exception:
+                await self._disconnect_bounded(connection_id)
+            except BaseException:
                 pass
             try:
-                tools = await self.mcp_manager.connect_ephemeral(
-                    connection_id,
-                    friend.lounge_url,
-                    {"Authorization": f"Bearer {friend.visitor_key}"},
+                tools = await _await_hard_deadline(
+                    self.mcp_manager.connect_ephemeral(
+                        connection_id,
+                        friend.lounge_url,
+                        {"Authorization": f"Bearer {friend.visitor_key}"},
+                    ),
+                    _TOOL_TIMEOUT_SECONDS,
                 )
                 self._require_approved_protocol(tools)
+                try:
+                    state = await self._call_tool(
+                        connection_id, "get_visit_state", {}
+                    )
+                    recovered = self._completed_remote_response(
+                        state, request_id
+                    )
+                    if recovered is not None:
+                        return recovered, True
+                except BaseException:
+                    pass
                 return (
                     await self._call_tool(
                         connection_id, "talk_to_host", arguments
@@ -412,9 +542,66 @@ class LoungeVisitCoordinator:
             except _VisitStopped:
                 raise
             except Exception:
-                raise _VisitStopped("interrupted", "connection_failed")
+                raise _VisitStopped(
+                    "interrupted", "network_reconnect_failed"
+                )
         except Exception:
-            raise _VisitStopped("interrupted", "connection_failed")
+            raise _VisitStopped("interrupted", "network_reconnect_failed")
+
+    async def _connect_with_one_retry(
+        self, connection_id: str, friend: LoungeFriend
+    ) -> list[dict]:
+        for attempt in range(2):
+            try:
+                return await _await_hard_deadline(
+                    self.mcp_manager.connect_ephemeral(
+                        connection_id,
+                        friend.lounge_url,
+                        {"Authorization": f"Bearer {friend.visitor_key}"},
+                    ),
+                    _TOOL_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                if attempt == 1:
+                    raise _VisitStopped(
+                        "interrupted", "network_reconnect_failed"
+                    )
+                await self._disconnect_bounded(connection_id)
+        raise _VisitStopped("interrupted", "network_reconnect_failed")
+
+    async def _end_with_one_reconnect(
+        self,
+        connection_id: str,
+        friend: LoungeFriend,
+        arguments: dict[str, object],
+    ) -> dict[str, object]:
+        try:
+            return await self._call_tool(connection_id, "end_visit", arguments)
+        except _VisitStopped:
+            raise
+        except (MCPToolTransportError, TimeoutError):
+            try:
+                await self._disconnect_bounded(connection_id)
+                tools = await _await_hard_deadline(
+                    self.mcp_manager.connect_ephemeral(
+                        connection_id,
+                        friend.lounge_url,
+                        {"Authorization": f"Bearer {friend.visitor_key}"},
+                    ),
+                    _TOOL_TIMEOUT_SECONDS,
+                )
+                self._require_approved_protocol(tools)
+                return await self._call_tool(
+                    connection_id, "end_visit", arguments
+                )
+            except _VisitStopped:
+                raise
+            except Exception:
+                raise _VisitStopped(
+                    "interrupted", "network_reconnect_failed"
+                )
 
     async def _call_tool(
         self, connection_id: str, tool_name: str, arguments: dict
@@ -422,17 +609,56 @@ class LoungeVisitCoordinator:
         if tool_name not in _APPROVED_TOOLS:
             raise _VisitStopped("interrupted", "remote_protocol_error")
         try:
-            result = await asyncio.wait_for(
+            result = await _await_hard_deadline(
                 self.mcp_manager.call_tool_json(
                     connection_id, tool_name, arguments
                 ),
-                timeout=_TOOL_TIMEOUT_SECONDS,
+                _TOOL_TIMEOUT_SECONDS,
             )
         except MCPToolProtocolError:
             raise _VisitStopped("interrupted", "remote_protocol_error")
         if not isinstance(result, dict):
             raise _VisitStopped("interrupted", "remote_protocol_error")
         return result
+
+    async def _disconnect_bounded(self, connection_id: str) -> None:
+        try:
+            await _await_hard_deadline(
+                self.mcp_manager.disconnect(connection_id),
+                _DISCONNECT_TIMEOUT_SECONDS,
+            )
+        except BaseException:
+            pass
+
+    @staticmethod
+    def _completed_remote_response(
+        state: dict[str, object], request_id: str
+    ) -> dict[str, object] | None:
+        job = state.get("job")
+        if not isinstance(job, dict):
+            return None
+        if job.get("request_id") != request_id or job.get("status") != "completed":
+            return None
+        reply = job.get("visible_text")
+        action = job.get("action", "continue")
+        if not isinstance(reply, str) or action not in {"continue", "closing", "end"}:
+            return None
+        host_message_id = ""
+        messages = state.get("messages")
+        if isinstance(messages, list):
+            for message in reversed(messages):
+                if not isinstance(message, dict) or message.get("sender") != "host":
+                    continue
+                candidate = message.get("id")
+                if isinstance(candidate, str):
+                    host_message_id = candidate
+                break
+        return {
+            "status": "ok",
+            "reply": reply,
+            "action": action,
+            "host_message_id": host_message_id,
+        }
 
     @staticmethod
     def _require_approved_protocol(tools: object) -> None:
@@ -454,17 +680,39 @@ class LoungeVisitCoordinator:
         if remote_status in accepted:
             return
         if remote_status in _REJECTED_REMOTE_STATUSES:
-            raise _VisitStopped("rejected", str(remote_status))
+            raise _VisitStopped(
+                "rejected", LoungeVisitCoordinator._remote_reason(response)
+            )
         if remote_status in _INTERRUPTED_REMOTE_STATUSES:
-            raise _VisitStopped("interrupted", str(remote_status))
+            raise _VisitStopped(
+                "interrupted", LoungeVisitCoordinator._remote_reason(response)
+            )
         raise _VisitStopped("interrupted", "remote_protocol_error")
+
+    @staticmethod
+    def _remote_reason(response: dict[str, object]) -> str:
+        reason = response.get("reason")
+        if isinstance(reason, str) and reason in _TERMINAL_REASON_CODES:
+            return reason
+        status = response.get("status")
+        if status == "generation_failed":
+            return "generation_failed_after_retries"
+        if status in _REJECTED_REMOTE_STATUSES | _INTERRUPTED_REMOTE_STATUSES:
+            return str(status)
+        if isinstance(status, str) and status in _TERMINAL_REASON_CODES:
+            return status
+        return "remote_protocol_error"
+
+    @staticmethod
+    def _remote_terminal_reason(reason: str) -> str:
+        return reason if reason in _TERMINAL_REASON_CODES else "unexpected_failure"
 
     @staticmethod
     def _validate_outbound_message(message: object) -> None:
         if not isinstance(message, str) or not message:
             raise _VisitStopped("rejected", "invalid_message")
         if len(message) > _MAX_MESSAGE_CHARS:
-            raise _VisitStopped("rejected", "message_too_long")
+            raise _VisitStopped("rejected", "response_too_long")
 
     @staticmethod
     def _parse_composed_message(message: object) -> tuple[object, str]:

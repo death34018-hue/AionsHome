@@ -40,7 +40,7 @@ def _decrypt_envelope(envelope, private_key, *, device_id, snapshot_id):
         {
             "device_id": device_id,
             "purpose": "aionshome-homecoming-routes",
-            "schema": 1,
+            "schema": 2,
             "snapshot_id": snapshot_id,
         },
         ensure_ascii=False,

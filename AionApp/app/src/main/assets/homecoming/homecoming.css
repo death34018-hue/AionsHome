@@ -127,6 +127,23 @@ button.danger, .danger-outline {
   background: #77a58a;
   box-shadow: 0 0 0 4px rgba(119, 165, 138, .09);
 }
+.header-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.tts-quick {
+  min-height: 30px;
+  padding: 4px 9px;
+  color: var(--muted);
+  border-color: #343b45;
+  background: #191e25;
+  font-size: 12px;
+}
+.tts-quick[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 .conversation-menu {
   position: fixed;
   z-index: 8;

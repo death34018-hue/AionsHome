@@ -205,6 +205,7 @@ def test_visit_uses_fixed_tool_order_and_filters_remote_timeline():
     assert repository.finished == [("visit-1", "completed", 1, "")]
     assert len(store.marked) == 1
     assert manager.disconnects == ["visitor-lounge:actor-1:friend-1"]
+    assert manager.calls[-1][2] == {"status": "completed"}
     uuid.UUID(manager.calls[2][2]["request_id"])
 
 
@@ -308,7 +309,7 @@ def test_unclaimed_identity_is_claimed_with_configured_actor_name():
     }
 
 
-def test_overlength_generated_message_is_rejected_without_sending_or_truncating():
+def test_overlength_generated_message_interrupts_without_sending_or_truncating():
     manager = FakeMCPManager(standard_responses())
     coordinator, _, repository = make_coordinator(manager)
 
@@ -321,8 +322,8 @@ def test_overlength_generated_message_is_rejected_without_sending_or_truncating(
         )
     )
 
-    assert result.status == "rejected"
-    assert result.reason == "message_too_long"
+    assert result.status == "interrupted"
+    assert result.reason == "response_too_long"
     assert "talk_to_host" not in [name for _, name, _ in manager.calls]
     assert [name for _, name, _ in manager.calls][-1] == "end_visit"
     assert repository.messages == []
@@ -331,7 +332,13 @@ def test_overlength_generated_message_is_rejected_without_sending_or_truncating(
 def test_generation_failure_interrupts_and_best_effort_ends_remote_visit():
     manager = FakeMCPManager(
         standard_responses(
-            talk=[{"status": "generation_failed", "request_id": "remote"}]
+            talk=[
+                {
+                    "status": "generation_failed",
+                    "reason": "generation_failed_after_retries",
+                    "request_id": "remote",
+                }
+            ]
         )
     )
     coordinator, _, repository = make_coordinator(manager)
@@ -346,11 +353,172 @@ def test_generation_failure_interrupts_and_best_effort_ends_remote_visit():
     )
 
     assert result.status == "interrupted"
-    assert result.reason == "generation_failed"
+    assert result.reason == "generation_failed_after_retries"
+    assert result.turn_count == 0
     assert [name for _, name, _ in manager.calls][-1] == "end_visit"
+    assert manager.calls[-1][2] == {
+        "status": "interrupted",
+        "reason": "generation_failed_after_retries",
+    }
     assert repository.finished == [
-        ("visit-1", "interrupted", 1, "generation_failed")
+        ("visit-1", "interrupted", 0, "generation_failed_after_retries")
     ]
+
+
+def test_failure_after_one_reply_counts_only_the_completed_host_reply():
+    manager = FakeMCPManager(
+        standard_responses(
+            talk=[
+                {"status": "ok", "reply": "First reply", "action": "continue"},
+                {
+                    "status": "generation_failed",
+                    "reason": "generation_failed_after_retries",
+                },
+            ]
+        )
+    )
+    coordinator, _, repository = make_coordinator(
+        manager, friend=make_friend(max_turns=2)
+    )
+
+    async def compose(*_args):
+        return "Hello"
+
+    result = asyncio.run(
+        coordinator.run_visit(
+            "actor-1", "friend-1", "manual", "Catch up", compose
+        )
+    )
+
+    assert result.status == "interrupted"
+    assert result.reason == "generation_failed_after_retries"
+    assert result.turn_count == 1
+    assert repository.finished == [
+        ("visit-1", "interrupted", 1, "generation_failed_after_retries")
+    ]
+
+
+def test_interrupted_cleanup_reconnects_once_to_end_the_remote_visit():
+    responses = standard_responses(
+        talk=[
+            {
+                "status": "generation_failed",
+                "reason": "generation_failed_after_retries",
+            }
+        ]
+    )
+    responses["end_visit"] = [
+        MCPToolTransportError("connection dropped during cleanup"),
+        {"status": "ok"},
+    ]
+    manager = FakeMCPManager(responses)
+    coordinator, _, _ = make_coordinator(manager)
+
+    async def compose(*_args):
+        return "Hello"
+
+    result = asyncio.run(
+        coordinator.run_visit(
+            "actor-1", "friend-1", "manual", "Catch up", compose
+        )
+    )
+
+    assert result.status == "interrupted"
+    assert len(manager.connects) == 2
+    end_calls = [call for call in manager.calls if call[1] == "end_visit"]
+    assert len(end_calls) == 2
+    assert end_calls[-1][2]["reason"] == "generation_failed_after_retries"
+
+
+def test_initial_transport_failure_reconnects_once_before_beginning():
+    manager = FakeMCPManager(standard_responses())
+    original_connect = manager.connect_ephemeral
+    attempts = 0
+
+    async def flaky_connect(connection_id, url, headers):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise MCPToolTransportError("temporary connection failure")
+        return await original_connect(connection_id, url, headers)
+
+    manager.connect_ephemeral = flaky_connect
+    coordinator, _, _ = make_coordinator(manager)
+
+    async def compose(*_args):
+        return "Hello"
+
+    result = asyncio.run(
+        coordinator.run_visit(
+            "actor-1", "friend-1", "manual", "Catch up", compose
+        )
+    )
+
+    assert result.status == "completed"
+    assert attempts == 2
+
+
+def test_cleanup_cancellation_still_settles_local_visit_as_interrupted():
+    manager = FakeMCPManager(
+        standard_responses(
+            talk=[{"status": "generation_failed", "request_id": "remote"}],
+            end=asyncio.CancelledError(),
+        )
+    )
+    coordinator, _, repository = make_coordinator(manager)
+
+    async def compose(*_args):
+        return "Hello"
+
+    result = asyncio.run(
+        coordinator.run_visit(
+            "actor-1", "friend-1", "manual", "Catch up", compose
+        )
+    )
+
+    assert result.status == "interrupted"
+    assert result.reason == "generation_failed_after_retries"
+    assert repository.finished == [
+        ("visit-1", "interrupted", 0, "generation_failed_after_retries")
+    ]
+
+
+def test_interrupted_visit_is_persisted_before_remote_cleanup():
+    manager = FakeMCPManager(
+        standard_responses(
+            talk=[{"status": "generation_failed", "request_id": "remote"}]
+        )
+    )
+    coordinator, _, repository = make_coordinator(manager)
+    original_call = manager.call_tool_json
+    end_saw_settlement = False
+
+    async def observe_call(connection_id, tool_name, arguments):
+        nonlocal end_saw_settlement
+        if tool_name == "end_visit":
+            end_saw_settlement = repository.finished == [
+                (
+                    "visit-1",
+                    "interrupted",
+                    0,
+                    "generation_failed_after_retries",
+                )
+            ]
+        return await original_call(connection_id, tool_name, arguments)
+
+    manager.call_tool_json = observe_call
+
+    async def compose(*_args):
+        return "Hello"
+
+    result = asyncio.run(
+        coordinator.run_visit(
+            "actor-1", "friend-1", "manual", "Catch up", compose
+        )
+    )
+
+    assert result.status == "interrupted"
+    assert end_saw_settlement is True
 
 
 def test_action_end_stops_after_first_turn_and_closes_visit():
@@ -441,7 +609,10 @@ def test_host_closing_gets_one_final_visitor_reply_without_another_host_turn():
     assert len(compose_calls) == 2
     assert [name for _, name, _ in manager.calls].count("talk_to_host") == 1
     end_call = next(call for call in manager.calls if call[1] == "end_visit")
-    assert end_call[2] == {"final_message": "好，那我回家啦。"}
+    assert end_call[2] == {
+        "final_message": "好，那我回家啦。",
+        "status": "completed",
+    }
     assert repository.messages[-1][1:3] == ("outbound", "好，那我回家啦。")
 
 
@@ -642,7 +813,7 @@ def test_protocol_failure_does_not_reconnect_or_expose_payload_details(
     assert [name for _, name, _ in manager.calls].count("talk_to_host") == 1
     assert error_message not in repr(result)
     assert repository.finished == [
-        ("visit-1", "interrupted", 1, "remote_protocol_error")
+        ("visit-1", "interrupted", 0, "remote_protocol_error")
     ]
 
 
@@ -667,10 +838,10 @@ def test_second_network_failure_does_not_reconnect_again_or_leak_details():
     )
 
     assert result.status == "interrupted"
-    assert result.reason == "connection_failed"
+    assert result.reason == "network_reconnect_failed"
     assert len(manager.connects) == 2
     assert repository.finished == [
-        ("visit-1", "interrupted", 1, "connection_failed")
+        ("visit-1", "interrupted", 0, "network_reconnect_failed")
     ]
 
 
@@ -699,11 +870,11 @@ def test_reconnect_budget_is_one_for_the_entire_visit():
     )
 
     assert result.status == "interrupted"
-    assert result.reason == "connection_failed"
+    assert result.reason == "network_reconnect_failed"
     assert len(manager.connects) == 2
     assert [name for _, name, _ in manager.calls].count("talk_to_host") == 3
     assert repository.finished == [
-        ("visit-1", "interrupted", 2, "connection_failed")
+        ("visit-1", "interrupted", 1, "network_reconnect_failed")
     ]
 
 
@@ -729,12 +900,143 @@ def test_overall_timeout_finishes_started_visit_and_disconnects(monkeypatch):
     )
 
     assert result == lounge_visit.LoungeVisitResult(
-        "visit-1", "interrupted", 0, "", "visit_timeout"
+        "visit-1", "interrupted", 0, "", "request_timeout"
     )
     assert repository.finished == [
-        ("visit-1", "interrupted", 0, "visit_timeout")
+        ("visit-1", "interrupted", 0, "request_timeout")
     ]
     assert manager.disconnects == ["visitor-lounge:actor-1:friend-1"]
+
+
+def test_transport_recovery_reuses_completed_remote_job_without_resending(monkeypatch):
+    manager = FakeMCPManager(
+        {
+            **standard_responses(talk=[MCPToolTransportError("response lost")]),
+            "get_visit_state": [
+                {
+                    "status": "ok",
+                    "job": {
+                        "request_id": "pending-request",
+                        "status": "completed",
+                        "visible_text": "Recovered reply",
+                        "action": "continue",
+                    },
+                    "messages": [
+                        {"id": "remote-host-1", "sender": "host"}
+                    ],
+                }
+            ],
+        }
+    )
+    coordinator, _, repository = make_coordinator(manager)
+
+    async def compose(*_args):
+        return "Hello"
+
+    monkeypatch.setattr(lounge_visit.uuid, "uuid4", lambda: "pending-request")
+    result = asyncio.run(
+        coordinator.run_visit(
+            "actor-1", "friend-1", "manual", "Catch up", compose
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.final_reply == "Recovered reply"
+    assert [name for _, name, _ in manager.calls].count("talk_to_host") == 1
+    assert [name for _, name, _ in manager.calls].count("get_visit_state") == 1
+    assert repository.messages[-1] == (
+        "visit-1", "inbound", "Recovered reply", "remote-host-1"
+    )
+
+
+def test_transport_recovery_resends_absent_request_with_same_request_id(monkeypatch):
+    manager = FakeMCPManager(
+        {
+            **standard_responses(
+                talk=[
+                    MCPToolTransportError("not delivered"),
+                    {"status": "ok", "reply": "After reconnect", "action": "continue"},
+                ]
+            ),
+            "get_visit_state": [{"status": "ok", "job": None, "messages": []}],
+        }
+    )
+    coordinator, _, _ = make_coordinator(manager)
+    monkeypatch.setattr(lounge_visit.uuid, "uuid4", lambda: "stable-request")
+
+    async def compose(*_args):
+        return "Hello"
+
+    result = asyncio.run(
+        coordinator.run_visit(
+            "actor-1", "friend-1", "manual", "Catch up", compose
+        )
+    )
+
+    talk_calls = [call for call in manager.calls if call[1] == "talk_to_host"]
+    assert result.final_reply == "After reconnect"
+    assert len(talk_calls) == 2
+    assert talk_calls[0][2]["request_id"] == "stable-request"
+    assert talk_calls[1][2]["request_id"] == "stable-request"
+
+
+def test_tool_and_disconnect_deadlines_do_not_wait_for_cancel_cleanup(monkeypatch):
+    class StubbornManager(FakeMCPManager):
+        async def call_tool_json(self, connection_id, tool_name, arguments):
+            if tool_name != "talk_to_host":
+                return await super().call_tool_json(connection_id, tool_name, arguments)
+            self.calls.append((connection_id, tool_name, dict(arguments)))
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.2)
+                raise
+
+        async def disconnect(self, connection_id):
+            self.disconnects.append(connection_id)
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.2)
+                raise
+
+    manager = StubbornManager(
+        {
+            **standard_responses(),
+            "get_visit_state": [
+                {
+                    "status": "ok",
+                    "job": {
+                        "request_id": "stable-request",
+                        "status": "completed",
+                        "visible_text": "Recovered reply",
+                        "action": "continue",
+                    },
+                    "messages": [],
+                }
+            ],
+        }
+    )
+    coordinator, _, _ = make_coordinator(manager)
+    monkeypatch.setattr(lounge_visit.uuid, "uuid4", lambda: "stable-request")
+    monkeypatch.setattr(lounge_visit, "_TOOL_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(lounge_visit, "_DISCONNECT_TIMEOUT_SECONDS", 0.01, raising=False)
+
+    async def compose(*_args):
+        return "Hello"
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        result = await coordinator.run_visit(
+            "actor-1", "friend-1", "manual", "Catch up", compose
+        )
+        return result, loop.time() - started
+
+    result, elapsed = asyncio.run(scenario())
+
+    assert result.status == "completed"
+    assert elapsed < 0.1
 
 
 def test_remote_availability_statuses_are_rejected():

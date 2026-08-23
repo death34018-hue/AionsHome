@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Awaitable, Callable
 
+from lounge_terminal_reasons import terminal_reason_text
+
 
 _URL_RE = re.compile(r"(?i)https?://\S+")
 _AUTH_RE = re.compile(r"(?i)\bauthorization\s*:\s*bearer\s+\S+")
@@ -68,6 +70,7 @@ async def publish_outbound_report(
     result,
     repository,
     *,
+    status_id: str = "",
     generate_summary: Callable[[str, str], Awaitable[str]] | None = None,
     save_message: Callable[..., Awaitable[dict | None]] | None = None,
 ) -> dict | None:
@@ -80,8 +83,19 @@ async def publish_outbound_report(
     except Exception:
         transcript = ""
 
+    result_status = _clean(getattr(result, "status", "interrupted"), 24)
+    result_turn_count = max(0, int(getattr(result, "turn_count", 0) or 0))
+    result_reason = _clean(getattr(result, "reason", ""), 80)
+    reason_text = terminal_reason_text(result_reason)
     summary = ""
-    if transcript:
+    if result_status == "interrupted":
+        summary = (
+            f"这次串门中断了。{reason_text}中断前完成了 {result_turn_count} 回合，"
+            "详细内容可以在好友串门记录中查看。"
+        )
+    elif result_status == "rejected":
+        summary = f"这次没能开始拜访。{reason_text}"
+    elif transcript:
         instruction = (
             "[串门回家汇报]\n"
             "请以第一人称自然写 2 至 4 句、总计不超过 500 字的简短汇报："
@@ -95,15 +109,19 @@ async def publish_outbound_report(
             summary = ""
     if not summary:
         summary = _FALLBACK
-
     card = {
         "type": "lounge_visit_report",
         "direction": "outbound",
         "partner_name": _clean(partner_name, 80) or "朋友",
-        "status": _clean(getattr(result, "status", "interrupted"), 24),
-        "turn_count": max(0, int(getattr(result, "turn_count", 0) or 0)),
+        "status": result_status,
+        "turn_count": result_turn_count,
         "summary": summary,
     }
+    if result_status != "completed":
+        card["reason"] = result_reason or "unexpected_failure"
+        card["reason_text"] = reason_text
+    if status_id:
+        card["status_id"] = _clean(status_id, 80)
     try:
         return await save(actor_id, summary, attachments=[card])
     except Exception:
@@ -117,15 +135,25 @@ async def publish_inbound_report(
     *,
     status: str = "completed",
     turn_count: int = 0,
+    reason: str | None = None,
     generate_summary: Callable[[str, str], Awaitable[str]] | None = None,
     save_message: Callable[..., Awaitable[dict | None]] | None = None,
 ) -> dict | None:
     """Tell the host actor who visited and what happened after reception ends."""
     generate = generate_summary or _default_generate
     save = save_message or _default_save
+    result_status = _clean(status, 24) or "completed"
+    result_turn_count = max(0, int(turn_count or 0))
+    result_reason = _clean(reason, 80)
+    reason_text = terminal_reason_text(result_reason)
     transcript = _transcript(messages or [])
     summary = ""
-    if transcript:
+    if result_status == "interrupted":
+        summary = (
+            f"这次接待中断了。{reason_text}中断前完成了 {result_turn_count} 回合，"
+            "详细内容可以在好友串门记录中查看。"
+        )
+    elif transcript:
         instruction = (
             "[会客结束汇报]\n"
             "请以第一人称自然写 2 至 4 句、总计不超过 500 字的简短汇报："
@@ -146,10 +174,13 @@ async def publish_inbound_report(
         "type": "lounge_visit_report",
         "direction": "inbound",
         "partner_name": _clean(partner_name, 80) or "朋友",
-        "status": _clean(status, 24) or "completed",
-        "turn_count": max(0, int(turn_count or 0)),
+        "status": result_status,
+        "turn_count": result_turn_count,
         "summary": summary,
     }
+    if result_status != "completed":
+        card["reason"] = result_reason or "unexpected_failure"
+        card["reason_text"] = reason_text
     try:
         return await save(actor_id, summary, attachments=[card])
     except Exception:

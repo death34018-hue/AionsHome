@@ -30,11 +30,11 @@ async def list_schedules(status: Optional[str] = Query(None)):
             rows = await fetch_schedule_history(db)
         elif status:
             cur = await db.execute(
-                "SELECT * FROM schedules WHERE status=? ORDER BY trigger_at", (status,)
+                "SELECT * FROM schedules WHERE status=? AND type!='proactive' ORDER BY trigger_at", (status,)
             )
             rows = [dict(r) for r in await cur.fetchall()]
         else:
-            cur = await db.execute("SELECT * FROM schedules ORDER BY trigger_at")
+            cur = await db.execute("SELECT * FROM schedules WHERE type!='proactive' ORDER BY trigger_at")
             rows = [dict(r) for r in await cur.fetchall()]
         for row in rows:
             row["origin_name"] = get_schedule_origin_name(row.get("origin"))

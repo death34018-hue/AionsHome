@@ -5,6 +5,8 @@ import android.content.Context;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 
+import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -14,10 +16,14 @@ final class HomecomingReturnPackageCoordinator
     private final HomecomingReturnPackageRepository repository;
     private final HomecomingReturnPackageBuilder builder;
     private final String deviceId;
+    private final File returnRoot;
+    private final HomecomingSnapshotStore snapshots;
 
     HomecomingReturnPackageCoordinator(Context context) {
         database = new HomecomingDatabase(context);
         repository = new HomecomingReturnPackageRepository(context);
+        returnRoot = new File(context.getFilesDir(), "homecoming-returns");
+        snapshots = new HomecomingSnapshotStore(context);
         deviceId = HomecomingBackupScheduler.getOrCreateDeviceId(context);
         HomecomingKeyStore keys = new HomecomingKeyStore(context, deviceId);
         builder = new HomecomingReturnPackageBuilder(
@@ -66,6 +72,33 @@ final class HomecomingReturnPackageCoordinator
                         receipt.acceptedHighestDeviceSeq,
                         receipt.resultSummarySha256),
                 now);
+    }
+
+    @Override
+    public void discardAllLocalData() throws Exception {
+        SQLiteDatabase writable = database.getWritableDatabase();
+        writable.beginTransaction();
+        try {
+            for (String table : HomecomingDatabase.tableNames()) {
+                writable.delete(table, null, null);
+            }
+            writable.setTransactionSuccessful();
+        } finally {
+            writable.endTransaction();
+        }
+        if (returnRoot.exists() && !deleteTree(returnRoot)) {
+            throw new IOException("could not discard Homecoming return packages");
+        }
+        snapshots.discardAll();
+    }
+
+    private static boolean deleteTree(File target) {
+        File[] children = target.listFiles();
+        if (children == null && target.isDirectory()) return false;
+        if (children != null) {
+            for (File child : children) if (!deleteTree(child)) return false;
+        }
+        return target.delete();
     }
 
     private List<HomecomingOperationJournal.Operation> loadPendingOperations(

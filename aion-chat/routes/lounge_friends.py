@@ -14,8 +14,9 @@ from chatroom import get_chatroom_names
 from config import DATA_DIR
 from database import get_db
 from lounge_friends import LoungeFriend, LoungeFriendStore
-from lounge_visit import LoungeVisitCoordinator
+from lounge_visit import LoungeVisitCoordinator, LoungeVisitResult
 from lounge_visit_repository import LoungeVisitRepository
+from lounge_visit_tasks import lounge_visit_tasks
 from lounge_visit_reporting import publish_outbound_report
 from mcp_client import MCPManager, mcp_manager
 
@@ -174,6 +175,7 @@ def create_router(
     compose_next: Callable = compose_lounge_message,
     report_publisher: Callable = publish_outbound_report,
     active_manual_actors: set[str] | None = None,
+    task_registry=lounge_visit_tasks,
 ) -> APIRouter:
     router = APIRouter(tags=["lounge-friends"])
     manual_actors = active_manual_actors if active_manual_actors is not None else set()
@@ -368,6 +370,41 @@ def create_router(
         if visit is None:
             raise HTTPException(status_code=404, detail="Visit not found")
         return visit
+
+    @router.post("/api/lounge-visits/{visit_id}/cancel")
+    async def cancel_lounge_visit(visit_id: str, body: ActorBody):
+        require_actor(body.actor_id)
+        async with repository_provider() as repository:
+            visit = await repository.get(body.actor_id, visit_id)
+            if visit is None:
+                raise HTTPException(status_code=404, detail="Visit not found")
+            changed = await repository.finish_running(
+                body.actor_id, visit_id, "user_cancelled"
+            )
+            if changed:
+                cancelled_active_task = task_registry.cancel(body.actor_id)
+                try:
+                    friend = friend_store.get_owned(
+                        body.actor_id, str(visit["friend_id"])
+                    )
+                    partner_name = friend.display_name
+                except Exception:
+                    partner_name = "AI 好友"
+                if not cancelled_active_task:
+                    await report_publisher(
+                        body.actor_id,
+                        partner_name,
+                        LoungeVisitResult(
+                            visit_id=visit_id,
+                            status="interrupted",
+                            turn_count=int(visit.get("turn_count") or 0),
+                            final_reply="",
+                            reason="user_cancelled",
+                        ),
+                        repository,
+                    )
+            current = await repository.get(body.actor_id, visit_id)
+        return current
 
     @router.delete("/api/lounge-visits/{visit_id}")
     async def delete_lounge_visit(visit_id: str, actor_id: str):

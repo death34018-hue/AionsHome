@@ -101,7 +101,10 @@ class Fixture:
             active.stop()
         self.tmp.cleanup()
 
-    def package(self, operations=None, *, epoch="epoch-one", mutate=None):
+    def package(
+        self, operations=None, *, epoch="epoch-one", mutate=None,
+        android_legacy=False,
+    ):
         operations = operations or [{
             "op_id": "op-one",
             "device_seq": 1,
@@ -136,7 +139,10 @@ class Fixture:
             "operations": operations,
             "section_counts": counts,
         }
-        digest = hashlib.sha256(canonical(payload)).hexdigest()
+        payload_bytes = canonical(payload)
+        if android_legacy:
+            payload_bytes = payload_bytes.replace(b"</", b"<\\/")
+        digest = hashlib.sha256(payload_bytes).hexdigest()
         signing_text = (
             "schema=1\n"
             "device_id=android:test-device\n"
@@ -184,6 +190,35 @@ def test_valid_package_is_quarantined_without_touching_mainline(fixture):
         ).fetchone()[0] == 1
     stored = list((fixture.root / "quarantine").glob("*.json.gz"))
     assert len(stored) == 1
+
+
+def test_legacy_android_slash_escaping_remains_uploadable(fixture):
+    operation = {
+        "op_id": "op-one",
+        "device_seq": 1,
+        "entity_type": "message",
+        "entity_id": "message-one",
+        "action": "create",
+        "base_revision": "",
+        "payload": {
+            "id": "message-one",
+            "timeline_id": "group",
+            "role": "assistant",
+            "sender_id": "main",
+            "text": "before</think>after",
+            "attachment_kind": "",
+            "attachment_transcript": "",
+            "created_at": 1000,
+        },
+        "created_at": 1000,
+    }
+
+    response = fixture.client.post(
+        "/api/homecoming/v1/return-packages",
+        content=fixture.package([operation], android_legacy=True),
+    )
+
+    assert response.status_code == 202, response.text
 
 
 def test_same_package_is_idempotent_and_status_can_be_read(fixture):

@@ -10,28 +10,47 @@ import static org.junit.Assert.assertEquals;
 
 public class HomecomingBackupSchedulerTest {
     @Test
-    public void launcherRefreshIsDebouncedForFiveMinutes() {
+    public void productionSchedulerUsesTheSharedThrottle() {
+        FakeClock clock = new FakeClock();
+        FakeRequests requests = new FakeRequests();
+        HomecomingBackupScheduler scheduler = new HomecomingBackupScheduler(
+                clock, requests, () -> false, () -> true);
+
+        scheduler.onLauncherForeground("https://server.example");
+        scheduler.onNormalRouteSelected("https://server.example");
+        scheduler.markDirty();
+        scheduler.runPeriodicFallback();
+
+        assertEquals(1, requests.bases.size());
+    }
+
+    @Test
+    public void everyRefreshTriggerSharesTenMinuteThrottle() {
         FakeClock clock = new FakeClock();
         FakeRequests requests = new FakeRequests();
         HomecomingBackupScheduler scheduler = scheduler(clock, requests);
 
         scheduler.onLauncherForeground("https://server.example");
-        clock.now += 299_000L;
-        scheduler.onLauncherForeground("https://server.example");
+        clock.now += 300_000L;
+        scheduler.onNormalRouteSelected("https://server.example");
+        scheduler.markDirty();
+        scheduler.runPeriodicFallback();
         assertEquals(1, requests.bases.size());
-        clock.now += 1_000L;
-        scheduler.onLauncherForeground("https://server.example");
+        clock.now += 300_000L;
+        scheduler.onNormalRouteSelected("https://server.example");
         assertEquals(2, requests.bases.size());
     }
 
     @Test
-    public void routeChangeMayRefreshImmediately() {
+    public void routeChangeInsideThrottleUpdatesFutureTargetWithoutRefreshing() {
         FakeClock clock = new FakeClock();
         FakeRequests requests = new FakeRequests();
         HomecomingBackupScheduler scheduler = scheduler(clock, requests);
 
         scheduler.onLauncherForeground("https://one.example");
         scheduler.onNormalRouteSelected("https://two.example");
+        clock.now += 600_000L;
+        scheduler.markDirty();
 
         assertEquals(Arrays.asList(
                 "https://one.example", "https://two.example"), requests.bases);
@@ -56,7 +75,7 @@ public class HomecomingBackupSchedulerTest {
         FakeClock clock = new FakeClock();
         FakeRequests requests = new FakeRequests();
         HomecomingBackupScheduler scheduler = new HomecomingBackupScheduler(
-                clock, requests, () -> true, () -> true);
+                clock, requests, () -> true, () -> true, true);
 
         scheduler.onLauncherForeground("https://server.example");
         scheduler.onNormalRouteSelected("https://server.example");
@@ -71,7 +90,7 @@ public class HomecomingBackupSchedulerTest {
         FakeRequests requests = new FakeRequests();
         MutableNetwork network = new MutableNetwork();
         HomecomingBackupScheduler scheduler = new HomecomingBackupScheduler(
-                clock, requests, () -> false, network);
+                clock, requests, () -> false, network, true);
         scheduler.onNormalRouteSelected("https://server.example");
         requests.bases.clear();
 
@@ -79,6 +98,7 @@ public class HomecomingBackupSchedulerTest {
         scheduler.runPeriodicFallback();
         assertEquals(0, requests.bases.size());
         network.available = true;
+        clock.now += 600_000L;
         scheduler.runPeriodicFallback();
         assertEquals(1, requests.bases.size());
     }
@@ -86,7 +106,7 @@ public class HomecomingBackupSchedulerTest {
     private static HomecomingBackupScheduler scheduler(
             FakeClock clock, FakeRequests requests) {
         return new HomecomingBackupScheduler(
-                clock, requests, () -> false, () -> true);
+                clock, requests, () -> false, () -> true, true);
     }
 
     private static final class FakeClock implements HomecomingBackupScheduler.Clock {

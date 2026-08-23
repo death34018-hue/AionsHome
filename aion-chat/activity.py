@@ -8,6 +8,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from config import DATA_DIR, DB_PATH, load_worldbook
+from device_context import DeviceContextStore
 from ws import manager
 
 log = logging.getLogger("activity")
@@ -22,7 +23,9 @@ ACTIVITY_LOGS_DIR = DATA_DIR / "activity_logs"
 ACTIVITY_LOGS_DIR.mkdir(exist_ok=True)
 
 # 保留最近 N 小时的活动日志和摘要
-KEEP_HOURS = 3
+KEEP_HOURS = 8
+
+device_context_store = DeviceContextStore()
 
 # ── 手机 App 包名 → 中文名映射（服务端兜底） ───────────
 # Android getApplicationLabel() 在部分 ROM 上会失败，这里做 fallback
@@ -326,6 +329,17 @@ class PCActivityTracker:
                         "app": app_name,
                         "title": title,
                     }
+                    try:
+                        display_status = pc_display_tracker.get_status()
+                        entry["idle_seconds"] = display_status.get("idle_seconds")
+                        entry["display"] = (
+                            display_status.get("physical_state")
+                            if display_status.get("physical_state") in {"on", "off"}
+                            else display_status.get("state", "unknown")
+                        )
+                    except Exception:
+                        entry["idle_seconds"] = None
+                        entry["display"] = "unknown"
                     append_activity_log(entry)
 
                     if title_changed:
@@ -842,6 +856,15 @@ def _summarize_window(entries: list[dict], window_start_ts: float, window_end_ts
 
         # 过滤"亮屏"（仅是过渡事件，锁屏时长由 screen_off→下一条 自动涵盖）
         dev_entries = [e for e in dev_entries if e["app"] != "screen_on"]
+        if device == "pc":
+            dev_entries = [
+                e for e in dev_entries
+                if e.get("display") != "off"
+                and (
+                    e.get("idle_seconds") is None
+                    or float(e.get("idle_seconds") or 0) <= 300
+                )
+            ]
         if not dev_entries:
             continue
 
@@ -1077,6 +1100,84 @@ def get_activity_summary_for_prompt(n: int = 6) -> str:
     return "\n".join(lines)
 
 
+def _context_log_entry(event: dict) -> dict:
+    timestamp = float(event.get("timestamp") or time.time())
+    entry = dict(event)
+    entry.update({
+        "timestamp": timestamp,
+        "time": time.strftime("%H:%M:%S", time.localtime(timestamp)),
+        "date": time.strftime("%Y-%m-%d", time.localtime(timestamp)),
+        "device": "phone",
+        "app": "device_context",
+        "title": event.get("kind", "device_context"),
+    })
+    return entry
+
+
+def record_phone_context(payload: dict, received_at: float | None = None) -> list[dict]:
+    received_at = float(received_at or time.time())
+    changes = device_context_store.update_phone(payload, received_at)
+    for change in changes:
+        append_activity_log(_context_log_entry(change))
+    return changes
+
+
+def record_notification(payload: dict, received_at: float | None = None) -> dict:
+    received_at = float(received_at or time.time())
+    event = device_context_store.upsert_notification(payload, received_at)
+    if event:
+        append_activity_log(_context_log_entry(event))
+    return event
+
+
+def remove_notification_context(key: str, received_at: float | None = None) -> dict | None:
+    received_at = float(received_at or time.time())
+    event = device_context_store.remove_notification(key, received_at)
+    if event:
+        append_activity_log(_context_log_entry(event))
+    return event
+
+
+def get_current_pc_context(now: float | None = None) -> dict:
+    now = float(now or time.time())
+    result = {"display": "unknown", "idle_seconds": None}
+    try:
+        status = pc_display_tracker.get_status()
+        physical = status.get("physical_state")
+        result["display"] = physical if physical in {"on", "off"} else status.get("state", "unknown")
+        result["idle_seconds"] = status.get("idle_seconds")
+    except Exception:
+        pass
+
+    recent_pc = [
+        entry for entry in read_recent_activity(1)
+        if entry.get("device") == "pc" and entry.get("app") not in {"screen_on", "screen_off"}
+    ]
+    if recent_pc:
+        latest = max(recent_pc, key=lambda entry: entry.get("timestamp", 0))
+        if now - float(latest.get("timestamp") or 0) <= 180:
+            result["app"] = _beautify_app(latest.get("app", ""), {latest.get("title", "")})
+            result["title"] = latest.get("title", "")
+            result["window_observed_at"] = latest.get("timestamp")
+    return result
+
+
+def get_device_context_snapshot(
+        now: float | None = None, pc: dict | None = None) -> dict:
+    now = float(now or time.time())
+    return device_context_store.snapshot(pc if pc is not None else get_current_pc_context(now), now)
+
+
+def get_device_context_for_prompt(max_chars: int = 800) -> str:
+    if not is_activity_tracking_enabled():
+        return ""
+    try:
+        now = time.time()
+        return device_context_store.prompt(get_current_pc_context(now), now, max_chars)
+    except Exception:
+        return ""
+
+
 # 全局单例
 def _user_dynamic_names() -> dict:
     wb = load_worldbook()
@@ -1200,3 +1301,15 @@ def get_user_dynamics_for_prompt(hours: int = 1, limit: int = 12) -> str:
 
 pc_tracker = PCActivityTracker()
 pc_display_tracker = PCDisplayTracker()
+
+try:
+    device_context_store.hydrate(
+        [
+            entry
+            for entry in read_recent_activity(KEEP_HOURS)
+            if entry.get("kind") in {"phone_context", "notification", "notification_removed"}
+        ],
+        time.time(),
+    )
+except Exception:
+    pass

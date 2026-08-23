@@ -118,6 +118,29 @@
   color: var(--text3);
   font-size: 14px;
 }
+.proactive-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.proactive-card-title {
+  padding: 11px 12px;
+  font-size: 14px;
+  font-weight: 700;
+  border-bottom: 1px solid var(--border);
+}
+.proactive-role-row {
+  display: grid;
+  grid-template-columns: minmax(80px, 1fr) minmax(100px, auto) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+}
+.proactive-role-row + .proactive-role-row { border-top: 1px solid var(--border); }
+.proactive-role-name { font-size: 14px; font-weight: 600; }
+.proactive-role-time { color: var(--text2); font-size: 12px; text-align: right; }
 @media (max-width: 760px) {
   .cap-list {
     grid-template-columns: 1fr;
@@ -138,6 +161,10 @@
       <button class="cap-action" onclick="setAllCapabilities(false)">全部取消</button>
       <button class="cap-action" onclick="loadCapabilities()">刷新</button>
     </div>
+    <div class="proactive-card" id="proactiveCompanionshipCard">
+      <div class="proactive-card-title">主动陪伴</div>
+      <div class="cap-empty">加载中...</div>
+    </div>
     <div class="cap-groups" id="capGroups">
       <div class="cap-empty">加载中...</div>
     </div>
@@ -149,6 +176,58 @@
 <script>
 let capabilityPayload = null;
 let capabilityBusy = false;
+let proactiveCompanionship = null;
+
+function proactiveTimeText(role) {
+  if (!role.active) return '暂无安排';
+  const clock = String(role.next_at || '').slice(11, 16);
+  if (Number.isFinite(role.remaining_minutes)) {
+    return `${role.remaining_minutes} 分钟后${clock ? ` · ${clock}` : ''}`;
+  }
+  return role.next_at || '已安排';
+}
+
+function renderProactiveCompanionship(data = proactiveCompanionship) {
+  proactiveCompanionship = data;
+  const card = $('proactiveCompanionshipCard');
+  const roles = Array.isArray(data?.roles) ? data.roles : [];
+  card.innerHTML = `
+    <div class="proactive-card-title">主动陪伴</div>
+    ${roles.map(role => `
+      <div class="proactive-role-row">
+        <span class="proactive-role-name">${escHtml(role.name)}</span>
+        <span class="proactive-role-time">${escHtml(proactiveTimeText(role))}</span>
+        <label class="toggle-switch" title="${escHtml(role.name)}">
+          <input type="checkbox" ${role.enabled ? 'checked' : ''}
+            onchange="toggleProactiveCompanionship('${escHtml(role.actor)}', this.checked, this)">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    `).join('') || '<div class="cap-empty">加载失败</div>'}`;
+}
+
+async function loadProactiveCompanionship() {
+  const res = await fetch('/api/proactive-companionship', { cache: 'no-store' });
+  if (!res.ok) throw new Error('load failed');
+  renderProactiveCompanionship(await res.json());
+}
+
+async function toggleProactiveCompanionship(actor, enabled, input) {
+  if (input) input.disabled = true;
+  try {
+    const res = await fetch(`/api/proactive-companionship/${encodeURIComponent(actor)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled })
+    });
+    const result = await res.json();
+    if (!res.ok || !result.ok) throw new Error(result.detail || 'update failed');
+    renderProactiveCompanionship(result.data);
+  } catch (err) {
+    showToast('保存失败');
+    loadProactiveCompanionship().catch(() => {});
+  }
+}
 
 function statusFor(item) {
   if (!item.enabled) return { text: '未注入', cls: '' };
@@ -239,7 +318,14 @@ async function setAllCapabilities(enabled) {
         body: JSON.stringify({ enabled })
       });
     }
-    await loadCapabilities();
+    for (const role of (proactiveCompanionship?.roles || [])) {
+      await fetch(`/api/proactive-companionship/${encodeURIComponent(role.actor)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+    }
+    await Promise.all([loadCapabilities(), loadProactiveCompanionship()]);
     showToast(enabled ? '已全部勾选' : '已全部取消');
   } catch (err) {
     showToast('批量保存失败');
@@ -251,6 +337,10 @@ async function setAllCapabilities(enabled) {
 }
 
 function handleCapabilityWs(msg) {
+  if (msg.type === 'proactive_companionship_changed') {
+    renderProactiveCompanionship(msg.data);
+    return;
+  }
   if (msg.type === 'capability_config_changed' || msg.type === 'health_share_changed') {
     loadCapabilities();
   }
@@ -258,6 +348,7 @@ function handleCapabilityWs(msg) {
 
 document.addEventListener('DOMContentLoaded', () => {
   loadCapabilities();
+  loadProactiveCompanionship().catch(() => renderProactiveCompanionship(null));
   connectCommonWS(handleCapabilityWs);
 });
 </script>
