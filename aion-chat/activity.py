@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 from config import DATA_DIR, DB_PATH, load_worldbook
 from device_context import DeviceContextStore
+from app_names import KNOWN_APPS, resolve_app_name
 from ws import manager
 
 log = logging.getLogger("activity")
@@ -26,120 +27,6 @@ ACTIVITY_LOGS_DIR.mkdir(exist_ok=True)
 KEEP_HOURS = 8
 
 device_context_store = DeviceContextStore()
-
-# ── 手机 App 包名 → 中文名映射（服务端兜底） ───────────
-# Android getApplicationLabel() 在部分 ROM 上会失败，这里做 fallback
-KNOWN_APPS = {
-    # 社交 / 通讯
-    "com.tencent.mm": "微信",
-    "com.tencent.mobileqq": "QQ",
-    "com.tencent.tim": "TIM",
-    "com.xingin.xhs": "小红书",
-    "com.sina.weibo": "微博",
-    "com.immomo.momo": "陌陌",
-    "com.tencent.wework": "企业微信",
-    "com.alibaba.android.rimet": "钉钉",
-    "com.lark.messenger": "飞书",
-    # 视频 / 直播
-    "com.ss.android.ugc.aweme": "抖音",
-    "com.kuaishou.nebula": "快手",
-    "com.smile.gifmaker": "快手",
-    "tv.danmaku.bili": "哔哩哔哩",
-    "com.youku.phone": "优酷",
-    "com.tencent.qqlive": "腾讯视频",
-    "com.qiyi.video": "爱奇艺",
-    "com.hunantv.imgo.activity": "芒果TV",
-    # 音乐
-    "com.netease.cloudmusic": "网易云音乐",
-    "com.tencent.qqmusic": "QQ音乐",
-    "com.kugou.android": "酷狗音乐",
-    "com.spotify.music": "Spotify",
-    # 购物
-    "com.taobao.taobao": "淘宝",
-    "com.jingdong.app.mall": "京东",
-    "com.xunmeng.pinduoduo": "拼多多",
-    "com.achievo.vipshop": "唯品会",
-    # 工具 / 效率
-    "com.tencent.mtt": "QQ浏览器",
-    "com.UCMobile": "UC浏览器",
-    "com.android.chrome": "Chrome",
-    "com.microsoft.emmx": "Edge",
-    "com.qihoo.browser": "360浏览器",
-    "com.baidu.searchbox": "百度",
-    "com.larus.nova": "豆包",
-    "com.ss.android.lark.alchemy": "豆包",
-    "com.openai.chatgpt": "ChatGPT",
-    "com.google.android.apps.maps": "Google Maps",
-    "com.autonavi.minimap": "高德地图",
-    "com.baidu.BaiduMap": "百度地图",
-    # 支付 / 金融
-    "com.eg.android.AlipayGphone": "支付宝",
-    "com.tencent.android.qqdownloader": "应用宝",
-    # 外卖 / 生活
-    "com.sankuai.meituan": "美团",
-    "me.ele": "饿了么",
-    "com.dianping.v1": "大众点评",
-    "com.Qunar": "去哪儿",
-    # 阅读 / 知识
-    "com.zhihu.android": "知乎",
-    "com.douban.frodo": "豆瓣",
-    "com.ss.android.article.news": "今日头条",
-    "com.netease.newsreader.activity": "网易新闻",
-    # 游戏平台
-    "com.miHoYo.Yuanshen": "原神",
-    "com.miHoYo.hkrpg": "崩坏：星穹铁道",
-    "com.tencent.tmgp.sgame": "王者荣耀",
-    "com.tencent.tmgp.pubgmhd": "和平精英",
-    # AI 助手
-    "com.anthropic.claude": "Claude",
-    "com.google.android.googlequicksearchbox": "Google搜索",
-    # 系统 / 应该过滤的
-    "com.android.systemui": None,       # 过滤
-    "com.android.launcher": None,       # 过滤
-    "com.android.launcher3": None,      # 过滤
-    "com.bbk.launcher2": None,          # vivo 桌面 → 过滤
-    "com.vivo.launcher": None,          # vivo 桌面 → 过滤
-    "com.huawei.android.launcher": None, # 华为桌面 → 过滤
-    "com.miui.home": None,              # 小米桌面 → 过滤
-    "com.oppo.launcher": None,          # OPPO 桌面 → 过滤
-    "com.sec.android.app.launcher": None, # 三星桌面 → 过滤
-    # 屏幕状态（Android BroadcastReceiver 上报）
-    "screen_off": "锁屏",
-    "screen_on": "亮屏",
-    # iQOO/vivo 系统
-    "com.iqoo.powersaving": "省电管理",
-}
-
-
-def resolve_app_name(app: str, title: str = "") -> str | None:
-    """
-    解析 App 名称。
-    - 如果 app 是包名格式（含 .），查映射表
-    - 映射值为 None 表示应过滤（桌面/系统 UI 等）
-    - 未知包名保持原样
-    - 如果 app 已经是中文名且不是乱码，直接用
-    """
-    # 已经是可读名称（非包名格式）
-    if "." not in app:
-        # 检查是否乱码（中文字符但不像正常中文）
-        try:
-            app.encode("ascii")
-        except UnicodeEncodeError:
-            # 含非 ASCII 字符，可能是中文也可能是乱码
-            # 简单启发式：如果全是常见中文字符，认为有效
-            pass
-        return app
-
-    # 包名格式，查表
-    if app in KNOWN_APPS:
-        return KNOWN_APPS[app]  # None 表示过滤
-
-    # 未知包名，如果 title 中有更好的名称就用 title
-    if title and "." not in title and title != app:
-        return title
-
-    return app
-
 
 # ── JSONL 读写 ────────────────────────────────────
 

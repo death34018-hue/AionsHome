@@ -34,6 +34,7 @@ from schedule import schedule_mgr
 from routes import chat, cam as cam_routes, files, settings, memories
 from routes import voice as voice_routes
 from routes import music as music_routes
+from routes import music_station as music_station_routes
 from routes import schedule as schedule_routes
 from routes import location as location_routes
 from routes import heart_whispers as heart_whispers_routes
@@ -78,6 +79,7 @@ from memory import auto_digest
 from memory_compression import migrate_legacy_daily_capsules
 from chatroom import _connor_1v1_auto_digest_loop
 from fund import fund_scheduler
+from music_station import init_music_station
 from autonomy import idle_autonomy_mgr
 from persona_evolution import main_ai_persona_evolution_loop, connor_persona_evolution_loop
 from asset_manifest import get_client_asset_manifest
@@ -133,6 +135,9 @@ async def _auto_digest_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    imported_music_requests = await init_music_station()
+    if imported_music_requests:
+        print(f"[music_station] 已补入 {imported_music_requests} 条历史点歌记录")
     await restore_active_windows()
     migrated_legacy_capsules = await migrate_legacy_daily_capsules()
     if migrated_legacy_capsules["main"] or migrated_legacy_capsules["chatroom"]:
@@ -246,6 +251,7 @@ app.include_router(settings.router)
 app.include_router(memories.router)
 app.include_router(voice_routes.router)
 app.include_router(music_routes.router)
+app.include_router(music_station_routes.router)
 app.include_router(schedule_routes.router)
 app.include_router(location_routes.router)
 app.include_router(heart_whispers_routes.router)
@@ -303,6 +309,11 @@ async def home():
 @app.get("/chat")
 async def chat_page():
     return FileResponse(BASE_DIR / "static" / "chat.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/music-station")
+async def music_station_page():
+    return FileResponse(BASE_DIR / "static" / "music-station.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/settings")
 async def settings_page():

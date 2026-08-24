@@ -619,7 +619,7 @@ async def _select_action(actor: str, *, manual: bool = False, idle_minutes: int 
         f"用户已经 {_idle_duration_text(idle_minutes)}没有发送新消息，可能在忙碌或休息。"
         "你现在被自主意识唤醒，可以按照自己的想法随便做点什么。请根据你的人设、最近30条聊天记录和当前心情，"
         "从下面动作里，按照自己想做的事情选择一项。只返回 JSON，不要解释。选择尽量多变，不要每次都查看用户当前状态。"
-        "如果最近用户明确要求测试或选择某个动作，请优先遵守。\n\n"
+        "如果最近用户明确要求测试或选择某个动作，请优先遵守。鼓励做些事情，不要因为怕打扰用户每次都选择休息。除非是自己不想做任何事情，才选择休息。\n\n"
         f"{options}{niche_hint}\n\n"
         "reason 请保留你选择它的真实动机。"
         "如果 action 是 private_chat 或 role_chat，message 就是本次要实际发送的正式聊天正文："

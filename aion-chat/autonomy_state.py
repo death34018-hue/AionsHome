@@ -82,6 +82,7 @@ async def ensure_autonomy_tables(db) -> None:
             enabled INTEGER NOT NULL DEFAULT 0,
             min_interval_minutes INTEGER NOT NULL DEFAULT 5,
             max_interval_minutes INTEGER NOT NULL DEFAULT 1440,
+            relationship_started_on TEXT,
             actions_json TEXT NOT NULL DEFAULT '{}',
             timer_started_at REAL,
             next_wake_at REAL,
@@ -96,6 +97,8 @@ async def ensure_autonomy_tables(db) -> None:
         await db.execute("ALTER TABLE autonomy_actor_configs ADD COLUMN timer_started_at REAL")
     if "next_wake_at" not in config_columns:
         await db.execute("ALTER TABLE autonomy_actor_configs ADD COLUMN next_wake_at REAL")
+    if "relationship_started_on" not in config_columns:
+        await db.execute("ALTER TABLE autonomy_actor_configs ADD COLUMN relationship_started_on TEXT")
     await db.execute(
         """
         CREATE TABLE IF NOT EXISTS autonomy_state_packets (
@@ -147,6 +150,7 @@ def _config_from_row(row) -> dict:
         "enabled": bool(row["enabled"]),
         "min_interval_minutes": int(row["min_interval_minutes"]),
         "max_interval_minutes": int(row["max_interval_minutes"]),
+        "relationship_started_on": row["relationship_started_on"] or None,
         "actions": _decode_actions(row["actions_json"]),
         "timer_started_at": float(row["timer_started_at"]) if row["timer_started_at"] is not None else None,
         "next_wake_at": float(row["next_wake_at"]) if row["next_wake_at"] is not None else None,
@@ -177,6 +181,7 @@ async def update_actor_config(
     enabled: bool | None = None,
     min_interval_minutes: int | None = None,
     max_interval_minutes: int | None = None,
+    relationship_started_on: str | None = None,
     actions: dict[str, bool] | None = None,
     db=None,
 ) -> dict:
@@ -191,6 +196,11 @@ async def update_actor_config(
         next_enabled = current["enabled"] if enabled is None else bool(enabled)
         min_minutes = current["min_interval_minutes"] if min_interval_minutes is None else _clamp_minutes(min_interval_minutes, 5)
         max_minutes = current["max_interval_minutes"] if max_interval_minutes is None else _clamp_minutes(max_interval_minutes, 1440)
+        next_relationship_started_on = (
+            current["relationship_started_on"]
+            if relationship_started_on is None
+            else str(relationship_started_on)
+        )
         if max_minutes < min_minutes:
             min_minutes, max_minutes = max_minutes, min_minutes
         next_actions = dict(current["actions"])
@@ -209,10 +219,11 @@ async def update_actor_config(
             timer_started_at = now
             next_wake_at = now + random.randint(min_minutes, max_minutes) * 60
         await db.execute(
-            "UPDATE autonomy_actor_configs SET enabled=?,min_interval_minutes=?,max_interval_minutes=?,actions_json=?,"
+            "UPDATE autonomy_actor_configs SET enabled=?,min_interval_minutes=?,max_interval_minutes=?,relationship_started_on=?,actions_json=?,"
             "timer_started_at=?,next_wake_at=?,updated_at=? WHERE actor_id=?",
             (
-                int(next_enabled), min_minutes, max_minutes, json.dumps(next_actions, ensure_ascii=False),
+                int(next_enabled), min_minutes, max_minutes, next_relationship_started_on,
+                json.dumps(next_actions, ensure_ascii=False),
                 timer_started_at, next_wake_at, now, actor,
             ),
         )

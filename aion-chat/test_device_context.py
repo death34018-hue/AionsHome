@@ -134,6 +134,53 @@ class DeviceContextStoreTest(unittest.TestCase):
         )
         self.assertIn("前台为 vivo 桌面", self.store.prompt({}, 151))
 
+    def test_known_foreground_apps_have_readable_display_names(self):
+        expected_names = {
+            "com.xingin.xhs": "小红书",
+            "tv.danmaku.bili": "哔哩哔哩",
+            "com.phoenix.read": "红果短剧",
+            "com.ss.android.ugc.aweme": "抖音",
+        }
+
+        for index, (package_name, display_name) in enumerate(
+            expected_names.items(), start=100
+        ):
+            with self.subTest(package_name=package_name):
+                self.store.update_phone(
+                    {
+                        "screen": {"value": "on", "observed_at": index},
+                        "foreground_app": {
+                            "value": package_name,
+                            "observed_at": index,
+                        },
+                    },
+                    index,
+                )
+
+                snapshot = self.store.snapshot({}, index + 1)
+                foreground = snapshot["phone"]["foreground_app"]
+                self.assertEqual(package_name, foreground["value"])
+                self.assertEqual(display_name, foreground.get("display_value"))
+                self.assertIn(
+                    f"前台为 {display_name}", self.store.prompt({}, index + 1)
+                )
+
+    def test_unknown_foreground_app_keeps_package_name_as_display_name(self):
+        self.store.update_phone(
+            {
+                "screen": {"value": "on", "observed_at": 100},
+                "foreground_app": {
+                    "value": "com.example.unknown",
+                    "observed_at": 100,
+                },
+            },
+            100,
+        )
+
+        foreground = self.store.snapshot({}, 101)["phone"]["foreground_app"]
+        self.assertEqual("com.example.unknown", foreground.get("display_value"))
+        self.assertIn("前台为 com.example.unknown", self.store.prompt({}, 101))
+
     def test_notification_update_replaces_same_key_and_keeps_other_key(self):
         self.store.upsert_notification(
             {"key": "order", "title": "外卖", "text": "商家已接单"}, 100

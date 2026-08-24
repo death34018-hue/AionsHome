@@ -7,6 +7,8 @@ from datetime import datetime
 from math import isfinite
 from typing import Any
 
+from app_names import display_app_name
+
 
 FRESH_SECONDS = 30 * 60
 KEEP_SECONDS = 8 * 60 * 60
@@ -57,24 +59,6 @@ LIGHT_TEXT = {
     "bright": "环境明亮",
 }
 SCREEN_TEXT = {"on": "亮屏", "off": "熄屏"}
-FOREGROUND_APP_TEXT = {
-    "com.bbk.launcher2": "vivo 桌面",
-    "com.vivo.launcher": "vivo 桌面",
-    "com.android.launcher": "安卓桌面",
-    "com.android.launcher3": "安卓桌面",
-    "com.huawei.android.launcher": "华为桌面",
-    "com.miui.home": "小米桌面",
-    "com.oppo.launcher": "OPPO 桌面",
-    "com.sec.android.app.launcher": "三星桌面",
-    "com.tencent.mm": "微信",
-    "com.tencent.mobileqq": "QQ",
-    "com.xingin.xhs": "小红书",
-    "com.ss.android.ugc.aweme": "抖音",
-    "tv.danmaku.bili": "哔哩哔哩",
-    "com.openai.chatgpt": "ChatGPT",
-}
-
-
 def _number(value: Any, fallback: float) -> float:
     try:
         return float(value)
@@ -267,6 +251,9 @@ class DeviceContextStore:
 
     def snapshot(self, pc: dict, now: float) -> dict:
         phone = self._fresh_phone(now)
+        foreground = phone.get("foreground_app")
+        if foreground:
+            foreground["display_value"] = display_app_name(foreground.get("value"))
         pc = dict(pc or {})
         display = str(pc.get("display") or "unknown")
         idle_seconds = _number(pc.get("idle_seconds"), float("inf"))
@@ -297,7 +284,8 @@ class DeviceContextStore:
             posture = (phone.get("posture") or {}).get("value")
             motion = (phone.get("motion") or {}).get("value")
             light = (phone.get("light") or {}).get("value")
-            app = (phone.get("foreground_app") or {}).get("value")
+            app_slot = phone.get("foreground_app") or {}
+            app = app_slot.get("display_value") or app_slot.get("value")
             phone_active = screen == "on" and motion in {"slight", "moving", "strong"}
             possible_bed = (
                 phone_active
@@ -402,13 +390,15 @@ class DeviceContextStore:
             _number(screen_slot.get("observed_at"), 0),
         )
         app_observed_at = _number(app_slot.get("observed_at"), 0)
-        app = _clean_text(app_slot.get("value"), 60)
+        app = _clean_text(
+            app_slot.get("display_value") or app_slot.get("value"), 60
+        )
         app_is_current = (
             screen_slot.get("value") == "on"
             and app_observed_at >= screen_started_at
         )
         if app_is_current and app and app != "unknown":
-            parts.append(f"前台为 {FOREGROUND_APP_TEXT.get(app, app)}")
+            parts.append(f"前台为 {app}")
         return f"手机：{'、'.join(parts)}。" if parts else ""
 
     def prompt(self, pc: dict, now: float, max_chars: int = PROMPT_MAX_CHARS) -> str:

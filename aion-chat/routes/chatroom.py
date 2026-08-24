@@ -37,6 +37,7 @@ from context_builder import (
     WISH_CMD_PATTERN,
     append_message_meta,
 )
+from music_station import record_music_request
 from memory import (
     get_embedding, _pack_embedding, memory_kind_for_type, memory_kind_label,
     _memory_time_payload, instant_digest,
@@ -599,6 +600,18 @@ async def _process_chatroom_commands(
         triggered["music_cards"] = music_cards
         await _q.put(music_data)
         await ws_manager.broadcast({"type": "music", "data": {**music_data, "source": "chatroom"}})
+        for song in music_cards:
+            try:
+                await record_music_request(
+                    song,
+                    requester_identity=who_identity,
+                    requester_name=who_label,
+                    source_type="chatroom",
+                    source_id=room_id,
+                    source_message_id=msg_id,
+                )
+            except Exception as exc:
+                print(f"[music_station] 聊天室点歌记录失败: {exc}")
 
     # ── 日程/闹钟（先检测指令生成系统消息，再交给 schedule 模块处理） ──
     for match in ALARM_CMD.finditer(full_text):

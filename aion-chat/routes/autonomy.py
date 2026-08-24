@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -30,6 +31,10 @@ class ActorConfigUpdate(BaseModel):
 
 class NicheCardUpdate(BaseModel):
     mentioned: bool
+
+
+class RelationshipDateUpdate(BaseModel):
+    started_on: date
 
 
 def _actor(value: str) -> str:
@@ -79,6 +84,20 @@ async def update_niche_card(card_id: str, actor: str, body: NicheCardUpdate):
 @router.get("/{actor}/config")
 async def read_actor_config(actor: str):
     return await get_actor_config(_actor(actor))
+
+
+@router.put("/{actor}/relationship-date")
+async def update_relationship_date(actor: str, body: RelationshipDateUpdate):
+    actor = _actor(actor)
+    if body.started_on > date.today():
+        raise HTTPException(status_code=422, detail="relationship date cannot be in the future")
+    config = await update_actor_config(
+        actor,
+        relationship_started_on=body.started_on.isoformat(),
+    )
+    payload = await autonomy_status_payload()
+    await manager.broadcast({"type": "autonomy_state_changed", "data": payload})
+    return {"ok": True, "config": config, "status": payload}
 
 
 @router.put("/{actor}/config")

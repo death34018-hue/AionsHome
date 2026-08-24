@@ -6,7 +6,7 @@ import json, time
 
 from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import Optional
+from typing import Literal, Optional
 import aiosqlite
 
 from activity import (
@@ -24,6 +24,11 @@ from config import load_worldbook
 from chatroom import load_chatroom_config
 from location import load_location_status
 from autonomy_state import wake_summary_timeline_title
+from family_events import (
+    build_user_timeline_items,
+    list_grouped_user_events,
+    record_user_event,
+)
 
 router = APIRouter()
 
@@ -54,6 +59,11 @@ class DeviceContextBody(BaseModel):
 class NotificationRemoveBody(BaseModel):
     key: str
     observed_at: Optional[float] = None
+
+
+class FamilyEventBody(BaseModel):
+    kind: Literal["seeky_feed", "seeky_clean"]
+    subject_name: str = ""
 
 
 @router.post("/api/activity/report")
@@ -133,6 +143,17 @@ async def remove_notification(body: NotificationRemoveBody):
             "data": {"notification_removed": body.key},
         })
     return {"ok": True, "removed": bool(event)}
+
+
+@router.post("/api/family-events")
+async def report_family_event(body: FamilyEventBody):
+    recorded = await record_user_event(
+        body.kind,
+        metadata={"subject_name": body.subject_name.strip()[:80]},
+    )
+    if recorded:
+        await manager.broadcast({"type": "family_event", "data": {"kind": body.kind}})
+    return {"ok": True, "recorded": recorded}
 
 
 @router.get("/api/device-context/status")
@@ -338,6 +359,9 @@ async def get_timeline(hours: int = 24, limit: int = 300):
                 r["created_at"], "idle_event", actor,
                 title, _clip(r["detail"]), r["id"],
             ))
+
+    user_groups = await list_grouped_user_events(since=cutoff, limit=limit)
+    items.extend(build_user_timeline_items(user_groups, user_name))
 
     status = load_location_status()
     changed_at = float(status.get("state_changed_at") or 0)

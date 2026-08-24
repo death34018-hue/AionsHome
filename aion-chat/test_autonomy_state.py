@@ -27,6 +27,25 @@ class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await autonomy_state.get_actor_config("aion", db=self.db))["enabled"])
         self.assertFalse((await autonomy_state.get_actor_config("connor", db=self.db))["enabled"])
 
+    async def test_relationship_date_starts_unset_and_persists_per_actor(self):
+        aion = await autonomy_state.get_actor_config("aion", db=self.db)
+        connor = await autonomy_state.get_actor_config("connor", db=self.db)
+        self.assertIn("relationship_started_on", aion)
+        self.assertIsNone(aion["relationship_started_on"])
+        self.assertIsNone(connor["relationship_started_on"])
+
+        await autonomy_state.update_actor_config(
+            "aion", relationship_started_on="2025-06-09", db=self.db
+        )
+
+        self.assertEqual(
+            "2025-06-09",
+            (await autonomy_state.get_actor_config("aion", db=self.db))["relationship_started_on"],
+        )
+        self.assertIsNone(
+            (await autonomy_state.get_actor_config("connor", db=self.db))["relationship_started_on"]
+        )
+
     async def test_each_actor_keeps_an_independent_persistent_wake_timer(self):
         await autonomy_state.update_actor_config(
             "aion", enabled=True, min_interval_minutes=60, max_interval_minutes=180, db=self.db

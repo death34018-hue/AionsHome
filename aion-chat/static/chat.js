@@ -5409,7 +5409,7 @@ function shouldNavigatePersistentSubPage(frame, url) {
 
 function isPersistentSubPage(url) {
   const path = subPagePath(url);
-  return path === '/' || path === '/chatroom' || path === '/health';
+  return path === '/' || path === '/chatroom' || path === '/health' || path === '/music-station';
 }
 
 function syncHealthRingPageVisibility() {

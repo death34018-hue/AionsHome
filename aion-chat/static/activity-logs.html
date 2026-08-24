@@ -358,7 +358,7 @@ async function loadDeviceContext() {
       pc.title ? `窗口：${pc.title}` : ''
     ].filter(Boolean);
     const phoneLines = Object.entries(phone).map(([key, slot]) =>
-      `${contextFieldLabels[key] || key}：${contextLabel(slot?.value)}（${contextAge(slot?.observed_at)}）`);
+      `${contextFieldLabels[key] || key}：${contextLabel(slot?.display_value || slot?.value)}（${contextAge(slot?.observed_at)}）`);
     $('contextPc').textContent = pcLines.join('\n') || '暂无电脑状态';
     $('contextPhone').textContent = phoneLines.join('\n') || '暂无手机状态';
 

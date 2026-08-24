@@ -347,6 +347,7 @@ async function feedSeeky() {
   if (Math.random() < 0.38) {
     setTimeout(addWasteSoon, rand(2600, 7200));
   }
+  globalThis.FamilyEventClient?.reportFamilyEvent?.('seeky_feed', seekyConfig.name).catch(() => {});
   showToast('Seeky 吃饱了一点');
   showTemporaryPetBubble('ヾ(≧▽≦*)o', 'pet');
   feeding = false;
@@ -377,6 +378,7 @@ function cleanWaste(id, button) {
   } else {
     renderPetCare();
   }
+  globalThis.FamilyEventClient?.reportFamilyEvent?.('seeky_clean', seekyConfig.name).catch(() => {});
   showToast('清理好了');
   addPetEventMessage(`${clockText()} 你给 Seeky 清理了水族缸`);
   showTemporaryPetBubble(petCare.wastes.length ? '主人真好！' : '(❁´◡`❁)', 'pet');

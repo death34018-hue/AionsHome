@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#eef3ff">
+  <title>点歌台</title>
+  <link rel="icon" href="/public/icon-192.png" type="image/png">
+  <link rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/music-station.css">
+</head>
+<body class="view-library">
+  <header class="station-header">
+    <button class="icon-button" id="backButton" type="button" aria-label="返回 Home">‹</button>
+    <div>
+      <h1>点歌台</h1>
+      <p id="trackSummary">正在整理点过的歌…</p>
+    </div>
+    <button class="upload-button" id="uploadButton" aria-label="上传本地歌曲" title="上传本地歌曲" type="button">＋</button>
+    <input id="audioInput" type="file" accept="audio/mpeg,audio/mp4,audio/aac,audio/wav,audio/flac,audio/ogg,.mp3,.m4a,.aac,.wav,.flac,.ogg" multiple hidden>
+  </header>
+
+  <nav class="mobile-view-switch" aria-label="点歌台内容切换">
+    <button class="active" id="libraryViewButton" data-view="library" type="button">歌曲</button>
+    <button id="lyricsViewButton" data-view="lyrics" type="button">歌词</button>
+  </nav>
+
+  <main class="station-shell">
+    <section class="library-panel" id="dropZone" aria-label="歌曲列表与上传区域">
+      <div class="toolbar">
+        <label class="search-box">
+          <span aria-hidden="true">⌕</span>
+          <input id="searchInput" type="search" placeholder="搜索歌曲、歌手或点歌人" autocomplete="off">
+        </label>
+        <button class="soft-button" id="refreshButton" type="button">刷新</button>
+        <button class="soft-button" id="manageButton" type="button">管理</button>
+      </div>
+      <div class="playlist-bar" id="playlistBar">
+        <div class="playlist-tabs" id="playlistTabs"></div>
+        <button class="playlist-icon-button" id="newPlaylistButton" type="button" aria-label="新建歌单">＋</button>
+        <button class="playlist-icon-button" id="playlistSettingsButton" type="button" aria-label="管理当前歌单" hidden>⋯</button>
+        <div class="playlist-menu" id="playlistMenu" hidden>
+          <button id="renamePlaylistButton" type="button">重命名</button>
+          <button id="deletePlaylistButton" type="button">删除歌单</button>
+        </div>
+      </div>
+      <div class="manage-actions" id="manageActions" hidden>
+        <span id="selectedCount">已选 0 首</span>
+        <select id="playlistTargetSelect" aria-label="目标歌单"></select>
+        <button id="addToPlaylistButton" type="button">加入歌单</button>
+        <button id="removeFromPlaylistButton" type="button">移出歌单</button>
+        <button class="danger-button" id="deleteSelectedButton" type="button">删除歌曲</button>
+      </div>
+      <div class="drop-hint" id="dropHint">把本地歌曲拖到这里</div>
+      <div class="notice" id="notice" role="status" aria-live="polite"></div>
+      <div class="track-list" id="trackList"></div>
+      <div class="empty-state" id="emptyState" hidden>
+        <div>♫</div>
+        <p>还没有歌曲。等伴侣点一首，或者上传本地音乐吧。</p>
+      </div>
+    </section>
+
+    <aside class="side-panel" id="sidePanel" aria-label="歌词与歌曲设置">
+      <div class="side-tabs" role="tablist">
+        <button class="side-tab active" data-panel="lyricsPanel" type="button" role="tab">歌词</button>
+        <button class="side-tab" data-panel="historyPanel" type="button" role="tab">点歌记录</button>
+        <button class="side-tab" data-panel="editPanel" type="button" role="tab">编辑</button>
+      </div>
+      <section class="side-content lyrics-panel" id="lyricsPanel"></section>
+      <section class="side-content" id="historyPanel" hidden></section>
+      <section class="side-content edit-panel" id="editPanel" hidden>
+        <label>歌名<input id="editTitle" maxlength="160"></label>
+        <label>歌手<input id="editArtist" maxlength="160"></label>
+        <label>专辑<input id="editAlbum" maxlength="160"></label>
+        <label>歌词（支持 LRC）<textarea id="editLyrics" rows="12"></textarea></label>
+        <div class="edit-actions">
+          <button class="soft-button" id="refreshLyricsButton" type="button">从网易云刷新歌词</button>
+          <button class="primary-button" id="saveMetadataButton" type="button">保存</button>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <footer class="station-player" id="stationPlayer">
+    <div class="now-playing">
+      <div class="now-cover" id="nowCover">♫</div>
+      <div class="now-copy"><strong id="nowTitle">尚未播放</strong><span id="nowArtist">从歌单里选一首吧</span></div>
+    </div>
+    <div class="transport">
+      <div class="transport-buttons">
+        <button id="previousButton" type="button" aria-label="上一首">⏮</button>
+        <button class="play-button" id="playButton" type="button" aria-label="播放或暂停">▶</button>
+        <button id="nextButton" type="button" aria-label="下一首">⏭</button>
+        <button id="repeatButton" type="button" aria-label="播放模式" title="列表循环">↻</button>
+      </div>
+      <div class="timeline">
+        <span id="currentTime">0:00</span>
+        <input id="seekBar" type="range" min="0" max="1000" value="0" aria-label="播放进度">
+        <span id="durationTime">0:00</span>
+      </div>
+    </div>
+    <div class="player-tools">
+      <button id="lyricsButton" type="button">歌词</button>
+      <button id="trimButton" type="button">片段</button>
+      <div class="volume-control" id="volumeControl">
+        <button id="volumeButton" aria-label="歌曲音量" aria-expanded="false" type="button">🔉</button>
+        <div class="volume-panel" id="volumePanel" hidden>
+          <span>歌曲音量</span>
+          <input id="volumeBar" type="range" min="0" max="100" value="50" aria-label="歌曲音量大小">
+        </div>
+      </div>
+    </div>
+    <audio id="stationAudio" preload="metadata"></audio>
+  </footer>
+
+  <dialog id="trimDialog">
+    <form method="dialog" class="trim-form">
+      <h2>设置播放片段</h2>
+      <p>只改变播放的起止位置，不会修改原始音频。</p>
+      <label>开始（秒）<input id="trimStart" type="number" min="0" step="0.1" value="0"></label>
+      <label>结束（秒，0 表示歌曲结尾）<input id="trimEnd" type="number" min="0" step="0.1" value="0"></label>
+      <div class="dialog-actions">
+        <button value="cancel" type="submit">取消</button>
+        <button class="primary-button" id="saveTrimButton" value="default" type="button">保存片段</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="playlistDialog">
+    <form method="dialog" class="compact-dialog-form">
+      <h2 id="playlistDialogTitle">新建歌单</h2>
+      <label>歌单名称<input id="playlistNameInput" maxlength="40" autocomplete="off"></label>
+      <div class="dialog-actions">
+        <button value="cancel" type="submit">取消</button>
+        <button class="primary-button" id="savePlaylistButton" value="default" type="button">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="deleteTracksDialog">
+    <form method="dialog" class="compact-dialog-form">
+      <h2>删除歌曲</h2>
+      <p id="deleteTracksMessage">歌曲文件和全部点歌记录也会一并删除。</p>
+      <div class="dialog-actions">
+        <button value="cancel" type="submit">取消</button>
+        <button class="danger-button" id="confirmDeleteTracksButton" value="default" type="button">确认删除</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="/static/theme.js"></script>
+  <script src="/static/music-station.js"></script>
+</body>
+</html>

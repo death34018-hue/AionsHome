@@ -23,6 +23,7 @@ from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prom
 from message_dedup import build_message_dedupe_key, reserve_message_ingress
 from routes.files import export_conversation
 from routes.music import MUSIC_CMD_PATTERN
+from music_station import record_music_request
 from song_gen import SONG_CMD_PATTERN, clean_song_visible_reply
 from stream_reply import resolve_stream_failure
 from stream_safety import (
@@ -685,6 +686,18 @@ async def _music_sys_msg(conv_id: str, music_cards: list):
             (msg_id, conv_id, "system", text, now, "[]"),
         )
         await db.commit()
+    for song in music_cards:
+        try:
+            await record_music_request(
+                song,
+                requester_identity="aion",
+                requester_name=ai_name,
+                source_type="private",
+                source_id=conv_id,
+                source_message_id=msg_id,
+            )
+        except Exception as exc:
+            print(f"[music_station] 私聊点歌记录失败: {exc}")
     msg = {"id": msg_id, "conv_id": conv_id, "role": "system",
            "content": text, "created_at": now, "attachments": []}
     await manager.broadcast({"type": "msg_created", "data": msg})

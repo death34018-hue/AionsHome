@@ -22,6 +22,11 @@ class DeviceContextApiSmokeTest(unittest.TestCase):
             "posture": {"value": "face_down", "observed_at": now, "since": now - 60},
             "motion": {"value": "slight", "observed_at": now, "since": now - 60},
             "light": {"value": "dark", "observed_at": now, "since": now - 60},
+            "foreground_app": {
+                "value": "com.xingin.xhs",
+                "observed_at": now,
+                "since": now - 60,
+            },
         }}
         notification = {"data": {
             "key": "smoke:delivery",
@@ -39,13 +44,17 @@ class DeviceContextApiSmokeTest(unittest.TestCase):
                 patch.object(activity_routes.manager, "broadcast", new=AsyncMock()),
             ):
                 client = TestClient(app)
-                self.assertEqual(4, client.post(
+                self.assertEqual(5, client.post(
                     "/api/device-context/phone", json=phone).json()["changed"])
                 self.assertTrue(client.post(
                     "/api/device-context/notification", json=notification).json()["accepted"])
 
                 status = client.get("/api/device-context/status").json()
                 self.assertEqual("face_down", status["phone"]["posture"]["value"])
+                self.assertEqual(
+                    "小红书",
+                    status["phone"]["foreground_app"].get("display_value"),
+                )
                 self.assertEqual("smoke:delivery", status["notifications"][0]["key"])
                 self.assertIn("骑手正在配送", status["prompt"])
 

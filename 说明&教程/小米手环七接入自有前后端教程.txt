@@ -1,0 +1,412 @@
+不适合人类阅读，直接交给codex就好！！
+本文章主要是获取到小米手环`auth_key`的方法！有了这个key，才能让你的手机通过蓝牙和手环进行连接。不包含如何发送指令，震动手环，留言小纸条等。（因为那个代码太多，一两句说不清，之后会在git提交，需要的可以自己去抠代码~但只要拿到手环key能正常绑定，其他的codex都能搞定~~）
+
+
+# 小米手环 7 接入电脑：密钥、协议与本地健康面板
+
+> 适用：普通长条屏 Xiaomi Smart Band 7 / 7 NFC。不是 7 Pro。只操作本人的设备和账号。
+
+# 第一部分：给人看的教程
+
+## 1. 能做到什么
+
+最终链路：
+
+```text
+本地网页 → Python 服务 → Windows 蓝牙 → 小米手环 7
+                         ↓
+                    本地 SQLite
+```
+
+已真机跑通：
+
+- 扫描、连接、认证和读取电量。
+- 按需开启/关闭实时心率。
+- 控制自动心率、增强睡眠、睡眠呼吸、全天压力和全天血氧。
+- 同步步数、活动、睡眠、心率、血氧、压力、PAI 和呼吸率。
+- 每 5 分钟增量同步一次，数据不上传。
+
+手环 7 不支持血压。NFC 门卡、公交卡和支付不在本文范围内。
+
+## 2. 先用 Zepp Life 正常绑定
+
+需要的软件：
+
+- 手机：**Zepp Life**，包名 `com.xiaomi.hm.health`，不是 Mi Fitness。
+- 电脑：Chrome/Edge、Python 3.11+、支持 BLE 的蓝牙适配器。
+- 可选验证工具：[Gadgetbridge](https://gadgetbridge.org/)。
+
+操作：
+
+1. 在 Zepp Life 登录自己的账号。
+2. 正常绑定手环并同意蓝牙、定位等权限。
+3. 测一次心率并同步，确认“我的设备”里能看到手环。
+4. **不要解绑，也不要恢复出厂。**这会让旧密钥失效。
+
+如果绑定异常，先关闭 VPN 再试。App 显示“解绑失败”但手环回到二维码页，说明两端状态可能不一致，重新完整绑定并同步后再取密钥。
+
+## 3. 获取本人手环的 `auth_key`
+
+手环的 `auth_key` 是服务器绑定时生成的 16 字节密钥，表现为 32 位十六进制字符串，不能在本地暴力生成。
+
+最简单的方法来自 [Gadgetbridge 官方配对文档](https://gadgetbridge.org/basics/pairing/huami-xiaomi-server/)：
+
+1. 电脑打开 [Zepp Watchface Maker](https://watchface.zepp.com/)，用绑定手环的同一账号登录。
+2. 按 `F12` 或 `Ctrl+Shift+I`，进入“控制台 / Console”。
+3. 从 Gadgetbridge 文档的 **On a computer (easiest)** 小节复制最新版查询脚本，在控制台执行。
+4. 脚本会利用当前网页里本人的登录会话查询已绑定设备。
+5. 在返回数组中找到 `Xiaomi Smart Band 7`。
+6. 复制 `additionalInfo.auth_key`，应为 32 位十六进制字符。
+
+返回结构大致如下，内容必须使用自己的：
+
+```json
+{
+  "deviceName": "Xiaomi Smart Band 7",
+  "additionalInfo": {
+    "auth_key": "00112233445566778899aabbccddeeff"
+  }
+}
+```
+
+查询不到设备时，常见原因是账号区域不同。官方脚本默认访问 `api-mifit-us3.zepp.com`；中国区账号可尝试把域名改为 `api-mifit-cn3.zepp.com`，其余路径和参数保持不变。
+
+安全提醒：控制台会接触账号会话。不要把控制台截图、完整 JSON、Cookie、token、用户 ID、MAC、序列号或 `auth_key` 发给别人。
+
+## 4. 配置本地 Demo
+
+创建 `device.local.json`：
+
+```json
+{
+  "address": "AA:BB:CC:DD:EE:FF",
+  "name": "Xiaomi Smart Band 7",
+  "auth_key": "00112233445566778899aabbccddeeff"
+}
+```
+
+这里的值都是示例。`device.local.json` 必须加入 `.gitignore`。
+
+连接前关闭 Zepp Life、Gadgetbridge 等会抢占 BLE 的应用，必要时暂时关闭手机蓝牙。不要在 Zepp Life 里点解绑。
+
+## 5. 使用与数据说明
+
+1. 启动 Python 服务并打开 `http://127.0.0.1:8765`。
+2. 扫描手环，连接后自动认证。
+3. 实时心率需要佩戴贴肤，再点击“开始实时监测”；不用时关闭。
+4. “立即同步”拉取手环已经产生的数据，不会凭空测量新指标。
+5. 后台每 300 秒增量同步；实时心率开启时暂停历史同步，避免冲突。
+
+注意：
+
+- 电脑每 5 分钟同步，不等于手环每 5 分钟测量。
+- 实测固件的自动心率只支持关闭、1、10、30 分钟和智能模式，不支持 5 分钟。
+- 血氧和压力要先佩戴并满足静止条件；想快速验证，可在手环上手动测一次再同步。
+- 睡眠和睡眠呼吸率要佩戴过夜才会出现。
+- “新增 3 条样本”可能只是 3 条分钟活动记录，不代表新增 3 种指标。
+- 活动样本里的心率 `255` 表示无有效读数，常见于充电或未佩戴。
+- PAI 是最近 7 天运动心率带来的心肺活动积分，没佩戴或没有有效运动时为 0 很正常。
+
+## 6. 常见故障
+
+| 现象 | 处理 |
+|---|---|
+| 扫描不到 | 关闭手机端应用；切换电脑蓝牙；让手环亮屏 |
+| 认证失败 | 检查密钥是否正好 32 位；确认取密钥后没有解绑或重置 |
+| 心率超时 | 戴紧手环，传感器贴肤；充电时无法获得有效心率 |
+| 没有血氧/压力 | 先在手环上完成一次测量，再点同步 |
+| 新增样本但卡片为空 | 新增的可能只是活动记录；查看同步结果中的各类型数量 |
+| 配置命令超时 | `0x000A` 必须使用认证后的会话密钥加密 |
+| 数据校验失败 | 检查包序号、CRC32，并处理“完成通知先于数据通知”的情况 |
+
+---
+
+# 第二部分：直接交给 Codex 的实现规格
+
+## A. 任务目标
+
+请实现一个独立的 Windows 本地 Demo：浏览器只访问 `127.0.0.1`；Python 负责 BLE、协议、SQLite 和定时任务。不得把密钥或健康数据发到外网。
+
+建议技术栈：
+
+```text
+Python 3.11+ / bleak / cryptography / pycryptodome
+FastAPI / uvicorn / sqlite3
+原生 HTML + CSS + JavaScript + WebSocket
+pytest
+```
+
+建议模块：
+
+```text
+config.py           本机配置与密钥校验
+ble_adapter.py      Bleak 薄封装，便于测试替换
+huami.py            鉴权、分包、加密、实时心率解析
+health_protocol.py  健康设置、历史请求与样本解析
+health_store.py     SQLite、去重、游标和摘要
+band_service.py     连接状态机、并发控制和 300 秒调度
+app.py              REST API 与 WebSocket
+static/             本地控制面板
+```
+
+## B. BLE UUID 与 endpoint
+
+| 用途 | UUID / endpoint |
+|---|---|
+| Huami 服务/扫描识别 | `0000fee0-0000-1000-8000-00805f9b34fb` |
+| 标准电量 | `00002a19-0000-1000-8000-00805f9b34fb` |
+| Zepp OS 分包写入 | `00000016-0000-3512-2118-0009af100700` |
+| Zepp OS 分包通知/ACK | `00000017-0000-3512-2118-0009af100700` |
+| 标准心率通知 | `00002a37-0000-1000-8000-00805f9b34fb` |
+| 历史元信息/命令 | `00000004-0000-3512-2118-0009af100700` |
+| 历史数据 | `00000005-0000-3512-2118-0009af100700` |
+| 2021 鉴权 endpoint | `0x0082` |
+| 实时心率 endpoint | `0x001D` |
+| 健康配置 endpoint | `0x000A` |
+
+扫描时接受广播 `FEE0`，或名称含 `Huami` / `Band` 的设备。连接后必须先认证。
+
+## C. Zepp OS 分包
+
+每个 frame 以 `0x03` 开头。
+
+首包头：
+
+```text
+03 flags 00 handle count payload_length_u32_le endpoint_u16_le
+```
+
+续包头：
+
+```text
+03 flags 00 handle count
+```
+
+标志位：
+
+- `0x01`：首包。
+- `0x02`：末包。
+- `0x04`：需要 ACK。
+- `0x08`：负载已加密。
+
+末包和 ACK 是独立标志，不能要求它们同时存在。需要 ACK 时回复：
+
+```text
+04 00 <handle> 01 <last_count>
+```
+
+同一消息的 `handle` 不变，`count` 从 0 递增。发送下一条消息时递增 `handle`。
+
+### 加密消息
+
+认证后得到 `session_key[16]` 和 `sequence_u32`。加密步骤：
+
+```text
+authenticated = payload || sequence_u32_le
+plain = authenticated || crc32(authenticated)_u32_le
+plain = 右侧补 00 到 16 字节倍数
+message_key[i] = session_key[i] XOR handle
+ciphertext = AES-128-ECB(message_key, plain)
+sequence += 1
+```
+
+首包里的 `payload_length` 填原始明文 `payload` 长度，不含 sequence、CRC 和 padding。接收时按同一规则解密并校验 CRC。
+
+## D. Zepp OS 2021 鉴权
+
+1. 校验 `auth_key` 为 16 字节。
+2. 使用 `SECT163R2`（B-163）生成临时密钥。私钥保存为 24 字节小端；公钥为 `x[24] || y[24]`，均为小端。
+3. 向 endpoint `0x0082` 发送：
+
+```text
+04 02 00 02 || local_public_key[48]
+```
+
+4. 等待挑战：
+
+```text
+10 04 01 || remote_random[16] || remote_public_key[48]
+```
+
+5. ECDH 得到 24 字节小端 `shared_x`：
+
+```text
+session_key = shared_x[8:24] XOR auth_key
+sequence = little_endian_u32(shared_x[0:4])
+```
+
+6. 回复：
+
+```text
+05 || AES-ECB(auth_key, remote_random)
+   || AES-ECB(session_key, remote_random)
+```
+
+7. 收到 `10 05 01` 才算认证成功。其他状态提示用户重新核对密钥。
+
+## E. 实时心率
+
+1. 订阅 `2A37`。
+2. 向 endpoint `0x001D` 发送 `04 01`（START）。
+3. 每秒发送 `04 02`（CONTINUE）保活。
+4. `2A37` 的首字节 bit0 决定 BPM 是 8 位还是 16 位小端。
+5. 停止时先取消保活任务，再发送 `04 00`（STOP），最后取消订阅。
+
+实时心率开启期间拒绝历史同步。重复 START/STOP 必须幂等；断开连接也要清理保活任务。
+
+## F. 健康设置
+
+endpoint `0x000A` 的读写都必须使用加密分包。
+
+读取设置和固件约束：
+
+```text
+03 01 08 05 01 11 12 13 31
+```
+
+配置项：
+
+| code | type | 含义 | value |
+|---|---:|---|---|
+| `01` | `10` | 自动心率间隔 | `00/01/05/0A/1E/FF`，`FF` 为智能 |
+| `11` | `0B` | 增强睡眠 | `00/01` |
+| `12` | `0B` | 睡眠呼吸质量 | `00/01` |
+| `13` | `0B` | 全天压力 | `00/01` |
+| `31` | `0B` | 全天血氧 | `00/01` |
+
+逐项写入，不要一次批量发送：
+
+```text
+05 08 02 00 01 <code> <type> <value>
+```
+
+读取手环返回的允许值并约束网页选项。真机只允许 `0,1,10,30,-1` 时，必须禁用 5 分钟选项，而不是伪装成功。
+
+## G. 历史同步
+
+支持的数据类型：
+
+| kind | type ID | 主要内容 |
+|---|---:|---|
+| `activity` | `01` | 分钟活动、步数、自动心率、睡眠原始字段 |
+| `manual_heart_rate` | `02` | 手动心率 |
+| `pai` | `0D` | PAI |
+| `manual_stress` | `12` | 手动压力 |
+| `stress` | `13` | 自动压力 |
+| `spo2` | `25` | 普通血氧 |
+| `sleep_spo2` | `26` | 睡眠血氧 |
+| `respiratory_rate` | `38` | 睡眠呼吸率 |
+| `resting_heart_rate` | `3A` | 静息心率 |
+| `max_heart_rate` | `3D` | 最高心率 |
+
+向 `0004` 写请求：
+
+```text
+01 <type> <year_u16_le> <month> <day> <hour> <minute> <second> <utc_offset_quarter_hours_i8>
+```
+
+同步状态机：
+
+1. `0004` 返回 `10 01 01 ...`：读取起始时间；有数据则回 `02` 开始传输。
+2. `0005` 每包第一个字节是计数器，必须从 0 连续递增；剩余字节拼接。
+3. `0004` 返回 `10 02 01 [crc32_u32_le]`：表示数据结束。
+4. Windows 通知可能乱序，结束通知可能先到。收到结束后等待约 50ms 安静窗口；若又来数据则重新计时。
+5. 校验整个数据 buffer 的 CRC32，解析后向 `0004` 写 `03 09`。
+6. `03 09` 表示确认但保留手环原始数据。等待 `10 03 01` 后完成该类型。
+
+首次同步默认回看 7 天。以后从各类型游标继续；新游标取最后样本时间加 60 秒。样本用 `(kind,timestamp,source)` 去重。
+
+### 已验证的解析规则
+
+- `activity`：每条 8 字节，依次为 `raw_kind,intensity,steps,heart_rate,unknown,sleep,deep_sleep,rem_sleep`，每条代表 1 分钟。
+- 心率只有 `20..250` 有效，`255` 表示无读数。
+- `raw_kind=118` 是充电/未佩戴，不能算睡眠；`raw_kind=120` 才进入睡眠阶段判断。
+- 睡眠阶段：先对 deep/REM 值执行 `& 0x7F`；REM `>55`，否则 deep `>42`，否则 light。
+- `stress`：每字节 1 分钟，跳过 `FF`。
+- `manual_stress`：每条 5 字节，`timestamp_u32_le + value_u8`。
+- 手动/静息/最高心率：每条 6 字节，`timestamp_u32_le + utc_quarters_i8 + value_u8`。
+- `spo2`：首字节版本必须为 `02`，之后每条 65 字节；时间戳在前 4 字节，血氧字节 bit7 表示自动测量。
+- `sleep_spo2`：首字节版本 `02`，之后每条 30 字节。
+- `respiratory_rate`：每条 8 字节，`timestamp_u32_le + utc_quarters_i8 + value_u8 + 2 个未知字节`。
+- `pai`：每条 102 字节，目前只接受 record type `05`；保存 `pai_today` 和 `pai_total`，卡片显示最新 total。
+- 未理解的字段原样放进 `data_json`，不要丢弃，也不要编造含义。
+
+## H. SQLite
+
+```sql
+CREATE TABLE health_samples (
+  kind TEXT NOT NULL,
+  timestamp INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  value REAL,
+  data_json TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY (kind, timestamp, source)
+);
+
+CREATE TABLE sync_cursors (
+  kind TEXT PRIMARY KEY,
+  timestamp INTEGER NOT NULL
+);
+```
+
+开启 WAL。使用 `INSERT OR IGNORE`。摘要包括今日步数、睡眠分钟/阶段、有效心率、最新血氧、压力、PAI 和呼吸率。血压固定返回不支持。
+
+## I. 本地 API 与网页
+
+REST API：
+
+```text
+GET  /api/status
+GET  /api/logs
+POST /api/scan
+POST /api/connect
+POST /api/disconnect
+POST /api/battery
+POST /api/heart-rate/start
+POST /api/heart-rate/stop
+GET  /api/health/settings
+PUT  /api/health/settings
+POST /api/health/sync
+GET  /api/health/summary
+GET  /api/health/recent?kind=&limit=
+WS   /ws
+```
+
+WebSocket 事件至少包含 `status`、`battery`、`heart_rate`、`health_settings` 和 `health_sync`。
+
+网页需要：设备状态、扫描/连接、实时心率开关与最近 60 点趋势、健康设置、立即同步、摘要卡片和脱敏协议日志。后台每 300 秒同步；实时心率开启、未连接或未认证时跳过。
+
+## J. 安全与验收
+
+安全要求：
+
+- `device.local.json` 加入 `.gitignore`。
+- API 只返回 `auth_key_configured: true/false`，永不返回密钥。
+- 日志对密钥做替换脱敏，不记录 Cookie 或 token。
+- 服务仅绑定 `127.0.0.1`。
+- 不实现 NFC、门卡、支付，也不连接陌生设备。
+
+最低自动测试：
+
+- 配置校验和密钥脱敏。
+- B-163 鉴权成功/失败。
+- 分包首包、续包、末包、独立 ACK、加密往返和 CRC 失败。
+- 实时心率 START/CONTINUE/STOP、幂等和断开清理。
+- 健康设置解析、约束和不支持档位拒绝。
+- 每种历史记录解析、包序号错误、CRC 错误、结束通知乱序。
+- SQLite 去重、游标和摘要。
+- REST/WebSocket 接口。
+
+真机验收顺序：
+
+```text
+扫描 → 连接 → 认证 → 电量
+→ 开关实时心率 → 关闭后确认停止保活
+→ 读取/写回健康设置
+→ 手动测一次血氧和压力 → 同步
+→ 重复同步确认零重复写入
+→ 等待 5 分钟确认自动同步
+```
+
+实现参考：[Gadgetbridge 源码](https://codeberg.org/Freeyourgadget/Gadgetbridge) 与其 [Zepp OS 文档](https://gadgetbridge.org/)。公开分发衍生代码前请核对 AGPL-3.0 义务并保留来源说明。
+

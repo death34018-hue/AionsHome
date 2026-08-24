@@ -10,6 +10,8 @@ import weakref
 
 import aiosqlite
 
+from family_events import record_user_event
+
 
 class EnglishCornerError(Exception):
     """Base exception for English-corner domain failures."""
@@ -1068,6 +1070,7 @@ async def set_card_status(card_id, status, *, db_path=None) -> dict:
     _validate_card_status(status)
     async with _open_english_corner_db(db_path) as db:
         await ensure_english_corner_tables(db)
+        previous = await _get_card_by_id_on_db(db, card_id)
         now = time.time()
         learned_at = now if status == "learned" else None
         cursor = await db.execute(
@@ -1087,6 +1090,17 @@ async def set_card_status(card_id, status, *, db_path=None) -> dict:
         card = await _get_card_by_id_on_db(db, card_id)
         if card is None:
             raise RuntimeError("Updated English learning card could not be reloaded.")
+        if status == "learned" and previous and previous.get("status") != "learned":
+            try:
+                await record_user_event(
+                    "english_card_learned",
+                    source_id=f"english-card:{card_id}:{time.time_ns()}",
+                    metadata={"card_title": card.get("title") or ""},
+                    created_at=now,
+                    db_path=db_path,
+                )
+            except (OSError, aiosqlite.Error):
+                pass
         return card
 
 
