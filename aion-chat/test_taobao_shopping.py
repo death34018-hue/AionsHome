@@ -97,6 +97,38 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(actual["products"][0]["item_id"], "805862215859")
         self.assertEqual(actual["skipped"], 1)
 
+    async def test_empty_native_result_recovers_on_one_retry(self):
+        with patch("taobao_shopping.mcp_search", new=AsyncMock(side_effect=[
+            {"products": []}, {"products": [product()]},
+        ])) as search, patch("taobao_shopping.asyncio.sleep", new=AsyncMock()):
+            actual = await search_and_record(self.store, "机械手")
+        self.assertEqual(len(actual["products"]), 1)
+        self.assertEqual(search.await_count, 2)
+        self.assertEqual(search.await_args_list[0], search.await_args_list[1])
+
+    async def test_empty_results_stop_after_retry_and_keep_clear_trip_summary(self):
+        with patch("autonomy._actor_context", new=AsyncMock(return_value=[])), \
+             patch("autonomy._call_actor", new=AsyncMock(return_value='{"keyword":"机械手"}')) as model, \
+             patch("taobao_shopping.mcp_search", new=AsyncMock(return_value={"products": []})) as search, \
+             patch("taobao_shopping.asyncio.sleep", new=AsyncMock()):
+            result = await roam("aion", self.store)
+        self.assertEqual(search.await_count, 2)
+        self.assertEqual(model.await_count, 1)
+        self.assertIn("空商品列表", result["message"])
+        self.assertEqual((await self.store.get_trip(result["trip_id"]))["summary"], result["message"])
+
+    async def test_invalid_links_are_not_retried_or_reported_as_empty_response(self):
+        with patch("autonomy._actor_context", new=AsyncMock(return_value=[])), \
+             patch("autonomy._call_actor", new=AsyncMock(return_value='{"keyword":"机械手"}')), \
+             patch("taobao_shopping.mcp_search", new=AsyncMock(return_value={
+                 "products": [product(productUrl="https://evil.test/")],
+             })) as search:
+            result = await roam("aion", self.store)
+        search.assert_awaited_once()
+        self.assertIn("1 件", result["message"])
+        self.assertIn("链接校验", result["message"])
+        self.assertEqual(result["items"], [])
+
     async def test_invalid_model_direction_is_error_not_fake_rest(self):
         with patch("autonomy._actor_context", new=AsyncMock(return_value=[])), \
              patch("autonomy._call_actor", new=AsyncMock(return_value="模型调用失败")):

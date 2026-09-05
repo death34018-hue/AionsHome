@@ -236,7 +236,7 @@ BUILTIN_MODELS = {
     "官Gem3.8flash":  {"provider": "gemini", "model": "gemini-3.8-flash", "vision": True},
     "官Gem3.1pro":  {"provider": "gemini", "model": "gemini-3.1-pro-preview", "vision": True},
     # "Codex-5.5":            {"provider": "codex_cli",  "model": "gpt-5.5", "vision": True},
-    # "Codex-Astra":    {"provider": "codex_cli",  "model": "gpt-6-astra", "vision": True, "transport_mode": "safe_live"},
+    "Codex-Astra":    {"provider": "codex_cli",  "model": "gpt-6-astra", "vision": True, "transport_mode": "safe_live"},
     "Codex-Sol":      {"provider": "codex_cli",  "model": "gpt-5.6-sol", "vision": True, "transport_mode": "safe_live"},
     # "Codex":          {"provider": "codex_cli",  "model": "gpt-5.6-terra", "vision": True},
     # "Codex-Luna":     {"provider": "codex_cli",  "model": "gpt-5.6-luna", "vision": True},

@@ -58,9 +58,9 @@ def _iter_client_assets():
         path = static_dir / filename
         if path.is_file():
             yield route, path, "document"
-    for path in static_dir.iterdir():
+    for path in static_dir.rglob("*"):
         if path.is_file() and path.suffix.lower() in {".js", ".css", ".json"}:
-            yield "/static/" + path.name, path, "frontend"
+            yield "/static/" + path.relative_to(static_dir).as_posix(), path, "frontend"
 
     # Wallpaper videos and user-authored HTML story pages remain excluded.
     # App-owned navigable documents above are versioned explicitly by route.

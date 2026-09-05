@@ -9,70 +9,101 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#ff8359">
 <style>
-.schedule-page { --sch-muted:#67584f; --sch-subtle:#76665d; --sch-accent-text:#9f3c19; --sch-accent-fg:#31170f; --sch-add-bg:#f47a33; --sch-add-fg:#32180e; --sch-alarm:#7a3d00; --sch-reminder:#31598c; --sch-monitor:#26634f; --sch-completed:#3159a5; --sch-cancelled:#a12649; flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; padding:12px 16px 16px; gap:10px; }
+.schedule-page { --sch-muted:#67584f; --sch-subtle:#76665d; --sch-accent-text:#9f3c19; --sch-accent-fg:#31170f; --sch-add-bg:#f47a33; --sch-add-fg:#32180e; --sch-alarm:#7a3d00; --sch-reminder:#31598c; --sch-monitor:#26634f; --sch-completed:#3159a5; --sch-cancelled:#a12649; flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; padding:12px 16px 16px; gap:16px; padding-bottom:max(16px,env(safe-area-inset-bottom)); }
 body[data-theme="dark"] .schedule-page { --sch-muted:#c5c9ef; --sch-subtle:#aeb5e4; --sch-accent-text:#c7baff; --sch-accent-fg:#160b32; --sch-add-bg:#ff8a3d; --sch-add-fg:#2b1308; --sch-alarm:#ffbf86; --sch-reminder:#a9c9ff; --sch-monitor:#8be7c9; --sch-completed:#adc5ff; --sch-cancelled:#ff9ab7; }
-.sch-tabs { display:grid; grid-template-columns:1fr 1fr; gap:4px; padding:4px; flex-shrink:0; border:1px solid var(--border); border-radius:14px; background:var(--surface2); }
-.sch-tab { min-height:36px; border:0; border-radius:10px; background:transparent; color:var(--sch-muted); font-size:13px; font-weight:600; cursor:pointer; transition:background .18s ease,color .18s ease,box-shadow .18s ease; }
+.sch-tabs { display:grid; grid-template-columns:1fr 1fr; gap:4px; padding:5px; flex-shrink:0; border:1px solid var(--border); border-radius:16px; background:var(--surface2); }
+.sch-tab { min-height:40px; border:0; border-radius:12px; background:transparent; color:var(--sch-muted); font-size:13px; font-weight:600; cursor:pointer; transition:background .18s ease,color .18s ease,box-shadow .18s ease; }
 .sch-tab.active { background:var(--surface); color:var(--sch-accent-text); box-shadow:0 4px 14px color-mix(in srgb,var(--text) 10%,transparent); }
 .sch-tab:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .sch-tab-panel { display:none; flex:1; min-height:0; }
-.sch-tab-panel.active { display:flex; min-height:0; flex-direction:column; gap:10px; }
+.sch-tab-panel.active { display:flex; min-height:0; flex-direction:column; gap:14px; }
 .sch-tab-panel[hidden] { display:none; }
-.sch-current-workspace { flex:1; min-height:0; display:grid; grid-template-rows:minmax(0,13fr) minmax(180px,7fr); gap:10px; }
-.sch-schedule-block { min-height:0; display:flex; flex-direction:column; gap:8px; }
-.sch-list { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; border:1px solid var(--border); border-radius:14px; background:color-mix(in srgb,var(--surface) 88%,transparent); box-shadow:0 10px 30px color-mix(in srgb,var(--text) 6%,transparent); }
-.sch-item { display:flex; align-items:flex-start; gap:9px; padding:11px 12px; border-bottom:1px solid var(--border); transition:background .16s ease; }
+.sch-schedule-block { flex:1; min-height:0; display:flex; flex-direction:column; gap:12px; }
+.sch-list { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; border:1px solid var(--border); border-radius:18px; background:color-mix(in srgb,var(--surface) 88%,transparent); box-shadow:none; }
+.sch-item { display:flex; align-items:flex-start; gap:8px; padding:10px 12px; border-bottom:1px solid var(--border); transition:background .16s ease; }
 .sch-item:hover { background:color-mix(in srgb,var(--accent) 5%,transparent); }
 .sch-item:last-child { border-bottom:none; }
-.sch-icon { font-size:17px; flex-shrink:0; margin-top:1px; }
+.sch-icon { font-size:15px; flex-shrink:0; margin-top:1px; display:grid; place-items:center; width:28px; height:28px; border-radius:11px; background:var(--surface2); }
 .sch-body { flex:1; min-width:0; }
-.sch-origin { font-size:11.5px; color:var(--sch-muted); font-weight:600; margin-right:4px; white-space:nowrap; }
-.sch-content { font-size:13.5px; line-height:1.45; color:var(--text); word-break:break-word; }
-.sch-type,.sch-history-status { display:inline-block; margin-left:6px; padding:2px 6px; border-radius:999px; font-size:9.5px; line-height:1.35; vertical-align:1px; }
+.sch-origin { font-size:11px; color:var(--sch-muted); font-weight:600; margin-right:4px; white-space:nowrap; }
+.sch-content { font-size:13px; line-height:1.5; color:var(--text); word-break:break-word; }
+.sch-type,.sch-history-status { display:inline-block; margin-left:6px; padding:2px 6px; border-radius:999px; font-size:10.5px; line-height:1.35; vertical-align:1px; }
 .sch-type.alarm { background:color-mix(in srgb,var(--accent) 16%,var(--surface)); color:var(--sch-alarm); }
 .sch-type.reminder { background:color-mix(in srgb,var(--text2) 13%,var(--surface)); color:var(--sch-reminder); }
 .sch-type.monitor { background:color-mix(in srgb,var(--ai-bg) 38%,var(--surface)); color:var(--sch-monitor); }
-.sch-time { font-size:10.5px; color:var(--sch-subtle); margin-top:3px; }
-.sch-history-item { padding:8px 10px; }
-.sch-history-item .sch-content { font-size:12px; color:var(--text); }
+.sch-time { font-size:11px; color:var(--sch-subtle); margin-top:4px; font-variant-numeric:tabular-nums; }
+.sch-history-item { padding:10px 12px; }
+.sch-history-item .sch-content { font-size:13px; color:var(--text); }
 .sch-history-item .sch-origin { font-size:10.5px; color:var(--sch-muted); }
 .sch-history-item .sch-time { font-size:10px; color:var(--sch-subtle); }
 .sch-history-item .sch-icon { font-size:15px; }
 .sch-history-status { background:color-mix(in srgb,var(--accent) 12%,var(--surface)); color:var(--sch-completed); }
 .sch-history-status.cancelled { background:color-mix(in srgb,var(--danger) 12%,var(--surface)); color:var(--sch-cancelled); }
-.sch-del-btn { width:30px; height:30px; border:none; border-radius:50%; background:transparent; color:var(--danger); font-size:13px; cursor:pointer; opacity:1; flex-shrink:0; }
+.sch-del-btn { width:44px; height:44px; border:none; border-radius:50%; background:transparent; color:var(--danger); font-size:13px; cursor:pointer; opacity:1; flex-shrink:0; margin:-5px -8px 0 0; }
 .sch-del-btn:hover { opacity:1; background:color-mix(in srgb,var(--danger) 10%,transparent); }
 .sch-del-btn:focus-visible { outline:2px solid var(--danger); outline-offset:1px; }
-.sch-empty { min-height:110px; display:flex; align-items:center; justify-content:center; padding:24px; text-align:center; color:var(--sch-muted); font-size:13px; }
-.sch-add-section { flex-shrink:0; padding:10px; border:1px solid var(--border); border-radius:14px; background:var(--surface); box-shadow:0 8px 24px color-mix(in srgb,var(--text) 5%,transparent); }
-.sch-add-section input[type="text"] { width:100%; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:9px 11px; font-size:13px; outline:none; margin-bottom:8px; box-sizing:border-box; }
-.sch-add-row2 { display:flex; gap:6px; align-items:center; }
+.sch-empty { min-height:180px; display:flex; align-items:center; justify-content:center; padding:24px; text-align:center; color:var(--sch-muted); font-size:13px; line-height:1.8; }
+.sch-add-section { flex-shrink:0; padding:12px; border:1px solid var(--border); border-radius:18px; background:var(--surface); box-shadow:none; }
+.sch-add-section input[type="text"] { width:100%; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:9px 11px; font-size:14px; outline:none; margin-bottom:8px; box-sizing:border-box; min-height:44px; }
+.sch-add-row2 { display:flex; gap:8px; align-items:center; }
 .sch-add-row2 input { flex:1; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:7px 9px; font-size:12px; outline:none; min-width:0; }
 .sch-add-row2 select { padding:7px 9px; border:1px solid var(--border); border-radius:10px; background:var(--surface2); color:var(--text); font-size:12px; flex-shrink:0; }
-.sch-add-row2 button { padding:8px 15px; border:none; border-radius:10px; background:var(--sch-add-bg); color:var(--sch-add-fg); font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap; flex-shrink:0; box-shadow:0 5px 14px color-mix(in srgb,var(--sch-add-bg) 28%,transparent); }
+.sch-add-row2 button { padding:8px 15px; border:none; border-radius:10px; background:var(--sch-add-bg); color:var(--sch-add-fg); font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap; flex-shrink:0; box-shadow:none; min-height:44px; }
 .sch-add-section input:focus,.sch-add-section select:focus { border-color:var(--accent); outline:2px solid color-mix(in srgb,var(--accent) 18%,transparent); outline-offset:1px; }
-.private-memo-section { min-height:0; display:flex; flex-direction:column; padding:9px 10px; border:1px solid var(--border); border-radius:14px; background:var(--surface); box-shadow:0 8px 24px color-mix(in srgb,var(--text) 5%,transparent); }
-.private-memo-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
+.private-memo-section { min-height:0; display:flex; flex-direction:column; padding:0; border:0; border-radius:14px; background:transparent; box-shadow:none; flex:1; gap:14px; }
+.private-memo-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; margin:0; flex-shrink:0; }
 .private-memo-title { font-size:14px; font-weight:750; color:var(--text); }
-.private-memo-mic { width:44px; height:44px; border:0; border-radius:50%; color:white; font-size:22px; cursor:pointer; background:linear-gradient(145deg,#62c9ff,#8068ff 58%,#d975ff); box-shadow:0 5px 15px color-mix(in srgb,#8068ff 35%,transparent); }
-.private-memo-list { min-height:0; overflow-y:auto; }
-.private-memo-item { display:flex; align-items:center; gap:8px; min-height:38px; border-top:1px solid var(--border); }
+.private-memo-mic { width:64px; height:64px; border:0; border-radius:50%; color:var(--sch-accent-fg); font-size:14px; cursor:pointer; background:transparent; box-shadow:none; display:flex; align-items:center; justify-content:center; gap:6px; min-height:44px; padding:0; font-weight:650; margin:0 auto; }
+.private-memo-list { min-height:0; overflow-y:auto; overflow:visible; }
+.private-memo-item { display:flex; align-items:center; gap:8px; min-height:56px; border-top:1px solid var(--border); padding:6px 0; }
 .private-memo-item.completed .private-memo-content { color:var(--sch-subtle); text-decoration:line-through; }
-.private-memo-content { flex:1; min-width:0; font-size:14px; line-height:1.4; color:var(--text); word-break:break-word; }
-.memo-check { width:22px; height:22px; border:2px solid var(--accent); border-radius:50%; background:transparent; color:white; padding:0; flex-shrink:0; }
-.memo-check.completed { border:0; background:var(--accent); }
-.memo-action { width:30px; height:30px; border:0; border-radius:50%; background:transparent; color:var(--sch-muted); font-size:15px; }
+.private-memo-content { flex:1; min-width:0; font-size:13px; line-height:1.5; color:var(--text); word-break:break-word; }
+.memo-check { width:44px; height:44px; border:0; border-radius:50%; background:transparent; color:var(--sch-accent-fg); padding:0; flex-shrink:0; cursor:pointer; position:relative; }
+.memo-check.completed { border:0; background:transparent; }
+.memo-action { width:44px; height:44px; border:0; border-radius:50%; background:transparent; color:var(--sch-muted); font-size:15px; flex-shrink:0; cursor:pointer; }
 .memo-action.danger { color:var(--danger); }
-.private-memo-empty { padding:15px 8px; text-align:center; color:var(--sch-muted); font-size:12px; }
-.private-memo-completed-toggle { border:0; background:transparent; color:var(--sch-muted); text-align:left; padding:7px 0 2px; font-size:12px; }
+.private-memo-empty { padding:48px 8px; text-align:center; color:var(--sch-muted); font-size:14px; line-height:1.8; }
+.private-memo-completed-toggle { border:0; background:transparent; color:var(--sch-muted); text-align:left; padding:7px 0 2px; font-size:12px; display:flex; align-items:center; justify-content:space-between; width:100%; min-height:48px; margin-top:6px; border-top:1px solid var(--border); cursor:pointer; }
 @media (max-width:420px) {
-  .schedule-page { padding:10px 12px 12px; }
+  .schedule-page { padding:10px 12px max(12px,env(safe-area-inset-bottom)); }
   .sch-add-row2 { flex-wrap:wrap; }
-  .sch-add-row2 input { flex-basis:calc(100% - 92px); }
-  .sch-add-row2 select { flex:1; }
-  .sch-add-row2 button { flex-basis:100%; width:100%; min-height:46px; font-size:15px; border-radius:12px; }
-  .sch-current-workspace { grid-template-rows:minmax(0,13fr) minmax(190px,7fr); }
+  .sch-add-row2 input { flex-basis:0; }
+  .sch-add-row2 select { flex:0 0 100px; width:100px; }
+  .sch-add-row2 button { flex-basis:100%; width:100%; min-height:44px; font-size:13px; border-radius:12px; }
 }
+.sub-page [hidden] { display:none !important; }
+.sch-section-note { margin-top:4px; font-size:12px; line-height:1.5; color:var(--sch-muted); }
+.sch-history-button { display:flex; align-items:center; gap:6px; min-height:36px; padding:0 10px; border:1px solid var(--border); border-radius:12px; background:transparent; color:var(--text2); font-size:12px; cursor:pointer; }
+.sch-history-button svg { width:16px; height:16px; }
+.sch-history-item .sch-origin,.sch-history-item .sch-time { font-size:11px; }
+.sch-add-title { margin-bottom:10px; font-size:13px; font-weight:650; color:var(--sch-muted); }
+.sch-add-row2 input,.sch-add-row2 select { min-height:44px; font-size:13px; }
+.private-memo-scroll { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; border:1px solid var(--border); border-radius:18px; background:var(--surface); padding:0 14px; }
+.private-memo-item:first-child { border-top:0; }
+.memo-check::before { content:''; position:absolute; inset:10px; border:2px solid var(--accent); border-radius:50%; }
+.memo-check.completed::before { background:color-mix(in srgb,var(--accent) 22%,transparent); }
+.private-memo-completed-toggle::after { content:'⌄'; }
+.private-memo-completed-toggle[aria-expanded="true"]::after { content:'⌃'; }
+.schedule-page button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+@media (max-width:420px) {
+  .schedule-page { gap:12px; }
+  .sch-item { padding:10px; gap:8px; }
+  .sch-add-section { padding:12px; }
+  .private-memo-scroll { padding:0 8px; }
+  .private-memo-item { gap:4px; }
+}
+@media (max-height:640px) {
+  .sch-schedule-block { overflow-y:auto; }
+  .sch-schedule-block .sch-list { flex:0 0 180px; }
+}
+.top-bar h2 { font-size:16px; }
+.private-memo-compose { flex-shrink:0; display:flex; flex-direction:column; gap:10px; }
+.private-memo-input-row { display:flex; gap:8px; }
+.private-memo-input-row input { flex:1; min-width:0; min-height:42px; padding:9px 11px; border:1px solid var(--border); border-radius:12px; background:var(--surface); color:var(--text); font-size:14px; }
+.private-memo-input-row button { min-height:42px; padding:0 16px; border:0; border-radius:12px; background:var(--sch-add-bg); color:var(--sch-add-fg); font-size:13px; cursor:pointer; }
+.private-memo-input-row button:disabled { opacity:.6; cursor:wait; }
+.private-memo-input-row input:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.private-memo-mic img { display:block; width:64px; height:64px; object-fit:contain; }
 @media (prefers-reduced-motion:reduce) {
   .sch-tab,.sch-item { transition:none; }
 }
@@ -81,50 +112,60 @@ body[data-theme="dark"] .schedule-page { --sch-muted:#c5c9ef; --sch-subtle:#aeb5
 <body>
 <div class="sub-page">
   <div class="top-bar">
-    <button class="back-btn" onclick="location.href='/'">⬅</button>
-    <h2>📅 日程管理</h2>
+    <button class="back-btn" id="schBackButton" data-custom-back onclick="leaveScheduleView()" aria-label="返回首页">⬅</button>
+    <h2 id="schPageTitle" tabindex="-1">日程管理</h2>
+    <button class="sch-history-button" id="schHistoryButton" onclick="openScheduleHistory()" aria-label="查看日程历史"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 11a9 9 0 1 1 2.5 7M3 4v7h7"/><path d="M12 7v5l3 2"/></svg>历史</button>
   </div>
   <div class="page-content schedule-page">
-    <div class="sch-tabs" role="tablist" aria-label="日程分类">
-      <button class="sch-tab active" id="schTabActive" role="tab" tabindex="0" aria-selected="true" aria-controls="schPanelActive" onclick="switchScheduleTab('active')" onkeydown="handleScheduleTabKeydown(event, 'active')">当前 0</button>
-      <button class="sch-tab" id="schTabHistory" role="tab" tabindex="-1" aria-selected="false" aria-controls="schPanelHistory" onclick="switchScheduleTab('history')" onkeydown="handleScheduleTabKeydown(event, 'history')">历史 0</button>
+    <div class="sch-tabs" id="schTabs" role="tablist" aria-label="日程分类">
+      <button class="sch-tab active" id="schTabActive" role="tab" tabindex="0" aria-selected="true" aria-controls="schPanelActive" onclick="switchScheduleTab('active')" onkeydown="handleScheduleTabKeydown(event, 'active')">日程管理</button>
+      <button class="sch-tab" id="schTabMemo" role="tab" tabindex="-1" aria-selected="false" aria-controls="schPanelMemo" onclick="switchScheduleTab('memo')" onkeydown="handleScheduleTabKeydown(event, 'memo')">快捷备忘</button>
     </div>
     <section class="sch-tab-panel active" id="schPanelActive" role="tabpanel" aria-labelledby="schTabActive">
-      <div class="sch-current-workspace">
         <div class="sch-schedule-block">
           <div class="sch-list" id="schList"><div class="sch-empty">暂无日程</div></div>
           <div class="sch-add-section">
-            <input type="text" id="schAddContent" placeholder="日程内容...">
+            <div class="sch-add-title">添加一个新安排</div>
+            <input type="text" id="schAddContent" placeholder="有什么需要提醒的事？" aria-label="日程内容">
             <div class="sch-add-row2">
-              <input type="datetime-local" id="schAddTime">
-              <select id="schAddType">
+              <input type="datetime-local" id="schAddTime" aria-label="提醒时间">
+              <select id="schAddType" aria-label="日程类型">
                 <option value="alarm">🔔 闹铃</option>
                 <option value="reminder">📋 日程</option>
                 <option value="monitor">👁 监督</option>
               </select>
-              <button onclick="addScheduleManual()">添加</button>
+              <button onclick="addScheduleManual()">添加日程</button>
             </div>
           </div>
         </div>
+    </section>
+    <section class="sch-tab-panel" id="schPanelMemo" role="tabpanel" aria-labelledby="schTabMemo" hidden>
         <section class="private-memo-section" aria-label="快捷备忘">
           <div class="private-memo-head">
-            <span class="private-memo-title">📝 快捷备忘</span>
-            <button class="private-memo-mic" onclick="openPrivateMemoRecorder()" aria-label="按住录音添加备忘">🎙</button>
+            <div><h3 class="private-memo-title">随手记下</h3><p class="sch-section-note" id="privateMemoSummary">小事先记住，慢慢来</p></div>
           </div>
+          <div class="private-memo-scroll">
           <div class="private-memo-list" id="privateMemoList"><div class="private-memo-empty">暂无备忘</div></div>
-          <button class="private-memo-completed-toggle" id="privateMemoCompletedToggle" onclick="toggleCompletedMemos()">已完成 0 ▾</button>
+          <button class="private-memo-completed-toggle" id="privateMemoCompletedToggle" onclick="toggleCompletedMemos()" aria-expanded="false" aria-controls="privateMemoCompleted">已完成 0</button>
           <div class="private-memo-list" id="privateMemoCompleted" hidden></div>
+          </div>
+          <div class="private-memo-compose">
+            <form class="private-memo-input-row" onsubmit="event.preventDefault(); addPrivateMemoManual();">
+              <input type="text" id="privateMemoInput" placeholder="打字记一件小事…" aria-label="备忘内容" autocomplete="off" required>
+              <button type="submit" id="privateMemoAddButton">添加</button>
+            </form>
+            <button class="private-memo-mic" onclick="openPrivateMemoRecorder()" aria-label="录音添加备忘"><img src="/public/小组件/录音.png" alt="" width="64" height="64"></button>
+          </div>
         </section>
-      </div>
     </section>
-    <section class="sch-tab-panel" id="schPanelHistory" role="tabpanel" aria-labelledby="schTabHistory" hidden>
+    <section class="sch-tab-panel" id="schPanelHistory" aria-labelledby="schPageTitle" hidden>
       <div class="sch-list" id="schHistoryList"><div class="sch-empty">暂无历史记录</div></div>
     </section>
     </div>
 </div>
 <script src="/static/theme.js?v=theme-20260606"></script>
-<script src="/static/common.js"></script>
-<script src="/static/schedule-ui.js"></script>
+<script src="/static/common.js?v=20260905-schedule-back"></script>
+<script src="/static/schedule-ui.js?v=20260905-compact"></script>
 <script>
 connectCommonWS(msg => {
   if (ScheduleUI.shouldReloadSchedules(msg)) loadSchedules();
@@ -146,9 +187,6 @@ async function loadSchedules() {
   if (result.history !== null) {
     renderScheduleList(result.history, "schHistoryList", "暂无历史记录", true);
   }
-  const activeCount = result.active === null ? $("schList").querySelectorAll(".sch-item").length : result.active.length;
-  const historyCount = result.history === null ? $("schHistoryList").querySelectorAll(".sch-item").length : result.history.length;
-  ScheduleUI.updateScheduleTabCounts(activeCount, historyCount);
   result.errors.forEach(item => {
     console.error(`loadSchedules(${item.list}):`, item.error);
   });
@@ -161,6 +199,30 @@ function switchScheduleTab(tab) {
 function handleScheduleTabKeydown(event, tab) {
   ScheduleUI.handleScheduleTabKeydown(event, tab);
 }
+
+function openScheduleHistory() {
+  history.pushState({ scheduleHistory: true }, '', '#history');
+  syncScheduleHistoryView();
+}
+
+function leaveScheduleView() {
+  if (location.hash !== '#history') { navigateSubPageBack(); return; }
+  if (history.state?.scheduleHistory) {
+    history.back();
+  } else {
+    history.replaceState(null, '', location.pathname + location.search);
+    syncScheduleHistoryView();
+  }
+}
+
+function syncScheduleHistoryView() {
+  const isHistory = location.hash === '#history';
+  switchScheduleTab(isHistory ? 'history' : 'active');
+  $(isHistory ? 'schPageTitle' : 'schHistoryButton').focus();
+}
+
+window.addEventListener('popstate', syncScheduleHistoryView);
+if (location.hash === '#history') syncScheduleHistoryView();
 
 function renderScheduleList(list, elementId, emptyText, history) {
   const el = $(elementId);
@@ -183,7 +245,9 @@ async function loadPrivateMemos() {
   if (result.completed !== null) completedPrivateMemos = result.completed;
   renderPrivateMemoList(activePrivateMemos, 'privateMemoList', '暂无备忘');
   renderPrivateMemoList(completedPrivateMemos, 'privateMemoCompleted', '暂无已完成备忘');
-  $('privateMemoCompletedToggle').textContent = `已完成 ${completedPrivateMemos.length} ▾`;
+  $('privateMemoCompletedToggle').textContent = `已完成 ${completedPrivateMemos.length}`;
+  $('privateMemoSummary').textContent = activePrivateMemos.length
+    ? `${activePrivateMemos.length} 件小事，快捷备忘不会同步给AI伴侣哦` : '小事先记住，慢慢来';
   result.errors.forEach(error => console.error('loadPrivateMemos:', error));
 }
 
@@ -204,6 +268,26 @@ function openPrivateMemoRecorder() {
 
 function notifyNativeMemoChanged() {
   window.AionPrivateMemos?.refreshWidget?.();
+}
+
+async function addPrivateMemoManual() {
+  const input = $('privateMemoInput');
+  const button = $('privateMemoAddButton');
+  const content = input.value.trim();
+  if (!content || button.disabled) return;
+  button.disabled = true;
+  try {
+    await api('POST', '/api/private-memos', { content, source: 'app' });
+    input.value = '';
+    notifyNativeMemoChanged();
+    await loadPrivateMemos();
+    $('privateMemoList').parentElement.scrollTop = 0;
+    showToast('✅ 已添加备忘');
+  } catch (error) {
+    alert('添加失败：' + error.message);
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function completePrivateMemo(id) {
@@ -237,6 +321,7 @@ async function deletePrivateMemo(id) {
 
 function toggleCompletedMemos() {
   $('privateMemoCompleted').hidden = !$('privateMemoCompleted').hidden;
+  $('privateMemoCompletedToggle').setAttribute('aria-expanded', String(!$('privateMemoCompleted').hidden));
 }
 
 async function addScheduleManual() {

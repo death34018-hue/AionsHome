@@ -30,6 +30,10 @@ const CR_SYNC_SEQ_KEY = 'aion_sync_seq_v1:chatroom';
 let crSettingsDirtyAt = 0;
 let crSettingsLoadingRoomId = null;
 let crSyncReplayPromise = null;
+let crRoomMessageLoad = null;
+let crRoomMessageGeneration = 0;
+let crRenderedRoomId = null;
+let crMessageRevision = 0;
 
 window.addEventListener('aion-client-update-ready', () => {
   if (window.__aionClientUpdateScheduled) return;
@@ -2177,61 +2181,20 @@ async function selectRoom(roomId) {
 // ══════════════════════════════════════════════════
 
 async function loadMessages() {
-  if (!currentRoom) return;
-  oldestMsgTs = null;
-  noMoreMessages = false;
-  loadingOlder = false;
-  const snapshotKey = `chatroom_messages_snapshot_v1_${currentRoom.id}`;
-  let snapshotShown = false;
-  try {
-    const bridge = (() => {
-      try { return window.top?.AppSharedData || window.AppSharedData || null; }
-      catch(e) { return window.AppSharedData || null; }
-    })();
-    const rawSnapshot = bridge?.get?.(snapshotKey) || localStorage.getItem(snapshotKey) || '';
-    const snapshot = JSON.parse(rawSnapshot || 'null');
-    if (snapshot && Array.isArray(snapshot.messages)) {
-      renderMessages(snapshot.messages);
-      scrollToBottom(true);
-      snapshotShown = true;
-    }
-  } catch(e) {}
-
-  let msgs;
-  try {
-    msgs = await api(`/rooms/${currentRoom.id}/messages?limit=100`);
-  } catch(e) {
-    if (snapshotShown) return;
-    throw e;
-  }
-  if (msgs && msgs.length) {
-    oldestMsgTs = msgs[0].created_at;
-    noMoreMessages = msgs.length < 100;
-  } else {
-    noMoreMessages = true;
-  }
-  renderMessages(msgs);
-  scrollToBottom(true);
-  try {
-    const payload = JSON.stringify({ savedAt: Date.now(), messages: msgs });
-    if (payload.length < 900000) {
-      localStorage.setItem(snapshotKey, payload);
-      try {
-        const bridge = window.top?.AppSharedData || window.AppSharedData;
-        bridge?.put?.(snapshotKey, payload);
-      } catch(e) {}
-    }
-  } catch(e) {}
+  return crFetchRoomMessages({ force: true, snapshot: true, scroll: true });
 }
 
 async function refreshCurrentChatroomFromServer(options = {}) {
   if (!currentRoom) return false;
+  // Android resume and reconnect can arrive together. Share both requests.
+  if (!options.force && crRoomMessageLoad?.roomId === currentRoom.id) return crRoomMessageLoad.promise;
   const roomId = currentRoom.id;
-
-  try {
-    rooms = await api('/rooms');
-    const room = rooms.find(r => r.id === roomId);
-    if (currentRoom && currentRoom.id === roomId) {
+  const messagePromise = crFetchRoomMessages(options);
+  const load = crRoomMessageLoad;
+  api('/rooms', { cache: 'no-store' }).then(result => {
+    if (currentRoom?.id === roomId && load.generation === crRoomMessageGeneration) {
+      rooms = result;
+      const room = rooms.find(r => r.id === roomId);
       if (room) {
         currentRoom = room;
         roomTitleEl.textContent = room.title;
@@ -2242,44 +2205,79 @@ async function refreshCurrentChatroomFromServer(options = {}) {
         renderRoomList();
       }
     }
-  } catch(e) {
-    console.warn('[chatroom] refresh rooms failed:', e);
-  }
-
-  let msgs;
-  try {
-    msgs = await api(`/rooms/${roomId}/messages?limit=100`);
-  } catch(e) {
-    console.warn('[chatroom] refresh current room failed:', e);
-    return false;
-  }
-  if (!currentRoom || currentRoom.id !== roomId) return false;
-
-  if (msgs && msgs.length) {
-    oldestMsgTs = msgs[0].created_at;
-    noMoreMessages = msgs.length < 100;
-  } else {
-    oldestMsgTs = null;
-    noMoreMessages = true;
-  }
-  loadingOlder = false;
-  renderMessages(msgs);
-  if (options && options.scroll) scrollToBottom(true);
-
-  try {
-    const payload = JSON.stringify({ savedAt: Date.now(), messages: msgs });
-    if (payload.length < 900000) {
-      const snapshotKey = `chatroom_messages_snapshot_v1_${roomId}`;
-      localStorage.setItem(snapshotKey, payload);
-      try {
-        const bridge = window.top?.AppSharedData || window.AppSharedData;
-        bridge?.put?.(snapshotKey, payload);
-      } catch(e) {}
-    }
-  } catch(e) {}
-  return true;
+  }).catch(e => console.warn('[chatroom] refresh rooms failed:', e));
+  return messagePromise;
 }
 window.refreshCurrentChatroomFromServer = refreshCurrentChatroomFromServer;
+
+function crFetchRoomMessages(options = {}) {
+  if (!currentRoom) return Promise.resolve(false);
+  const roomId = currentRoom.id;
+  if (!options.force && crRoomMessageLoad?.roomId === roomId) return crRoomMessageLoad.promise;
+  const load = { roomId, generation: ++crRoomMessageGeneration, promise: null };
+  crRoomMessageLoad = load;
+  const isCurrent = () => crRoomMessageLoad === load && currentRoom?.id === roomId;
+  const snapshotKey = `chatroom_messages_snapshot_v1_${roomId}`;
+
+  // A preserved room already contains live messages. Never replace them with
+  // an older disk snapshot just because the user selects that room again.
+  if (options.snapshot && crRenderedRoomId !== roomId) {
+    let messages = [];
+    try {
+      const bridge = window.top?.AppSharedData || window.AppSharedData;
+      const candidates = [bridge?.get?.(snapshotKey), localStorage.getItem(snapshotKey)]
+        .map(raw => { try { return JSON.parse(raw || 'null'); } catch(e) { return null; } })
+        .filter(item => Array.isArray(item?.messages))
+        .sort((a, b) => Number(b.savedAt || 0) - Number(a.savedAt || 0));
+      messages = candidates[0]?.messages || [];
+    } catch(e) {}
+    renderMessages(messages);
+    scrollToBottom(true);
+  }
+
+  load.promise = (async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const revision = crMessageRevision;
+      const msgs = await api(`/rooms/${roomId}/messages?limit=100`, { cache: 'no-store' });
+      if (!isCurrent()) return false;
+      // A live create/edit/delete crossed this request. Re-read instead of
+      // guessing whether the HTTP snapshot or the event is newer.
+      if (revision !== crMessageRevision) continue;
+      if (!options.snapshot && (isSending || isAiChatting || isReplyOnce)) return false;
+      oldestMsgTs = msgs[0]?.created_at || null;
+      noMoreMessages = msgs.length < 100;
+      loadingOlder = false;
+      const displayed = Object.values(crMessagesById);
+      if (options.snapshot || crRenderedRoomId !== roomId || JSON.stringify(displayed) !== JSON.stringify(msgs)) {
+        renderMessages(msgs);
+      }
+      if (options.scroll) scrollToBottom(true);
+      try {
+        const payload = JSON.stringify({ savedAt: Date.now(), messages: msgs });
+        if (payload.length < 900000) {
+          localStorage.setItem(snapshotKey, payload);
+          const bridge = window.top?.AppSharedData || window.AppSharedData;
+          bridge?.put?.(snapshotKey, payload);
+        }
+      } catch(e) {}
+      return true;
+    }
+    // A burst of live updates can overlap several reads. Keep the live view
+    // and retry after the burst instead of repainting an obsolete snapshot.
+    setTimeout(() => {
+      if (currentRoom?.id === roomId && load.generation === crRoomMessageGeneration && !crRoomMessageLoad) {
+        refreshCurrentChatroomFromServer();
+      }
+    }, 500);
+    return false;
+  })().catch(e => {
+    console.warn('[chatroom] refresh current room failed:', e);
+    return false;
+  }).finally(() => {
+    if (crRoomMessageLoad === load) crRoomMessageLoad = null;
+  });
+  return load.promise;
+}
 
 async function loadOlderMessages() {
   if (!currentRoom || noMoreMessages || loadingOlder || !oldestMsgTs) return;
@@ -2570,6 +2568,8 @@ async function crCenterSearchResult(msgId) {
 if (chatSearchForm) chatSearchForm.addEventListener('submit', runChatSearch);
 
 function renderMessages(msgs) {
+  crRenderedRoomId = currentRoom?.id || null;
+  crMessageRevision++;
   crMessagesById = {};
   if (!msgs || !msgs.length) {
     messagesEl.innerHTML = `
@@ -3050,6 +3050,7 @@ function closeMsgMenus() {
 async function deleteMsg(msgId, btnEl) {
   try {
     await fetch(`${API}/messages/${msgId}`, { method: 'DELETE' });
+    crMessageRevision++;
     delete crMessagesById[msgId];
     const row = document.querySelector(`[data-msg-id="${msgId}"]`);
     if (row) row.remove();
@@ -3058,6 +3059,7 @@ async function deleteMsg(msgId, btnEl) {
 
 function removeRowsAfter(row, includeSelf = false) {
   if (!row) return;
+  crMessageRevision++;
   let n = includeSelf ? row : row.nextElementSibling;
   while (n) {
     const next = n.nextElementSibling;
@@ -3197,6 +3199,7 @@ document.addEventListener('click', (e) => {
 });
 
 function appendMessage(m) {
+  crMessageRevision++;
   if (m?.id) crMessagesById[m.id] = m;
   // 移除空状态
   const empty = messagesEl.querySelector('.empty-state');
@@ -3219,6 +3222,7 @@ function appendMessage(m) {
 
 function reconcileLocalUserEcho(msg) {
   if (!msg || msg.sender !== 'user') return false;
+  crMessageRevision++;
   if (msg.id) crMessagesById[msg.id] = msg;
   const localRow = messagesEl.querySelector('.message-row.user[data-local-echo="1"]');
   if (!localRow) return false;
@@ -3380,6 +3384,7 @@ function resetStreamingBubble(sender) {
 }
 
 function endStreamingBubble(messageOrAttachments) {
+  crMessageRevision++;
   // 先获取流式行的引用（后面 replaceChild 可能破坏 streamingBubble 的 DOM 位置）
   const streamRow = streamingBubble ? streamingBubble.closest('.message-row') : null;
   const finalMsg = messageOrAttachments && !Array.isArray(messageOrAttachments) ? messageOrAttachments : null;
@@ -5291,13 +5296,6 @@ function renderEmptyChat() {
 //  WebSocket 实时同步
 // ══════════════════════════════════════════════════
 
-function crRememberSyncSeq(event) {
-  const seq = Number(event?.sync_seq || 0);
-  if (!seq) return;
-  const current = Number(localStorage.getItem(CR_SYNC_SEQ_KEY) || 0);
-  if (seq > current) localStorage.setItem(CR_SYNC_SEQ_KEY, String(seq));
-}
-
 function crApplySettingsSync(data) {
   const cfg = data?.config || null;
   const room = data?.room || null;
@@ -5331,7 +5329,9 @@ function crApplySettingsSync(data) {
 }
 
 function crApplyReplayedSyncEvent(event) {
-  // sync_event replay uses the same legacy event shape and remains idempotent.
+  // Historical message events may precede the snapshot already on screen.
+  // Reconcile them with one fresh read after replay, never replay old edits
+  // or deletes directly into the live view.
   if (!event?.type) return;
   if (event.type === 'chatroom_settings_updated') {
     crApplySettingsSync(event.data || {});
@@ -5342,61 +5342,55 @@ function crApplyReplayedSyncEvent(event) {
     loadRooms();
     return;
   }
-  if (!currentRoom || event.data?.room_id !== currentRoom.id) return;
-  const data = event.data || {};
-  if (event.type === 'chatroom_msg_created') {
-    if (!messagesEl.querySelector(`[data-msg-id="${data.id}"]`) && !document.getElementById(`streaming-${data.id}`)) {
-      if (!reconcileLocalUserEcho(data)) appendMessage(data);
-    }
-  } else if (event.type === 'chatroom_msg_deleted') {
-    delete crMessagesById[data.id];
-    document.querySelector(`[data-msg-id="${data.id}"]`)?.remove();
-  } else if (event.type === 'chatroom_msg_updated') {
-    crMessagesById[data.id] = data;
-    const row = document.querySelector(`[data-msg-id="${data.id}"]`);
-    if (row) {
-      const div = document.createElement('div');
-      div.innerHTML = msgHTML(data);
-      row.replaceWith(div.firstElementChild);
-    }
-  }
+  return event.type === 'chatroom_msg_created'
+    || event.type === 'chatroom_msg_deleted'
+    || event.type === 'chatroom_msg_updated';
 }
 
 async function crReconcileSyncEvents() {
   if (crSyncReplayPromise) return crSyncReplayPromise;
   crSyncReplayPromise = (async () => {
     let after = Number(localStorage.getItem(CR_SYNC_SEQ_KEY) || 0);
+    let refreshMessages = false;
     for (let batch = 0; batch < 20; batch++) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10000);
       let response;
       try {
-        response = await fetch(`/api/sync/changes?after=${after}&limit=200`, { signal: controller.signal });
+        response = await fetch(`/api/sync/changes?after=${after}&limit=200`, { signal: controller.signal, cache: 'no-store' });
       } finally {
         clearTimeout(timer);
       }
       if (!response.ok) throw new Error(`sync HTTP ${response.status}`);
       const result = await response.json();
       if (result.reset_required) {
-        if (currentRoom) refreshCurrentChatroomFromServer();
-        const latest = Number(result.latest_seq || 0);
-        localStorage.setItem(CR_SYNC_SEQ_KEY, String(latest));
+        refreshMessages = true;
+        after = Number(result.latest_seq || 0);
         break;
       }
       const events = Array.isArray(result.events) ? result.events : [];
       events.forEach(event => {
-        crApplyReplayedSyncEvent(event);
-        crRememberSyncSeq(event);
+        refreshMessages = crApplyReplayedSyncEvent(event) || refreshMessages;
         after = Math.max(after, Number(event.sync_seq || 0));
       });
       if (!result.has_more || !events.length) break;
     }
+    if (refreshMessages && currentRoom) {
+      // Start after replay: an earlier foreground request may have captured
+      // the database before the events we just received.
+      const refreshed = await refreshCurrentChatroomFromServer({ force: true });
+      if (!refreshed) return;
+    }
+    // Only advance the replay cursor after the missing changes are reconciled.
+    // Live WS events cannot advance it past an offline gap.
+    localStorage.setItem(CR_SYNC_SEQ_KEY, String(after));
   })().catch(e => console.warn('[chatroom sync] reconcile failed:', e))
     .finally(() => { crSyncReplayPromise = null; });
   return crSyncReplayPromise;
 }
 
 function connectWS() {
+  if (crWs && (crWs.readyState === WebSocket.OPEN || crWs.readyState === WebSocket.CONNECTING)) return;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   crWs = ws;
@@ -5409,9 +5403,13 @@ function connectWS() {
   };
 
   ws.onmessage = (e) => {
+    if (crWs !== ws) return;
     try {
       const data = JSON.parse(e.data);
-      crRememberSyncSeq(data);
+      if (data.data?.room_id === currentRoom?.id
+          && ['chatroom_msg_created', 'chatroom_msg_updated', 'chatroom_msg_deleted'].includes(data.type)) {
+        crMessageRevision++;
+      }
       if (data.type === 'pong') return;
 
       if (data.type === 'proactive_companionship_changed') {
@@ -5540,7 +5538,8 @@ function connectWS() {
   };
 
   ws.onclose = () => {
-    if (crWs === ws) crWs = null;
+    if (crWs !== ws) return;
+    crWs = null;
     setTimeout(connectWS, 3000);
   };
   ws.onerror = () => ws.close();

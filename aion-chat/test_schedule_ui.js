@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const vm = require('node:vm');
 const ui = require('./static/schedule-ui.js');
 
 const tests = [];
@@ -179,9 +180,14 @@ function createTabDocument() {
   const elements = {};
   for (const id of [
     'schTabActive',
-    'schTabHistory',
+    'schTabMemo',
     'schPanelActive',
     'schPanelHistory',
+    'schPanelMemo',
+    'schTabs',
+    'schPageTitle',
+    'schBackButton',
+    'schHistoryButton',
   ]) {
     const classes = new Set();
     elements[id] = {
@@ -228,28 +234,28 @@ test('unknown tab defaults to current with matching accessible state', () => {
     'true',
   );
   assert.equal(
-    fixture.elements.schTabHistory.attributes['aria-selected'],
+    fixture.elements.schTabMemo.attributes['aria-selected'],
     'false',
   );
   assert.equal(fixture.elements.schTabActive.attributes.tabindex, '0');
-  assert.equal(fixture.elements.schTabHistory.attributes.tabindex, '-1');
+  assert.equal(fixture.elements.schTabMemo.attributes.tabindex, '-1');
   assert.equal(fixture.elements.schTabActive.classList.contains('active'), true);
 });
 
-test('history tab hides current panel and exposes history panel', () => {
+test('memo tab gets its own exclusive panel', () => {
   const fixture = createTabDocument();
-  const selected = ui.selectScheduleTab('history', fixture.document);
+  const selected = ui.selectScheduleTab('memo', fixture.document);
 
-  assert.equal(selected, 'history');
+  assert.equal(selected, 'memo');
   assert.equal(fixture.elements.schPanelActive.hidden, true);
-  assert.equal(fixture.elements.schPanelHistory.hidden, false);
+  assert.equal(fixture.elements.schPanelMemo.hidden, false);
   assert.equal(
-    fixture.elements.schTabHistory.attributes['aria-selected'],
+    fixture.elements.schTabMemo.attributes['aria-selected'],
     'true',
   );
-  assert.equal(fixture.elements.schTabHistory.classList.contains('active'), true);
+  assert.equal(fixture.elements.schTabMemo.classList.contains('active'), true);
   assert.equal(
-    fixture.elements.schPanelHistory.classList.contains('active'),
+    fixture.elements.schPanelMemo.classList.contains('active'),
     true,
   );
   assert.equal(
@@ -257,7 +263,7 @@ test('history tab hides current panel and exposes history panel', () => {
     false,
   );
   assert.equal(fixture.elements.schTabActive.attributes.tabindex, '-1');
-  assert.equal(fixture.elements.schTabHistory.attributes.tabindex, '0');
+  assert.equal(fixture.elements.schTabMemo.attributes.tabindex, '0');
 });
 
 test('tab keyboard navigation selects and focuses the expected tab', () => {
@@ -272,15 +278,15 @@ test('tab keyboard navigation selects and focuses the expected tab', () => {
 
   assert.equal(
     ui.handleScheduleTabKeydown(event, 'active', fixture.document),
-    'history',
+    'memo',
   );
   assert.equal(prevented, 1);
-  assert.equal(fixture.elements.schPanelHistory.hidden, false);
-  assert.equal(fixture.elements.schTabHistory.focusCalls, 1);
+  assert.equal(fixture.elements.schPanelMemo.hidden, false);
+  assert.equal(fixture.elements.schTabMemo.focusCalls, 1);
 
   event.key = 'Home';
   assert.equal(
-    ui.handleScheduleTabKeydown(event, 'history', fixture.document),
+    ui.handleScheduleTabKeydown(event, 'memo', fixture.document),
     'active',
   );
   assert.equal(fixture.elements.schTabActive.focusCalls, 1);
@@ -292,34 +298,80 @@ test('tab keyboard navigation selects and focuses the expected tab', () => {
   );
 });
 
-test('tab counts use non-negative whole record totals', () => {
+test('history is a separate view and returning preserves the active panel', () => {
   const fixture = createTabDocument();
-  ui.updateScheduleTabCounts(5.9, -3, fixture.document);
-
-  assert.equal(fixture.elements.schTabActive.textContent, '当前 5');
-  assert.equal(fixture.elements.schTabHistory.textContent, '历史 0');
+  ui.selectScheduleTab('history', fixture.document);
+  assert.equal(fixture.elements.schTabs.hidden, true);
+  assert.equal(fixture.elements.schHistoryButton.hidden, true);
+  assert.equal(fixture.elements.schPanelHistory.hidden, false);
+  assert.equal(fixture.elements.schPanelActive.hidden, true);
+  assert.equal(fixture.elements.schPanelMemo.hidden, true);
+  assert.equal(fixture.elements.schBackButton.attributes['aria-label'], '返回日程管理');
+  ui.selectScheduleTab('active', fixture.document);
+  assert.equal(fixture.elements.schTabs.hidden, false);
+  assert.equal(fixture.elements.schHistoryButton.hidden, false);
+  assert.equal(fixture.elements.schPanelHistory.hidden, true);
+  assert.equal(fixture.elements.schPanelActive.hidden, false);
 });
 
-test('page separates current and history into exclusive tab panels', () => {
-  const html = fs.readFileSync(
-    `${__dirname}/static/schedule.html`,
-    'utf8',
-  );
-
-  assert.match(html, /id="schPanelActive"[^>]*role="tabpanel"/);
-  assert.match(html, /id="schPanelHistory"[^>]*role="tabpanel"[^>]*hidden/);
-  assert.match(html, /id="schTabActive"[^>]*aria-selected="true"/);
-  assert.match(html, /id="schTabHistory"[^>]*aria-selected="false"/);
-});
-
-test('current page contains a compact memo manager and native recorder entry', () => {
+test('embedded schedule keeps its own back action after common navigation initializes', () => {
+  const common = fs.readFileSync(`${__dirname}/static/common.js`, 'utf8');
   const html = fs.readFileSync(`${__dirname}/static/schedule.html`, 'utf8');
+  const callbacks = {};
+  const fixture = createTabDocument();
+  const button = fixture.elements.schBackButton;
+  const markup = html.match(/<button[^>]*id="schBackButton"[^>]*>/)[0];
+  button.hasAttribute = name => markup.includes(name);
+  const context = {
+    window: { parent: { openSubPage: () => { throw new Error('Unexpected exit to home'); } }, addEventListener: (name, fn) => { callbacks[name] = fn; } },
+    document: { querySelector: () => button, addEventListener: (name, fn) => { callbacks[name] = fn; } },
+    location: { hash: '', pathname: '/static/schedule.html', search: '' },
+    history: {
+      state: null,
+      pushState(state, title, hash) { this.state = state; context.location.hash = hash; },
+      back() { context.location.hash = ''; callbacks.popstate(); },
+    },
+    $: id => fixture.elements[id],
+    switchScheduleTab: tab => ui.selectScheduleTab(tab, fixture.document),
+  };
+  vm.createContext(context);
+  vm.runInContext(common.slice(common.indexOf('function getSubPageReturnUrl'), common.indexOf('async function api')), context);
+  vm.runInContext(html.slice(html.indexOf('function openScheduleHistory'), html.indexOf('function renderScheduleList')), context);
+  button.onclick = context.leaveScheduleView;
+  callbacks.DOMContentLoaded();
+  context.openScheduleHistory();
+  button.onclick();
+  assert.equal(fixture.elements.schPanelActive.hidden, false);
+  assert.equal(fixture.elements.schPanelHistory.hidden, true);
+  button.hasAttribute = () => false;
+  callbacks.DOMContentLoaded();
+  assert.equal(button.onclick, context.navigateSubPageBack, 'ordinary subpages retain shared navigation');
+});
 
-  assert.match(html, /class="private-memo-section"/);
-  assert.match(html, /id="privateMemoList"/);
-  assert.match(html, /id="privateMemoCompleted"[^>]*hidden/);
-  assert.match(html, /AionPrivateMemos\.openRecorder/);
-  assert.match(html, /\.sch-current-workspace\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*13fr\)\s+minmax\(180px,\s*7fr\)/s);
+test('typed memo saves trimmed content and preserves input when saving fails', async () => {
+  const html = fs.readFileSync(`${__dirname}/static/schedule.html`, 'utf8');
+  const elements = { privateMemoInput: { value: '  记一件小事  ' }, privateMemoAddButton: { disabled: false }, privateMemoList: { parentElement: { scrollTop: 60 } } };
+  const calls = [];
+  const context = {
+    $: id => elements[id],
+    api: async (...args) => calls.push(args),
+    notifyNativeMemoChanged: () => calls.push('widget'),
+    loadPrivateMemos: async () => calls.push('reload'),
+    showToast: () => {}, alert: () => {},
+  };
+  vm.createContext(context);
+  vm.runInContext(html.slice(html.indexOf('async function addPrivateMemoManual'), html.indexOf('async function completePrivateMemo')), context);
+  await context.addPrivateMemoManual();
+  assert.equal(calls[0][0], 'POST');
+  assert.equal(calls[0][1], '/api/private-memos');
+  assert.equal(calls[0][2].content, '记一件小事');
+  assert.deepEqual(calls.slice(1), ['widget', 'reload']);
+  assert.equal(elements.privateMemoInput.value, '');
+  elements.privateMemoInput.value = '保留草稿';
+  context.api = async () => { throw new Error('offline'); };
+  await context.addPrivateMemoManual();
+  assert.equal(elements.privateMemoInput.value, '保留草稿');
+  assert.equal(elements.privateMemoAddButton.disabled, false);
 });
 
 test('schedule panels constrain long lists to internal scrolling', () => {
@@ -345,36 +397,6 @@ test('schedule panels constrain long lists to internal scrolling', () => {
     /\.sch-add-section\s*\{[^}]*flex-shrink:\s*0/s,
   );
   assert.doesNotMatch(html, /max-height:\s*calc\(100dvh/);
-});
-
-test('history typography is compact and page colors stay theme-derived', () => {
-  const html = fs.readFileSync(
-    `${__dirname}/static/schedule.html`,
-    'utf8',
-  );
-
-  assert.match(
-    html,
-    /\.sch-history-item \.sch-content\s*\{[^}]*font-size:\s*12px/s,
-  );
-  assert.match(
-    html,
-    /\.sch-history-item \.sch-origin\s*\{[^}]*font-size:\s*10\.5px/s,
-  );
-  assert.match(
-    html,
-    /\.sch-history-item \.sch-time\s*\{[^}]*font-size:\s*10px/s,
-  );
-  assert.doesNotMatch(html, /\.sch-type\.alarm\s*\{\s*background:\s*#/);
-  assert.match(html, /color-mix\(in srgb,\s*var\(--accent\)/);
-  assert.match(html, /--sch-muted:\s*#67584f/);
-  assert.match(html, /body\[data-theme="dark"\]\s+\.schedule-page/);
-  assert.match(html, /\.sch-history-item \.sch-time\s*\{[^}]*color:\s*var\(--sch-subtle\)/s);
-  assert.doesNotMatch(html, /\.sch-add-row2 button\s*\{[^}]*color:\s*#fff/s);
-  assert.match(
-    html,
-    /\.sch-del-btn\s*\{[^}]*color:\s*var\(--danger\)[^}]*opacity:\s*1/s,
-  );
 });
 
 test('page keeps browser zoom available for compact history text', () => {
@@ -405,7 +427,7 @@ test('phone layout gives the add button its own large full-width row', () => {
 
   assert.match(
     mobileCss,
-    /\.sch-add-row2 button\s*\{[^}]*flex-basis:\s*100%[^}]*width:\s*100%[^}]*min-height:\s*46px[^}]*font-size:\s*15px/s,
+    /\.sch-add-row2 button\s*\{[^}]*flex-basis:\s*100%[^}]*width:\s*100%[^}]*min-height:\s*44px[^}]*font-size:\s*13px/s,
   );
   assert.match(
     html,

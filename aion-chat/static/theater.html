@@ -151,8 +151,8 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 .msg-menu button:hover { background:var(--surface2); }
 
 .msg-bubble { padding: 10px 14px; border-radius: 14px; font-size: 15px; line-height: 1.65; word-break: break-word; font-weight: 450; }
-.msg-row.user .msg-bubble { background: linear-gradient(180deg, rgba(131, 80, 226, 0.32), rgba(77, 45, 158, 0.30)); color: var(--text); border-top-right-radius: 4px; border: 1px solid rgba(210, 142, 255, 0.52); box-shadow: inset 0 1px 1px rgba(255,255,255,0.18), inset 0 -10px 28px rgba(54,20,110,0.12), 0 0 24px rgba(147, 91, 255, 0.22), 0 10px 30px rgba(0,0,0,0.16); }
-.msg-row.assistant .msg-bubble { background: linear-gradient(180deg, rgba(37, 92, 183, 0.28), rgba(17, 41, 103, 0.26)); color: var(--text); border-top-left-radius: 4px; border: 1px solid rgba(108, 177, 255, 0.44); box-shadow: inset 0 1px 1px rgba(255,255,255,0.16), inset 0 -10px 26px rgba(9,16,48,0.10), 0 10px 28px rgba(0,0,0,0.16); }
+.msg-row.user .msg-bubble { background: linear-gradient(180deg, rgba(131, 80, 226, 0.10), rgba(77, 45, 158, 0.08)); color: var(--text); border-top-right-radius: 4px; border: 1px solid rgba(210, 142, 255, 0.52); box-shadow: inset 0 1px 1px rgba(255,255,255,0.18), inset 0 -10px 28px rgba(54,20,110,0.04), 0 0 24px rgba(147, 91, 255, 0.22), 0 10px 30px rgba(0,0,0,0.16); }
+.msg-row.assistant .msg-bubble { background: linear-gradient(180deg, rgba(37, 92, 183, 0.08), rgba(17, 41, 103, 0.06)); color: var(--text); border-top-left-radius: 4px; border: 1px solid rgba(108, 177, 255, 0.44); box-shadow: inset 0 1px 1px rgba(255,255,255,0.16), inset 0 -10px 26px rgba(9,16,48,0.03), 0 10px 28px rgba(0,0,0,0.16); }
 .msg-bubbles { display:flex; flex-direction:column; gap:3px; }
 .msg-reasoning { margin-bottom:3px; border:1px solid rgba(142,108,255,0.32); border-radius:12px; background:rgba(16,20,61,0.52); overflow:hidden; }
 .msg-reasoning summary { display:flex; align-items:center; gap:7px; padding:8px 12px; color:var(--text2); font-size:12px; cursor:pointer; list-style:none; user-select:none; }
@@ -342,7 +342,7 @@ body { font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-se
 <!-- Toast -->
 <div class="toast-msg" id="toast"></div>
 
-<script src="/static/theme.js?v=theme-20260621-theater"></script>
+<script src="/static/theme.js?v=theme-20260905-theater-v2"></script>
 <script src="/static/theater_tts_queue.js?v=theater-tts-20260713"></script>
 <script>
 /* ══════════════════════════════════════════════════

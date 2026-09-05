@@ -35,3 +35,13 @@ def test_english_corner_document_route_is_content_addressed():
     assert entry["category"] == "document"
     assert entry["content_type"] == "text/html"
     assert entry["sha256"] == hashlib.sha256(document.read_bytes()).hexdigest()
+
+
+def test_nested_markdown_vendor_is_in_the_verified_frontend_cache():
+    manifest = get_client_asset_manifest()
+    asset_path = "/static/vendor/markdown-it-15.0.1.min.js"
+    entry = manifest["files"][asset_path]
+    assert entry["category"] == "frontend"
+    assert entry["sha256"] == hashlib.sha256(
+        (BASE_DIR / asset_path.lstrip("/")).read_bytes()
+    ).hexdigest()

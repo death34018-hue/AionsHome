@@ -153,7 +153,7 @@ function navigateSubPageBack() {
 if (window.parent !== window) {
   document.addEventListener('DOMContentLoaded', () => {
     const backBtn = document.querySelector('.top-bar .back-btn');
-    if (backBtn) backBtn.onclick = navigateSubPageBack;
+    if (backBtn && !backBtn.hasAttribute('data-custom-back')) backBtn.onclick = navigateSubPageBack;
   });
 }
 

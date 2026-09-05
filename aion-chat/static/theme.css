@@ -312,19 +312,19 @@ body.theater-page .msg-row.user .msg-role-name {
 body.theater-page .msg-bubble {
   color: var(--text);
   border: 1px solid rgba(129, 174, 255, 0.40);
-  box-shadow: inset 0 1px 1px rgba(255,255,255,0.16), inset 0 -10px 26px rgba(9,16,48,0.10), 0 10px 28px rgba(0,0,0,0.16);
-  backdrop-filter: blur(12px) saturate(1.45);
-  -webkit-backdrop-filter: blur(12px) saturate(1.45);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.16), inset 0 -10px 26px rgba(9,16,48,0.03), 0 10px 28px rgba(0,0,0,0.16);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   text-shadow: 0 1px 10px rgba(5, 8, 28, 0.28);
 }
 body.theater-page .msg-row.assistant .msg-bubble {
-  background: linear-gradient(180deg, rgba(37, 92, 183, 0.28), rgba(17, 41, 103, 0.26));
+  background: linear-gradient(180deg, rgba(37, 92, 183, 0.08), rgba(17, 41, 103, 0.06));
   border-color: rgba(108, 177, 255, 0.44);
 }
 body.theater-page .msg-row.user .msg-bubble {
-  background: linear-gradient(180deg, rgba(131, 80, 226, 0.32), rgba(77, 45, 158, 0.30));
+  background: linear-gradient(180deg, rgba(131, 80, 226, 0.10), rgba(77, 45, 158, 0.08));
   border-color: rgba(210, 142, 255, 0.52);
-  box-shadow: inset 0 1px 1px rgba(255,255,255,0.18), inset 0 -10px 28px rgba(54,20,110,0.12), 0 0 24px rgba(147, 91, 255, 0.22), 0 10px 30px rgba(0,0,0,0.16);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.18), inset 0 -10px 28px rgba(54,20,110,0.04), 0 0 24px rgba(147, 91, 255, 0.22), 0 10px 30px rgba(0,0,0,0.16);
 }
 body.theater-page[data-theme="dark"] .input-box {
   background: var(--surface);

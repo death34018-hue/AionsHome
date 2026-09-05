@@ -51,6 +51,7 @@ let _suppressScrollBottom = false; // 星标跳转时抑制自动滚底
 const MSG_PAGE_SIZE = 50;
 const PRIVATE_SYNC_SEQ_KEY = 'aion_sync_seq_v1:chat';
 let privateSyncReplayPromise = null;
+let privateConversationLoadId = 0;
 const $ = id => document.getElementById(id);
 
 window.addEventListener('aion-client-update-ready', () => {
@@ -115,17 +116,26 @@ window.addEventListener('storage', e => {
 
 // ── 初始化 ──
 async function init() {
-  models = await api("GET", "/api/models");
+  const bootstrap = Promise.all([
+    api("GET", "/api/models"),
+    api("GET", "/api/worldbook"),
+    api("GET", "/api/conversations"),
+  ]);
+  api("GET", "/api/chatroom/config")
+    .then(config => { chatroomConfig = config; })
+    .catch(() => { chatroomConfig = {}; });
+  loadProactiveCompanionshipStatus();
+  [models, worldBook, conversations] = await bootstrap;
   renderModelSelect();
-  worldBook = await api("GET", "/api/worldbook");
-  try { chatroomConfig = await api("GET", "/api/chatroom/config"); } catch(e) { chatroomConfig = {}; }
-  await loadProactiveCompanionshipStatus();
-  conversations = await api("GET", "/api/conversations");
   const initParams = new URLSearchParams(location.search);
   const targetConvId = initParams.get('conv');
   const targetMsgId = initParams.get('msg');
   const lastId = localStorage.getItem('aion_last_conv');
-  if (targetConvId && conversations.find(c => c.id === targetConvId)) {
+  if (currentConvId) {
+    // The desktop is already interactive; keep a conversation opened by the
+    // user while these bootstrap requests were running.
+    renderConvList();
+  } else if (targetConvId && conversations.find(c => c.id === targetConvId)) {
     await selectConv(targetConvId);
     if (targetMsgId) setTimeout(() => jumpToChatMessage(targetConvId, targetMsgId), 100);
   } else if (lastId && conversations.find(c => c.id === lastId)) {
@@ -2706,6 +2716,7 @@ async function newConversation() {
 }
 
 async function selectConv(id) {
+  const loadId = ++privateConversationLoadId;
   currentConvId = id;
   localStorage.setItem('aion_last_conv', id);
   msgDebugData = {};
@@ -2718,18 +2729,27 @@ async function selectConv(id) {
     $("chatTitle").textContent = conv.title;
     $("modelSelect").value = conv.model;
   }
-  setCurrentMessages(await api("GET", `/api/conversations/${id}/messages?limit=${MSG_PAGE_SIZE}`));
-  // 加载该对话的心语数据
-  try {
-    const hwList = await api("GET", `/api/heart-whispers/by-conv/${id}`);
+  // Fetch annotations alongside messages, but don't hold the message view
+  // behind two extra network round trips.
+  const annotations = Promise.all([
+    api("GET", `/api/heart-whispers/by-conv/${id}`).catch(() => []),
+    api("GET", `/api/memories/by-conv/${id}`).catch(() => []),
+  ]);
+  const msgs = await api("GET", `/api/conversations/${id}/messages?limit=${MSG_PAGE_SIZE}`);
+  if (loadId !== privateConversationLoadId || currentConvId !== id) return;
+  setCurrentMessages(msgs);
+  hasMoreMessages = currentMessages.length >= MSG_PAGE_SIZE;
+  renderConvList();
+  renderMessages();
+  $("sendBtn").disabled = false;
+  closeSidebar();
+
+  annotations.then(([hwList, mrList]) => {
+    if (loadId !== privateConversationLoadId || currentConvId !== id) return;
     for (const hw of hwList) {
       _heartWhisperMsgIds.add(hw.msg_id);
       _heartWhisperContent[hw.msg_id] = hw.content;
     }
-  } catch (e) { console.warn('加载心语失败:', e); }
-  // 加载该对话的 AI 主动记忆数据
-  try {
-    const mrList = await api("GET", `/api/memories/by-conv/${id}`);
     for (const mr of mrList) {
       _memoryRecordMsgIds.add(mr.msg_id);
       if (_memoryRecordContent[mr.msg_id]) {
@@ -2738,12 +2758,11 @@ async function selectConv(id) {
         _memoryRecordContent[mr.msg_id] = mr.content;
       }
     }
-  } catch (e) { console.warn('加载记忆记录失败:', e); }
-  hasMoreMessages = currentMessages.length >= MSG_PAGE_SIZE;
-  renderConvList();
-  renderMessages();
-  $("sendBtn").disabled = false;
-  closeSidebar();
+    // Only add the small hint badges; keep scroll position, editors and any
+    // streaming reply intact when annotations arrive after the messages.
+    for (const hw of hwList) _applyHeartHint(hw.msg_id);
+    for (const mr of mrList) _applyMemoryHint(mr.msg_id);
+  }).catch(e => console.warn('加载消息附加信息失败:', e));
 }
 
 async function refreshCurrentConversationFromServer(options = {}) {
@@ -4890,10 +4909,15 @@ async function fmSave() {
   }
 }
 
-init().then(() => {
-  // 初始化完成后自动打开 Home 作为默认页面
-  setTimeout(() => openSubPage('/'), 100);
-});
+function startChatApp() {
+  // Open the cached desktop before any chat API finishes. Explicit message
+  // links still open their target conversation instead of being covered.
+  if (!new URLSearchParams(location.search).has('conv') && window.__aionStartupPage !== '/chat') {
+    openSubPage(window.__aionStartupPage || '/');
+  }
+  if (window.__aionStartupWhisper) openWhisper();
+  return init().catch(e => console.warn('[chat] initialization failed:', e));
+}
 
 // ── 摄像头/监控日志/记忆库 → 已拆分为独立页面 ──
 
@@ -5466,7 +5490,7 @@ function syncSubPageMode(url) {
   }
 }
 const persistentSubPageFrames = new Map();
-const transientSubPageFrame = $('subPageFrame');
+let transientSubPageFrame = $('subPageFrame');
 let activeSubPageFrame = null;
 let _aionAppForeground = false;
 let _aionPhoneCameraCaptureActive = false;
@@ -5499,6 +5523,10 @@ function subPagePath(url) {
 function shouldNavigatePersistentSubPage(frame, url) {
   try {
     const requested = new URL(url, location.origin);
+    if (frame.dataset.startupFrame === '1' && frame.src === requested.href) {
+      delete frame.dataset.startupFrame;
+      return false;
+    }
     // Plain app launches keep the preserved page state. Explicit route params
     // (for example, a global-search message anchor) must navigate the frame.
     let current;
@@ -5554,7 +5582,12 @@ function getSubPageFrame(url) {
     // 相册的原图下载需要单独允许；不改变其他子页面的沙箱权限。
     if (path === '/album') transientSubPageFrame.sandbox.add('allow-downloads');
     else transientSubPageFrame.sandbox.remove('allow-downloads');
-    transientSubPageFrame.dataset.pendingSrc = url;
+    if (transientSubPageFrame.dataset.startupFrame === '1'
+        && transientSubPageFrame.src === new URL(url, location.origin).href) {
+      delete transientSubPageFrame.dataset.startupFrame;
+    } else {
+      transientSubPageFrame.dataset.pendingSrc = url;
+    }
     return transientSubPageFrame;
   }
   let frame = persistentSubPageFrames.get(path);
@@ -5574,6 +5607,18 @@ function getSubPageFrame(url) {
   return frame;
 }
 
+const initialDesktopFrame = document.querySelector('iframe[data-startup-frame="1"]');
+if (initialDesktopFrame) {
+  const path = initialDesktopFrame.dataset.startupPath || '/';
+  if (isPersistentSubPage(path)) {
+    persistentSubPageFrames.set(path, initialDesktopFrame);
+    attachSubPageFrameLoad(initialDesktopFrame);
+  } else {
+    transientSubPageFrame.remove();
+    transientSubPageFrame = initialDesktopFrame;
+    transientSubPageFrame.id = 'subPageFrame';
+  }
+}
 attachSubPageFrameLoad(transientSubPageFrame);
 
 function openSubPage(url) {
@@ -5725,3 +5770,6 @@ async function openWalletPanel() {
 function closeWalletPanel() {
   $('walletPanelOverlay').classList.remove('show');
 }
+
+// All page/frame state above must exist before opening the initial desktop.
+startChatApp();

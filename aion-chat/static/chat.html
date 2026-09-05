@@ -310,6 +310,40 @@
     <iframe id="subPageFrame" class="sub-page-frame" sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals" allow="autoplay"></iframe>
   </div>
 </div>
+<script id="initial-desktop">
+// Start the desktop before any external chat script can block the parser.
+// chat.js adopts this same frame once it is ready, preserving early navigation.
+(() => {
+  if (new URLSearchParams(location.search).has('conv')) return;
+  const overlay = document.getElementById('subPageOverlay');
+  const frame = document.createElement('iframe');
+  frame.className = 'sub-page-frame';
+  frame.dataset.startupFrame = '1';
+  frame.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-popups allow-modals');
+  frame.setAttribute('allow', 'autoplay');
+  frame.style.display = 'block';
+  document.getElementById('subPageFrames').appendChild(frame);
+  window.openSubPage = url => {
+    const target = new URL(url, location.origin);
+    window.__aionStartupPage = url;
+    frame.dataset.startupPath = target.pathname;
+    if (frame.src !== target.href) frame.src = target.href;
+    overlay.classList.toggle('home-subpage', target.pathname === '/');
+    overlay.classList.add('show');
+  };
+  window.closeSubPage = () => {
+    window.__aionStartupPage = '/chat';
+    overlay.classList.remove('show');
+  };
+  window.openWhisper = () => { window.__aionStartupWhisper = true; };
+  window.handleNativeBack = () => {
+    if (window.__aionStartupPage === '/') return 'dialog';
+    window.openSubPage('/');
+    return 'handled';
+  };
+  window.openSubPage('/');
+})();
+</script>
 <script src="/static/hug_pillow_ai.js?v=hug-pillow-ai-20260726"></script>
 <script src="/static/monitor-camera-snapshot.js?v=20260902-compact"></script>
 <script src="/static/system-notice-ui.js?v=20260902"></script>
@@ -321,7 +355,7 @@
 <script src="/static/vendor/markdown-it-15.0.1.min.js?v=15.0.1"></script>
 <script src="/static/chatroom-markdown.js?v=user-markdown-bubbles-20260904"></script>
 <script src="/static/message-row-focus.js?v=20260904-editor-focus"></script>
-<script src="/static/chat.js?v=editor-focus-20260904"></script>
+<script src="/static/chat.js?v=desktop-shell-20260905"></script>
 <script src="/static/voice-call-policy.js?v=voice-latency-20260902a"></script>
 <script src="/static/voice-call.js?v=voice-latency-20260902a"></script>
 

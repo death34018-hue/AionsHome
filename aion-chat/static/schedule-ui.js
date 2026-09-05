@@ -118,27 +118,30 @@
   }
 
   function normalizeScheduleTab(tab) {
-    return tab === 'history' ? 'history' : 'active';
+    return tab === 'memo' || tab === 'history' ? tab : 'active';
   }
 
   function selectScheduleTab(tab, documentLike = document) {
     const selected = normalizeScheduleTab(tab);
-    const activeSelected = selected === 'active';
-    const activeTab = documentLike.getElementById('schTabActive');
-    const historyTab = documentLike.getElementById('schTabHistory');
-    const activePanel = documentLike.getElementById('schPanelActive');
-    const historyPanel = documentLike.getElementById('schPanelHistory');
-
-    activeTab?.classList.toggle('active', activeSelected);
-    historyTab?.classList.toggle('active', !activeSelected);
-    activeTab?.setAttribute('aria-selected', String(activeSelected));
-    historyTab?.setAttribute('aria-selected', String(!activeSelected));
-    activeTab?.setAttribute('tabindex', activeSelected ? '0' : '-1');
-    historyTab?.setAttribute('tabindex', activeSelected ? '-1' : '0');
-    activePanel?.classList.toggle('active', activeSelected);
-    historyPanel?.classList.toggle('active', !activeSelected);
-    if (activePanel) activePanel.hidden = !activeSelected;
-    if (historyPanel) historyPanel.hidden = activeSelected;
+    for (const [name, suffix] of [['active', 'Active'], ['memo', 'Memo'], ['history', 'History']]) {
+      const isSelected = selected === name;
+      const tabElement = documentLike.getElementById(`schTab${suffix}`);
+      const panel = documentLike.getElementById(`schPanel${suffix}`);
+      tabElement?.classList.toggle('active', isSelected);
+      tabElement?.setAttribute('aria-selected', String(isSelected));
+      tabElement?.setAttribute('tabindex', isSelected ? '0' : '-1');
+      panel?.classList.toggle('active', isSelected);
+      if (panel) panel.hidden = !isSelected;
+    }
+    const tabs = documentLike.getElementById('schTabs');
+    if (tabs) tabs.hidden = selected === 'history';
+    const historyButton = documentLike.getElementById('schHistoryButton');
+    if (historyButton) historyButton.hidden = selected !== 'active';
+    const title = documentLike.getElementById('schPageTitle');
+    if (title) title.textContent = selected === 'history' ? '日程历史' : '日程管理';
+    documentLike.getElementById('schBackButton')?.setAttribute(
+      'aria-label', selected === 'history' ? '返回日程管理' : '返回首页',
+    );
     return selected;
   }
 
@@ -146,39 +149,21 @@
     const selected = normalizeScheduleTab(tab);
     let next = null;
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-      next = selected === 'active' ? 'history' : 'active';
+      next = selected === 'active' ? 'memo' : 'active';
     } else if (event.key === 'Home') {
       next = 'active';
     } else if (event.key === 'End') {
-      next = 'history';
+      next = 'memo';
     }
     if (!next) return null;
 
     event.preventDefault();
     selectScheduleTab(next, documentLike);
     const nextTab = documentLike.getElementById(
-      next === 'active' ? 'schTabActive' : 'schTabHistory',
+      next === 'active' ? 'schTabActive' : 'schTabMemo',
     );
     nextTab?.focus();
     return next;
-  }
-
-  function scheduleCount(value) {
-    const number = Number(value);
-    return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : 0;
-  }
-
-  function updateScheduleTabCounts(
-    activeCount,
-    historyCount,
-    documentLike = document,
-  ) {
-    const activeTab = documentLike.getElementById('schTabActive');
-    const historyTab = documentLike.getElementById('schTabHistory');
-    if (activeTab) activeTab.textContent = `当前 ${scheduleCount(activeCount)}`;
-    if (historyTab) {
-      historyTab.textContent = `历史 ${scheduleCount(historyCount)}`;
-    }
   }
 
   return {
@@ -192,6 +177,5 @@
     selectScheduleTab,
     shouldReloadSchedules,
     shouldReloadPrivateMemos,
-    updateScheduleTabCounts,
   };
 }));
