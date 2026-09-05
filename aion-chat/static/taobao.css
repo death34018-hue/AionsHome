@@ -30,6 +30,7 @@ dialog{width:calc(100% - 28px);max-width:540px;max-height:90dvh;overflow:auto;bo
 .companion h2{font-size:18px}.companion-status{font-size:11px;margin:5px 0 0}
 .notice:empty{display:none}
 .roam-bar{margin:20px 0 8px}.roam-bar label{white-space:nowrap}.roam-bar select{width:auto}
+body[data-theme="dark"] .roam-bar select{background:var(--tb-card);border-color:var(--tb-line);color:var(--tb-text)}
 button.primary,.view-tabs button[aria-pressed="true"]{color:#592909;background:linear-gradient(110deg,#ffb078,#ff9168);border-color:#ef9b6b;box-shadow:0 5px 16px #e5884930,inset 0 1px 0 #fff7e8a8}
 @media(max-width:700px){.outing-panel{margin-top:82px;padding-top:18px}.companions{top:-76px;left:6px;right:6px}.companion{height:80px;gap:3px}.portrait{height:88px;width:76px}.companion h2{font-size:15px}.companion-status{font-size:10px;margin-top:4px}.roam-bar label{font-size:11px}}
 @media(max-width:360px){.portrait{width:62px;height:80px}.companion h2{font-size:13px}.companion-status{font-size:9px}}

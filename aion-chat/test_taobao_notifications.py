@@ -81,6 +81,67 @@ class ShoppingNoticeTests(unittest.IsolatedAsyncioTestCase):
             message = await notify_shopping_trip("aion", "last-user-trip", self.items)
         self.assertEqual(message["conv_id"], "private-old")
 
+    async def test_card_loads_outing_essentials_into_private_and_group_context(self):
+        from context_builder import fetch_merged_timeline, render_merged_timeline
+        from taobao_notifications import notify_shopping_trip
+        from ws import manager
+
+        selected = [{**p, "price": "2.82", "reflection": "这次喜欢它的造型",
+                     "recipient": "家人", "purpose": "夹住零食袋", "shop": "不必带入的店铺"}
+                    for p in self.items]
+        async with aiosqlite.connect(self.path.with_name("taobao.sqlite3")) as db:
+            await db.execute("CREATE TABLE shopping_trips(id TEXT PRIMARY KEY,selected TEXT)")
+            await db.execute("INSERT INTO shopping_trips VALUES('context-trip',?)",
+                             (json.dumps(selected, ensure_ascii=False),))
+            await db.commit()
+
+        for actor, active in (("aion", "private"), ("aion", "chatroom:group-last"),
+                              ("connor", "group-last"), ("connor", "connor-private")):
+            with self.subTest(actor=actor, active=active), \
+                 patch("taobao_notifications.get_db", self.db), \
+                 patch("context_builder.get_db", self.db), \
+                 patch("taobao_context.DB_PATH", self.path), \
+                 patch("context_builder._timeline_display_names", return_value=("家人", "测试甲", "测试乙")), \
+                 patch.object(manager, "get_aion_last_active", return_value=active), \
+                 patch.object(manager, "get_connor_last_active", return_value=active), \
+                 patch.object(manager, "broadcast", new=AsyncMock()):
+                async with self.db() as db:
+                    for table in ("messages", "chatroom_messages", "sync_events"):
+                        await db.execute(f"DELETE FROM {table}")
+                    await db.commit()
+                # Original three-product card has no new context fields: old cards work too.
+                notice = await notify_shopping_trip(actor, "context-trip", self.items)
+                history = render_merged_timeline(await fetch_merged_timeline(actor, 1), actor)
+            entries = [m for m in history if "[逛淘宝记录]" in m["content"]]
+            self.assertEqual(len(entries), 1)
+            text = entries[0]["content"]
+            for value in ("历史消息 - 系统事件", "商品3", "¥2.82", "这次喜欢它的造型",
+                          "想给谁：家人", "用途：夹住零食袋", "仅收藏，未购买", "发现时快照",
+                          "测试甲" if actor == "aion" else "测试乙"):
+                self.assertIn(value, text)
+            self.assertNotIn("不必带入的店铺", text)
+            self.assertNotIn("https://", text)
+            self.assertNotIn("选品感想", notice["content"])
+            self.assertNotIn("attachments", entries[0])
+
+    async def test_missing_outing_uses_card_without_inventing_essentials(self):
+        from context_builder import fetch_merged_timeline, render_merged_timeline
+        from taobao_notifications import notify_shopping_trip
+        from ws import manager
+        with patch("taobao_notifications.get_db", self.db), \
+             patch("context_builder.get_db", self.db), \
+             patch("taobao_context.DB_PATH", self.path), \
+             patch.object(manager, "get_aion_last_active", return_value="private"), \
+             patch.object(manager, "broadcast", new=AsyncMock()):
+            await notify_shopping_trip("aion", "missing-trip", self.items)
+            history = render_merged_timeline(await fetch_merged_timeline("aion", 1), "aion")
+        text = history[-1]["content"]
+        self.assertIn("商品0", text)
+        self.assertIn("完整小记已不可用", text)
+        self.assertIn("当时价格：未提供", text)
+        self.assertNotIn("选品感想：", text)
+        self.assertFalse(self.path.with_name("taobao.sqlite3").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

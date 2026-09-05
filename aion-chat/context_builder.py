@@ -10,6 +10,7 @@ import aiosqlite
 
 from config import load_worldbook
 from database import get_db
+from taobao_context import trip_card, load_trip_products, render_trip_context
 from schedule import get_active_schedules, build_schedule_prompt
 from luckin import LUCKIN_CMD_PATTERN
 from song_gen import SONG_CMD_PATTERN
@@ -548,6 +549,8 @@ def _is_model_visible_timeline_message(message: dict) -> bool:
     if message.get("sender") != "system":
         return True
     attachments = _parse_timeline_attachments(message.get("attachments", []))
+    if trip_card(attachments) is not None:
+        return True
     explicitly_model_visible = any(
         isinstance(attachment, dict)
         and attachment.get("type") == "system_model_context"
@@ -719,11 +722,19 @@ async def fetch_merged_timeline(
         since_ts=since_ts,
         until_ts=until_ts,
     )
-    return (
+    results = (
         results[-normalized_limit:]
         if len(results) > normalized_limit
         else results
     )
+    cards = [(message, trip_card(_parse_timeline_attachments(message.get("attachments", []))))
+             for message in results if message.get("sender") == "system"]
+    trip_ids = {card["trip_id"] for _, card in cards if card and card.get("trip_id")}
+    products = await load_trip_products(trip_ids)
+    for message, card in cards:
+        if card is not None:
+            message["taobao_products"] = products.get(card.get("trip_id"))
+    return results
 
 
 async def count_merged_timeline(
@@ -806,6 +817,11 @@ def render_merged_timeline(
         message_attachments = _parse_timeline_attachments(
             msg.get("attachments", [])
         )
+        card = trip_card(message_attachments) if sender == "system" else None
+        if card is not None:
+            content = render_trip_context(
+                card, msg.get("taobao_products"), {"aion": ai_name, "connor": connor_name},
+            )
 
         # ── 场景切换标记：不再插入 fake 应答对，仅记录下来在下一条消息前内联输出 ──
         if has_mixed and source != current_source:
