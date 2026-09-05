@@ -128,15 +128,15 @@ class StreamSafetyGuardTest(unittest.TestCase):
 class ConsumeSafeStreamTest(unittest.IsolatedAsyncioTestCase):
     async def test_activity_resets_idle_timeout_without_entering_text(self):
         async def source():
-            await asyncio.sleep(0.025)
+            await asyncio.sleep(0.06)
             yield StreamActivity()
-            await asyncio.sleep(0.025)
+            await asyncio.sleep(0.06)
             yield "正文"
 
         policy = StreamSafetyPolicy(
             max_chars=100,
-            total_timeout=0.2,
-            idle_timeout=0.04,
+            total_timeout=0.5,
+            idle_timeout=0.1,
             quarantine_chars=0,
         )
         commits = []

@@ -8,6 +8,109 @@ import tts
 
 
 class TTSBackpressureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rewind_before_audio_clears_started_workers_for_fallback(self):
+        blocker = asyncio.Event()
+
+        async def slow_request(_text, _voice, *, seq=0):
+            await blocker.wait()
+            return b"audio"
+
+        streamer = tts.TTSStreamer(
+            "rewind_before_audio",
+            "voice",
+            None,
+            min_chars=1,
+            max_chars=2,
+        )
+        with patch("tts._request_tts_audio", side_effect=slow_request):
+            await streamer.feed_async("一句。")
+            self.assertGreater(streamer.accepted_segment_count, 0)
+            self.assertFalse(streamer.has_emitted_audio)
+
+            self.assertTrue(await streamer.rewind_before_audio())
+            self.assertEqual(streamer.accepted_segment_count, 0)
+            self.assertEqual(streamer.worker_task_count, 0)
+
+            blocker.set()
+            await streamer.feed_async("重试。")
+            await streamer.flush()
+
+        self.assertTrue(streamer.has_emitted_audio)
+
+    async def test_notification_attempt_is_already_an_irreversible_checkpoint(self):
+        notify_started = asyncio.Event()
+        release_notify = asyncio.Event()
+
+        async def request_audio(_text, _voice, *, seq=0):
+            return b"audio"
+
+        async def blocked_notify(_payload):
+            notify_started.set()
+            await release_notify.wait()
+
+        streamer = tts.TTSStreamer(
+            "notify_checkpoint",
+            "voice",
+            None,
+            min_chars=1,
+            max_chars=2,
+        )
+        with (
+            patch("tts._request_tts_audio", side_effect=request_audio),
+            patch.object(streamer, "_notify", side_effect=blocked_notify),
+        ):
+            await streamer.feed_async("一句。")
+            await notify_started.wait()
+
+            self.assertTrue(streamer.has_emitted_audio)
+            self.assertFalse(await streamer.rewind_before_audio())
+
+            release_notify.set()
+            await streamer.flush()
+
+    async def test_discard_pending_text_prevents_unspoken_text_from_being_synthesized(self):
+        calls = []
+
+        async def record_audio(text, *args, **kwargs):
+            calls.append(text)
+            return b"audio"
+
+        with tempfile.TemporaryDirectory() as td:
+            streamer = tts.TTSStreamer(
+                "msg_retry",
+                "voice",
+                low_latency_first_chunk=True,
+                cache_dir=Path(td),
+                cache_max_bytes=None,
+            )
+            streamer.feed("尚未形成句子的待回退正文")
+            streamer.discard_pending_text()
+            with patch.object(tts, "_request_tts_audio", new=record_audio):
+                await streamer.flush()
+
+        self.assertEqual(calls, [])
+        self.assertFalse(streamer.has_emitted_audio)
+
+    async def test_successful_audio_notification_sets_irreversible_checkpoint(self):
+        with tempfile.TemporaryDirectory() as td:
+            streamer = tts.TTSStreamer(
+                "msg_emitted",
+                "voice",
+                min_chars=1,
+                max_chars=2,
+                cache_dir=Path(td),
+                cache_max_bytes=None,
+            )
+            with patch.object(
+                tts,
+                "_request_tts_audio",
+                new=lambda *args, **kwargs: asyncio.sleep(0, result=b"audio"),
+            ):
+                await streamer.feed_async("好。")
+                await streamer.flush()
+
+        self.assertTrue(streamer.has_emitted_audio)
+
     async def test_streaming_feed_never_runs_more_than_two_requests(self):
         active = 0
         peak_active = 0

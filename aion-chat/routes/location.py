@@ -12,7 +12,7 @@ from location import (
     load_location_status, save_location_status,
     process_heartbeat,
     amap_poi_search, format_nearby_pois_for_prompt,
-    is_location_quiet_hours,
+    is_location_quiet_hours, load_amap_usage,
 )
 from ws import manager
 
@@ -202,8 +202,10 @@ async def get_location_config():
         masked_key = k[:4] + "*" * (len(k) - 8) + k[-4:]
     return {
         **cfg,
-        "amap_key": k,
+        "amap_key": "",
         "amap_key_masked": masked_key,
+        "amap_key_configured": bool(k),
+        "amap_usage_today": load_amap_usage(),
         "active": cfg.get("enabled", False) and not is_location_quiet_hours(),
     }
 

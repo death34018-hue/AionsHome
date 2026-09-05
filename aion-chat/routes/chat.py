@@ -12,11 +12,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Any
 
-from config import DEFAULT_MODEL, MODELS, load_worldbook, SETTINGS, UPLOADS_DIR, CODEX_UPLOADS_DIR, PUBLIC_DIR, resolve_model_key
+from config import DEFAULT_MODEL, MODELS, load_worldbook, SETTINGS, UPLOADS_DIR, ALBUM_IMAGES_DIR, CODEX_UPLOADS_DIR, PUBLIC_DIR, resolve_model_key, resolve_model_transport_mode
 from database import get_db
 from ws import manager
 from active_window_state import record_aion_private_active
-from ai_providers import stream_ai, CLI_STATUS_PREFIX
+from ai_providers import stream_ai, CLI_STATUS_PREFIX, with_current_device_context
 from memory import recall_memories, instant_digest, fetch_source_details, build_surfacing_memories, get_embedding, _pack_embedding, format_recalled_memories_for_prompt
 from camera import cam, CAM_CHECK_CMD, perform_cam_check
 from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prompt
@@ -26,11 +26,14 @@ from routes.music import MUSIC_CMD_PATTERN
 from music_station import record_music_request
 from song_gen import SONG_CMD_PATTERN, clean_song_visible_reply
 from stream_reply import resolve_stream_failure
+from widget_control import process_widget_control_commands
 from stream_safety import (
     CHAT_STREAM_POLICY,
     StreamSafetyResult,
     consume_safe_stream,
 )
+from safe_live_stream import consume_safe_live_stream
+from realtime_stream_transport import consume_realtime_transport
 from tts import TTSStreamer
 from wechat_bridge import (
     dispatch_wechat_message,
@@ -43,6 +46,13 @@ from app_supervision_ai import (
     queue_app_supervision_reply_command,
     broadcast_app_supervision_command,
 )
+from capabilities import is_capability_enabled
+from active_memory_search import (
+    MemorySearchRequest,
+    extract_memory_search_requests,
+    format_memory_search_context,
+    search_actor_memories,
+)
 
 MOMENT_CMD_PATTERN = re.compile(r'\[MOMENT:(.+?)(?:\|(true|false))?\]')
 MEMORY_CMD_PATTERN = re.compile(
@@ -53,6 +63,22 @@ ACTIVITY_CHECK_PATTERN = re.compile(r'\[查看动态:(\d+)\]')
 SELFIE_CMD_PATTERN = re.compile(r'\[SELFIE:\s*([^\]]+)\]')
 DRAW_CMD_PATTERN = re.compile(r'\[DRAW:\s*([^\]]+)\]')
 TRANSFER_CMD_PATTERN = re.compile(r'\[转账[：:]\s*(-?\d+(?:\.\d+)?)\s*元\]')
+
+
+def _private_memory_search_requests(text: str) -> list[MemorySearchRequest]:
+    """Return memory requests even when the model adds a natural preface."""
+    _cleaned, requests = extract_memory_search_requests(
+        text, enabled=is_capability_enabled("memory_search")
+    )
+    return requests
+
+
+def _private_memory_search_parse(
+    text: str,
+) -> tuple[str, list[MemorySearchRequest]]:
+    return extract_memory_search_requests(
+        text, enabled=is_capability_enabled("memory_search")
+    )
 
 # ── 活跃生成任务（用于 abort 取消） ──
 active_generations: dict[str, asyncio.Event] = {}  # conv_id → cancel_event
@@ -129,16 +155,12 @@ def _process_voice_attachments_in_history(history: list, keep_idx: int = -1):
                 if is_kept:
                     non_media_atts.append(att.get("url", ""))
             else:
-                if is_kept:
-                    non_media_atts.append(att)
+                non_media_atts.append(att)
         if media_transcripts:
             vt = "\n".join(media_transcripts)
             orig = msg["content"].strip() if msg["content"] else ""
             msg["content"] = vt + (f"\n{orig}" if orig else "")
-        if is_kept:
-            msg["attachments"] = non_media_atts
-        else:
-            msg["attachments"] = []
+        msg["attachments"] = non_media_atts
 
 
 async def _insert_private_ability_block(
@@ -155,11 +177,18 @@ async def _insert_private_ability_block(
         whisper_mode=whisper_mode,
         model_key=model_key,
     )
-    if not ability_block:
-        return inject_offset
-    history.insert(cap_idx + inject_offset, {"role": "user", "content": ability_block})
-    history.insert(cap_idx + inject_offset + 1, {"role": "assistant", "content": "好的，需要时我会使用这些指令。"})
-    return inject_offset + 2
+    if ability_block:
+        history.insert(cap_idx + inject_offset, {"role": "user", "content": ability_block})
+        history.insert(cap_idx + inject_offset + 1, {"role": "assistant", "content": "好的，需要时我会使用这些指令。"})
+        inject_offset += 2
+
+    before_count = len(history)
+    history[:] = with_current_device_context(
+        history,
+        insert_at=cap_idx + inject_offset,
+        add_acknowledgement=True,
+    )
+    return inject_offset + (len(history) - before_count)
 
 router = APIRouter()
 
@@ -274,7 +303,93 @@ async def _consume_chat_stream(
     return result, visible_text
 
 
+async def _consume_safe_chat_stream(
+    source,
+    queue,
+    *,
+    model_key: str,
+    tts_streamer: TTSStreamer | None = None,
+) -> tuple[StreamSafetyResult, str]:
+    """Independent safe-live consumer; the legacy consumer above stays intact."""
+    visible_text = ""
+    stream_filter = WebCommandStreamFilter()
+    lounge_filter = LoungeVisitCommandStreamFilter()
+
+    async def on_commit(chunk: str) -> None:
+        nonlocal visible_text
+        visible_chunk = lounge_filter.feed(stream_filter.feed(chunk))
+        if visible_chunk:
+            visible_text += visible_chunk
+            await _emit_chat_visible_chunk(
+                queue,
+                model_key,
+                visible_text,
+                visible_chunk,
+                tts_streamer,
+            )
+
+    result = await consume_safe_live_stream(source, on_commit)
+    if result.stop_reason is None:
+        visible_tail = lounge_filter.feed(stream_filter.flush()) + lounge_filter.flush()
+        if visible_tail:
+            visible_text += visible_tail
+            await _emit_chat_visible_chunk(
+                queue,
+                model_key,
+                visible_text,
+                visible_tail,
+                tts_streamer,
+            )
+    return result, visible_text
+
+
+async def _consume_chat_realtime_stream(
+    source_factory,
+    queue,
+    *,
+    model_key: str,
+    tts_streamer: TTSStreamer | None = None,
+    transport_mode: str | None = None,
+) -> tuple[StreamSafetyResult, str, bool, bool]:
+    mode = transport_mode or resolve_model_transport_mode(model_key)
+
+    async def safe_consumer(source):
+        return await _consume_safe_chat_stream(
+            source,
+            queue,
+            model_key=model_key,
+            tts_streamer=tts_streamer,
+        )
+
+    async def legacy_consumer(source):
+        return await _consume_chat_stream(
+            source,
+            queue,
+            model_key=model_key,
+            tts_streamer=tts_streamer,
+        )
+
+    async def reset_visible():
+        await queue.put({"type": "stream_reset"})
+
+    outcome = await consume_realtime_transport(
+        mode=mode,
+        source_factory=source_factory,
+        safe_consumer=safe_consumer,
+        legacy_consumer=legacy_consumer,
+        reset_visible=reset_visible,
+        tts_streamer=tts_streamer,
+    )
+    return (
+        outcome.result,
+        outcome.visible_text,
+        outcome.used_fallback,
+        outcome.manual_retry_required,
+    )
+
+
 _AI_ERROR_PREFIXES = (
+    "[CodexCLI错误",
     "[Gemini错误",
     "[AntigravityCLI错误",
     "[硅基流动错误",
@@ -528,6 +643,11 @@ def _path_url_for_local_image(ref: str) -> str | None:
         resolved = src.resolve()
     except Exception:
         resolved = src
+    try:
+        rel = resolved.relative_to(ALBUM_IMAGES_DIR.resolve())
+        return "/uploads/album/" + rel.as_posix()
+    except Exception:
+        pass
     try:
         rel = resolved.relative_to(UPLOADS_DIR.resolve())
         return "/uploads/" + rel.as_posix()
@@ -1331,7 +1451,12 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
 
     tts_streamer = None
     if body.tts_enabled and body.tts_voice:
-        tts_streamer = TTSStreamer(ai_msg_id, body.tts_voice, manager)
+        tts_streamer = TTSStreamer(
+            ai_msg_id,
+            body.tts_voice,
+            manager,
+            low_latency_first_chunk=resolve_model_transport_mode(model_key) == "safe_live",
+        )
     manager.set_tts_fallback(body.tts_enabled, body.tts_voice)
 
     async def _bg_generate():
@@ -1349,12 +1474,15 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                         continue
                     yield chunk
 
-            stream_result, visible_text = await _consume_chat_stream(
-                content_stream(),
+            stream_result, visible_text, _used_fallback, manual_retry = await _consume_chat_realtime_stream(
+                content_stream,
                 _q,
                 model_key=model_key,
                 tts_streamer=tts_streamer,
             )
+            if manual_retry:
+                await _q.put({"type": "stream_error", "content": "回复连接异常，可重试"})
+                return
             full_text = stream_result.committed_text
             safety_notice = stream_result.notice
             has_error = stream_result.stop_reason is not None
@@ -1366,6 +1494,12 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 error_text = stripped
             if safety_notice:
                 full_text = f"{full_text}\n\n[{safety_notice}]".strip()
+
+            if not has_error and await _start_private_memory_search_if_requested(
+                full_text, conv_id=conv_id, model_key=model_key,
+                original_question=body.content, queue=_q, ai_msg_id=ai_msg_id,
+            ):
+                return
 
             music_matches = MUSIC_CMD_PATTERN.findall(full_text)
             music_cards = []
@@ -1530,6 +1664,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 source_ref=conv_id,
             )
 
+            full_text = await process_widget_control_commands(full_text, "aion")
             full_text = _visible_ai_text(full_text)
 
             # 检测 [转账：N元] 指令 — AI 转账入账（不从 full_text 中剥离，前端渲染卡片需要）
@@ -1966,7 +2101,12 @@ async def send_message(conv_id: str, body: MsgCreate):
     # 创建 TTS streamer（如果请求方开了 TTS）
     tts_streamer = None
     if body.tts_enabled and body.tts_voice:
-        tts_streamer = TTSStreamer(ai_msg_id, body.tts_voice, manager)
+        tts_streamer = TTSStreamer(
+            ai_msg_id,
+            body.tts_voice,
+            manager,
+            low_latency_first_chunk=resolve_model_transport_mode(model_key) == "safe_live",
+        )
     # 同步备用 TTS 状态，供 cam_check / schedule 等服务端触发场景使用
     manager.set_tts_fallback(body.tts_enabled, body.tts_voice)
 
@@ -1986,12 +2126,15 @@ async def send_message(conv_id: str, body: MsgCreate):
                         continue
                     yield chunk
 
-            stream_result, visible_text = await _consume_chat_stream(
-                content_stream(),
+            stream_result, visible_text, _used_fallback, manual_retry = await _consume_chat_realtime_stream(
+                content_stream,
                 _q,
                 model_key=model_key,
                 tts_streamer=tts_streamer,
             )
+            if manual_retry:
+                await _q.put({"type": "stream_error", "content": "回复连接异常，可重试"})
+                return
             full_text = stream_result.committed_text
             safety_notice = stream_result.notice
             has_error = stream_result.stop_reason is not None
@@ -2004,6 +2147,12 @@ async def send_message(conv_id: str, body: MsgCreate):
                 error_text = stripped
             if safety_notice:
                 full_text = f"{full_text}\n\n[{safety_notice}]".strip()
+
+            if not has_error and await _start_private_memory_search_if_requested(
+                full_text, conv_id=conv_id, model_key=model_key,
+                original_question=body.content, queue=_q, ai_msg_id=ai_msg_id,
+            ):
+                return
 
             # 检测 [MUSIC:xxx] 指令 → 搜索歌曲并推送卡片数据
             music_matches = MUSIC_CMD_PATTERN.findall(full_text)
@@ -2240,6 +2389,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                             print(f"[剧场] 道具赠送: {item_name}")
 
             # 清洗 AI 回复中模仿产生的 <meta> 标签
+            full_text = await process_widget_control_commands(full_text, "aion")
             full_text = _visible_ai_text(full_text)
 
             # 将音乐点歌信息存入 attachments，刷新后可显示胶囊
@@ -2533,6 +2683,270 @@ async def _guarded_cam_check(conv_id: str, model_key: str):
         await perform_cam_check(conv_id, model_key)
     finally:
         _cam_check_active.discard(conv_id)
+
+
+def _private_memory_status_text(worldbook: dict) -> str:
+    return f"{worldbook.get('ai_name') or 'AI'}正在翻找记忆……"
+
+
+def _private_memory_completed_text(worldbook: dict) -> str:
+    return f"{worldbook.get('ai_name') or 'AI'}翻找了记忆"
+
+
+async def _complete_private_memory_search_status(
+    conv_id: str, msg_id: str, worldbook: dict
+) -> None:
+    if not conv_id or not msg_id:
+        return
+    content = _private_memory_completed_text(worldbook)
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE messages SET content=? WHERE id=? AND conv_id=? AND role='system'",
+            (content, msg_id, conv_id),
+        )
+        cur = await db.execute(
+            "SELECT created_at, attachments FROM messages WHERE id=? AND conv_id=? AND role='system'",
+            (msg_id, conv_id),
+        )
+        row = await cur.fetchone()
+        await db.commit()
+    if not row:
+        return
+    try:
+        attachments = json.loads(row[1] or "[]")
+    except (TypeError, json.JSONDecodeError):
+        attachments = []
+    await manager.broadcast({
+        "type": "msg_updated",
+        "data": {
+            "id": msg_id,
+            "conv_id": conv_id,
+            "role": "system",
+            "content": content,
+            "created_at": row[0],
+            "attachments": attachments,
+        },
+    })
+
+
+async def _save_private_memory_preface(
+    conv_id: str, msg_id: str, content: str
+) -> None:
+    now = time.time()
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
+            (msg_id, conv_id, "assistant", content, now, "[]"),
+        )
+        await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
+        await db.commit()
+    await manager.broadcast({
+        "type": "msg_created",
+        "data": {
+            "id": msg_id, "conv_id": conv_id, "role": "assistant",
+            "content": content, "created_at": now, "attachments": [],
+        },
+    })
+
+
+async def _private_memory_search_sys_msg(
+    conv_id: str, *, after_msg_id: str | None = None
+) -> str:
+    wb = load_worldbook()
+    text = _private_memory_status_text(wb)
+    now = time.time()
+    msg_id = f"msg_{time.time_ns()}_memory_search"
+    order_atts = (
+        [{"type": "system_notice_order", "after_msg_id": after_msg_id}]
+        if after_msg_id else []
+    )
+    att_json = json.dumps(order_atts, ensure_ascii=False) if order_atts else "[]"
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
+            (msg_id, conv_id, "system", text, now, att_json),
+        )
+        await db.commit()
+    msg = {
+        "id": msg_id, "conv_id": conv_id, "role": "system",
+        "content": text, "created_at": now, "attachments": order_atts,
+    }
+    await manager.broadcast({"type": "msg_created", "data": msg})
+    return msg_id
+
+
+async def _start_private_memory_search_if_requested(
+    full_text: str,
+    *,
+    conv_id: str,
+    model_key: str,
+    original_question: str,
+    queue: asyncio.Queue,
+    ai_msg_id: str,
+) -> bool:
+    clean_text, requests = _private_memory_search_parse(full_text)
+    if not requests:
+        return False
+    preface = _visible_ai_text(clean_text)
+    after_msg_id = None
+    if preface:
+        await _save_private_memory_preface(conv_id, ai_msg_id, preface)
+        after_msg_id = ai_msg_id
+    status_id = await _private_memory_search_sys_msg(
+        conv_id, after_msg_id=after_msg_id
+    )
+    await queue.put({
+        "type": "memory_search",
+        "conv_id": conv_id,
+        "queries": [request.query for request in requests],
+        "msg_id": status_id,
+    })
+    asyncio.create_task(
+        perform_private_memory_search(
+            conv_id,
+            model_key,
+            requests,
+            original_question=original_question,
+            status_msg_id=status_id,
+        )
+    )
+    return True
+
+
+async def _private_memory_recent_messages(conv_id: str, limit: int = 8) -> list[dict]:
+    import aiosqlite
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT role, content FROM messages WHERE conv_id=? AND role IN ('user','assistant') "
+            "ORDER BY created_at DESC LIMIT ?",
+            (conv_id, limit),
+        )
+        rows = await cur.fetchall()
+    return [
+        {"role": row["role"], "content": row["content"], "attachments": []}
+        for row in reversed(rows)
+    ]
+
+
+async def perform_private_memory_search(
+    conv_id: str,
+    model_key: str,
+    requests: list[MemorySearchRequest],
+    *,
+    original_question: str,
+    status_msg_id: str = "",
+):
+    try:
+        results = await asyncio.wait_for(
+            search_actor_memories("aion", requests), timeout=30.0
+        )
+        memory_context = format_memory_search_context(results, original_question)
+    except Exception as exc:
+        memory_context = (
+            "[主动记忆搜索回执]\n"
+            f"原始问题：{original_question[:500]}\n"
+            f"系统搜索失败：{type(exc).__name__}。请明确说明暂时无法核实，不要猜测。"
+        )
+
+    wb = load_worldbook()
+    if status_msg_id:
+        await _complete_private_memory_search_status(conv_id, status_msg_id, wb)
+    user_name = wb.get("user_name", "用户")
+    ai_name = wb.get("ai_name", "AI")
+    messages: list[dict] = []
+    if wb.get("ai_persona"):
+        messages.extend([
+            {"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"},
+            {"role": "assistant", "content": "收到，我会按照设定扮演角色。"},
+        ])
+    if wb.get("user_persona"):
+        messages.extend([
+            {"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"},
+            {"role": "assistant", "content": "收到，我会记住你的信息。"},
+        ])
+    if wb.get("system_prompt") and wb.get("system_prompt_enabled", True):
+        messages.extend([
+            {"role": "user", "content": f"[系统提示]\n{wb['system_prompt']}"},
+            {"role": "assistant", "content": "收到，我会遵循这些规则。"},
+        ])
+    ability_block = await build_ability_block(
+        user_name, model_key=model_key, excluded_capabilities={"memory_search"}
+    )
+    if ability_block:
+        messages.extend([
+            {"role": "user", "content": ability_block},
+            {"role": "assistant", "content": "好的，需要时我会使用这些指令。"},
+        ])
+    messages.extend(await _private_memory_recent_messages(conv_id))
+    messages.append({
+        "role": "user",
+        "content": (
+            f"你刚才为了回答{user_name}的这个原始问题而翻找了自己的记忆：\n"
+            f"{original_question[:1000]}\n\n{memory_context}\n\n"
+            f"现在请直接、自然地回答{user_name}。不要写成检索报告；如果证据不足或冲突就坦白说明。"
+            "本轮不要再次输出 MEMORY_SEARCH 指令。"
+        ),
+    })
+
+    msg_id = f"msg_{int(time.time()*1000)}_memory_reply"
+    tts_streamer = None
+    if manager.any_tts_enabled():
+        voice = manager.get_tts_voice()
+        if voice:
+            tts_streamer = TTSStreamer(msg_id, voice, manager)
+    full_text = ""
+    reply_filter = WebCommandStreamFilter()
+    try:
+        async for chunk in stream_ai(messages, model_key, temperature=SETTINGS.get("temperature")):
+            if chunk.startswith(CLI_STATUS_PREFIX):
+                continue
+            full_text += chunk
+            visible = reply_filter.feed(chunk)
+            if tts_streamer and visible:
+                tts_streamer.feed(visible)
+        tail = reply_filter.flush()
+        if tts_streamer and tail:
+            tts_streamer.feed(tail)
+    except Exception as exc:
+        resolution = resolve_stream_failure(full_text, exc, "记忆搜索完成但回复生成失败")
+        full_text = resolution.visible_text
+
+    full_text, _ignored = extract_memory_search_requests(full_text, enabled=True)
+    if not full_text.strip():
+        return
+    from schedule import _process_background_reply_commands
+    full_text = await _process_background_reply_commands(
+        full_text,
+        target={"type": "private"},
+        conv_id=conv_id,
+        sender="aion",
+        ai_msg_id=msg_id,
+    )
+    full_text = _visible_ai_text(full_text)
+    now = time.time()
+    reply_atts = await with_band_vibration_attachment(msg_id, [])
+    att_json = json.dumps(reply_atts, ensure_ascii=False) if reply_atts else "[]"
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
+            (msg_id, conv_id, "assistant", full_text, now, att_json),
+        )
+        await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
+        await db.commit()
+    await manager.broadcast({
+        "type": "msg_created",
+        "data": {
+            "id": msg_id, "conv_id": conv_id, "role": "assistant",
+            "content": full_text, "created_at": now, "attachments": reply_atts,
+        },
+    })
+    if tts_streamer:
+        try:
+            await tts_streamer.flush()
+        except Exception:
+            pass
+    await export_conversation(conv_id)
 
 
 async def _web_search_sys_msg(
@@ -3170,7 +3584,12 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
     # 创建 TTS streamer（如果请求方开了 TTS）
     regen_tts = None
     if tts_enabled and tts_voice:
-        regen_tts = TTSStreamer(ai_msg_id, tts_voice, manager)
+        regen_tts = TTSStreamer(
+            ai_msg_id,
+            tts_voice,
+            manager,
+            low_latency_first_chunk=resolve_model_transport_mode(model_key) == "safe_live",
+        )
     manager.set_tts_fallback(tts_enabled, tts_voice)
 
     async def _bg_generate():
@@ -3189,12 +3608,15 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                         continue
                     yield chunk
 
-            stream_result, visible_text = await _consume_chat_stream(
-                content_stream(),
+            stream_result, visible_text, _used_fallback, manual_retry = await _consume_chat_realtime_stream(
+                content_stream,
                 _q,
                 model_key=model_key,
                 tts_streamer=regen_tts,
             )
+            if manual_retry:
+                await _q.put({"type": "stream_error", "content": "回复连接异常，可重试"})
+                return
             full_text = stream_result.committed_text
             safety_notice = stream_result.notice
             has_error = stream_result.stop_reason is not None
@@ -3207,6 +3629,12 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 error_text = stripped
             if safety_notice:
                 full_text = f"{full_text}\n\n[{safety_notice}]".strip()
+
+            if not has_error and await _start_private_memory_search_if_requested(
+                full_text, conv_id=conv_id, model_key=model_key,
+                original_question=lounge_request_text, queue=_q, ai_msg_id=ai_msg_id,
+            ):
+                return
 
             # 检测 [MUSIC:xxx] 指令 → 搜索歌曲并推送卡片数据
             music_matches = MUSIC_CMD_PATTERN.findall(full_text)
@@ -3396,6 +3824,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                     pass
 
             # 清洗 AI 回复中模仿产生的 <meta> 标签
+            full_text = await process_widget_control_commands(full_text, "aion")
             full_text = _visible_ai_text(full_text)
 
             # 将音乐点歌信息存入 attachments，刷新后可显示胶囊

@@ -451,7 +451,7 @@ function wallpaperBubbleParts(raw) {
 
 function wallpaperMessageItems(raw) {
   const items = [];
-  const monologueRe = /\[心里嘀咕[：:]\s*([^\]]+?)\]/g;
+  const monologueRe = /[\[【]心里嘀咕[：:]\s*([^\]】]+?)[\]】]/g;
   for (const part of wallpaperBubbleParts(raw)) {
     let last = 0;
     let match;

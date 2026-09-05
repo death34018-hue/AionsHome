@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>记忆库</title>
 <link rel="stylesheet" href="/static/common.css">
+<link rel="stylesheet" href="/static/memory-editor.css?v=20260905">
 <link rel="manifest" href="/manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#ff8359">
@@ -40,7 +41,6 @@
 .mem-kw { font-size:10px; color:var(--accent); opacity:0.85; }
 .mem-time { font-size:10px; color:var(--text3); }
 .mem-content { flex:1; color:var(--text); word-break:break-word; }
-.mem-content-edit { flex:1; background:var(--surface2); color:var(--text); border:1px solid var(--accent); border-radius:4px; padding:8px 10px; font-size:14px; font-family:inherit; resize:vertical; min-height:50vh; line-height:1.5; width:100%; box-sizing:border-box; }
 .mem-actions { display:flex; gap:4px; flex-shrink:0; margin-top:2px; }
 .mem-actions button { background:none; border:none; cursor:pointer; font-size:14px; padding:2px; opacity:0.6; }
 .mem-actions button:hover { opacity:1; }
@@ -48,16 +48,16 @@
 .mem-pin.active { opacity:1 !important; }
 .mem-entry.mem-unresolved { background:rgba(255,152,0,0.08); border-left:2px solid #ff9800; }
 .mem-empty { padding:24px; text-align:center; color:var(--text3); font-size:14px; }
-.mem-add-row { display:flex; gap:6px; margin-top:8px; }
-.mem-add-row input { flex:1; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px 10px; font-size:13px; outline:none; }
-.mem-add-row select { background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px 8px; font-size:12px; outline:none; }
-.mem-add-row button { background:var(--accent); color:#fff; border:none; border-radius:6px; padding:6px 14px; font-size:13px; cursor:pointer; font-weight:600; white-space:nowrap; }
+.mem-add-row { display:flex; gap:8px; margin-top:10px; flex-shrink:0; }
+.mem-add-row input { flex:1; min-width:0; min-height:44px; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px 12px; font-size:16px; outline:none; }
+.mem-add-row input:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.mem-add-row button { flex-shrink:0; min-height:44px; background:var(--accent); color:#fff; border:none; border-radius:8px; padding:10px 14px; font-size:13px; cursor:pointer; font-weight:600; white-space:nowrap; }
 .mem-count { font-size:11px; color:var(--text3); margin-bottom:4px; }
 .btn-digest { background:#2e7d32; color:#fff; border:none; border-radius:6px; padding:6px 14px; font-size:13px; cursor:pointer; font-weight:600; white-space:nowrap; }
 .btn-digest:hover { background:#388e3c; }
 .btn-digest:disabled { background:var(--surface2); color:var(--text3); cursor:not-allowed; }
-.memory-actions-row { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; margin-top:8px; flex-shrink:0; }
-.memory-actions-row .btn-digest { min-width:0; width:100%; padding:7px 5px; white-space:normal; line-height:1.25; }
+.memory-actions-row { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-top:10px; flex-shrink:0; }
+.memory-actions-row .btn-digest { min-width:0; width:100%; min-height:44px; padding:10px 6px; border-radius:8px; white-space:normal; line-height:1.4; }
 .memory-actions-row a.btn-digest { display:flex; align-items:center; justify-content:center; text-decoration:none; box-sizing:border-box; }
 .digest-status { margin-top:8px; padding:8px 12px; border-radius:6px; font-size:12px; line-height:1.5; }
 .digest-status.success { background:#e8f5e9; color:#2e7d32; }
@@ -118,28 +118,10 @@
   .mem-entry { flex-direction:column; gap:4px; padding:10px 8px; position:relative; }
   .mem-left { flex-direction:row; gap:6px; }
   .mem-actions { position:absolute; top:8px; right:6px; }
-  .mem-add-row { flex-wrap:wrap; }
-  .mem-add-row input { flex-basis:100%; }
-  .mem-add-row select { flex:1; }
   .anchor-row { flex-wrap:nowrap; gap:6px; overflow-x:auto; }
   .page-content { padding:10px 12px calc(20px + env(safe-area-inset-bottom)); }
-  .memory-actions-row { margin-inline:4px; }
   .memory-actions-row .btn-digest { font-size:12px; }
 }
-/* 聚焦编辑模式 */
-.editing-focus .mem-search,
-.editing-focus .mem-tabs,
-.editing-focus .mem-count,
-.editing-focus .mem-add-row,
-.editing-focus .anchor-row,
-.editing-focus .digest-status,
-.editing-focus .compress-review,
-.editing-focus .btn-row,
-.editing-focus .top-bar { display:none !important; }
-.editing-focus .mem-list { max-height:none; border:none; overflow:visible; }
-.editing-focus .mem-entry:not(.mem-editing) { display:none !important; }
-.editing-focus .mem-entry.mem-editing { border:none; }
-.editing-focus .page-content { padding-top:12px; }
 </style>
 </head>
 <body>
@@ -159,15 +141,7 @@
     <div class="mem-list" id="memList"><div class="mem-empty">暂无记忆</div></div>
     <div class="mem-add-row">
       <input type="text" id="memAddInput" placeholder="手动添加一条记忆...">
-      <select id="memAddType">
-        <option value="shared_moment">共同经历</option>
-        <option value="emotion">情感时刻</option>
-        <option value="life_event">重要事件</option>
-        <option value="preference">喜好/雷区</option>
-        <option value="promise">约定承诺</option>
-        <option value="milestone">关系里程碑</option>
-      </select>
-      <button onclick="addMemory()">添加</button>
+      <button onclick="addMemory()">添加记忆</button>
     </div>
     <div class="anchor-row">
       <span class="anchor-label">📌 总结锚点：<span id="anchorDate">--</span></span>
@@ -202,6 +176,7 @@
 
 <script src="/static/theme.js?v=theme-20260606"></script>
 <script src="/static/common.js"></script>
+<script src="/static/memory-editor.js?v=20260905"></script>
 <script>
 const MEM_TYPE_LABELS = {
   shared_moment:"共同经历", emotion:"情感时刻", life_event:"重要事件",
@@ -509,80 +484,31 @@ function restoreMemoryPosition(id) {
 function editMemory(id) {
   const mem = _allMemories.find(m => m.id === id);
   if (!mem) return;
-  const entry = document.querySelector(`.mem-entry[data-id="${id}"]`);
-  if (!entry) return;
   let kws = '';
   try { const arr = mem.keywords ? (typeof mem.keywords === 'string' ? JSON.parse(mem.keywords) : mem.keywords) : []; kws = arr.join(', '); } catch(e) { kws = mem.keywords || ''; }
-  const imp = mem.importance != null ? Number(mem.importance).toFixed(1) : '0.5';
-  // 进入聚焦编辑模式
-  document.querySelector('.sub-page').classList.add('editing-focus');
-  entry.classList.add('mem-editing');
-  const curType = mem.type || 'event';
-  const curKind = memoryKind(mem);
-  entry.innerHTML = `
-    <div style="flex:1;display:flex;flex-direction:column;gap:8px;padding:4px 0">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <span style="font-size:13px;color:var(--text2);font-weight:600">✏️ 编辑记忆</span>
-        <button onclick="cancelEdit()" style="background:none;border:none;color:var(--text3);font-size:20px;cursor:pointer;padding:0 4px">✕</button>
-      </div>
-      <textarea class="mem-content-edit" id="me_${escHtml(id)}">${escHtml(mem.content)}</textarea>
-      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        <label style="font-size:11px;color:var(--text2)">记忆标签:</label>
-        <select id="mg_${escHtml(id)}" style="background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:12px;outline:none">
-          <option value="long_term"${curKind === 'long_term' ? ' selected' : ''}>长期重要</option>
-          <option value="daily"${curKind === 'daily' ? ' selected' : ''}>日常</option>
-        </select>
-        <label style="font-size:11px;color:var(--text2)">关键词:</label>
-        <input type="text" id="mk_${escHtml(id)}" value="${escHtml(kws)}" placeholder="逗号分隔" style="flex:1;min-width:120px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:12px;outline:none">
-        <label style="font-size:11px;color:var(--text2)">重要度:</label>
-        <input type="number" id="mi_${escHtml(id)}" value="${imp}" min="0" max="1" step="0.1" style="width:50px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:12px;outline:none">
-      </div>
-      <div style="display:flex;gap:8px;justify-content:flex-end">
-        <button onclick="cancelEdit()" style="background:var(--surface2);color:var(--text2);border:1px solid var(--border);border-radius:4px;padding:6px 16px;cursor:pointer;font-size:13px">取消</button>
-        <button onclick="saveMemoryEdit('${escHtml(id)}')" style="background:var(--accent);color:#fff;border:none;border-radius:4px;padding:6px 16px;cursor:pointer;font-size:13px;font-weight:600">保存</button>
-      </div>
-    </div>`;
-  document.getElementById("me_" + id).focus();
-}
-
-function cancelEdit() {
-  document.querySelector('.sub-page').classList.remove('editing-focus');
-  const editingEntry = document.querySelector('.mem-editing');
-  if (editingEntry) editingEntry.classList.remove('mem-editing');
-  renderMemories();
-}
-
-async function saveMemoryEdit(id) {
-  const el = document.getElementById("me_" + id);
-  if (!el) return;
-  const newContent = el.value.trim();
-  if (!newContent) return;
-  const kwEl = document.getElementById("mk_" + id);
-  const impEl = document.getElementById("mi_" + id);
-  const kindEl = document.getElementById("mg_" + id);
-  const kwStr = kwEl ? kwEl.value.trim() : '';
-  const kwArr = kwStr ? kwStr.split(/[,，]/).map(s => s.trim()).filter(Boolean) : [];
-  const imp = impEl ? parseFloat(impEl.value) : null;
-  const mem = _allMemories.find(m => m.id === id);
-  const selectedKind = kindEl ? kindEl.value : memoryKind(mem || {});
-  const newType = typeForMemoryKind(mem?.type, selectedKind);
-  const body = { content: newContent, keywords: JSON.stringify(kwArr) };
-  if (newType) body.type = newType;
-  if (imp != null && !isNaN(imp)) body.importance = Math.max(0, Math.min(1, imp));
-  try {
-    await api("PUT", `/api/memories/${id}`, body);
-    if (mem) {
-      mem.content = newContent;
-      mem.keywords = body.keywords;
-      if (newType) mem.type = newType;
-      mem.memory_kind = selectedKind;
-      mem.memory_kind_label = selectedKind === 'daily' ? '日常' : '长期重要';
-      if (body.importance != null) mem.importance = body.importance;
-    }
-    document.querySelector('.sub-page').classList.remove('editing-focus');
-    renderMemories();
-    restoreMemoryPosition(id);
-  } catch(e) { alert("保存失败"); }
+  _memoryKindMenuId = null;
+  MemoryEditor.open({
+    content: mem.content, keywords: kws, importance: mem.importance, kind: memoryKind(mem),
+    onSave: async data => {
+      const keywords = data.keywords.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+      const body = { content: data.content, keywords: JSON.stringify(keywords), importance: data.importance, type: typeForMemoryKind(mem.type, data.kind) };
+      const result = await api("PUT", `/api/memories/${id}`, body);
+      if (result?.ok === false || result?.error) throw new Error(result.message || result.error || '保存失败');
+      const current = _allMemories.find(m => m.id === id);
+      if (current) {
+        const previousKind = memoryKind(current);
+        Object.assign(current, body, { memory_kind: data.kind, memory_kind_label: data.kind === 'daily' ? '日常' : '长期重要' });
+        if (previousKind !== data.kind) {
+          _memoryKindTotals[previousKind] = Math.max(0, Number(_memoryKindTotals[previousKind] || 0) - 1);
+          _memoryKindTotals[data.kind] = Number(_memoryKindTotals[data.kind] || 0) + 1;
+        }
+      }
+      renderMemories();
+      saveMemorySnapshot();
+    },
+    onSaved: () => showToast('记忆已保存'),
+    onClose: () => restoreMemoryPosition(id),
+  });
 }
 
 async function deleteMemory(id) {
@@ -657,7 +583,7 @@ async function selectMemoryKind(id, nextKind, event) {
 async function addMemory() {
   const content = $("memAddInput").value.trim();
   if (!content) return;
-  const type = $("memAddType").value;
+    const type = "important";
   try {
     const mem = await api("POST", "/api/memories", { content, type });
     upsertMemory(mem, true);

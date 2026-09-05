@@ -8,6 +8,11 @@ from routes import autonomy as routes
 
 
 class AutonomyRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_rest_is_exposed_as_a_configurable_action(self):
+        with patch.object(routes, "autonomy_status_payload", new=AsyncMock(return_value={"roles": []})):
+            payload = await routes.read_autonomy_status()
+        self.assertIn("rest", [action["key"] for action in payload["actions"]])
+
     async def test_unknown_actor_is_rejected(self):
         with self.assertRaises(HTTPException) as raised:
             await routes.read_actor_config("nobody")

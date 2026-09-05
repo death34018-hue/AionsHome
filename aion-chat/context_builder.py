@@ -52,6 +52,9 @@ TRANSFER_CMD_PATTERN = re.compile(r'\[转账[：:]\s*(-?\d+(?:\.\d+)?)\s*元\]')
 PRIVATE_WHISPER_CMD_PATTERN = re.compile(r'\[悄悄话[：:]\s*([^\]]+)\]')
 VIDEO_CALL_CMD = '[视频电话]'
 META_TAG_PATTERN = re.compile(r'\s*<meta\b[^>]*>.*?</meta\s*>', re.DOTALL | re.IGNORECASE)
+MEMORY_SEARCH_CMD_PATTERN = re.compile(
+    r'[\[［【]\s*MEMORY_SEARCH\s*[：:]\s*[^\]］】]*[\]］】]', re.IGNORECASE
+)
 
 # 所有需要从 AI 回复中剥离的工具指令正则列表（TTS、保存时统一清理）
 _ALL_CMD_PATTERNS = [
@@ -61,7 +64,7 @@ _ALL_CMD_PATTERNS = [
     HOME_CMD_PATTERN, BAND_VIBRATE_CMD_PATTERN, BAND_NOTE_CMD_PATTERN,
     LUCKIN_CMD_PATTERN, TRANSFER_CMD_PATTERN, PRIVATE_WHISPER_CMD_PATTERN,
     WECHAT_MESSAGE_PATTERN, WEB_SEARCH_CMD_PATTERN, WEB_EXTRACT_CMD_PATTERN,
-    APP_COMMAND_PATTERN,
+    APP_COMMAND_PATTERN, MEMORY_SEARCH_CMD_PATTERN,
 ]
 
 def strip_tool_commands(text: str) -> str:
@@ -209,6 +212,7 @@ async def build_ability_block(
     include_image_gen: bool = True,
     who: str = "aion",
     model_key: str | None = None,
+    excluded_capabilities: set[str] | None = None,
 ) -> str:
     """构建 [系统能力] 文本块，who 参数用于 Connor 等角色的细微措辞差异"""
     parts = []
@@ -219,6 +223,7 @@ async def build_ability_block(
         include_video_call=include_video_call,
         include_image_gen=include_image_gen,
         who=who,
+        excluded_capabilities=excluded_capabilities,
     )
     if abilities:
         parts.append(format_ability_block(abilities))

@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>朋友圈 - Aion</title>
 <link rel="stylesheet" href="/static/common.css">
+<link rel="stylesheet" href="/static/content-markdown.css?v=compact-spacing-20260904">
 <link rel="manifest" href="/manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#ff8359">
@@ -287,6 +288,8 @@
 </div>
 <script src="/static/theme.js?v=theme-20260606"></script>
 <script src="/static/common.js"></script>
+<script src="/static/vendor/markdown-it-15.0.1.min.js?v=15.0.1"></script>
+<script src="/static/chatroom-markdown.js?v=social-markdown-20260904"></script>
 <script>
 const PAGE_SIZE = 50;
 const MOMENTS_SNAPSHOT_KEY = 'moments_page_snapshot_v2';
@@ -411,6 +414,12 @@ function escapeHtml(s) {
   const d = document.createElement('div');
   d.textContent = s;
   return d.innerHTML;
+}
+
+function renderMarkdownBody(value) {
+  return window.ChatroomMarkdown?.render
+    ? window.ChatroomMarkdown.render(String(value || ''))
+    : escapeHtml(value || '');
 }
 
 // ── 渲染列表 ──
@@ -562,7 +571,7 @@ function renderMomentCard(m) {
         <button class="moment-action" onclick="openCommentModal('${m.id}')">💬 ${comments.length || ''}</button>
       </div>
     </div>
-    <div class="moment-content">${escapeHtml(m.content)}</div>
+    <div class="moment-content markdown-body social-markdown">${renderMarkdownBody(m.content)}</div>
     ${imagesHtml}
     ${reactionsHtml}
     ${commentsHtml}

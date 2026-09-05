@@ -7,8 +7,9 @@ from datetime import datetime
 
 import httpx, aiosqlite
 
-from config import get_key, UPLOADS_DIR, load_worldbook
+from config import get_key, load_worldbook
 from database import get_db
+from album import save_generated_image
 from model_json import extract_json_object
 from ws import manager
 
@@ -113,7 +114,7 @@ async def send_gift_from_decision(
     print(f"[gift] AI 决定送礼！生图中... prompt: {image_prompt[:80]}")
 
     # 调用硅基流动 Kolors 生图
-    image_path = await _generate_image(image_prompt)
+    image_path = await _generate_image(image_prompt, source_identity=sender)
     if not image_path:
         print("[gift] 生图失败，跳过送礼")
         return
@@ -144,7 +145,7 @@ async def send_gift_from_decision(
 
 
 # ── 硅基流动 Kolors 生图 ──────────────────────────
-async def _generate_image(prompt: str) -> str | None:
+async def _generate_image(prompt: str, source_identity: str = "") -> str | None:
     """调用硅基流动 Kwai-Kolors/Kolors 生成图片，下载保存到本地，返回相对路径"""
     api_key = get_key("siliconflow")
     if not api_key:
@@ -186,11 +187,8 @@ async def _generate_image(prompt: str) -> str | None:
             img_resp = await client.get(image_url)
             img_resp.raise_for_status()
 
-            filename = f"gift_{int(time.time() * 1000)}.png"
-            filepath = UPLOADS_DIR / filename
-            filepath.write_bytes(img_resp.content)
-            print(f"[gift] 图片已保存: {filepath}")
-            return filename
+            return await save_generated_image(img_resp.content, prompt=prompt, model="Kwai-Kolors/Kolors",
+                                              actor=source_identity, kind="gift")
 
     except Exception as e:
         print(f"[gift] 生图异常: {e}")
@@ -230,19 +228,8 @@ async def list_gifts() -> list[dict]:
 
 
 async def delete_gift(gift_id: str) -> bool:
-    """删除礼物"""
+    """删除礼物记录，保留本机原图和独立相册记录。"""
     async with get_db() as db:
-        # 获取图片路径以便清理
-        db.row_factory = aiosqlite.Row
-        cur = await db.execute("SELECT image_path FROM gifts WHERE id=?", (gift_id,))
-        row = await cur.fetchone()
-        if row:
-            img_path = UPLOADS_DIR / row["image_path"]
-            if img_path.exists():
-                try:
-                    img_path.unlink()
-                except Exception:
-                    pass
         cur = await db.execute("DELETE FROM gifts WHERE id=?", (gift_id,))
         await db.commit()
         return cur.rowcount > 0

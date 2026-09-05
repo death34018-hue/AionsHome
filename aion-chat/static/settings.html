@@ -116,6 +116,12 @@
   transition: transform .18s ease;
 }
 .settings-card[open] .summary-chevron { transform: rotate(90deg); }
+.transport-settings-card {
+  margin-top: 28px;
+}
+.transport-settings-card .summary-title strong {
+  color: #ffad8c;
+}
 .card-body {
   padding: 0 18px 18px;
 }
@@ -275,6 +281,28 @@
   padding: 8px;
   background: rgba(255,255,255,0.035);
 }
+.transport-mode-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.transport-mode-btn {
+  min-height: 42px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.045);
+  color: rgba(255,255,255,0.72);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.transport-mode-btn.is-active {
+  border-color: rgba(25,184,184,0.78);
+  background: rgba(25,184,184,0.18);
+  color: #dfffff;
+  box-shadow: 0 0 0 1px rgba(25,184,184,0.12) inset;
+}
 .model-card-head {
   display: flex;
   align-items: center;
@@ -297,6 +325,25 @@
   display: grid;
   grid-template-columns: minmax(120px, .9fr) minmax(180px, 1.25fr);
   gap: 7px;
+}
+.model-options {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 7px;
+  min-width: 0;
+}
+.reasoning-setting {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.reasoning-setting .reasoning-select {
+  width: 80px;
+  min-height: 28px;
+  padding: 4px 24px 4px 8px;
 }
 .check-field {
   display: flex;
@@ -412,6 +459,9 @@ body[data-theme="light"] .summary-title strong,
 body[data-theme="light"] .route-title {
   color: #24304f;
 }
+body[data-theme="light"] .transport-settings-card .summary-title strong {
+  color: #c85f43;
+}
 body[data-theme="light"] .action-btn.secondary {
   color: rgba(31,42,68,.75);
   background: rgba(255,255,255,.65);
@@ -420,12 +470,60 @@ body[data-theme="light"] .ghost-btn {
   color: rgba(31,42,68,.76);
   background: rgba(255,255,255,.62);
 }
+body[data-theme="light"] .transport-mode-btn {
+  color: rgba(31,42,68,.72);
+  background: rgba(255,255,255,.62);
+}
+body[data-theme="light"] .transport-mode-btn.is-active {
+  color: #087979;
+  background: rgba(25,184,184,.13);
+}
 @media (max-width: 720px) {
   .settings-grid,
   .settings-grid.compact,
   .route-config-grid,
   .model-card-fields {
     grid-template-columns: 1fr;
+  }
+  .model-card-head {
+    display: block;
+    padding-right: 34px;
+  }
+  .model-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    margin-top: 6px;
+  }
+  .model-card-actions .vision-toggle {
+    min-width: 0;
+    justify-content: center;
+  }
+  .model-card {
+    position: relative;
+  }
+  .model-delete {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+  }
+  .model-options {
+    align-items: stretch;
+  }
+  .model-options > .vision-toggle {
+    flex: 1 1 calc(50% - 3px);
+    justify-content: center;
+  }
+  .reasoning-setting {
+    flex: 1 1 calc(50% - 3px);
+  }
+  .reasoning-setting .vision-toggle {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: center;
+  }
+  .reasoning-setting.is-custom {
+    flex-basis: 100%;
   }
   .settings-card summary {
     align-items: flex-start;
@@ -497,6 +595,48 @@ body[data-theme="light"] .ghost-btn {
         <div class="section-actions">
           <button class="action-btn add" type="button" onclick="addCustomRoute()">＋ 添加线路</button>
         </div>
+      </div>
+    </details>
+
+    <details class="settings-card transport-settings-card">
+      <summary>
+        <div class="summary-title">
+          <strong>实时聊天传输模式</strong>
+          <span id="modelTransportModeSummary">按模型独立选择旧版保守模式或安全实时流式</span>
+        </div>
+        <span class="summary-chevron">›</span>
+      </summary>
+      <div class="card-body">
+        <p class="hint">旧版保守模式使用原来的 120 字隔离；安全实时流式只建议用于结构化流稳定的线路，随时可以切回。</p>
+        <div id="modelTransportModeList" class="route-list"></div>
+      </div>
+    </details>
+
+    <details class="settings-card">
+      <summary>
+        <div class="summary-title">
+          <strong>🎨 生图模型</strong>
+          <span>独立配置文生图与参考图自拍的 OpenAI 兼容接口</span>
+        </div>
+        <span class="summary-chevron">›</span>
+      </summary>
+      <div class="card-body">
+        <p class="hint">三项全部留空时，继续使用原来的 Gemini 生图模型和上方 Gemini API Key。填写完整并保存后，使用自定义接口；清空三项即可恢复默认。</p>
+        <div class="settings-grid">
+          <div class="field">
+            <label class="form-label" for="imageGenBaseUrlInput">API 地址（Base URL）</label>
+            <input class="form-input mono-input" type="text" id="imageGenBaseUrlInput" placeholder="https://example.com/v1" autocomplete="off">
+          </div>
+          <div class="field">
+            <label class="form-label" for="imageGenApiKeyInput">API Key</label>
+            <input class="form-input mono-input" type="password" id="imageGenApiKeyInput" placeholder="生图服务的 API Key" autocomplete="off">
+          </div>
+          <div class="field full">
+            <label class="form-label" for="imageGenModelInput">模型名称</label>
+            <input class="form-input mono-input" type="text" id="imageGenModelInput" placeholder="填写服务商提供的完整生图模型 ID" autocomplete="off">
+          </div>
+        </div>
+        <p class="hint">使用 chat/completions 接口，参考图通过 image_url 发送。请填写支持此格式生图的模型，不是仅支持看图的聊天模型。自定义接口失败时不会自动改用 Gemini。</p>
       </div>
     </details>
 
@@ -642,6 +782,7 @@ body[data-theme="light"] .ghost-btn {
 connectCommonWS();
 
 var customModelRoutes = [];
+var modelTransportRows = [];
 
 function escHtml(value) {
   var div = document.createElement("div");
@@ -657,8 +798,48 @@ function makeRouteId() {
   return "custom_route_" + Date.now() + "_" + Math.random().toString(16).slice(2, 8);
 }
 
+function renderModelTransportModes() {
+  var list = $("modelTransportModeList");
+  if (!list) return;
+  var configurableRows = modelTransportRows.map(function(row, index) {
+    return { row: row, index: index };
+  }).filter(function(entry) {
+    return entry.row && entry.row.supports_safe_live === true;
+  });
+  var summary = $("modelTransportModeSummary");
+  if (summary) {
+    summary.textContent = configurableRows.length
+      ? configurableRows.length + " 条可配置线路 · 默认收起，按需展开"
+      : "当前没有支持安全实时流式的模型";
+  }
+  if (!configurableRows.length) {
+    list.innerHTML = '<div class="empty-route">当前没有支持安全实时流式的模型。</div>';
+    return;
+  }
+  list.innerHTML = configurableRows.map(function(entry) {
+    var row = entry.row;
+    var index = entry.index;
+    var mode = row.transport_mode === "safe_live" ? "safe_live" : "legacy";
+    return '<div class="model-card">' +
+      '<div class="model-card-head"><span class="model-index">' + escHtml(row.key) + '</span></div>' +
+      '<div class="transport-mode-options" role="group" aria-label="' + escAttr(row.key) + ' 的实时聊天传输模式">' +
+        '<button class="transport-mode-btn ' + (mode === "legacy" ? "is-active" : "") + '" type="button" aria-pressed="' + (mode === "legacy" ? "true" : "false") + '" onclick="modelTransportRows[' + index + '].transport_mode=\'legacy\';renderModelTransportModes()">旧版保守模式</button>' +
+        '<button class="transport-mode-btn ' + (mode === "safe_live" ? "is-active" : "") + '" type="button" aria-pressed="' + (mode === "safe_live" ? "true" : "false") + '" onclick="modelTransportRows[' + index + '].transport_mode=\'safe_live\';renderModelTransportModes()">安全实时流式</button>' +
+      '</div>' +
+    '</div>';
+  }).join("");
+}
+
+function collectModelTransportModes() {
+  var modes = {};
+  modelTransportRows.forEach(function(row) {
+    if (row && row.key) modes[row.key] = row.supports_safe_live === true && row.transport_mode === "safe_live" ? "safe_live" : "legacy";
+  });
+  return modes;
+}
+
 function newCustomModel() {
-  return { key: "", model: "", vision: true, audio: false, video: false };
+  return { key: "", model: "", vision: true, audio: false, video: false, use_default_reasoning_effort: true, reasoning_effort: "high" };
 }
 
 function newCustomRoute() {
@@ -691,7 +872,11 @@ function normalizeRoutesForUi(routes, collapsedState) {
               model: model.model || model.model_id || "",
               vision: model.vision !== false,
               audio: model.audio === true,
-              video: model.video === true
+              video: model.video === true,
+              use_default_reasoning_effort: model.use_default_reasoning_effort !== false,
+              reasoning_effort: model.reasoning_effort === "medium"
+                ? "high"
+                : (["low", "high", "max"].includes(model.reasoning_effort) ? model.reasoning_effort : "high")
             };
           })
         : [newCustomModel()]
@@ -714,24 +899,38 @@ function renderCustomRoutes() {
           '<div class="model-card-head">' +
             '<span class="model-index">模型 ' + (modelIndex + 1) + '</span>' +
             '<div class="model-card-actions">' +
-              '<label class="vision-toggle">' +
-                '<input type="checkbox" ' + (model.vision !== false ? "checked" : "") + ' onchange="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'vision\', this.checked)">' +
-                '可看图' +
-              '</label>' +
-              '<label class="vision-toggle">' +
-                '<input type="checkbox" ' + (model.audio === true ? "checked" : "") + ' onchange="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'audio\', this.checked)">' +
-                '可听音频' +
-              '</label>' +
-              '<label class="vision-toggle">' +
-                '<input type="checkbox" ' + (model.video === true ? "checked" : "") + ' onchange="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'video\', this.checked)">' +
-                '可看视频' +
-              '</label>' +
               '<button class="ghost-btn danger-btn model-delete" type="button" title="删除模型" onclick="removeCustomModel(' + routeIndex + ', ' + modelIndex + ')">×</button>' +
             '</div>' +
           '</div>' +
           '<div class="model-card-fields">' +
             '<input class="form-input" type="text" value="' + escAttr(model.key) + '" placeholder="显示名，例如 哈基米-gemini-3.1" oninput="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'key\', this.value)">' +
             '<input class="form-input mono-input" type="text" value="' + escAttr(model.model) + '" placeholder="模型 ID，例如 gemini-3.1-pro-high" oninput="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'model\', this.value)">' +
+          '</div>' +
+          '<div class="model-options">' +
+            '<label class="vision-toggle">' +
+              '<input type="checkbox" ' + (model.vision !== false ? "checked" : "") + ' onchange="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'vision\', this.checked)">' +
+              '看图' +
+            '</label>' +
+            '<label class="vision-toggle">' +
+              '<input type="checkbox" ' + (model.audio === true ? "checked" : "") + ' onchange="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'audio\', this.checked)">' +
+              '听音频' +
+            '</label>' +
+            '<label class="vision-toggle">' +
+              '<input type="checkbox" ' + (model.video === true ? "checked" : "") + ' onchange="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'video\', this.checked)">' +
+              '看视频' +
+            '</label>' +
+            '<div class="reasoning-setting ' + (model.use_default_reasoning_effort !== false ? '' : 'is-custom') + '">' +
+              '<label class="vision-toggle" title="使用 API 默认思考程度">' +
+                '<input type="checkbox" ' + (model.use_default_reasoning_effort !== false ? "checked" : "") + ' onchange="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'use_default_reasoning_effort\', this.checked); renderCustomRoutes()">' +
+                '默认思考' +
+              '</label>' +
+              (model.use_default_reasoning_effort !== false ? '' :
+              '<select class="form-input reasoning-select" onchange="updateCustomRouteModel(' + routeIndex + ', ' + modelIndex + ', \'reasoning_effort\', this.value)">' +
+                '<option value="low" ' + (model.reasoning_effort === "low" ? "selected" : "") + '>低</option>' +
+                '<option value="high" ' + (model.reasoning_effort === "high" ? "selected" : "") + '>高</option>' +
+                '<option value="max" ' + (model.reasoning_effort === "max" ? "selected" : "") + '>最大</option>' +
+              '</select>') +
+            '</div>' +
           '</div>' +
         '</div>';
     }).join("");
@@ -838,7 +1037,17 @@ function collectCustomRoutes() {
       if (!key || !modelId) throw new Error("第 " + (routeIndex + 1) + " 条线路的第 " + (modelIndex + 1) + " 个模型需要同时填写显示名和模型 ID");
       if (seenModelKeys.has(key)) throw new Error("模型显示名重复：" + key);
       seenModelKeys.add(key);
-      models.push({ key: key, model: modelId, vision: model.vision !== false, audio: model.audio === true, video: model.video === true });
+      models.push({
+        key: key,
+        model: modelId,
+        vision: model.vision !== false,
+        audio: model.audio === true,
+        video: model.video === true,
+        use_default_reasoning_effort: model.use_default_reasoning_effort !== false,
+        reasoning_effort: model.reasoning_effort === "medium"
+          ? "high"
+          : (["low", "high", "max"].includes(model.reasoning_effort) ? model.reasoning_effort : "high")
+      });
     });
     if (!models.length) throw new Error("第 " + (routeIndex + 1) + " 条线路至少需要一个模型");
     routes.push({
@@ -853,7 +1062,18 @@ function collectCustomRoutes() {
 }
 
 (async function init() {
-  var s = await api("GET", "/api/settings");
+  var loaded = await Promise.all([
+    api("GET", "/api/settings"),
+    api("GET", "/api/models")
+  ]);
+  var s = loaded[0];
+  modelTransportRows = Array.isArray(loaded[1]) ? loaded[1].map(function(row) {
+    return {
+      key: row.key,
+      transport_mode: row.transport_mode === "safe_live" ? "safe_live" : "legacy",
+      supports_safe_live: row.supports_safe_live === true
+    };
+  }) : [];
   $("geminiKeyInput").value = s.gemini_key || "";
   $("geminiFreeKeyInput").value = s.gemini_free_key || "";
   $("sentinelBaseUrlInput").value = s.sentinel_base_url || "";
@@ -862,6 +1082,9 @@ function collectCustomRoutes() {
   $("embeddingBaseUrlInput").value = s.embedding_base_url || "";
   $("embeddingApiKeyInput").value = s.embedding_api_key || "";
   $("embeddingModelInput").value = s.embedding_model || "";
+  $("imageGenBaseUrlInput").value = s.image_gen_base_url || "";
+  $("imageGenApiKeyInput").value = s.image_gen_api_key || "";
+  $("imageGenModelInput").value = s.image_gen_model || "";
   $("sfKeyInput").value = s.siliconflow_key || "";
   $("tavilyApiKeyInput").value = s.tavily_api_key || "";
   $("neteaseMusicUInput").value = s.netease_music_u || "";
@@ -872,11 +1095,31 @@ function collectCustomRoutes() {
   $("luckinShopKeywordInput").value = s.luckin_default_shop_keyword || "";
   customModelRoutes = normalizeRoutesForUi(s.custom_model_routes || []);
   renderCustomRoutes();
+  renderModelTransportModes();
   refreshPhoneScreenStatus();
   refreshMediaCacheStatus();
 })();
 
 async function saveSettings() {
+  var imageConfig = {
+    image_gen_base_url: $("imageGenBaseUrlInput").value.trim(),
+    image_gen_api_key: $("imageGenApiKeyInput").value.trim(),
+    image_gen_model: $("imageGenModelInput").value.trim()
+  };
+  var imageValues = Object.values(imageConfig);
+  if (imageValues.some(Boolean) && !imageValues.every(Boolean)) {
+    showToast("请完整填写生图 API 地址、Key 和模型名，或全部清空以使用 Gemini");
+    return;
+  }
+  if (imageConfig.image_gen_base_url) {
+    try {
+      var imageUrl = new URL(imageConfig.image_gen_base_url);
+      if (!["http:", "https:"].includes(imageUrl.protocol) || !imageUrl.hostname || imageUrl.search || imageUrl.hash || imageUrl.username || imageUrl.password) throw new Error("invalid URL");
+    } catch (err) {
+      showToast("生图 API 地址须为 HTTP(S) 地址，不能包含账号、查询参数或片段");
+      return;
+    }
+  }
   var customRoutes = [];
   try {
     customRoutes = collectCustomRoutes();
@@ -894,6 +1137,9 @@ async function saveSettings() {
     embedding_base_url: $("embeddingBaseUrlInput").value.trim(),
     embedding_api_key: $("embeddingApiKeyInput").value.trim(),
     embedding_model: $("embeddingModelInput").value.trim(),
+    image_gen_base_url: imageConfig.image_gen_base_url,
+    image_gen_api_key: imageConfig.image_gen_api_key,
+    image_gen_model: imageConfig.image_gen_model,
     siliconflow_key: $("sfKeyInput").value.trim(),
     tavily_api_key: $("tavilyApiKeyInput").value.trim(),
     netease_music_u: $("neteaseMusicUInput").value.trim(),
@@ -902,7 +1148,8 @@ async function saveSettings() {
     luckin_default_longitude: $("luckinLongitudeInput").value.trim(),
     luckin_default_latitude: $("luckinLatitudeInput").value.trim(),
     luckin_default_shop_keyword: $("luckinShopKeywordInput").value.trim(),
-    custom_model_routes: customRoutes
+    custom_model_routes: customRoutes,
+    model_transport_modes: collectModelTransportModes()
   });
   customModelRoutes = normalizeRoutesForUi(customRoutes, collapsedState);
   renderCustomRoutes();

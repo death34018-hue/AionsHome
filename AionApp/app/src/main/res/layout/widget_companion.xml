@@ -1,0 +1,158 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/transparent"
+    android:clipChildren="true"
+    android:clipToPadding="true">
+
+    <RelativeLayout
+        android:id="@+id/widget_normal_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+    <ImageView
+        android:id="@+id/widget_background"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_margin="8dp"
+        android:contentDescription="@null"
+        android:scaleType="fitXY"
+        android:src="@drawable/widget_bg_morning" />
+
+    <ImageView
+        android:id="@+id/widget_companion_left"
+        android:layout_width="180dp"
+        android:layout_height="180dp"
+        android:layout_alignParentStart="true"
+        android:layout_alignParentBottom="true"
+        android:contentDescription="@null"
+        android:scaleType="fitStart"
+        android:src="@drawable/widget_companion_left_calm" />
+
+    <ImageView
+        android:id="@+id/widget_companion_right"
+        android:layout_width="180dp"
+        android:layout_height="180dp"
+        android:layout_alignParentEnd="true"
+        android:layout_alignParentBottom="true"
+        android:contentDescription="@null"
+        android:scaleType="fitEnd"
+        android:src="@drawable/widget_companion_right_calm" />
+
+    <RelativeLayout
+        android:id="@+id/widget_center"
+        android:layout_width="148dp"
+        android:layout_height="match_parent"
+        android:layout_centerHorizontal="true">
+
+        <LinearLayout
+            android:id="@+id/widget_memo_area"
+            android:layout_width="match_parent"
+            android:layout_height="78dp"
+            android:layout_alignParentTop="true"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/widget_empty_hint"
+            android:layout_width="match_parent"
+            android:layout_height="24dp"
+            android:gravity="center"
+            android:maxLines="1"
+            android:text="@string/widget_empty_hint"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/widget_memo_first"
+            android:layout_width="match_parent"
+            android:layout_height="30dp"
+            android:background="@drawable/widget_memo_card"
+            android:ellipsize="end"
+            android:gravity="center_vertical"
+            android:maxLines="1"
+            android:paddingStart="10dp"
+            android:paddingEnd="8dp"
+            android:visibility="gone"
+            android:textColor="#69452F"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/widget_memo_second"
+            android:layout_width="match_parent"
+            android:layout_height="30dp"
+            android:layout_marginTop="4dp"
+            android:background="@drawable/widget_memo_card"
+            android:ellipsize="end"
+            android:gravity="center_vertical"
+            android:maxLines="1"
+            android:paddingStart="10dp"
+            android:paddingEnd="8dp"
+            android:visibility="gone"
+            android:textColor="#69452F"
+            android:textSize="14sp" />
+
+        </LinearLayout>
+
+        <ImageView
+            android:id="@+id/widget_microphone"
+            android:layout_width="72dp"
+            android:layout_height="72dp"
+            android:layout_alignParentBottom="true"
+            android:layout_centerHorizontal="true"
+            android:layout_marginBottom="1dp"
+            android:contentDescription="@string/widget_record_open"
+            android:scaleType="fitCenter"
+            android:src="@drawable/widget_microphone" />
+    </RelativeLayout>
+    </RelativeLayout>
+
+    <RelativeLayout
+        android:id="@+id/widget_banner_container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone">
+
+        <ImageView
+            android:id="@+id/widget_banner_image"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:contentDescription="@null"
+            android:scaleType="fitCenter"
+            android:src="@drawable/widget_banner" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/widget_banner_top_space"
+                android:layout_width="1dp"
+                android:layout_height="0dp"
+                android:layout_weight="55" />
+
+            <TextView
+                android:id="@+id/widget_banner_text"
+                android:layout_width="190dp"
+                android:layout_height="0dp"
+                android:layout_weight="30"
+                android:ellipsize="end"
+                android:gravity="center"
+                android:maxLines="2"
+                android:textColor="#4B3429"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_banner_bottom_space"
+                android:layout_width="1dp"
+                android:layout_height="0dp"
+                android:layout_weight="15" />
+        </LinearLayout>
+    </RelativeLayout>
+</RelativeLayout>

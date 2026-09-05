@@ -1,4 +1,7 @@
+import json
 import unittest
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, patch
 
 import aiosqlite
 
@@ -31,6 +34,32 @@ class AutonomyNicheTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(cards[0]["mentioned"])
         self.assertIsNone(cards[0]["mentioned_at"])
 
+    async def test_album_events_archive_both_photos_once_and_do_not_reappear_after_deletion(self):
+        await self.db.execute("""CREATE TABLE idle_events (
+            id TEXT PRIMARY KEY, actor TEXT, action TEXT, title TEXT, detail TEXT,
+            metadata TEXT, created_at REAL, result_type TEXT DEFAULT '', result_id TEXT DEFAULT '')""")
+        photos = [{"url": "/uploads/album/one.png"}, {"url": "/uploads/album/two.png"}]
+        metadata = {"selected_action": "album_browse", "album_photos": photos,
+                    "session_id": "album-session", "shared": True, "outcome": "finished"}
+        await self.db.execute("INSERT INTO idle_events(id,actor,action,title,detail,metadata,created_at) VALUES (?,?,?,?,?,?,?)",
+                              ("album-event", "aion", "wake_summary", "翻看了两张家庭照片", "完整感想" * 2000,
+                               json.dumps(metadata), 1234.5))
+        await self.db.commit()
+        self.assertTrue(callable(getattr(autonomy_niches, "backfill_album_niche_cards", None)))
+        self.assertEqual(await autonomy_niches.backfill_album_niche_cards(self.db), 1)
+        self.assertEqual(await autonomy_niches.backfill_album_niche_cards(self.db), 0)
+        cards = await autonomy_niches.list_niche_cards("aion", db=self.db)
+        self.assertEqual(len(cards), 1)
+        card = cards[0]
+        self.assertEqual(card["photo_paths"], ["/uploads/album/one.png", "/uploads/album/two.png"])
+        self.assertEqual(card["reflection"], "完整感想" * 2000)
+        self.assertEqual(card["created_at"], 1234.5)
+        self.assertTrue(card["shared"])
+        self.assertEqual(await autonomy_niches.list_niche_cards("connor", db=self.db), [])
+        await autonomy_niches.delete_niche_card("aion", card["id"], db=self.db)
+        self.assertEqual(await autonomy_niches.backfill_album_niche_cards(self.db), 0)
+        self.assertEqual(await autonomy_niches.list_niche_cards("aion", db=self.db), [])
+
     async def test_card_can_be_marked_as_mentioned(self):
         card = await autonomy_niches.create_niche_card(
             actor="connor", session_id="trip-mentioned", title="一只纸鸟",
@@ -43,6 +72,32 @@ class AutonomyNicheTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(updated["mentioned"])
         self.assertEqual(1234.5, updated["mentioned_at"])
+
+    async def test_new_album_event_archives_in_same_save_and_preserves_plain_reflection(self):
+        import autonomy
+        await self.db.execute("""CREATE TABLE idle_events (
+            id TEXT PRIMARY KEY, actor TEXT, action TEXT, title TEXT, detail TEXT,
+            target_type TEXT, target_id TEXT, result_type TEXT, result_id TEXT,
+            metadata TEXT, created_at REAL)""")
+
+        @asynccontextmanager
+        async def connection():
+            yield self.db
+
+        with patch.object(autonomy, "get_db", connection), \
+             patch.object(autonomy.manager, "broadcast", new=AsyncMock()):
+            event = await autonomy.append_idle_event(
+                "connor", "wake_summary", "翻看了家庭相册", "安静的午后；留言未能送达",
+                metadata={"session_id": "new-album-session", "selected_action": "album_browse",
+                          "outcome": "finished", "album_reflection": "安静的午后",
+                          "album_photos": [{"url": "/uploads/album/new.png"}]})
+        cards = await autonomy_niches.list_niche_cards("connor", db=self.db)
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(event["result_id"], cards[0]["id"])
+        self.assertEqual(event["result_type"], "niche_card")
+        self.assertEqual(cards[0]["reflection"], "安静的午后")
+        self.assertEqual(cards[0]["photo_paths"], ["/uploads/album/new.png"])
+        self.assertEqual(cards[0]["created_at"], event["created_at"])
 
     async def test_card_mention_state_can_be_toggled_in_its_own_niche(self):
         card = await autonomy_niches.create_niche_card(

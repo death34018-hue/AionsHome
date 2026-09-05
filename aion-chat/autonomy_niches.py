@@ -38,6 +38,8 @@ async def ensure_autonomy_niche_tables(db) -> None:
     columns = {str(row[1]) for row in await cursor.fetchall()}
     if "mentioned_at" not in columns:
         await db.execute("ALTER TABLE autonomy_niche_cards ADD COLUMN mentioned_at REAL")
+    if "photo_paths" not in columns:
+        await db.execute("ALTER TABLE autonomy_niche_cards ADD COLUMN photo_paths TEXT DEFAULT '[]'")
     await db.execute(
         "CREATE INDEX IF NOT EXISTS idx_autonomy_niches_actor "
         "ON autonomy_niche_cards(actor, created_at DESC)"
@@ -99,6 +101,7 @@ def _row(row) -> dict:
         "reflection": row["reflection"] or "",
         "tags": json.loads(row["tags"] or "[]"),
         "photo_path": row["photo_path"] or "",
+        "photo_paths": json.loads(row["photo_paths"] or "[]"),
         "image_prompt": row["image_prompt"] or "",
         "action_trace": json.loads(row["action_trace"] or "[]"),
         "shared": bool(row["shared"]),
@@ -163,6 +166,58 @@ async def create_niche_card(
             "SELECT * FROM autonomy_niche_cards WHERE id=?", (card_id,)
         )
         return _row(await cursor.fetchone())
+
+
+async def archive_album_event(event: dict, db) -> str | None:
+    """Archive a completed album reflection in the caller's event transaction."""
+    meta = event.get("metadata") or {}
+    if (event.get("action") != "wake_summary" or not isinstance(meta, dict)
+            or meta.get("selected_action") != "album_browse"
+            or meta.get("outcome", "finished") != "finished"
+            or event.get("actor") not in ACTORS or event.get("result_type") == "niche_card"):
+        return None
+    photos = meta.get("album_photos")
+    paths = [p["url"] for p in (photos[:2] if isinstance(photos, list) else [])
+             if isinstance(p, dict) and isinstance(p.get("url"), str)
+             and p["url"].startswith("/uploads/album/")]
+    reflection = meta.get("album_reflection") or event.get("detail") or ""
+    if not paths or not isinstance(reflection, str) or not reflection.strip():
+        return None
+    await ensure_autonomy_niche_tables(db)
+    card_id = "niche_album_" + event["id"]
+    session_id = meta.get("session_id") or "album_" + event["id"]
+    await db.execute(
+        "INSERT INTO autonomy_niche_cards "
+        "(id,session_id,actor,title,reflection,tags,photo_path,photo_paths,shared,created_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_id) DO NOTHING",
+        (card_id, session_id, event["actor"], event["title"], reflection,
+         json.dumps(["相册随想"], ensure_ascii=False), paths[0], json.dumps(paths),
+         int(meta.get("shared") is True), event["created_at"]))
+    cursor = await db.execute("SELECT id FROM autonomy_niche_cards WHERE session_id=?", (session_id,))
+    card_id = (await cursor.fetchone())[0]
+    # 保留已归档标记：手动删除壁龛卡片后，历史补录不会把它重新放回来。
+    await db.execute("UPDATE idle_events SET result_type='niche_card',result_id=? WHERE id=?",
+                     (card_id, event["id"]))
+    event.update(result_type="niche_card", result_id=card_id)
+    return card_id
+
+
+async def backfill_album_niche_cards(db) -> int:
+    """Backfill saved album events only; never call a model or send a message."""
+    db.row_factory = aiosqlite.Row
+    cursor = await db.execute(
+        "SELECT * FROM idle_events WHERE action='wake_summary' "
+        "AND COALESCE(result_type,'')!='niche_card' AND metadata LIKE '%album_browse%'")
+    count = 0
+    for row in await cursor.fetchall():
+        event = dict(row)
+        try:
+            event["metadata"] = json.loads(event.get("metadata") or "{}")
+        except (ValueError, TypeError):
+            continue
+        if await archive_album_event(event, db):
+            count += 1
+    return count
 
 
 async def list_niche_cards(actor: str, limit: int = 60, *, db=None) -> list[dict]:

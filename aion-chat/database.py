@@ -281,6 +281,22 @@ async def init_db():
                 await db.execute(f"ALTER TABLE schedules ADD COLUMN {col} {defn}")
             except:
                 pass
+        # ── 快捷备忘录（与长期 AI 记忆隔离） ──
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS private_memos (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                source TEXT NOT NULL DEFAULT 'app',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                completed_at REAL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_private_memos_status "
+            "ON private_memos(status, updated_at DESC)"
+        )
         # ── 心语表（保留兼容，不再写入新数据） ──
         await db.execute("""
             CREATE TABLE IF NOT EXISTS heart_whispers (
@@ -774,6 +790,8 @@ async def init_db():
         """)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_idle_events_created ON idle_events(created_at DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_idle_events_actor ON idle_events(actor, created_at DESC)")
+        from autonomy_niches import backfill_album_niche_cards
+        await backfill_album_niche_cards(db)
         # 鈹€鈹€ 许愿池 鈹€鈹€
         await db.execute("""
             CREATE TABLE IF NOT EXISTS wishes (

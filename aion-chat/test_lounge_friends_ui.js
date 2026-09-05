@@ -10,6 +10,28 @@ const HTML_PATH = path.join(ROOT, 'static', 'lounge-friends.html');
 const COMMON_PATH = path.join(ROOT, 'static', 'common.js');
 const STYLE_PATH = path.join(ROOT, 'static', 'lounge-friends.css');
 
+test('history initially selects the companion and preserves an explicit actor choice', () => {
+  const ui = require(SCRIPT_PATH);
+  const actors = [{ id: 'aion' }, { id: 'connor' }];
+  assert.equal(ui.preferredHistoryActor(actors, ''), 'connor');
+  assert.equal(ui.preferredHistoryActor(actors, 'aion'), 'aion');
+  assert.equal(ui.preferredHistoryActor([{ id: 'other' }], ''), 'other');
+  assert.equal(ui.preferredHistoryActor([], ''), '');
+});
+
+test('history pages stay bounded when empty or after deleting the last page', () => {
+  const ui = require(SCRIPT_PATH);
+  const visits = Array.from({ length: 14 }, (_, id) => ({ id }));
+  assert.deepEqual(ui.paginateVisits(visits, 2).items.map(v => v.id), [6, 7, 8, 9, 10, 11]);
+  const last = ui.paginateVisits(visits, 99);
+  assert.equal(last.page, 3);
+  assert.equal(last.pageCount, 3);
+  assert.deepEqual(last.items.map(v => v.id), [12, 13]);
+  assert.equal(ui.paginateVisits(visits.slice(0, 6), 3).page, 1);
+  assert.equal(ui.paginateVisits([], 2).page, 1);
+  assert.deepEqual(ui.paginateVisits([], 2).items, []);
+});
+
 
 test('actor options use display names returned by the API', () => {
   const ui = require(SCRIPT_PATH);
@@ -165,6 +187,16 @@ test('single visit deletion is blocked while running and stays actor scoped', as
     'DELETE',
     '/api/lounge-visits/visit-1?actor_id=actor-primary',
   ]]);
+});
+
+test('inbound history labels its direction and cannot cancel or delete reception', () => {
+  const ui = require(SCRIPT_PATH);
+  const reception = { direction: 'inbound', partner_name: '来访朋友', status: 'running' };
+  assert.equal(ui.visitTitle(reception), '被拜访 · 来访朋友');
+  assert.equal(ui.visitTitle({ direction: 'outbound', partner_name: '远方朋友' }), '拜访 · 远方朋友');
+  assert.equal(ui.canCancelVisit(reception), false);
+  assert.equal(ui.canDeleteVisit({ ...reception, status: 'ended' }), false);
+  assert.equal(ui.visitStatusText({ ...reception, status: 'ended', turn_count: 2 }), '已结束 · 2 回合');
 });
 
 

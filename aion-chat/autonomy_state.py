@@ -21,12 +21,15 @@ MIN_INTERVAL_MINUTES = 5
 MAX_INTERVAL_MINUTES = 24 * 60
 MAX_STATE_CHARS = 800
 ACTION_IDS = (
+    "rest",
     "private_chat",
     "role_chat",
     "home_dynamics",
     "memory_browse",
+    "album_browse",
     "web_roam",
     "xhs_roam",
+    "taobao_roam",
     "friend_visit",
     "seeky_interaction",
     "wish_pool",
@@ -71,7 +74,7 @@ def _clamp_minutes(value: Any, fallback: int) -> int:
 
 
 def _default_actions() -> dict[str, bool]:
-    return {key: True for key in ACTION_IDS}
+    return {key: key != "album_browse" for key in ACTION_IDS}
 
 
 async def ensure_autonomy_tables(db) -> None:
@@ -141,7 +144,7 @@ def _decode_actions(raw: str | None) -> dict[str, bool]:
         stored = json.loads(raw or "{}")
     except (TypeError, json.JSONDecodeError):
         stored = {}
-    return {key: bool(stored.get(key, True)) for key in ACTION_IDS}
+    return {key: bool(stored.get(key, key != "album_browse")) for key in ACTION_IDS}
 
 
 def _config_from_row(row) -> dict:

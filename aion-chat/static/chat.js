@@ -130,6 +130,8 @@ async function init() {
     if (targetMsgId) setTimeout(() => jumpToChatMessage(targetConvId, targetMsgId), 100);
   } else if (lastId && conversations.find(c => c.id === lastId)) {
     await selectConv(lastId);
+  } else if (conversations.length === 0) {
+    await newConversation();
   } else {
     renderConvList();
     renderMessages();
@@ -156,18 +158,18 @@ async function init() {
 
 function escHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 function renderInnerMonologues(html) {
-  return String(html || '').replace(/\[心里嘀咕[：:]\s*([^\]]+?)\]/g, (_, content) =>
+  return String(html || '').replace(/[\[【]心里嘀咕[：:]\s*([^\]】]+?)[\]】]/g, (_, content) =>
     `<span class="inner-monologue">${content.trim()}</span>`
   );
 }
 function innerMonologueText(s) {
-  const match = String(s || '').match(/^\s*\[心里嘀咕[：:]\s*([^\]]+?)\]\s*$/);
+  const match = String(s || '').match(/^\s*[\[【]心里嘀咕[：:]\s*([^\]】]+?)[\]】]\s*$/);
   return match ? match[1].trim() : null;
 }
 function splitInnerMonologueParts(s) {
   const items = [];
   const text = String(s || '');
-  const monologueRe = /\[心里嘀咕[：:]\s*([^\]]+?)\]/g;
+  const monologueRe = /[\[【]心里嘀咕[：:]\s*([^\]】]+?)[\]】]/g;
   let last = 0;
   let match;
   while ((match = monologueRe.exec(text)) !== null) {
@@ -182,7 +184,7 @@ function splitInnerMonologueParts(s) {
   return items;
 }
 function hasInnerMonologue(s) {
-  return /\[心里嘀咕[：:]\s*[^\]]+?\]/.test(String(s || ''));
+  return /[\[【]心里嘀咕[：:]\s*[^\]】]+?[\]】]/.test(String(s || ''));
 }
 function renderMsgPart(p) {
   return splitInnerMonologueParts(p).map(item => {
@@ -592,9 +594,13 @@ const remoteVoice = {
     const isSpeech = energy > this._noiseFloor;
 
     // 每帧约 2048/48000 = 42.7ms
-    // silenceLimit: 唤醒 ~0.85s(20帧), 通话 ~1.5s(35帧)
+    // 通话短句约 0.8s 截断，长句约 1.2s；唤醒词保持约 0.85s。
     // waitLimit: 唤醒 ~15s(350帧), 通话 ~60s(1400帧)
-    const silenceLimit = this.inCall ? 35 : 20;
+    const frameMs = input.length / this._sampleRate * 1000;
+    const recordedMs = this._frames.length * frameMs;
+    const silenceLimit = this.inCall
+      ? Math.ceil((recordedMs < 2000 ? 800 : 1200) / frameMs)
+      : 20;
     const waitLimit = this.inCall ? 1400 : 350;
 
     if (!this._isRecording) {
@@ -885,7 +891,7 @@ async function toggleGeminiCliTools() {
 // ── TTS 语音合成（服务端流式 TTS via WebSocket） ──
 let ttsEnabled = localStorage.getItem('aion_tts_enabled') === 'true';
 let ttsVoiceId = localStorage.getItem('aion_tts_voice') || '';
-let ttsAudio = new Audio();
+let ttsAudio = window.createAionTtsAudio ? window.createAionTtsAudio() : new Audio();
 let ttsPlaying = false;
 let ttsResumeTimer = null;
 let ttsManualStop = false;
@@ -1045,6 +1051,10 @@ window.PrivateVoiceCallAdapter = {
   },
   speakerForMessage() {
     return "assistant";
+  },
+  interruptTTS(msgId) {
+    suppressTTSMsg(msgId);
+    stopLiveTTSQueue();
   },
   async sendText(text) {
     const content = String(text || "").trim();
@@ -1254,7 +1264,7 @@ function _cleanupFinishedTTS() {
 }
 
 // 重听 TTS 音频（从服务器缓存播放，支持分段）
-let replayAudio = new Audio();
+let replayAudio = window.createAionTtsAudio ? window.createAionTtsAudio() : new Audio();
 let replayChunks = []; // 当前重听的分段URL列表
 let replayIdx = 0;
 let replayToken = 0;
@@ -1697,6 +1707,18 @@ function systemNoticeAfterMsgId(m) {
   return marker ? String(marker.after_msg_id) : "";
 }
 
+function systemNoticeBeforeMsgId(m, nextMessage = null) {
+  if (!m || m.role !== "system") return "";
+  const marker = Array.isArray(m.attachments)
+    ? m.attachments.find(a => a && typeof a === "object" && a.type === "system_notice_order" && a.before_msg_id)
+    : null;
+  if (marker) return String(marker.before_msg_id);
+  if (/查看了监控(?:画面)?/.test((m.content || "").trim()) && nextMessage?.role === "assistant") {
+    return String(nextMessage.id || "");
+  }
+  return "";
+}
+
 function isLegacyCommandSystemNotice(m) {
   if (!m || m.role !== "system" || systemNoticeAfterMsgId(m)) return false;
   return LEGACY_COMMAND_SYSTEM_NOTICE_RE.test((m.content || "").trim());
@@ -1755,6 +1777,22 @@ function messagesForDisplay(messages) {
   return out;
 }
 
+function formatPrivateSystemNoticeContent(content) {
+  const text = String(content ?? '');
+  const aiName = String((worldBook && worldBook.ai_name) || 'AI').trim();
+  if (!aiName) return text;
+
+  const prefixMatch = text.match(/^(\s*(?:(?:⏰|📅|👀|📷)\uFE0F?\s*)?)/u);
+  const prefix = prefixMatch ? prefixMatch[1] : '';
+  const rest = text.slice(prefix.length);
+  if (rest.startsWith(`【${aiName}】`)) return text;
+  if (!rest.startsWith(aiName)) return text;
+
+  const nextChar = rest.slice(aiName.length, aiName.length + 1);
+  if (nextChar && /[A-Za-z0-9_]/.test(nextChar)) return text;
+  return `${prefix}【${aiName}】${rest.slice(aiName.length)}`;
+}
+
 // ── 渲染 ──
 function renderModelSelect() {
   const visibleModels = models.filter(m => !DEPRECATED_MODEL_PROVIDERS.has(m.provider));
@@ -1776,6 +1814,156 @@ function renderConvList() {
   }).join("");
 }
 
+function privateSystemMessageHTML(m, nextMessage = null) {
+  const loungeStatus = window.LoungeVisitUI && window.LoungeVisitUI.isStatusMessage(m);
+  const afterMsgId = systemNoticeAfterMsgId(m);
+  const beforeMsgId = systemNoticeBeforeMsgId(m, nextMessage);
+  const afterAttr = afterMsgId ? ` data-after-msg-id="${escHtml(afterMsgId)}"` : "";
+  const beforeAttr = beforeMsgId ? ` data-before-msg-id="${escHtml(beforeMsgId)}"` : "";
+  const displayContent = formatPrivateSystemNoticeContent(m.content);
+  const snapshotHtml = window.MonitorCameraSnapshot
+    ? window.MonitorCameraSnapshot.renderMonitorCameraSnapshot(
+        m.attachments,
+        {
+          escapeHtml: escHtml,
+          imageAttrs: imageInteractionAttrs(),
+          compact: true,
+          summaryText: displayContent,
+        },
+      )
+    : "";
+  const contentHtml = snapshotHtml || (window.SystemNoticeUI
+    ? window.SystemNoticeUI.renderSystemNoticeContent(displayContent, {escapeHtml: escHtml})
+    : `<span class="system-notice-text">${escHtml(displayContent)}</span>`);
+  return `
+  <div class="msg-row system${loungeStatus ? ' lounge-visit-status-line' : ''}" id="m_${m.id}" data-msg-id="${m.id}" tabindex="0" onclick="this.focus()"${afterAttr}${beforeAttr}>
+    <div class="system-notice">
+      <span class="system-notice-marker" aria-hidden="true">&gt;</span>
+      ${contentHtml}
+      <button class="msg-dots system-dots" onclick="event.stopPropagation();toggleMsgMenu('${m.id}')">&#8943;</button>
+      <div class="msg-menu" id="menu_${m.id}">
+        <button onclick="delMsg('${m.id}');closeMsgMenus()">删除</button>
+      </div>
+    </div>
+    ${window.TaobaoCards ? window.TaobaoCards.render(m.attachments, {returnTo: '/chat?conv=' + encodeURIComponent(m.conv_id || currentConvId)}) : ''}
+  </div>`;
+}
+
+const PRIVATE_MESSAGE_SPECIAL_TOKEN_RE = /(\[\[image:\S+?\]\]|\[转账(?:给[^：:]+?)?[：:]\s*-?\d+(?:\.\d+)?\s*元\])/g;
+
+function normalizePrivateMarkdownParagraphs(value, isUser) {
+  const text = String(value || '').trim();
+  if (!text || isUser) return text;
+  return text.replace(/\n(?!(?:\n|\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|>|```)))/g, '\n\n');
+}
+
+function privateMarkdownMessageHtml(value, isUser) {
+  const source = normalizePrivateMarkdownParagraphs(value, isUser);
+  const renderMarkdown = window.ChatroomMarkdown && window.ChatroomMarkdown.render
+    ? window.ChatroomMarkdown.render
+    : input => `<p>${formatMsg(input)}</p>`;
+  let cursor = 0;
+  let html = '';
+  let match;
+  PRIVATE_MESSAGE_SPECIAL_TOKEN_RE.lastIndex = 0;
+  while ((match = PRIVATE_MESSAGE_SPECIAL_TOKEN_RE.exec(source)) !== null) {
+    if (match.index > cursor) html += renderMarkdown(source.slice(cursor, match.index));
+    html += formatMsg(match[0]);
+    cursor = PRIVATE_MESSAGE_SPECIAL_TOKEN_RE.lastIndex;
+  }
+  if (cursor < source.length) html += renderMarkdown(source.slice(cursor));
+  return html || renderMarkdown(source);
+}
+
+function privateMessageContentItems(value, isUser = false) {
+  const text = String(value || '');
+  const items = [];
+  const monologueRe = /[\[【]心里嘀咕[：:]\s*([^\]】]+?)[\]】]/g;
+  const parts = isUser
+    ? (window.ChatroomMarkdown?.splitUserBubbleParts
+        ? window.ChatroomMarkdown.splitUserBubbleParts(text)
+        : text.split(/\n+/).map(part => part.trim()).filter(Boolean))
+    : (text.trim() ? [text] : []);
+  for (const part of parts) {
+    let cursor = 0;
+    let match;
+    monologueRe.lastIndex = 0;
+    while ((match = monologueRe.exec(part)) !== null) {
+      const before = part.slice(cursor, match.index).trim();
+      if (before) items.push({ type: 'message', text: before });
+      const thought = String(match[1] || '').trim();
+      if (thought) items.push({ type: 'monologue', text: thought });
+      cursor = monologueRe.lastIndex;
+    }
+    const tail = part.slice(cursor).trim();
+    if (tail) items.push({ type: 'message', text: tail });
+  }
+  return items;
+}
+
+function renderPrivateMessageHTML(m) {
+  const isUser = m.role === 'user';
+  const isAssistant = m.role === 'assistant';
+  const roleLabel = isUser ? (worldBook.user_name || '你') : (worldBook.ai_name || 'AI');
+  const time = m.created_at ? fmtTime(m.created_at) : '';
+  const starLabel = m.starred ? '取消星标' : '⭐ 星标';
+  const actionsHtml = `${isUser ? `<button onclick="editMsg('${m.id}');closeMsgMenus()">编辑</button>` : `<button onclick="regenerateMsg('${m.id}');closeMsgMenus()">重新生成</button>`}<button onclick="delMsg('${m.id}');closeMsgMenus()">删除</button><button onclick="copyMsg('${m.id}');closeMsgMenus()">复制</button><button onclick="toggleStar('${m.id}');closeMsgMenus()">${starLabel}</button>`;
+  const starBadge = m.starred ? '<span class="msg-star-badge">✨</span>' : '';
+  const dotsLeft = isUser ? `<button class="msg-dots" onclick="event.stopPropagation();toggleMsgMenu('${m.id}')">&#8943;</button>` : '';
+  const dotsRight = !isUser ? `<button class="msg-dots" onclick="event.stopPropagation();toggleMsgMenu('${m.id}')">&#8943;</button>` : '';
+  const feedbackHtml = isAssistant ? `<span class="msg-feedback-actions">
+    <button class="msg-feedback-btn ${m.ai_feedback_rating === 'like' ? 'active' : ''}" onclick="openMsgFeedback(event,'${m.id}','like')" title="喜欢这条回复">👍</button>
+    <button class="msg-feedback-btn ${m.ai_feedback_rating === 'dislike' ? 'active' : ''}" onclick="openMsgFeedback(event,'${m.id}','dislike')" title="不喜欢这条回复">👎</button>
+    ${m.reasoning_content ? `<button class="msg-feedback-btn msg-reasoning-btn" onclick="openMsgReasoning(event,'${m.id}')" title="查看思考过程">💭</button>` : ''}
+  </span>` : '';
+  const messageAttachments = withWishFallbackAttachments(m);
+  const bandVibrationHtml = renderBandVibrationNote(messageAttachments);
+  const rawContent = isUser ? (m.content || '') : (m.content || '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
+  const displayContent = stripWishFulfillmentMarker(rawContent).trim();
+  const hasVoiceAtt = messageAttachments.some(a => typeof a === 'object' && (a.type === 'voice' || a.type === 'video_clip'));
+  const hasWishFulfillmentAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'wish_fulfillment');
+  const hasStandaloneCard = messageAttachments.some(a => typeof a === 'object' && (a.type === 'date_summary' || a.type === 'lounge_visit_report'));
+  const isEmptyMessage = !displayContent && messageAttachments.length === 0;
+  const items = privateMessageContentItems(displayContent, isUser);
+  const textHtml = items.map(item => item.type === 'monologue'
+    ? `<div class="inner-monologue-line"><div class="inner-monologue-content markdown-body">${privateMarkdownMessageHtml(item.text, isUser)}</div></div>`
+    : `<div class="${isUser ? 'msg-bubble' : 'private-ai-message-content'} markdown-body">${privateMarkdownMessageHtml(item.text, isUser)}</div>`
+  ).join('');
+  let contentHtml = textHtml;
+  if (hasStandaloneCard) {
+    contentHtml = `<div class="private-message-attachments date-summary-bubbles">${renderAttachments(messageAttachments)}</div>`;
+  } else if (hasWishFulfillmentAtt) {
+    contentHtml = `<div class="private-message-attachments wish-card-bubbles">${renderAttachments(messageAttachments)}${isUser ? '' : textHtml}</div>`;
+  } else if (hasVoiceAtt && !displayContent) {
+    contentHtml = `<div class="private-message-attachments">${renderAttachments(messageAttachments)}</div>`;
+  } else {
+    contentHtml += renderAttachments(messageAttachments);
+  }
+  if (isEmptyMessage) contentHtml = `<div class="${isUser ? 'msg-bubble ' : 'private-ai-message-content '}empty-msg-bubble"></div>`;
+  const avatarSrc = isUser ? '/public/UserIcon.png' : '/public/AIIcon.png';
+  const ttsBtn = !isUser ? `<button class="tts-replay-btn" onclick="replayTTS('${m.id}')" title="重听语音">🔊</button>` : '';
+  const roleRow = `<div class="msg-role-row">${dotsLeft}<span class="msg-role-name">${escHtml(roleLabel)}</span><span class="msg-time">${time}</span>${dotsRight}${feedbackHtml}${ttsBtn}${starBadge}<div class="msg-menu" id="menu_${m.id}">${actionsHtml}</div></div>`;
+  const avatar = `<div class="msg-avatar-col"><img class="msg-avatar" src="${avatarSrc}" alt=""></div>`;
+  const header = isUser ? `${roleRow}${avatar}` : `${avatar}${roleRow}`;
+  return `
+  <div class="msg-row ${m.role}${isEmptyMessage ? ' empty-message' : ''}" id="m_${m.id}" data-msg-id="${m.id}" tabindex="0" onclick="MessageRowFocus.focusRowFromClick(event, this)">
+    <div class="private-message-unit ${isUser ? 'user-message-unit' : 'assistant-message-unit'}">
+      <div class="private-message-header${isUser ? ' user-message-header' : ''}">${header}</div>
+      <div class="msg-body"><div class="private-message-flow">${contentHtml}</div>${bandVibrationHtml}</div>
+    </div>
+  </div>`;
+}
+
+function updatePrivateStreamingMessage(messageId, display) {
+  const flow = document.querySelector(`#m_${messageId} .private-message-flow`);
+  if (!flow) return;
+  const items = privateMessageContentItems(display);
+  flow.innerHTML = items.map(item => item.type === 'monologue'
+    ? `<div class="inner-monologue-line"><div class="inner-monologue-content markdown-body">${privateMarkdownMessageHtml(item.text, false)}</div></div>`
+    : `<div class="private-ai-message-content markdown-body">${privateMarkdownMessageHtml(item.text, false)}</div>`
+  ).join('');
+}
+
 function renderMessages() {
   const el = $("messages");
 
@@ -1790,7 +1978,8 @@ function renderMessages() {
   }
 
   const loadMoreBtn = hasMoreMessages ? '<div class="load-more-bar" onclick="loadOlderMessages()">⬆ 加载更早的消息</div>' : '';
-  el.innerHTML = loadMoreBtn + messagesForDisplay(currentMessages).map(m => {
+  const displayMessages = messagesForDisplay(currentMessages);
+  el.innerHTML = loadMoreBtn + displayMessages.map((m, index) => {
     const isUser = m.role === "user";
 
     // 隐藏监控相关消息（日志已独立存储）
@@ -1798,96 +1987,12 @@ function renderMessages() {
       return '';
     }
 
-    // 系统提示消息（居中显示）
+    // 系统提示消息
     if (m.role === "system") {
-      const loungeStatus = window.LoungeVisitUI && window.LoungeVisitUI.isStatusMessage(m);
-      const afterMsgId = systemNoticeAfterMsgId(m);
-      const afterAttr = afterMsgId ? ` data-after-msg-id="${escHtml(afterMsgId)}"` : "";
-      const snapshotHtml = window.MonitorCameraSnapshot
-        ? window.MonitorCameraSnapshot.renderMonitorCameraSnapshot(
-            m.attachments,
-            {
-              escapeHtml: escHtml,
-              imageAttrs: imageInteractionAttrs(),
-            },
-          )
-        : "";
-      return `
-      <div class="msg-row system${loungeStatus ? ' lounge-visit-status-line' : ''}" id="m_${m.id}" data-msg-id="${m.id}"${afterAttr}>
-        <div class="system-notice">
-          <span class="system-notice-text">${escHtml(m.content)}</span>
-          <button class="msg-dots system-dots" onclick="event.stopPropagation();toggleMsgMenu('${m.id}')">&#8943;</button>
-          <div class="msg-menu" id="menu_${m.id}">
-            <button onclick="delMsg('${m.id}');closeMsgMenus()">删除</button>
-          </div>
-        </div>
-        ${snapshotHtml}
-      </div>`;
+      return privateSystemMessageHTML(m, displayMessages[index + 1]);
     }
 
-    const isAssistant = m.role === "assistant";
-    const roleLabel = isUser ? (worldBook.user_name || '你') : (worldBook.ai_name || 'AI');
-    const time = m.created_at ? fmtTime(m.created_at) : "";
-    const starLabel = m.starred ? '取消星标' : '⭐ 星标';
-    const actionsHtml = `${isUser ? `<button onclick="editMsg('${m.id}');closeMsgMenus()">编辑</button>` : `<button onclick="regenerateMsg('${m.id}');closeMsgMenus()">重新生成</button>`}<button onclick="delMsg('${m.id}');closeMsgMenus()">删除</button><button onclick="copyMsg('${m.id}');closeMsgMenus()">复制</button><button onclick="toggleStar('${m.id}');closeMsgMenus()">${starLabel}</button>`;
-    const starBadge = m.starred ? '<span class="msg-star-badge">✨</span>' : '';
-    const dotsLeft = isUser ? `<button class="msg-dots" onclick="event.stopPropagation();toggleMsgMenu('${m.id}')">&#8943;</button>` : '';
-    const dotsRight = !isUser ? `<button class="msg-dots" onclick="event.stopPropagation();toggleMsgMenu('${m.id}')">&#8943;</button>` : '';
-    const feedbackHtml = isAssistant ? `<span class="msg-feedback-actions">
-      <button class="msg-feedback-btn ${m.ai_feedback_rating === 'like' ? 'active' : ''}" onclick="openMsgFeedback(event,'${m.id}','like')" title="喜欢这条回复">👍</button>
-      <button class="msg-feedback-btn ${m.ai_feedback_rating === 'dislike' ? 'active' : ''}" onclick="openMsgFeedback(event,'${m.id}','dislike')" title="不喜欢这条回复">👎</button>
-      ${m.reasoning_content ? `<button class="msg-feedback-btn msg-reasoning-btn" onclick="openMsgReasoning(event,'${m.id}')" title="查看思考过程">💭</button>` : ''}
-    </span>` : '';
-    const messageAttachments = withWishFallbackAttachments(m);
-    const bandVibrationHtml = renderBandVibrationNote(messageAttachments);
-    const rawDisplayContent = isUser ? (m.content || '') : (m.content || '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
-    const displayContent = stripWishFulfillmentMarker(rawDisplayContent).trim();
-    const hasVoiceAtt = messageAttachments.some(a => typeof a === 'object' && (a.type === 'voice' || a.type === 'video_clip'));
-    const hasWishFulfillmentAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'wish_fulfillment');
-    const hasDateSummaryAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'date_summary');
-    const hasLoungeReportAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'lounge_visit_report');
-    const isEmptyMessage = !displayContent && messageAttachments.length === 0;
-    // 转账标签前后强制换行，确保卡片独占一个气泡
-    const splitContent = displayContent.replace(/(\[转账(?:给[^\uff1a:]+?)?[：:]\s*-?\d+(?:\.\d+)?\s*元\])/g, '\n$1\n');
-    const parts = (isUser ? splitContent.split(/\n+/) : splitContent.split(/\n+/)).filter(p => p.trim());
-    let bubblesHtml;
-    if (hasDateSummaryAtt || hasLoungeReportAtt) {
-      bubblesHtml = `<div class="msg-bubbles date-summary-bubbles">${renderAttachments(messageAttachments)}</div>`;
-    } else if (isEmptyMessage) {
-      bubblesHtml = '<div class="msg-bubble empty-msg-bubble"></div>';
-    } else if (hasWishFulfillmentAtt) {
-      const explanationHtml = !isUser
-        ? parts.map(renderMsgPart).join('')
-        : '';
-      bubblesHtml = `<div class="msg-bubbles wish-card-bubbles">${renderAttachments(messageAttachments)}${explanationHtml}</div>`;
-    } else if (hasVoiceAtt && !displayContent.trim()) {
-      // 纯语音消息：不显示文本气泡，只显示语音气泡
-      bubblesHtml = `<div class="msg-bubble" style="background:transparent;padding:0;box-shadow:none;border:none">${renderAttachments(messageAttachments)}</div>`;
-    } else if (parts.length > 1) {
-      bubblesHtml = '<div class="msg-bubbles">' + parts.map(renderMsgPart).join('') + renderAttachments(messageAttachments) + '</div>';
-    } else {
-      const monologue = innerMonologueText(displayContent);
-      bubblesHtml = monologue !== null || hasInnerMonologue(displayContent)
-        ? `<div class="msg-bubbles">${renderMsgPart(displayContent)}${renderAttachments(messageAttachments)}</div>`
-        : `<div class="msg-bubble">${formatMsg(displayContent)}${renderAttachments(messageAttachments)}</div>`;
-    }
-    const avatarSrc = isUser ? '/public/UserIcon.png' : '/public/AIIcon.png';
-    const ttsBtn = !isUser ? `<button class="tts-replay-btn" onclick="replayTTS('${m.id}')" title="重听语音">🔊</button>` : '';
-    return `
-    <div class="msg-row ${m.role}${isEmptyMessage ? ' empty-message' : ''}" id="m_${m.id}" data-msg-id="${m.id}">
-      <div class="msg-avatar-col">
-        <img class="msg-avatar" src="${avatarSrc}" alt="">
-        ${ttsBtn}
-      </div>
-      <div class="msg-body">
-        <div class="msg-role-row">
-          ${dotsLeft}<span class="msg-role-name">${roleLabel}</span><span class="msg-time">${time}</span>${dotsRight}${feedbackHtml}${starBadge}
-          <div class="msg-menu" id="menu_${m.id}">${actionsHtml}</div>
-        </div>
-        ${bubblesHtml}
-        ${bandVibrationHtml}
-      </div>
-    </div>`;
+    return renderPrivateMessageHTML(m);
   }).join("");
   // 恢复音乐卡片
   for (const mid of Object.keys(msgMusicCards)) {
@@ -2039,6 +2144,18 @@ function addErrorToSystemLog(errorMsg, model) {
     prompt_messages: null,
   };
   addSystemLog(d);
+}
+
+function handleRealtimeStreamError(msgId, errorText, modelKey) {
+  _stopTypingAnim();
+  if (msgId) {
+    currentMessages = currentMessages.filter(message => message.id !== msgId);
+    renderMessages();
+  }
+  streamingAiId = null;
+  const message = errorText || '回复连接异常，可重试';
+  showToast(message);
+  addErrorToSystemLog(message, modelKey || $("modelSelect")?.value);
 }
 
 function _buildTokenHtml(u) {
@@ -2583,6 +2700,7 @@ async function newConversation() {
   const today = new Date();
   const title = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
   const conv = await api("POST", "/api/conversations", { title, model });
+  if (!conversations.find(c => c.id === conv.id)) conversations.unshift(conv);
   await selectConv(conv.id);
   closeSidebar();
 }
@@ -2829,6 +2947,12 @@ async function _processSSEStream(res) {
             _startTypingAnim(aiMsgId);
           } else if (data.type === "cli_status") {
             _updateTypingStatus(aiMsgId, data.text);
+          } else if (data.type === "stream_reset") {
+            aiContent = "";
+            const mi = currentMessages.findIndex(m => m.id === aiMsgId);
+            if (mi >= 0) currentMessages[mi].content = "...";
+            renderMessages();
+            _startTypingAnim(aiMsgId);
           } else if (data.type === "chunk" || data.type === "replace") {
             if (aiFinalAlreadyReceived) continue;
             _stopTypingAnim();
@@ -2838,27 +2962,11 @@ async function _processSSEStream(res) {
             if (mi >= 0) currentMessages[mi].content = display;
             const container = document.getElementById(`m_${aiMsgId}`);
             if (container) {
-              const parts = display.split(/\n{2,}/).filter(p => p.trim());
-              const target = container.querySelector('.msg-bubbles') || container.querySelector('.msg-bubble') || container.querySelector('.inner-monologue-line');
-              if (parts.length > 1) {
-                const wrapper = document.createElement('div');
-                wrapper.className = 'msg-bubbles';
-                wrapper.innerHTML = parts.map(renderMsgPart).join('');
-                target.replaceWith(wrapper);
-              } else if (target) {
-                const monologue = innerMonologueText(display);
-                const shouldSplit = monologue !== null || hasInnerMonologue(display);
-                if (target.classList.contains('msg-bubbles') || shouldSplit) {
-                  const single = document.createElement('div');
-                  single.className = shouldSplit ? 'msg-bubbles' : 'msg-bubble';
-                  single.innerHTML = shouldSplit ? renderMsgPart(display) : formatMsg(display);
-                  target.replaceWith(single);
-                } else {
-                  target.innerHTML = formatMsg(display);
-                }
-              }
+              updatePrivateStreamingMessage(aiMsgId, display);
             }
             scrollBottom();
+          } else if (data.type === "stream_error") {
+            handleRealtimeStreamError(aiMsgId, data.content, $("modelSelect")?.value);
           } else if (data.type === "debug" && aiMsgId) {
             msgDebugData[aiMsgId] = data;
             renderDebugBar(aiMsgId);
@@ -3002,6 +3110,12 @@ async function saveEdit(id) {
             _startTypingAnim(aiMsgId);
           } else if (data.type === 'cli_status') {
             _updateTypingStatus(aiMsgId, data.text);
+          } else if (data.type === 'stream_reset') {
+            aiContent = '';
+            const mi = currentMessages.findIndex(m => m.id === aiMsgId);
+            if (mi >= 0) currentMessages[mi].content = '...';
+            renderMessages();
+            _startTypingAnim(aiMsgId);
           } else if (data.type === 'chunk' || data.type === 'replace') {
             _stopTypingAnim();
             aiContent = data.type === 'replace' ? data.content : aiContent + data.content;
@@ -3010,27 +3124,11 @@ async function saveEdit(id) {
             if (mi >= 0) currentMessages[mi].content = display;
             const container = document.getElementById(`m_${aiMsgId}`);
             if (container) {
-              const parts = display.split(/\n{2,}/).filter(p => p.trim());
-              const target = container.querySelector('.msg-bubbles') || container.querySelector('.msg-bubble') || container.querySelector('.inner-monologue-line');
-              if (parts.length > 1) {
-                const wrapper = document.createElement('div');
-                wrapper.className = 'msg-bubbles';
-                wrapper.innerHTML = parts.map(renderMsgPart).join('');
-                target.replaceWith(wrapper);
-              } else if (target) {
-                const monologue = innerMonologueText(display);
-                const shouldSplit = monologue !== null || hasInnerMonologue(display);
-                if (target.classList.contains('msg-bubbles') || shouldSplit) {
-                  const single = document.createElement('div');
-                  single.className = shouldSplit ? 'msg-bubbles' : 'msg-bubble';
-                  single.innerHTML = shouldSplit ? renderMsgPart(display) : formatMsg(display);
-                  target.replaceWith(single);
-                } else {
-                  target.innerHTML = formatMsg(display);
-                }
-              }
+              updatePrivateStreamingMessage(aiMsgId, display);
             }
             scrollBottom();
+          } else if (data.type === 'stream_error') {
+            handleRealtimeStreamError(aiMsgId, data.content, $("modelSelect")?.value);
           } else if (data.type === 'debug' && aiMsgId) {
             msgDebugData[aiMsgId] = data;
             renderDebugBar(aiMsgId);
@@ -3137,15 +3235,22 @@ async function regenerateMsg(aiMsgId) {
             upsertCurrentMessage({ id: newId, conv_id: currentConvId, role: "assistant", content: "...", created_at: Date.now()/1000 });
             renderMessages();
             _startTypingAnim(newId);
+          } else if (d.type === "stream_reset") {
+            aiContent = "";
+            const mi = currentMessages.findIndex(m => m.id === newId);
+            if (mi >= 0) currentMessages[mi].content = "...";
+            renderMessages();
+            _startTypingAnim(newId);
           } else if (d.type === "chunk" || d.type === "replace") {
             _stopTypingAnim();
             aiContent = d.type === "replace" ? d.content : aiContent + d.content;
             const display = aiContent.replace(/\[CAM_CHECK\]/g, '').replace(/\[POI_SEARCH:[^\]]*\]/g, '').replace(/\[MUSIC:[^\]]*\]/g, '').replace(/\[ALARM:[^\]]*\]/g, '').replace(/\[REMINDER:[^\]]*\]/g, '').replace(/\[Monitor:[^\]]*\]/g, '').replace(/\[SCHEDULE_DEL:[^\]]*\]/g, '').replace(/\[SCHEDULE_LIST\]/g, '').replace(/\[NEXT_CHAT:[^\]]*\]/gi, '').replace(/\[TOY:[^\]]*\]/g, '').replace(/\[HEART:[^\]]*\]/g, '').replace(/\[MEMORY:[^\]]*\]/g, '').replace(/\[查看动态:\d+\]/g, '').replace(/\[视频电话\]/g, '').replace(/\[SELFIE:\s*[^\]]*\]/g, '').replace(/\[DRAW:\s*[^\]]*\]/g, '').replace(/\[SONG\][\s\S]*?\[\/SONG\]/gi, '').replace(/<meta>[\s\S]*?<\/meta>/g, '').replace(/\s*<autonomy_state>[\s\S]*$/gi, '').trim();
             const mi = currentMessages.findIndex(m => m.id === newId);
             if (mi >= 0) currentMessages[mi].content = display;
-            const b = document.querySelector(`#m_${newId} .msg-bubble`);
-            if (b) b.textContent = display;
+            updatePrivateStreamingMessage(newId, display);
             scrollBottom();
+          } else if (d.type === "stream_error") {
+            handleRealtimeStreamError(newId, d.content, $("modelSelect")?.value);
           } else if (d.type === "debug" && newId) {
             msgDebugData[newId] = d;
             renderDebugBar(newId);
@@ -3205,7 +3310,7 @@ function _startTypingAnim(msgId) {
   _stopTypingAnim();
   const container = document.getElementById(`m_${msgId}`);
   if (!container) return;
-  const bubble = container.querySelector('.msg-bubble');
+  const bubble = container.querySelector('.private-ai-message-content, .msg-bubble');
   if (!bubble) return;
   bubble.classList.add('typing-bubble');
   bubble.innerHTML = '<span class="typing-text">思考中</span><span class="typing-dots"><span></span><span></span><span></span></span>';
@@ -3226,7 +3331,7 @@ function _updateTypingStatus(msgId, statusText) {
   // CLI 状态更新：替换 typing bubble 中的文本，保留弹跳动画
   const container = document.getElementById(`m_${msgId}`);
   if (!container) return;
-  const bubble = container.querySelector('.msg-bubble');
+  const bubble = container.querySelector('.private-ai-message-content, .msg-bubble');
   if (!bubble) return;
   if (!bubble.classList.contains('typing-bubble')) {
     // 如果 typing 动画已停止，重新启动
@@ -3467,7 +3572,7 @@ function showImageSaveMenu(url) {
   cancelBtn.textContent = '取消';
   cancelBtn.addEventListener('click', closeImageSaveMenu);
 
-  sheet.append(saveBtn, viewBtn, cancelBtn);
+  sheet.append(saveBtn, viewBtn, window.ChatImageAlbum.createButton(url), cancelBtn);
   overlay.appendChild(sheet);
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) closeImageSaveMenu();
@@ -4252,7 +4357,7 @@ async function startCam() {
   // 1) 先尝试 getUserMedia
   try {
     _camStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: _camFacing, width: { ideal: 640 }, height: { ideal: 480 } },
+      video: { facingMode: _camFacing, width: { ideal: 1280 }, height: { ideal: 960 } },
       audio: false
     });
     const vid = document.getElementById('camVideo');
@@ -4271,7 +4376,10 @@ async function startCam() {
   }
   // 2) 回退到原生 CameraBridge
   if (window.AionCamera) {
-    const ok = window.AionCamera.start(_camFacing === 'user' ? 'user' : 'environment');
+    const facing = _camFacing === 'user' ? 'user' : 'environment';
+    const ok = typeof window.AionCamera.startPhoto === 'function'
+      ? window.AionCamera.startPhoto(facing)
+      : window.AionCamera.start(facing);
     if (ok) {
       _camUseNative = true;
       const vid = document.getElementById('camVideo');
@@ -4335,7 +4443,7 @@ async function capturePhoto() {
       canvas.height = videoEl.videoHeight || 480;
       const ctx = canvas.getContext('2d');
       ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-      dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      dataUrl = canvas.toDataURL('image/jpeg', 0.9);
     }
   }
   if (!dataUrl) { alert('拍照失败'); return; }
@@ -5346,6 +5454,7 @@ function syncSubPageMode(url) {
   const isHome = path === '/';
   const isImmersive = path === '/wishes';
   const ov = $('subPageOverlay');
+  ov.classList.remove('album-viewing');
   ov.classList.toggle('home-subpage', isHome);
   ov.classList.toggle('immersive-subpage', isImmersive);
   if (isHome) resetSubPageChrome();
@@ -5392,15 +5501,16 @@ function shouldNavigatePersistentSubPage(frame, url) {
     const requested = new URL(url, location.origin);
     // Plain app launches keep the preserved page state. Explicit route params
     // (for example, a global-search message anchor) must navigate the frame.
-    if (!requested.search && !requested.hash) return false;
     let current;
     try {
       current = new URL(frame.contentWindow.location.href, location.origin);
     } catch(e) {
       current = new URL(frame.src || 'about:blank', location.origin);
     }
-    return current.pathname !== requested.pathname
-      || current.search !== requested.search
+    // An old in-frame link may have replaced the preserved app with another page.
+    if (current.pathname !== requested.pathname) return true;
+    if (!requested.search && !requested.hash) return false;
+    return current.search !== requested.search
       || current.hash !== requested.hash;
   } catch(e) {
     return false;
@@ -5441,6 +5551,9 @@ function attachSubPageFrameLoad(frame) {
 function getSubPageFrame(url) {
   const path = subPagePath(url);
   if (!isPersistentSubPage(path)) {
+    // 相册的原图下载需要单独允许；不改变其他子页面的沙箱权限。
+    if (path === '/album') transientSubPageFrame.sandbox.add('allow-downloads');
+    else transientSubPageFrame.sandbox.remove('allow-downloads');
     transientSubPageFrame.dataset.pendingSrc = url;
     return transientSubPageFrame;
   }
@@ -5529,6 +5642,12 @@ function handleNativeBack() {
       return 'dialog';
     }
     // 在其他功能页 → 回到 Home
+    if (path === '/taobao') {
+      try { if (activeSubPageFrame?.contentWindow?.handleTaobaoBack?.()) return 'handled'; } catch(e) {}
+    }
+    if (path === '/album') {
+      try { if (activeSubPageFrame?.contentWindow?.handleAlbumBack?.()) return 'handled'; } catch(e) {}
+    }
     navigateToHome();
     return 'handled';
   }

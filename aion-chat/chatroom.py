@@ -1110,6 +1110,12 @@ async def build_aion_group_context(
         history.append({"role": "user", "content": ability_block})
         history.append({"role": "assistant", "content": "好的，需要时我会使用这些指令。"})
 
+    history = with_current_device_context(
+        history,
+        insert_at=len(history),
+        add_acknowledgement=True,
+    )
+
     # 3. 构建 recent_messages 用于 instant_digest
     merged = await fetch_merged_timeline("aion", context_limit, room_id=room_id)
 
@@ -1196,6 +1202,12 @@ async def build_connor_group_context(
     if ability_block:
         history.append({"role": "user", "content": ability_block})
         history.append({"role": "assistant", "content": "好的，需要时我会使用这些指令。"})
+
+    history = with_current_device_context(
+        history,
+        insert_at=len(history),
+        add_acknowledgement=True,
+    )
 
     # 2. 构建 recent_messages 用于 instant_digest
     merged = await fetch_merged_timeline("connor", context_limit, room_id=room_id)
@@ -1292,6 +1304,12 @@ async def build_connor_1v1_context(
     merged = await fetch_merged_timeline("connor", context_limit)
     if ability_block:
         messages.append({"role": "assistant", "content": "好的，需要时我会使用这些指令。"})
+
+    messages = with_current_device_context(
+        messages,
+        insert_at=len(messages),
+        add_acknowledgement=True,
+    )
 
     # 构建 recent_messages 用于 instant_digest（前置哨兵）
     recent_for_digest = []

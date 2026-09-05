@@ -2,4 +2,20 @@
     <string name="app_name">Aion Oloth</string>
     <string name="device_lock_home_button">乖乖回小家呆着</string>
     <string name="aion_accessibility_description">用于在手机解锁使用时截取当前屏幕，发送给 Aion 进行查岗监督。</string>
+    <string name="widget_description">私人语音备忘录与陪伴角色</string>
+    <string name="widget_empty_hint">记点什么？</string>
+    <string name="widget_record_open">打开语音备忘录</string>
+    <string name="widget_record_hint">按住麦克风说话</string>
+    <string name="widget_record_hold">按住开始录音</string>
+    <string name="widget_recording">正在听，松开就转成文字</string>
+    <string name="widget_transcribing">正在转成文字…</string>
+    <string name="widget_transcribe_done">听到这些，你可以稍微修改</string>
+    <string name="widget_record_too_short">说得有点短，再试一次吧</string>
+    <string name="widget_record_start_failed">麦克风启动失败，请重试</string>
+    <string name="widget_record_permission_needed">需要麦克风权限才能录音</string>
+    <string name="widget_record_empty">没有可以保存的文字</string>
+    <string name="widget_save_failed">保存失败，文字还在这里</string>
+    <string name="widget_transcription_hint">转写文字</string>
+    <string name="widget_retry">重录</string>
+    <string name="widget_save">保存备忘</string>
 </resources>

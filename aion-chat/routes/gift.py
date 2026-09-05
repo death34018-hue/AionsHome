@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from PIL import Image
 
-from config import DATA_DIR, UPLOADS_DIR
+from config import DATA_DIR, UPLOADS_DIR, ALBUM_IMAGES_DIR
 from database import get_db
 from gift import get_pending_gifts, receive_gift, list_gifts, delete_gift
 
@@ -59,8 +59,10 @@ async def api_thumbnail(gift_id: str):
     if not row:
         raise HTTPException(status_code=404, detail="gift not found")
 
-    source = (UPLOADS_DIR / row["image_path"]).resolve()
-    if UPLOADS_DIR.resolve() not in source.parents or not source.is_file():
+    relative_path = row["image_path"]
+    image_root = ALBUM_IMAGES_DIR if relative_path.startswith("album/") else UPLOADS_DIR
+    source = (image_root / (relative_path[len("album/"):] if relative_path.startswith("album/") else relative_path)).resolve()
+    if image_root.resolve() not in source.parents or not source.is_file():
         raise HTTPException(status_code=404, detail="image not found")
     destination = THUMBNAIL_DIR / f"{gift_id}.webp"
     if not destination.is_file() or destination.stat().st_mtime_ns < source.stat().st_mtime_ns:

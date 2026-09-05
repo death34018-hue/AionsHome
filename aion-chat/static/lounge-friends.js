@@ -14,6 +14,10 @@
     editingId: null,
     expandedVisitId: null,
     historyActorId: null,
+    historyPage: 1,
+    historyRequestId: 0,
+    rosterActorId: null,
+    rosterSignature: null,
     visitRefreshTimer: null,
     visitingActorIds: new Set(),
     runningVisitActorIds: new Set(),
@@ -95,11 +99,11 @@
   }
 
   function canDeleteVisit(visit) {
-    return visit?.status !== 'running';
+    return visit?.direction !== 'inbound' && visit?.status !== 'running';
   }
 
   function canCancelVisit(visit) {
-    return visit?.status === 'running';
+    return visit?.direction !== 'inbound' && visit?.status === 'running';
   }
 
   async function requestCancelVisit({ visit, actorId, confirmCancel, request }) {
@@ -135,7 +139,9 @@
   }
 
   function status(documentRef, message) {
-    documentRef.getElementById('statusLine').textContent = message || '';
+    for (const id of ['statusLine', 'rosterStatus', 'formStatus']) {
+      documentRef.getElementById(id).textContent = message || '';
+    }
   }
 
   function actorName(actorId) {
@@ -144,6 +150,14 @@
 
   function friendName(friendId) {
     return state.friends.find(friend => friend.id === friendId)?.display_name || '好友';
+  }
+
+  function visitPartnerName(visit) {
+    return visit?.partner_name || friendName(visit?.friend_id);
+  }
+
+  function visitTitle(visit) {
+    return `${visit?.direction === 'inbound' ? '被拜访' : '拜访'} · ${visitPartnerName(visit)}`;
   }
 
   const TERMINAL_REASON_TEXT = {
@@ -184,6 +198,18 @@
     restart_recovery: '服务重启导致本次会面提前结束。',
   };
 
+  function preferredHistoryActor(actors, currentId) {
+    if (actors.some(actor => actor.id === currentId)) return currentId;
+    return actors.find(actor => actor.id === 'connor')?.id || actors[0]?.id || '';
+  }
+
+  function paginateVisits(visits, requestedPage) {
+    const pageSize = 6;
+    const pageCount = Math.max(1, Math.ceil(visits.length / pageSize));
+    const page = Math.max(1, Math.min(Number(requestedPage) || 1, pageCount));
+    return { page, pageCount, total: visits.length, items: visits.slice((page - 1) * pageSize, page * pageSize) };
+  }
+
   function visitReasonText(visit) {
     const raw = String(visit?.error || visit?.reason || '');
     const code = Object.keys(TERMINAL_REASON_TEXT).find(key => raw.includes(key));
@@ -193,8 +219,9 @@
   function visitStatusText(visit) {
     const turns = Math.max(0, Number(visit?.turn_count) || 0);
     if (visit?.status === 'running') {
-      return turns > 0 ? `进行中 · ${turns} 回合` : '正在连接';
+      return turns > 0 ? `进行中 · ${turns} 回合` : (visit?.direction === 'inbound' ? '接待中' : '正在连接');
     }
+    if (visit?.status === 'ended') return `已结束 · ${turns} 回合`;
     if (visit?.status === 'completed') return `已完成 · ${turns} 回合`;
     if (visit?.status === 'interrupted') return `已中断 · ${turns} 回合 · ${visitReasonText(visit)}`;
     if (visit?.status === 'rejected') return `未能开始 · ${visitReasonText(visit)}`;
@@ -239,15 +266,19 @@
     return control;
   }
 
-  function openForm(documentRef, friend = null) {
+  function openForm(documentRef, friend = null, actorId = null) {
     const controls = elements(documentRef);
     state.editingId = friend?.id || null;
     documentRef.getElementById('formTitle').textContent = friend ? '编辑好友' : '新增好友';
     controls.actorId.disabled = Boolean(friend);
-    controls.actorId.value = friend?.actor_id || state.actors[0]?.id || '';
+    controls.actorId.value = friend?.actor_id || actorId || state.actors[0]?.id || '';
+    documentRef.getElementById('formStatus').textContent = '';
     controls.displayName.value = friend?.display_name || '';
     controls.loungeUrl.value = friend?.lounge_url || '';
     controls.visitorKey.value = '';
+    controls.visitorKey.placeholder = friend?.has_key
+      ? `已保存 ${friend.visitor_key_masked || 'Key'}；留空保留原 Key`
+      : '请输入 Visitor Key';
     controls.relationshipNote.value = friend?.relationship_note || '';
     controls.enabled.checked = friend ? Boolean(friend.enabled) : true;
     controls.allowAutonomous.checked = friend ? Boolean(friend.allow_autonomous) : false;
@@ -261,29 +292,92 @@
     documentRef.getElementById('friendDialog').close();
   }
 
+  function initialAvatar(documentRef, name) {
+    const label = String(name || '').trim();
+    const initial = typeof Intl.Segmenter === 'function'
+      ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(label)][0]?.segment
+      : Array.from(label)[0];
+    const avatar = textElement(documentRef, 'span', 'initial-avatar', initial || '友');
+    avatar.setAttribute('aria-hidden', 'true');
+    return avatar;
+  }
+
+  function actorAvatar(documentRef, actor) {
+    const avatar = initialAvatar(documentRef, actor.display_name);
+    avatar.className = 'actor-avatar';
+    const source = { aion: '/public/gropicon1.png', connor: '/public/codexicon.png' }[actor.id];
+    if (source) {
+      const image = documentRef.createElement('img');
+      image.src = source;
+      image.alt = '';
+      image.addEventListener('error', () => image.remove(), { once: true });
+      avatar.appendChild(image);
+    }
+    return avatar;
+  }
+
+  function openRoster(documentRef, actorId) {
+    state.rosterActorId = actorId;
+    state.rosterSignature = null;
+    documentRef.getElementById('rosterStatus').textContent = '';
+    renderRoster(documentRef);
+    documentRef.getElementById('rosterDialog').showModal();
+  }
+
   function renderFriendGroups(documentRef) {
     const root = documentRef.getElementById('friendGroups');
     const groups = state.actors.map(actor => {
-      const section = documentRef.createElement('section');
-      section.className = 'actor-group';
-      section.appendChild(textElement(documentRef, 'h4', '', actor.display_name));
-      const grid = documentRef.createElement('div');
-      grid.className = 'friend-grid';
       const friends = state.friends.filter(friend => friend.actor_id === actor.id);
-      if (!friends.length) {
-        grid.appendChild(textElement(documentRef, 'p', 'empty-state', '还没有登记好友。'));
-      }
+      const summary = button(documentRef, '', 'actor-summary', () => openRoster(documentRef, actor.id));
+      summary.dataset.actorId = actor.id;
+      summary.setAttribute('aria-haspopup', 'dialog');
+      summary.setAttribute('aria-label', `${actor.display_name}的好友名册，${friends.length} 位好友`);
+      const info = documentRef.createElement('span');
+      info.className = 'actor-info';
+      const busy = state.visitingActorIds.has(actor.id) || state.runningVisitActorIds.has(actor.id);
+      const lastVisit = Math.max(0, ...friends.map(friend => Number(friend.last_visit_at) || 0));
+      info.append(
+        textElement(documentRef, 'strong', 'actor-name', actor.display_name || 'AI'),
+        textElement(documentRef, 'span', 'actor-count', `${friends.length} 位好友`),
+        textElement(documentRef, 'span', 'actor-note', busy ? '正在串门' : lastVisit ? '有过来往' : friends.length ? '随时去坐坐' : '等待新朋友'),
+      );
+      summary.append(actorAvatar(documentRef, actor), info);
+      return summary;
+    });
+    root.replaceChildren(...groups);
+    if (state.rosterActorId) renderRoster(documentRef);
+  }
+
+  function renderRoster(documentRef) {
+    const actor = state.actors.find(item => item.id === state.rosterActorId);
+    if (!actor) return;
+    const friends = state.friends.filter(friend => friend.actor_id === actor.id);
+    const signature = JSON.stringify([actor, friends, [...state.visitingActorIds], [...state.runningVisitActorIds]]);
+    if (signature === state.rosterSignature) return;
+    state.rosterSignature = signature;
+    const roster = documentRef.getElementById('rosterFriends');
+    const focused = documentRef.activeElement;
+    const focusedCard = roster.contains(focused) ? focused.closest('.friend-card') : null;
+    const focusedAction = focusedCard ? [...focusedCard.querySelectorAll('button')].indexOf(focused) : -1;
+    const scrollTop = documentRef.getElementById('rosterDialog').scrollTop;
+    documentRef.getElementById('rosterTitle').textContent = `${actor.display_name || 'AI'}的好友`;
+    documentRef.getElementById('rosterDescription').textContent = `${friends.length} 位好友 · 选一位去坐坐`;
+    const grid = documentRef.createElement('div');
+    if (!friends.length) grid.appendChild(textElement(documentRef, 'p', 'empty-state', '还没有登记好友，添加一位新朋友吧。'));
       friends.forEach(friend => {
         const card = documentRef.createElement('article');
         card.className = `friend-card${friend.enabled ? '' : ' is-disabled'}`;
+        card.dataset.friendId = String(friend.id);
         const heading = documentRef.createElement('div');
         heading.className = 'friend-card-heading';
+        heading.appendChild(initialAvatar(documentRef, friend.display_name));
         heading.appendChild(textElement(documentRef, 'h5', '', friend.display_name));
         heading.appendChild(textElement(documentRef, 'span', 'visit-meta', friend.enabled ? '已启用' : '已停用'));
         card.appendChild(heading);
-        card.appendChild(textElement(documentRef, 'p', 'friend-note', friend.relationship_note || '暂无关系备注'));
-        const keyState = friend.has_key ? `Key：${friend.visitor_key_masked || '已保存'}` : 'Key：未设置';
-        card.appendChild(textElement(documentRef, 'p', 'friend-meta', `${keyState} · 最多 ${friend.max_turns} 回合 · 冷却 ${friend.cooldown_hours} 小时`));
+        if (friend.relationship_note?.trim()) {
+          card.appendChild(textElement(documentRef, 'p', 'friend-note', friend.relationship_note));
+        }
+        card.appendChild(textElement(documentRef, 'p', 'friend-meta', `最多 ${friend.max_turns} 回合 · 冷却 ${friend.cooldown_hours} 小时`));
         const actions = documentRef.createElement('div');
         actions.className = 'friend-actions';
         const busyActorIds = new Set([
@@ -307,10 +401,13 @@
         card.appendChild(actions);
         grid.appendChild(card);
       });
-      section.appendChild(grid);
-      return section;
-    });
-    root.replaceChildren(...groups);
+    roster.replaceChildren(...grid.children);
+    if (focusedCard) {
+      const nextCard = [...roster.children].find(card => card.dataset.friendId === focusedCard.dataset.friendId);
+      const nextAction = nextCard?.querySelectorAll('button')[focusedAction];
+      (nextAction && !nextAction.disabled ? nextAction : documentRef.getElementById('closeRosterButton')).focus({ preventScroll: true });
+    }
+    documentRef.getElementById('rosterDialog').scrollTop = scrollTop;
   }
 
   async function loadFriends(documentRef) {
@@ -324,9 +421,7 @@
     if (state.actors.some(actor => actor.id === currentFormActor)) {
       documentRef.getElementById('actorId').value = currentFormActor;
     }
-    if (state.actors.some(actor => actor.id === currentHistoryActor)) {
-      documentRef.getElementById('historyActor').value = currentHistoryActor;
-    }
+    documentRef.getElementById('historyActor').value = preferredHistoryActor(state.actors, currentHistoryActor);
     renderFriendGroups(documentRef);
     await loadVisits(documentRef);
   }
@@ -384,8 +479,15 @@
   }
 
   async function loadVisits(documentRef) {
+    const requestId = ++state.historyRequestId;
     const actorId = documentRef.getElementById('historyActor').value;
     const list = documentRef.getElementById('visitList');
+    const oldThread = list.querySelector('.visit-thread');
+    const threadScrollTop = oldThread?.scrollTop || 0;
+    const threadVisitId = oldThread?.dataset.visitId;
+    list.setAttribute('aria-busy', 'true');
+    documentRef.getElementById('previousVisits').disabled = true;
+    documentRef.getElementById('nextVisits').disabled = true;
     if (state.visitRefreshTimer !== null) {
       clearTimeout(state.visitRefreshTimer);
       state.visitRefreshTimer = null;
@@ -393,21 +495,33 @@
     if (state.historyActorId !== actorId) {
       state.historyActorId = actorId;
       state.expandedVisitId = null;
+      state.historyPage = 1;
+      list.replaceChildren(textElement(documentRef, 'p', 'empty-state', '正在整理拜访记录…'));
     }
     if (!actorId) {
       list.replaceChildren(textElement(documentRef, 'p', 'empty-state', '暂无本地 AI。'));
+      list.setAttribute('aria-busy', 'false');
+      renderPagination(documentRef, paginateVisits([], 1));
       return;
     }
     try {
       const payload = await request('GET', `/api/lounge-visits?actor_id=${encodeURIComponent(actorId)}&limit=50`);
+      if (requestId !== state.historyRequestId) return;
       const visits = Array.isArray(payload?.visits) ? payload.visits : [];
-      if (visits.some(visit => visit.status === 'running')) state.runningVisitActorIds.add(actorId);
+      const page = paginateVisits(visits, state.historyPage);
+      state.historyPage = page.page;
+      if (!page.items.some(visit => visit.id === state.expandedVisitId)) state.expandedVisitId = null;
+      if (visits.some(canCancelVisit)) state.runningVisitActorIds.add(actorId);
       else state.runningVisitActorIds.delete(actorId);
       renderFriendGroups(documentRef);
       const rows = [];
-      for (const visit of visits) {
+      if (payload?.warning) rows.push(textElement(documentRef, 'p', 'empty-state', payload.warning));
+      for (const visit of page.items) {
         const entry = documentRef.createElement('article');
-        entry.className = 'visit-entry';
+        entry.className = `visit-entry ${visit.direction === 'inbound' ? 'inbound' : 'outbound'}`;
+        const marker = textElement(documentRef, 'span', 'visit-marker', visit.direction === 'inbound' ? '⌂' : '↗');
+        marker.setAttribute('aria-hidden', 'true');
+        entry.appendChild(marker);
         const expanded = state.expandedVisitId === visit.id;
         const summary = button(documentRef, '', 'visit-summary', () => {
           state.expandedVisitId = nextExpandedVisitId(state.expandedVisitId, visit.id);
@@ -417,9 +531,15 @@
 
         const main = documentRef.createElement('span');
         main.className = 'visit-summary-main';
+        const title = documentRef.createElement('span');
+        title.className = 'visit-title';
+        title.append(
+          textElement(documentRef, 'span', `visit-direction ${visit.direction === 'inbound' ? 'inbound' : 'outbound'}`, visit.direction === 'inbound' ? '被拜访' : '拜访'),
+          textElement(documentRef, 'strong', '', visitPartnerName(visit)),
+        );
         main.append(
-          textElement(documentRef, 'strong', '', friendName(visit.friend_id)),
-          textElement(documentRef, 'span', 'visit-summary-topic', visit.topic || '未填写主题'),
+          title,
+          textElement(documentRef, 'span', 'visit-summary-topic', visit.topic || (visit.direction === 'inbound' ? '来家里做客' : '未填写主题')),
         );
         const meta = documentRef.createElement('span');
         meta.className = 'visit-summary-meta';
@@ -427,7 +547,7 @@
           textElement(documentRef, 'span', 'visit-status', visitStatusText(visit)),
           textElement(documentRef, 'time', 'visit-started-at', visitTimeText(visit.started_at)),
         );
-        summary.append(main, meta);
+        summary.append(initialAvatar(documentRef, visitPartnerName(visit)), main, meta);
         const header = documentRef.createElement('div');
         header.className = 'visit-entry-header';
         const deleteButton = button(
@@ -447,7 +567,7 @@
             () => cancelVisit(documentRef, actorId, visit),
           ));
         }
-        header.appendChild(deleteButton);
+        if (visit.direction !== 'inbound') header.appendChild(deleteButton);
         entry.appendChild(header);
 
         if (expanded) {
@@ -456,7 +576,9 @@
               'GET',
               `/api/lounge-visits/${encodeURIComponent(visit.id)}?actor_id=${encodeURIComponent(actorId)}`,
             );
-            entry.appendChild(renderVisitThread(documentRef, actorId, detail));
+            const thread = renderVisitThread(documentRef, actorId, detail);
+            thread.dataset.visitId = visit.id;
+            entry.appendChild(thread);
           } catch (error) {
             const thread = documentRef.createElement('div');
             thread.className = 'visit-thread';
@@ -466,14 +588,36 @@
         }
         rows.push(entry);
       }
-      if (!rows.length) rows.push(textElement(documentRef, 'p', 'empty-state', '还没有拜访记录。'));
+      if (!rows.length) rows.push(textElement(documentRef, 'p', 'empty-state', '还没有拜访或被拜访记录。'));
+      if (requestId !== state.historyRequestId) return;
       list.replaceChildren(...rows);
+      const currentThread = list.querySelector('.visit-thread');
+      if (currentThread && currentThread.dataset.visitId === threadVisitId) currentThread.scrollTop = threadScrollTop;
+      renderPagination(documentRef, page);
       if (visits.some(visit => visit.status === 'running')) {
         state.visitRefreshTimer = setTimeout(() => loadVisits(documentRef), 3000);
       }
     } catch (error) {
-      status(documentRef, error.message);
+      if (requestId !== state.historyRequestId) return;
+      list.replaceChildren(textElement(documentRef, 'p', 'empty-state', `${error.message}，请点击刷新重试。`));
+      renderPagination(documentRef, paginateVisits([], 1));
+    } finally {
+      if (requestId === state.historyRequestId) list.setAttribute('aria-busy', 'false');
     }
+  }
+
+  function renderPagination(documentRef, page) {
+    documentRef.getElementById('historyCount').textContent = `最近 ${page.total} 条`;
+    documentRef.getElementById('historyPage').textContent = `${page.page} / ${page.pageCount}`;
+    documentRef.getElementById('previousVisits').disabled = page.page <= 1;
+    documentRef.getElementById('nextVisits').disabled = page.page >= page.pageCount;
+  }
+
+  async function changeVisitPage(documentRef, delta) {
+    state.historyPage += delta;
+    state.expandedVisitId = null;
+    await loadVisits(documentRef);
+    documentRef.getElementById('historyTitle').scrollIntoView({ block: 'start' });
   }
 
   async function deleteVisit(documentRef, actorId, visit) {
@@ -513,7 +657,13 @@
     const thread = documentRef.createElement('div');
     thread.className = 'visit-thread';
     thread.setAttribute('aria-live', 'polite');
+    thread.tabIndex = 0;
+    thread.setAttribute('role', 'region');
+    thread.setAttribute('aria-label', `${visitTitle(visit)}的聊天记录`);
     const messages = Array.isArray(visit?.messages) ? visit.messages : [];
+    if (visit?.direction === 'inbound') {
+      thread.appendChild(textElement(documentRef, 'p', 'visit-meta', `${actorName(actorId)}接待 · 来访记录仅供查看`));
+    }
     if (visit?.status === 'interrupted' || visit?.status === 'rejected') {
       thread.appendChild(textElement(
         documentRef,
@@ -531,7 +681,7 @@
       const bubble = documentRef.createElement('div');
       bubble.className = `visit-message ${direction}`;
       bubble.append(
-        textElement(documentRef, 'span', 'visit-message-sender', direction === 'inbound' ? friendName(visit.friend_id) : actorName(actorId)),
+        textElement(documentRef, 'span', 'visit-message-sender', direction === 'inbound' ? visitPartnerName(visit) : actorName(actorId)),
         textElement(documentRef, 'p', 'visit-message-text', message.content || ''),
         textElement(documentRef, 'time', 'visit-message-time', messageTimeText(message.created_at)),
       );
@@ -542,11 +692,23 @@
 
   async function init(documentRef) {
     const form = documentRef.getElementById('friendForm');
+    documentRef.getElementById('closeRosterButton').addEventListener('click', () => documentRef.getElementById('rosterDialog').close());
+    documentRef.getElementById('rosterDialog').addEventListener('close', () => {
+      const actorId = state.rosterActorId;
+      state.rosterActorId = null;
+      state.rosterSignature = null;
+      const card = [...documentRef.getElementById('friendGroups').children].find(item => item.dataset.actorId === actorId);
+      card?.focus();
+    });
+    documentRef.getElementById('rosterAddButton').addEventListener('click', () => openForm(documentRef, null, state.rosterActorId));
+    documentRef.getElementById('friendDialog').addEventListener('cancel', () => { elements(documentRef).visitorKey.value = ''; });
     documentRef.getElementById('newFriendButton').addEventListener('click', () => openForm(documentRef));
     documentRef.getElementById('refreshButton').addEventListener('click', () => loadFriends(documentRef));
     documentRef.getElementById('closeDialogButton').addEventListener('click', () => closeForm(documentRef));
     documentRef.getElementById('cancelButton').addEventListener('click', () => closeForm(documentRef));
     documentRef.getElementById('historyActor').addEventListener('change', () => loadVisits(documentRef));
+    documentRef.getElementById('previousVisits').addEventListener('click', () => changeVisitPage(documentRef, -1));
+    documentRef.getElementById('nextVisits').addEventListener('click', () => changeVisitPage(documentRef, 1));
     form.addEventListener('submit', async event => {
       event.preventDefault();
       try {
@@ -571,6 +733,8 @@
 
   return {
     friendPayload,
+    preferredHistoryActor,
+    paginateVisits,
     init,
     renderActorOptions,
     nextExpandedVisitId,
@@ -582,6 +746,7 @@
     requestImmediateVisit,
     saveFriend,
     visitStatusText,
+    visitTitle,
     visitReasonText,
     withVisitingActor,
   };

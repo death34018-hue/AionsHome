@@ -201,6 +201,7 @@ function crGetParentAudio(key) {
 }
 
 function crCreateHiddenAudio() {
+  if (window.createAionTtsAudio) return window.createAionTtsAudio();
   try {
     const audio = document.createElement('audio');
     audio.preload = 'auto';
@@ -679,6 +680,10 @@ window.ChatroomVoiceCallAdapter = {
   },
   speakerForMessage(msgId) {
     return crSenderForTTSMsg(msgId);
+  },
+  interruptTTS(msgId) {
+    crSuppressTTSMsg(msgId);
+    crStopTTS();
   },
   async sendText(text) {
     const content = String(text || "").trim();
@@ -2329,7 +2334,7 @@ function crMsgSelector(msgId) {
   return `[data-msg-id="${safeId}"]`;
 }
 
-const CR_LEGACY_COMMAND_SYSTEM_NOTICE_RE = /^(?:🎵\s+.+点了一首|(?:⏰|📅|👀)\s*【[^】]+】设定了|📷\s+.+查看了监控|📊\s+.+查看了用户动态|💾\s+.+记住了)/;
+const CR_LEGACY_COMMAND_SYSTEM_NOTICE_RE = /^(?:🎵\s+.+点了一首|(?:⏰|📅|👀)\s*【[^】]+】设定了|📊\s+.+查看了用户动态|💾\s+.+记住了)/;
 
 function crIsAiSender(sender) {
   return sender === 'aion' || sender === 'connor';
@@ -2339,6 +2344,18 @@ function crSystemNoticeAfterMsgId(m) {
   if (!m || m.sender !== 'system' || !Array.isArray(m.attachments)) return '';
   const marker = m.attachments.find(a => a && typeof a === 'object' && a.type === 'system_notice_order' && a.after_msg_id);
   return marker ? String(marker.after_msg_id) : '';
+}
+
+function crSystemNoticeBeforeMsgId(m, nextMessage = null) {
+  if (!m || m.sender !== 'system') return '';
+  const marker = Array.isArray(m.attachments)
+    ? m.attachments.find(a => a && typeof a === 'object' && a.type === 'system_notice_order' && a.before_msg_id)
+    : null;
+  if (marker) return String(marker.before_msg_id);
+  if (/查看了监控(?:画面)?/.test((m.content || '').trim()) && crIsAiSender(nextMessage?.sender)) {
+    return String(nextMessage.id || '');
+  }
+  return '';
 }
 
 function crIsLegacyCommandSystemNotice(m) {
@@ -2563,7 +2580,8 @@ function renderMessages(msgs) {
     return;
   }
   msgs.forEach(m => { if (m.id) crMessagesById[m.id] = m; });
-  messagesEl.innerHTML = crMessagesForDisplay(msgs).map(m => msgHTML(m)).join('');
+  const displayMessages = crMessagesForDisplay(msgs);
+  messagesEl.innerHTML = displayMessages.map((m, index) => msgHTML(m, displayMessages[index + 1])).join('');
   crApplySongGenIndicator();
 }
 
@@ -2605,6 +2623,9 @@ function crMsgFeedbackHtml(msg) {
 function crMsgSenderLineHtml(sender, name, msgId, msg = null, opts = {}) {
   const menuHtml = crMsgMenuHtml(sender, msgId, { deleteOnly: opts.deleteOnly });
   const feedbackHtml = crMsgFeedbackHtml(msg || { id: msgId, sender });
+  const timeHtml = msg?.created_at
+    ? `<span class="message-time">${esc(timeStr(msg.created_at))}</span>`
+    : '';
   const ttsHtml = opts.tts && sender !== 'user' && msgId
     ? `<button class="tts-replay-btn" onclick="crReplayTTS('${msgId}', this)" title="重听语音">🔊</button>`
     : '';
@@ -2612,9 +2633,9 @@ function crMsgSenderLineHtml(sender, name, msgId, msg = null, opts = {}) {
     ? `<button class="memory-record-hint" onclick="event.stopPropagation();crShowMemoryRecordCard('${msgId}')" title="已记录到记忆库">💡</button>`
     : '';
   if (sender !== 'user') {
-    return `<div class="sender-line"><span class="sender-label ${sender}">${esc(name)}</span>${menuHtml}${feedbackHtml}${ttsHtml}${memoryHtml}</div>`;
+    return `<div class="sender-line"><span class="sender-label ${sender}">${esc(name)}</span>${timeHtml}${menuHtml}${feedbackHtml}${ttsHtml}${memoryHtml}</div>`;
   }
-  return menuHtml ? `<div class="sender-line user-line">${menuHtml}</div>` : '';
+  return timeHtml || menuHtml ? `<div class="sender-line user-line">${timeHtml}${menuHtml}</div>` : '';
 }
 
 function crEnsureMsgMenu(row, sender, msgId) {
@@ -2651,19 +2672,17 @@ const CR_STRUCTURED_LINE_RE = /^\s*(```|[-*+]\s+|\d+[.)]\s+|[>|#]|\|)/;
 
 function crBubbleParts(raw, isUser = false) {
   const text = raw || '';
-  // 转账标签前后强制换行，确保卡片独占一个气泡
-  const splitText = text.replace(/(\[转账(?:给[^\uff1a:]+?)?[：:]\s*-?\d+(?:\.\d+)?\s*元\])/g, isUser ? '\n$1\n' : '\n\n$1\n\n');
-  if (isUser) return splitText.split(/\n+/).filter(p => p.trim());
-
-  const singleLineParts = splitText.split(/\n+/).map(p => p.trim()).filter(Boolean);
-  if (singleLineParts.length < 2) return singleLineParts;
-  if (singleLineParts.some(p => CR_STRUCTURED_LINE_RE.test(p))) return splitText.split(/\n{2,}/).filter(p => p.trim());
-  return singleLineParts;
+  if (isUser) {
+    return window.ChatroomMarkdown?.splitUserBubbleParts
+      ? window.ChatroomMarkdown.splitUserBubbleParts(text)
+      : text.split(/\n+/).map(part => part.trim()).filter(Boolean);
+  }
+  return text.trim() ? [text] : [];
 }
 
 function crMessageContentItems(raw, isUser = false) {
   const items = [];
-  const monologueRe = /\[心里嘀咕[：:]\s*([^\]]+?)\]/g;
+  const monologueRe = /[\[【]心里嘀咕[：:]\s*([^\]】]+?)[\]】]/g;
   for (const part of crBubbleParts(raw, isUser)) {
     let last = 0;
     let match;
@@ -2713,47 +2732,86 @@ function crBubbleUnitHtml({ sender, name, avatar, msgId, msg, html, showHeader, 
       })
     : '';
   const emptyClass = String(html || '').trim() ? '' : ' empty-message';
-  return `<div class="message-unit ${sender}${emptyClass}">
-    <div class="msg-avatar-col"><img class="avatar" src="${avatar}" alt="${esc(name)}"></div>
-    <div class="unit-content">
+  return crMessageUnitHtml({
+    sender,
+    name,
+    avatar,
+    senderLine,
+    contentHtml: `${preBubbleHtml}<div class="bubble">${html}</div>`,
+    extraClass: emptyClass,
+  });
+}
+
+function crMessageUnitHtml({ sender, name, avatar, senderLine, contentHtml, extraClass = '' }) {
+  const avatarHtml = `<div class="msg-avatar-col"><img class="avatar" src="${avatar}" alt="${esc(name)}"></div>`;
+  if (sender === 'user') {
+    return `<div class="message-unit ${sender} user-message-unit${extraClass}">
+      <div class="message-header user-message-header">
+        ${senderLine}
+        ${avatarHtml}
+      </div>
+      <div class="unit-content">${contentHtml}</div>
+    </div>`;
+  }
+  return `<div class="message-unit ${sender} ai-message-unit${extraClass}">
+    <div class="message-header">
+      ${avatarHtml}
       ${senderLine}
-      ${preBubbleHtml}
-      <div class="bubble">${html}</div>
     </div>
+    <div class="unit-content">${contentHtml}</div>
   </div>`;
 }
 
-function crRenderMessageItems(items, { sender, name, avatar, msgId, msg, fmt, isUser }) {
-  let firstBubble = true;
-  let leadingMonologues = [];
-  const htmlParts = [];
-  items.forEach(item => {
-    if (item.type === 'monologue') {
-      if (firstBubble) {
-        leadingMonologues.push(item.text);
-      } else {
-        htmlParts.push(`<div class="inner-monologue-line">${esc(item.text)}</div>`);
-      }
-      return;
+const CR_MESSAGE_SPECIAL_TOKEN_RE = /(\[\[image:\S+?\]\]|\[转账(?:给[^\uff1a:]+?)?[：:]\s*-?\d+(?:\.\d+)?\s*元\])/g;
+
+function crNormalizeMarkdownParagraphs(value, isUser) {
+  if (isUser) return value;
+  const lines = String(value || '').split(/\n+/).map(line => line.trim()).filter(Boolean);
+  if (lines.length < 2 || lines.some(line => CR_STRUCTURED_LINE_RE.test(line))) return value;
+  return lines.join('\n\n');
+}
+
+function crMarkdownMessageHtml(raw, isUser = false) {
+  const text = String(raw || '');
+  const renderMarkdown = value => window.ChatroomMarkdown
+    ? window.ChatroomMarkdown.render(crNormalizeMarkdownParagraphs(value, isUser))
+    : `<p>${isUser ? escWithTransfer(value) : escWithImages(value)}</p>`;
+  let html = '';
+  let lastIndex = 0;
+  let match;
+  CR_MESSAGE_SPECIAL_TOKEN_RE.lastIndex = 0;
+  while ((match = CR_MESSAGE_SPECIAL_TOKEN_RE.exec(text)) !== null) {
+    const before = text.slice(lastIndex, match.index);
+    if (before.trim()) html += renderMarkdown(before);
+    const token = match[0];
+    if (token.startsWith('[[image:')) {
+      html += isUser ? renderMarkdown(token) : escWithImages(token);
+    } else {
+      html += escWithTransfer(token);
     }
-    const showHeader = firstBubble;
-    const preBubbleHtml = showHeader && leadingMonologues.length
-      ? leadingMonologues.map(text => `<div class="inner-monologue-line">${esc(text)}</div>`).join('')
-      : '';
-    firstBubble = false;
-    leadingMonologues = [];
-    htmlParts.push(crBubbleUnitHtml({
-      sender, name, avatar, msgId, msg,
-      html: fmt(item.text),
-      showHeader,
-      includeActions: !isUser && showHeader,
-      preBubbleHtml,
-    }));
-  });
-  if (leadingMonologues.length) {
-    htmlParts.push(...leadingMonologues.map(text => `<div class="inner-monologue-line">${esc(text)}</div>`));
+    lastIndex = CR_MESSAGE_SPECIAL_TOKEN_RE.lastIndex;
   }
-  return htmlParts.join('');
+  const tail = text.slice(lastIndex);
+  if (tail.trim()) html += renderMarkdown(tail);
+  return html;
+}
+
+function crRenderMessageItems(items, { sender, name, avatar, msgId, msg, fmt, isUser }) {
+  const senderLine = crMsgSenderLineHtml(sender, name, msgId, msg, {
+    tts: !isUser,
+    memory: !isUser && crMemoryRecordMsgIds.has(msgId),
+  });
+  const contentHtml = items.map(item => item.type === 'monologue'
+    ? `<div class="inner-monologue-line">${esc(item.text)}</div>`
+    : `<div class="${isUser ? 'bubble' : 'ai-message-content'} markdown-body">${crMarkdownMessageHtml(item.text, isUser)}</div>`
+  ).join('');
+  return crMessageUnitHtml({
+    sender,
+    name,
+    avatar,
+    senderLine,
+    contentHtml: `<div class="message-text-flow ${sender}">${contentHtml}</div>`,
+  });
 }
 
 function crBandVibrationNoteHtml(atts) {
@@ -2769,7 +2827,7 @@ function crBandVibrationNoteHtml(atts) {
   return `<div class="band-vibration-line">${esc(note.label || fallback)}</div>`;
 }
 
-function msgHTML(m) {
+function msgHTML(m, nextMessage = null) {
   const sender = m.sender || 'user';
   const loungeStatus = window.LoungeVisitUI && window.LoungeVisitUI.isStatusMessage(m);
 
@@ -2777,30 +2835,35 @@ function msgHTML(m) {
   if (sender === 'system') {
     const msgId = m.id || '';
     const afterMsgId = crSystemNoticeAfterMsgId(m);
+    const beforeMsgId = crSystemNoticeBeforeMsgId(m, nextMessage);
     const afterAttr = afterMsgId ? ` data-after-msg-id="${esc(afterMsgId)}"` : '';
+    const beforeAttr = beforeMsgId ? ` data-before-msg-id="${esc(beforeMsgId)}"` : '';
     const snapshotHtml = window.MonitorCameraSnapshot
       ? window.MonitorCameraSnapshot.renderMonitorCameraSnapshot(
           m.attachments,
           {
             escapeHtml: esc,
             imageAttrs: imageInteractionAttrs(),
+            compact: true,
+            summaryText: m.content,
           },
         )
       : '';
-    return `<div class="system-event-msg${loungeStatus ? ' lounge-visit-status-line' : ''}" data-msg-id="${msgId}"${afterAttr}>
+    const contentHtml = snapshotHtml || (window.SystemNoticeUI
+      ? window.SystemNoticeUI.renderSystemNoticeContent(m.content, {escapeHtml: esc})
+      : `<span class="system-event-text">${esc(m.content || '')}</span>`);
+    return `<div class="system-event-msg${loungeStatus ? ' lounge-visit-status-line' : ''}" data-msg-id="${msgId}" tabindex="0" onclick="this.focus()"${afterAttr}${beforeAttr}>
       <div class="system-event-line">
-        <span class="system-event-text">${esc(m.content || '')}</span>
+        <span class="system-notice-marker" aria-hidden="true">&gt;</span>
+        ${contentHtml}
         ${crMsgMenuHtml('system', msgId)}
       </div>
-      ${snapshotHtml}
+      ${window.TaobaoCards ? window.TaobaoCards.render(m.attachments, {returnTo: '/chatroom?room=' + encodeURIComponent(m.room_id || currentRoom?.id || '')}) : ''}
     </div>`;
   }
 
   const name = crName(sender);
   const avatar = AVATARS[sender] || AVATARS.user;
-  const time = timeStr(m.created_at);
-
-  // 用户消息按单换行拆；AI优先按空行拆，兼容 Gemini CLI 的普通单换行段落。
   const isUser = sender === 'user';
   const originalRaw = m.content || '';
   const raw = crStripWishFulfillmentMarker(originalRaw);
@@ -2813,7 +2876,7 @@ function msgHTML(m) {
   const hasDateSummaryAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'date_summary');
   const hasLoungeReportAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'lounge_visit_report');
 
-  // AI 消息使用 escWithImages 解析 [[image:...]] 和转账卡片，用户消息也渲染转账卡片
+  // Markdown 负责正文排版；现有 [[image:...]] 与转账卡片仍走专用安全渲染。
   const fmt = isUser ? escWithTransfer : escWithImages;
   // 渲染附件图片、语音和结构化卡片
   const toyHtml = renderToyAttachments(messageAttachments);
@@ -2853,7 +2916,7 @@ function msgHTML(m) {
   const msgId = m.id || '';
 
   return `
-    <div class="message-row ${sender}" data-msg-id="${msgId}">
+    <div class="message-row ${sender}" data-msg-id="${msgId}" tabindex="0" onclick="MessageRowFocus.focusRowFromClick(event, this)">
       <div class="msg-body">
         <div class="msg-content">
           ${hasWishFulfillmentAtt || hasDateSummaryAtt ? attHtml : ''}
@@ -2863,7 +2926,6 @@ function msgHTML(m) {
           ${bandVibrationHtml}
         </div>
       </div>
-      <div class="message-meta">${time}</div>
     </div>`;
 }
 
@@ -3260,7 +3322,9 @@ function startStreamingBubble(sender, id) {
   streamingText = '';
   const name = crName(sender);
   const avatar = AVATARS[sender] || AVATARS.user;
-  const senderLine = crMsgSenderLineHtml(sender, name, id, { id, sender }, { tts: false });
+  const liveContentClass = sender === 'user' ? 'bubble markdown-body' : 'ai-message-content markdown-body';
+  const createdAt = Date.now() / 1000;
+  const senderLine = crMsgSenderLineHtml(sender, name, id, { id, sender, created_at: createdAt }, { tts: false });
 
   // 移除 typing
   const typing = messagesEl.querySelector('.typing-indicator');
@@ -3269,23 +3333,23 @@ function startStreamingBubble(sender, id) {
   const row = document.createElement('div');
   row.className = `message-row ${sender}`;
   row.id = `streaming-${id}`;
+  const liveMessageUnit = crMessageUnitHtml({
+    sender,
+    name,
+    avatar,
+    senderLine,
+    contentHtml: `<div class="message-live-content ${liveContentClass}"></div>`,
+  });
   row.innerHTML = `
     <div class="msg-body">
       <div class="msg-content">
         <div class="message-stack">
-          <div class="message-unit ${sender}">
-            <div class="msg-avatar-col"><img class="avatar" src="${avatar}" alt="${esc(name)}"></div>
-            <div class="unit-content">
-              ${senderLine}
-              <div class="bubble"></div>
-            </div>
-          </div>
+          ${liveMessageUnit}
         </div>
       </div>
-    </div>
-    <div class="message-meta">${timeStr(Date.now() / 1000)}</div>`;
+    </div>`;
   messagesEl.appendChild(row);
-  streamingBubble = row.querySelector('.bubble');
+  streamingBubble = row.querySelector('.message-live-content');
   scrollToBottom();
 }
 
@@ -3300,6 +3364,19 @@ function feedStreamingChunk(text) {
   streamingText += text;
   streamingBubble.textContent = crStripScheduleCommands(streamingText);
   scrollToBottom();
+}
+
+function resetStreamingBubble(sender) {
+  const streamRow = streamingBubble ? streamingBubble.closest('.message-row') : null;
+  const streamId = streamRow?.id?.startsWith('streaming-')
+    ? streamRow.id.replace('streaming-', '')
+    : pendingStreamId;
+  if (streamRow) streamRow.remove();
+  streamingBubble = null;
+  streamingText = '';
+  pendingStreamSender = sender;
+  pendingStreamId = streamId;
+  appendTyping(crName(sender));
 }
 
 function endStreamingBubble(messageOrAttachments) {
@@ -3324,7 +3401,7 @@ function endStreamingBubble(messageOrAttachments) {
     return;
   }
 
-  // 流结束后，按段落拆分成多个气泡，并解析 [[image:...]] 和转账卡片
+  // 流结束后一次性排版 Markdown，避免未闭合标记在流式阶段闪烁。
   if (streamingBubble && streamingText) {
     const sender = streamRow?.classList.contains('connor') ? 'connor' : (streamRow?.classList.contains('aion') ? 'aion' : 'user');
     const name = crName(sender);
@@ -3491,6 +3568,17 @@ function handleSSE(data) {
         pendingStreamId = null;
       }
       feedStreamingChunk(data.content);
+      break;
+    case 'connor_reset':
+    case 'aion_reset':
+      resetStreamingBubble(data.type === 'connor_reset' ? 'connor' : 'aion');
+      break;
+    case 'connor_failed':
+    case 'aion_failed':
+      pendingStreamSender = null;
+      pendingStreamId = null;
+      messagesEl.querySelector('.typing-indicator')?.remove();
+      toast(data.content || '回复连接异常，可重试');
       break;
     case 'connor_done':
       pendingStreamSender = null;
@@ -4367,7 +4455,6 @@ async function triggerDigest() {
 function openMemory() {
   if (!currentRoom) { toast('请先选择一个房间'); return; }
   document.getElementById('memoryOverlay').classList.add('active');
-  hideMemForm();
   loadMemories();
   loadChatroomCompressionDraft();
   closeSidebar();
@@ -4918,69 +5005,44 @@ async function loadMemories(focusMemId = '') {
 }
 
 function showAddMemory() {
-  document.getElementById('memEditId').value = '';
-  document.getElementById('memContent').value = '';
-  document.getElementById('memKeywords').value = '';
-  document.getElementById('memImportance').value = '0.5';
-  const kindEl = document.getElementById('memKind');
-  if (kindEl) kindEl.value = 'long_term';
-  document.getElementById('memForm').style.display = 'block';
-  document.getElementById('memContent').focus();
-}
-
-function hideMemForm() {
-  document.getElementById('memForm').style.display = 'none';
+  if (!currentRoom) return;
+  openChatroomMemoryEditor();
 }
 
 async function editMemory(memId) {
+  if (!currentRoom) return;
   let mem = chatroomMemoryCache.find(m => m.id === memId);
   if (!mem) {
-    const mems = await api(`/rooms/${currentRoom.id}/memories`);
-    chatroomMemoryCache = Array.isArray(mems) ? mems : [];
-    mem = chatroomMemoryCache.find(m => m.id === memId);
+    try {
+      const mems = await api(`/rooms/${currentRoom.id}/memories`);
+      chatroomMemoryCache = Array.isArray(mems) ? mems : [];
+      mem = chatroomMemoryCache.find(m => m.id === memId);
+    } catch (err) { toast('加载记忆失败: ' + err.message); return; }
   }
   if (!mem) { toast('找不到该记忆'); return; }
-
-  document.getElementById('memEditId').value = memId;
-  document.getElementById('memContent').value = mem.content || '';
-  document.getElementById('memKeywords').value = mem.keywords || '';
-  document.getElementById('memImportance').value = mem.importance ?? 0.5;
-  const kindEl = document.getElementById('memKind');
-  if (kindEl) kindEl.value = mem.memory_kind === 'daily' ? 'daily' : 'long_term';
-  document.getElementById('memForm').style.display = 'block';
-  document.getElementById('memContent').focus();
+  openChatroomMemoryEditor(mem);
 }
 
-async function saveMemory() {
-  if (!currentRoom) return;
-  const editId = document.getElementById('memEditId').value;
-  const content = document.getElementById('memContent').value.trim();
-  if (!content) { toast('内容不能为空'); return; }
-
-  const body = {
-    content,
-    keywords: document.getElementById('memKeywords').value.trim(),
-    importance: parseFloat(document.getElementById('memImportance').value) || 0.5,
-    memory_kind: document.getElementById('memKind')?.value === 'daily' ? 'daily' : 'long_term',
-  };
-
-  try {
-    let result;
-    if (editId) {
-      result = await api(`/memories/${editId}`, { method: 'PUT', body: JSON.stringify(body) });
-    } else {
-      result = await api(`/rooms/${currentRoom.id}/memories`, { method: 'POST', body: JSON.stringify(body) });
-    }
-    if (result && result.error) {
-      toast('保存失败: ' + result.error);
-      return;
-    }
-    toast(editId ? '记忆已更新' : '记忆已添加');
-    hideMemForm();
-    loadMemories(editId || result?.id || '');
-  } catch (err) {
-    toast('保存失败: ' + err.message);
-  }
+function openChatroomMemoryEditor(mem = {}) {
+  const roomId = currentRoom.id;
+  chatroomMemoryKindMenuId = null;
+  MemoryEditor.open({
+    title: mem.id ? '编辑记忆' : '添加记忆',
+    saveLabel: mem.id ? '保存修改' : '保存记忆',
+    content: mem.content, keywords: mem.keywords, importance: mem.importance, kind: chatroomMemoryKind(mem),
+    onSave: async data => {
+      const body = { content: data.content, keywords: data.keywords, importance: data.importance, memory_kind: data.kind };
+      const url = mem.id ? `/memories/${mem.id}` : `/rooms/${roomId}/memories`;
+      const result = await api(url, { method: mem.id ? 'PUT' : 'POST', body: JSON.stringify(body) });
+      if (result?.error || result?.ok === false) throw new Error(result.error || result.message || '保存失败');
+      return result;
+    },
+    onSaved: result => {
+      toast(mem.id ? '记忆已更新' : '记忆已添加');
+      loadMemories(mem.id || result?.id || '');
+    },
+    onClose: () => restoreChatroomMemoryPosition(mem.id),
+  });
 }
 
 async function deleteMemory(memId) {
@@ -5954,7 +6016,7 @@ function showImageSaveMenu(url) {
   cancelBtn.textContent = '取消';
   cancelBtn.addEventListener('click', closeImageSaveMenu);
 
-  sheet.append(saveBtn, viewBtn, cancelBtn);
+  sheet.append(saveBtn, viewBtn, window.ChatImageAlbum.createButton(url), cancelBtn);
   overlay.appendChild(sheet);
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) closeImageSaveMenu();
@@ -6213,13 +6275,13 @@ function esc(str) {
 }
 
 function crRenderInnerMonologues(html) {
-  return String(html || '').replace(/\[心里嘀咕[：:]\s*([^\]]+?)\]/g, (_, content) =>
+  return String(html || '').replace(/[\[【]心里嘀咕[：:]\s*([^\]】]+?)[\]】]/g, (_, content) =>
     `<span class="inner-monologue">${content.trim()}</span>`
   );
 }
 
 function crInnerMonologueText(s) {
-  const match = String(s || '').match(/^\s*\[心里嘀咕[：:]\s*([^\]]+?)\]\s*$/);
+  const match = String(s || '').match(/^\s*[\[【]心里嘀咕[：:]\s*([^\]】]+?)[\]】]\s*$/);
   return match ? match[1].trim() : null;
 }
 
@@ -6336,7 +6398,7 @@ function crOpenCamera() {
 async function _crStartCam() {
   try {
     _crCamStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: _crCamFacing, width: { ideal: 640 }, height: { ideal: 480 } },
+      video: { facingMode: _crCamFacing, width: { ideal: 1280 }, height: { ideal: 960 } },
       audio: false
     });
     const vid = document.getElementById('crCamVideo');
@@ -6348,7 +6410,8 @@ async function _crStartCam() {
   } catch (e) { console.warn('[CR-Camera] getUserMedia failed:', e); }
   const _cam = _getNativeBridge('AionCamera');
   if (_cam) {
-    const ok = _cam.start(_crCamFacing === 'user' ? 'user' : 'environment');
+    const facing = _crCamFacing === 'user' ? 'user' : 'environment';
+    const ok = typeof _cam.startPhoto === 'function' ? _cam.startPhoto(facing) : _cam.start(facing);
     if (ok) {
       _crCamUseNative = true;
       const vid = document.getElementById('crCamVideo');
@@ -6407,7 +6470,7 @@ async function crCapturePhoto() {
       canvas.width = videoEl.videoWidth || 640;
       canvas.height = videoEl.videoHeight || 480;
       canvas.getContext('2d').drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-      dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      dataUrl = canvas.toDataURL('image/jpeg', 0.9);
     }
   }
   if (!dataUrl) { alert('拍照失败'); return; }

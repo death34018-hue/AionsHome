@@ -47,6 +47,8 @@ import androidx.core.content.ContextCompat;
 import com.aion.chat.supervision.AppSupervisionBridge;
 import com.aion.chat.supervision.AppSupervisionRuntime;
 import com.aion.chat.infrared.HugPillowInfraredBridge;
+import com.aion.chat.widget.PrivateMemoBridge;
+import com.aion.chat.widget.WidgetStateSyncClient;
 import androidx.core.view.WindowCompat;
 
 /**
@@ -68,6 +70,8 @@ public class WebViewActivity extends AppCompatActivity
     private AionMiBandBleBridge miBandBleBridge;
     private CameraBridge cameraBridge;
     private PhoneCameraBridge phoneCameraBridge;
+    private PrivateMemoBridge privateMemoBridge;
+    private TtsAudioBridge ttsAudioBridge;
     private String targetUrl;
     private boolean initialPageLoadStarted = false;
     private boolean pageLoaded = false;
@@ -172,6 +176,10 @@ public class WebViewActivity extends AppCompatActivity
                 new AppSupervisionBridge(this, AppSupervisionRuntime.get()),
                 "AionAppSupervision");
         webView.addJavascriptInterface(new DeviceContextBridge(this), "AionDeviceContext");
+        privateMemoBridge = new PrivateMemoBridge(this, webView);
+        webView.addJavascriptInterface(privateMemoBridge, "AionPrivateMemos");
+        ttsAudioBridge = new TtsAudioBridge(this, webView);
+        webView.addJavascriptInterface(ttsAudioBridge, "AionTtsAudio");
 
         // 状态栏图标样式桥接（让网页可以根据主题动态切换深色/浅色图标）
         webView.addJavascriptInterface(new Object() {
@@ -900,6 +908,8 @@ public class WebViewActivity extends AppCompatActivity
             webView.evaluateJavascript(
                     "window.onAionAppForegroundChanged?.(true)", null);
         }
+        if (privateMemoBridge != null) privateMemoBridge.sync();
+        WidgetStateSyncClient.sync(this);
         maybeRefreshClientAssets(false);
     }
 
@@ -1099,6 +1109,10 @@ public class WebViewActivity extends AppCompatActivity
             miBandBleBridge = null;
         }
         if (mediaCacheStore != null) mediaCacheStore.shutdown();
+        if (ttsAudioBridge != null) {
+            ttsAudioBridge.shutdown();
+            ttsAudioBridge = null;
+        }
         if (webView != null) {
             webView.destroy();
         }

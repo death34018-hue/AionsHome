@@ -272,14 +272,27 @@ async def get_embedding(text: str) -> list[float] | None:
 
 
 # ── 关键词匹配辅助 ──────────────────────
+def _parse_memory_keywords(value) -> list[str]:
+    """兼容新式 JSON 数组与旧式中英文逗号分隔关键词。"""
+    if isinstance(value, list):
+        parsed = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return []
+        try:
+            decoded = json.loads(text)
+            parsed = decoded if isinstance(decoded, list) else re.split(r"[,，、;；\n]+", text)
+        except (json.JSONDecodeError, TypeError):
+            parsed = re.split(r"[,，、;；\n]+", text)
+    return [str(item).strip() for item in parsed if str(item).strip()]
+
+
 def _keyword_match_score(query_keywords: list[str], mem_keywords_json: str) -> float:
     """计算关键词命中率：命中关键词数 / 查询关键词数"""
     if not query_keywords:
         return 0.0
-    try:
-        mem_kws = json.loads(mem_keywords_json) if mem_keywords_json else []
-    except (json.JSONDecodeError, TypeError):
-        mem_kws = []
+    mem_kws = _parse_memory_keywords(mem_keywords_json)
     if not mem_kws:
         return 0.0
     mem_kws_lower = [k.lower() for k in mem_kws]

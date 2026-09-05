@@ -17,6 +17,8 @@ from ws import manager
 # ── 文件路径 ──────────────────────────────────────
 LOCATION_CONFIG_PATH = DATA_DIR / "location_config.json"
 LOCATION_STATUS_PATH = DATA_DIR / "location_status.json"
+AMAP_USAGE_PATH = DATA_DIR / "amap_usage.json"
+WEATHER_CACHE_SECONDS = 60 * 60
 
 # ── 默认配置 ──────────────────────────────────────
 DEFAULT_LOCATION_CONFIG = {
@@ -69,6 +71,7 @@ DEFAULT_LOCATION_STATUS = {
     "adcode": "",
     "weather": {},             # 实况天气
     "forecast": [],            # 天气预报
+    "weather_fetched_at": 0,   # 本地成功获取天气的时间
     "nearby_pois": {},         # {类型名: [poi...]}
     "updated_at": 0,
     "state_changed_at": 0,
@@ -92,6 +95,42 @@ def save_location_status(data: dict):
     LOCATION_STATUS_PATH.write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+
+def load_amap_usage() -> dict:
+    """读取今日高德请求计数；跨天自动从零开始。"""
+    today = time.strftime("%Y-%m-%d", time.localtime())
+    empty = {
+        "date": today,
+        "counts": {"regeo": 0, "weather": 0, "poi": 0, "total": 0},
+    }
+    if not AMAP_USAGE_PATH.exists():
+        return empty
+    try:
+        data = json.loads(AMAP_USAGE_PATH.read_text(encoding="utf-8"))
+        if data.get("date") != today:
+            return empty
+        counts = data.get("counts", {})
+        for key in empty["counts"]:
+            counts.setdefault(key, 0)
+        return {"date": today, "counts": counts}
+    except Exception:
+        return empty
+
+
+def record_amap_usage(service: str):
+    """在发出请求前计数，失败请求也纳入本地用量估算。"""
+    if service not in {"regeo", "weather", "poi"}:
+        return
+    try:
+        usage = load_amap_usage()
+        usage["counts"][service] += 1
+        usage["counts"]["total"] += 1
+        AMAP_USAGE_PATH.write_text(
+            json.dumps(usage, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
 
 
 # ── WGS84 → GCJ-02 坐标转换 ─────────────────────
@@ -151,6 +190,7 @@ async def amap_regeo(lng: float, lat: float, key: str) -> dict | None:
     params = {"key": key, "location": f"{lng},{lat}", "extensions": "base"}
     try:
         async with httpx.AsyncClient(timeout=15) as client:
+            record_amap_usage("regeo")
             resp = await client.get(url, params=params)
             data = resp.json()
             if data.get("status") == "1" and data.get("regeocode"):
@@ -172,6 +212,7 @@ async def amap_weather(adcode: str, key: str) -> dict:
     result = {"live": {}, "forecast": []}
     try:
         async with httpx.AsyncClient(timeout=15) as client:
+            record_amap_usage("weather")
             live_resp = await client.get(
                 "https://restapi.amap.com/v3/weather/weatherInfo",
                 params={"key": key, "city": adcode, "extensions": "base"},
@@ -180,6 +221,7 @@ async def amap_weather(adcode: str, key: str) -> dict:
             if live_data.get("status") == "1" and live_data.get("lives"):
                 result["live"] = live_data["lives"][0]
 
+            record_amap_usage("weather")
             fc_resp = await client.get(
                 "https://restapi.amap.com/v3/weather/weatherInfo",
                 params={"key": key, "city": adcode, "extensions": "all"},
@@ -207,6 +249,7 @@ async def amap_poi_search(lng: float, lat: float, types: str, key: str, radius: 
     }
     try:
         async with httpx.AsyncClient(timeout=15) as client:
+            record_amap_usage("poi")
             resp = await client.get(url, params=params)
             data = resp.json()
             if data.get("status") == "1":
@@ -400,40 +443,39 @@ async def process_heartbeat(lng: float, lat: float, accuracy: float = 0.0, is_gc
 
     significant_move = moved_distance >= movement_threshold
 
-    # ── 3. 天气过期检查（30分钟刷新） ──
-    WEATHER_STALE_SECONDS = 30 * 60  # 30 分钟
-    last_weather = old_status.get("weather", {})
-    last_weather_time = last_weather.get("reporttime", "")
-    weather_stale = True
-    if last_weather_time:
-        try:
-            wt = time.mktime(time.strptime(last_weather_time, "%Y-%m-%d %H:%M:%S"))
-            weather_stale = (time.time() - wt) > WEATHER_STALE_SECONDS
-        except Exception:
-            weather_stale = True
-    else:
-        weather_stale = bool(old_status.get("adcode"))
+    # ── 3. 天气过期检查（按本地成功请求时间缓存 1 小时） ──
+    now = time.time()
+    weather_fetched_at = float(old_status.get("weather_fetched_at", 0) or 0)
+    weather_stale = (
+        weather_fetched_at <= 0
+        or now - weather_fetched_at >= WEATHER_CACHE_SECONDS
+    )
 
     # ── 4. 三级处理逻辑 ──
-    #   级别1（轻量）: 在家没动 / 外出没动  → 只存坐标，零 API（天气过期时仅刷新天气）
-    #   级别2（刷新）: 外出且显著移动        → 地理编码+天气+POI
-    #   级别3（全量）: 状态变化(出门/回家)   → 刷新 + 哨兵通知
+    #   级别1（轻量）: 没有显著移动 → 只存坐标（天气缓存过期时仅刷新天气）
+    #   级别2（刷新）: 显著移动     → 刷新地址，天气仍遵守缓存，不自动搜索 POI
+    #   级别3（全量）: 状态变化     → 刷新 + 哨兵通知；手动 force_full 才刷新 POI
     need_full_api = state_changed or significant_move or force_full
 
-    now = time.time()
-
     if need_full_api:
-        # ── 刷新级/全量级：调用高德 API ──
+        # ── 刷新级/全量级：刷新地址；天气按缓存；POI 仅手动全量刷新 ──
         geo_info = await amap_regeo(gcj_lng, gcj_lat, amap_key)
         address = geo_info["address"] if geo_info else ""
         adcode = geo_info["adcode"] if geo_info else old_status.get("adcode", "")
 
-        weather_data = {"live": {}, "forecast": []}
-        if adcode:
-            weather_data = await amap_weather(adcode, amap_key)
+        weather_data = {
+            "live": old_status.get("weather", {}),
+            "forecast": old_status.get("forecast", []),
+        }
+        adcode_changed = bool(adcode and adcode != old_status.get("adcode", ""))
+        if adcode and (weather_stale or adcode_changed):
+            fresh_weather = await amap_weather(adcode, amap_key)
+            if fresh_weather.get("live") or fresh_weather.get("forecast"):
+                weather_data = fresh_weather
+                weather_fetched_at = now
 
         nearby_pois = old_status.get("nearby_pois", {})
-        if new_state == "outside":
+        if force_full and new_state == "outside":
             poi_types = cfg.get("poi_types", DEFAULT_LOCATION_CONFIG["poi_types"])
             poi_radius = cfg.get("poi_radius", 2000)
             nearby_pois = {}
@@ -457,8 +499,9 @@ async def process_heartbeat(lng: float, lat: float, accuracy: float = 0.0, is_gc
         # 天气过期时单独刷新天气（不触发地理编码/POI）
         if weather_stale and adcode and amap_key:
             fresh_weather = await amap_weather(adcode, amap_key)
-            if fresh_weather.get("live"):
+            if fresh_weather.get("live") or fresh_weather.get("forecast"):
                 weather_data = fresh_weather
+                weather_fetched_at = now
                 print(f"[Location] 轻量处理: 天气已过期，刷新天气数据")
             else:
                 print(f"[Location] 轻量处理: 天气刷新失败，继续使用缓存")
@@ -474,6 +517,7 @@ async def process_heartbeat(lng: float, lat: float, accuracy: float = 0.0, is_gc
         "adcode": adcode,
         "weather": weather_data.get("live", {}),
         "forecast": weather_data.get("forecast", []),
+        "weather_fetched_at": weather_fetched_at,
         "nearby_pois": nearby_pois,
         "updated_at": now,
         "state_changed_at": old_status.get("state_changed_at", now) if not state_changed else now,

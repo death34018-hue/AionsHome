@@ -161,28 +161,28 @@ class ChatroomFrontendSystemDisplayTests(unittest.TestCase):
         self.assertIn('data-msg-id="${data.message.id}"', branch)
         self.assertIn("appendMessage(data.message)", branch)
 
-    def test_mobile_system_notices_use_full_chat_width(self):
+    def test_mobile_system_notices_align_with_ai_bubble_edge(self):
         css = (ROOT / "static" / "chatroom.css").read_text(encoding="utf-8")
         mobile = self._css_block(css, "@media (max-width: 700px) {\n  .app {")
 
         self.assertIn("  .system-event-msg {", mobile)
         system_notice = self._css_block(mobile, ".system-event-msg")
         self.assertIn("box-sizing: border-box;", system_notice)
-        self.assertIn("align-self: stretch;", system_notice)
-        self.assertIn("width: 100%;", system_notice)
-        self.assertIn("max-width: none;", system_notice)
-        self.assertIn("margin: 4px 0;", system_notice)
+        self.assertIn("align-self: flex-start;", system_notice)
+        self.assertIn("width: calc(100% - var(--system-notice-left-offset));", system_notice)
+        self.assertIn("max-width: calc(100% - var(--system-notice-left-offset));", system_notice)
+        self.assertIn("margin-left: var(--system-notice-left-offset);", system_notice)
         self.assertIn("padding: 6px 4px;", system_notice)
 
-    def test_desktop_system_notices_match_message_row_width(self):
+    def test_desktop_system_notices_align_with_ai_bubble_edge(self):
         css = (ROOT / "static" / "chatroom.css").read_text(encoding="utf-8")
         html = (ROOT / "static" / "chatroom.html").read_text(encoding="utf-8")
         system_notice = self._css_block(css, "\n.system-event-msg {\n")
 
         self.assertIn("box-sizing: border-box;", system_notice)
-        self.assertIn("width: min(85%, calc(100% - 16px));", system_notice)
-        self.assertIn("margin: 4px auto;", system_notice)
-        self.assertIn("flex: none;", css)
+        self.assertIn("width: min(85%, calc(100% - var(--system-notice-left-offset) - 8px));", system_notice)
+        self.assertIn("margin-left: var(--system-notice-left-offset);", system_notice)
+        self.assertIn("flex: 1;", css)
         self.assertIn("position: absolute;", css)
         self.assertIn("overflow-wrap: anywhere;", css)
         self.assertRegex(html, r'chatroom\.css\?v=[^"\s]+')

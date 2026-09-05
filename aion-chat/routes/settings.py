@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from config import SETTINGS, save_settings, get_key, get_sentinel_config, load_worldbook, save_worldbook, load_chat_status, TTS_CACHE_DIR, TTS_CACHE_MAX_BYTES, THEATER_TTS_CACHE_DIR, normalize_custom_model_routes, refresh_custom_models, iter_visible_models
+from config import SETTINGS, save_settings, get_key, get_sentinel_config, load_worldbook, save_worldbook, load_chat_status, TTS_CACHE_DIR, TTS_CACHE_MAX_BYTES, THEATER_TTS_CACHE_DIR, normalize_custom_model_routes, normalize_model_transport_modes, refresh_custom_models, iter_visible_models, resolve_model_transport_mode, model_supports_safe_live
 from tts import cleanup_tts_cache_dir
 from ws import manager
 
@@ -28,6 +28,8 @@ async def list_models():
             "provider": v["provider"],
             "custom": v.get("provider") == "custom_openai",
             "route_name": v.get("route_name", ""),
+            "transport_mode": resolve_model_transport_mode(k),
+            "supports_safe_live": model_supports_safe_live(k),
         }
         for k, v in iter_visible_models()
     ]
@@ -47,12 +49,16 @@ class SettingsUpdate(BaseModel):
     embedding_base_url: Optional[str] = None
     embedding_api_key: Optional[str] = None
     embedding_model: Optional[str] = None
+    image_gen_base_url: Optional[str] = None
+    image_gen_api_key: Optional[str] = None
+    image_gen_model: Optional[str] = None
     luckin_mcp_enabled: Optional[bool] = None
     luckin_mcp_token: Optional[str] = None
     luckin_default_longitude: Optional[str] = None
     luckin_default_latitude: Optional[str] = None
     luckin_default_shop_keyword: Optional[str] = None
     custom_model_routes: Optional[list[Dict[str, Any]]] = None
+    model_transport_modes: Optional[Dict[str, str]] = None
 
 class HomeLayoutUpdate(BaseModel):
     version: Optional[int] = 2
@@ -104,12 +110,16 @@ async def get_settings():
         "embedding_base_url": SETTINGS.get("embedding_base_url", ""),
         "embedding_api_key": SETTINGS.get("embedding_api_key", ""),
         "embedding_model": SETTINGS.get("embedding_model", ""),
+        "image_gen_base_url": SETTINGS.get("image_gen_base_url", ""),
+        "image_gen_api_key": SETTINGS.get("image_gen_api_key", ""),
+        "image_gen_model": SETTINGS.get("image_gen_model", ""),
         "luckin_mcp_enabled": SETTINGS.get("luckin_mcp_enabled", False),
         "luckin_mcp_token": SETTINGS.get("luckin_mcp_token", ""),
         "luckin_default_longitude": SETTINGS.get("luckin_default_longitude", ""),
         "luckin_default_latitude": SETTINGS.get("luckin_default_latitude", ""),
         "luckin_default_shop_keyword": SETTINGS.get("luckin_default_shop_keyword", ""),
         "custom_model_routes": normalize_custom_model_routes(SETTINGS.get("custom_model_routes")),
+        "model_transport_modes": normalize_model_transport_modes(SETTINGS.get("model_transport_modes")),
         "gemini_key_masked": mask(SETTINGS.get("gemini_key", "")),
         "siliconflow_key_masked": mask(SETTINGS.get("siliconflow_key", "")),
         "gemini_free_key_masked": mask(SETTINGS.get("gemini_free_key", "")),
@@ -122,6 +132,24 @@ async def get_settings():
 
 @router.put("/api/settings")
 async def update_settings(body: SettingsUpdate):
+    image_fields = ("image_gen_base_url", "image_gen_api_key", "image_gen_model")
+    image_config = {}
+    if any(getattr(body, key) is not None for key in image_fields):
+        image_config = {
+            key: (getattr(body, key) if getattr(body, key) is not None else SETTINGS.get(key) or "").strip()
+            for key in image_fields
+        }
+        if any(image_config.values()) and not all(image_config.values()):
+            raise HTTPException(status_code=400, detail="请完整填写生图 API 地址、Key 和模型名，或全部清空以使用 Gemini")
+        base_url = image_config["image_gen_base_url"]
+        if base_url:
+            try:
+                parsed_url = httpx.URL(base_url)
+                if parsed_url.scheme not in ("http", "https") or not parsed_url.host or parsed_url.query or parsed_url.fragment or parsed_url.userinfo:
+                    raise ValueError("invalid base URL")
+            except (httpx.InvalidURL, ValueError):
+                raise HTTPException(status_code=400, detail="生图 API 地址须为 HTTP(S) 地址，不能包含账号、查询参数或片段")
+    SETTINGS.update(image_config)
     luckin_changed = False
     if body.gemini_key is not None:
         SETTINGS["gemini_key"] = body.gemini_key
@@ -160,6 +188,8 @@ async def update_settings(body: SettingsUpdate):
     if body.custom_model_routes is not None:
         SETTINGS["custom_model_routes"] = normalize_custom_model_routes(body.custom_model_routes)
         refresh_custom_models()
+    if body.model_transport_modes is not None:
+        SETTINGS["model_transport_modes"] = normalize_model_transport_modes(body.model_transport_modes)
     if body.netease_music_u is not None:
         old_mu = SETTINGS.get("netease_music_u", "")
         SETTINGS["netease_music_u"] = body.netease_music_u

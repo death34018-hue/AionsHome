@@ -6,6 +6,31 @@ import chatroom
 
 
 class RoleDeviceContextInjectionTest(unittest.IsolatedAsyncioTestCase):
+    async def test_explicit_insertion_places_device_context_before_memory_and_body(self):
+        messages = [
+            {"role": "user", "content": "[系统能力]\n能力说明"},
+            {"role": "assistant", "content": "好的，需要时我会使用这些指令。"},
+            {"role": "user", "content": "系统当前的准确时间是 12:00\n\n[背景记忆]\n旧事"},
+            {"role": "assistant", "content": "收到，我会在合适的时候自然提及。"},
+            {"role": "user", "content": "当前用户消息 - User：正文"},
+        ]
+
+        with patch(
+            "activity.get_device_context_for_prompt",
+            return_value="【设备当前状态】\n电脑：刚刚有键鼠输入。",
+        ):
+            prepared = ai_providers.with_current_device_context(
+                messages,
+                insert_at=2,
+                add_acknowledgement=True,
+            )
+
+        contents = [message["content"] for message in prepared]
+        self.assertEqual("【设备当前状态】\n电脑：刚刚有键鼠输入。", contents[2])
+        self.assertEqual("收到，我会结合当前设备状态判断。", contents[3])
+        self.assertIn("[背景记忆]", contents[4])
+        self.assertNotIn("【设备当前状态】", contents[-1])
+
     async def test_main_ai_request_receives_current_device_context(self):
         captured = []
 

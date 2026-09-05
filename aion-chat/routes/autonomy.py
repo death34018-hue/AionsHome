@@ -50,7 +50,6 @@ async def read_autonomy_status():
     payload["actions"] = [
         {"key": key, "label": label}
         for key, label in ACTION_DEFS.items()
-        if key != "rest"
     ]
     return payload
 

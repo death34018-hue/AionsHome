@@ -138,6 +138,43 @@ test('only schedule change messages request both-list refresh', () => {
   assert.equal(ui.shouldReloadSchedules(null), false);
 });
 
+test('memo rows escape content and expose the correct status action', () => {
+  const active = ui.privateMemoItemHtml({
+    id: "memo'1",
+    content: '<img src=x onerror=alert(1)>',
+    status: 'active',
+  });
+  const completed = ui.privateMemoItemHtml({
+    id: 'memo-2', content: '完成内容', status: 'completed',
+  });
+
+  assert.doesNotMatch(active, /<img/);
+  assert.match(active, /&lt;img/);
+  assert.match(active, /completePrivateMemo/);
+  assert.match(active, /editPrivateMemo/);
+  assert.match(completed, /restorePrivateMemo/);
+  assert.doesNotMatch(completed, /editPrivateMemo/);
+});
+
+test('memo loader requests active and completed lists together', async () => {
+  const calls = [];
+  const result = await ui.loadPrivateMemoLists(async (method, path) => {
+    calls.push([method, path]);
+    return path.endsWith('active') ? [{ id: 'a' }] : [{ id: 'c' }];
+  });
+  assert.deepEqual(calls, [
+    ['GET', '/api/private-memos?status=active'],
+    ['GET', '/api/private-memos?status=completed'],
+  ]);
+  assert.equal(result.active.length, 1);
+  assert.equal(result.completed.length, 1);
+});
+
+test('private memo change messages request a memo refresh', () => {
+  assert.equal(ui.shouldReloadPrivateMemos({ type: 'private_memos_changed' }), true);
+  assert.equal(ui.shouldReloadPrivateMemos({ type: 'schedule_changed' }), false);
+});
+
 function createTabDocument() {
   const elements = {};
   for (const id of [
@@ -273,6 +310,16 @@ test('page separates current and history into exclusive tab panels', () => {
   assert.match(html, /id="schPanelHistory"[^>]*role="tabpanel"[^>]*hidden/);
   assert.match(html, /id="schTabActive"[^>]*aria-selected="true"/);
   assert.match(html, /id="schTabHistory"[^>]*aria-selected="false"/);
+});
+
+test('current page contains a compact memo manager and native recorder entry', () => {
+  const html = fs.readFileSync(`${__dirname}/static/schedule.html`, 'utf8');
+
+  assert.match(html, /class="private-memo-section"/);
+  assert.match(html, /id="privateMemoList"/);
+  assert.match(html, /id="privateMemoCompleted"[^>]*hidden/);
+  assert.match(html, /AionPrivateMemos\.openRecorder/);
+  assert.match(html, /\.sch-current-workspace\s*\{[^}]*grid-template-rows:\s*minmax\(0,\s*13fr\)\s+minmax\(180px,\s*7fr\)/s);
 });
 
 test('schedule panels constrain long lists to internal scrolling', () => {

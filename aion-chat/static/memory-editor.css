@@ -1,0 +1,68 @@
+/* Shared by the main and chatroom memory libraries. */
+.memory-editor {
+  position: fixed;
+  inset: auto 0;
+  top: calc(var(--memory-editor-top, 0px) + 16px);
+  margin: 0 auto;
+  width: min(760px, calc(100% - 32px));
+  max-width: none;
+  height: min(840px, calc(var(--memory-editor-height, 100dvh) - 32px));
+  max-height: none;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: linear-gradient(var(--surface), var(--surface)), var(--bg);
+  color: var(--text);
+  box-shadow: 0 20px 70px rgba(30, 22, 18, .24);
+  overflow: hidden;
+  font-family: inherit;
+}
+.memory-editor[open] { display: flex; flex-direction: column; }
+body[data-theme="dark"] .memory-editor { color-scheme: dark; }
+.memory-editor::backdrop { background: rgba(25, 22, 20, .55); }
+.memory-editor-header { flex-shrink: 0; padding: 18px 24px 14px; border-bottom: 1px solid var(--border); }
+.memory-editor-title { margin: 0; font-size: 19px; font-weight: 650; line-height: 1.4; outline: none; }
+.memory-editor-subtitle { margin-top: 4px; color: var(--text2); font-size: 12px; line-height: 1.5; }
+.memory-editor-form { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.memory-editor-body { display: flex; flex: 1; flex-direction: column; gap: 16px; min-height: 0; padding: 20px 24px; overflow-y: auto; overscroll-behavior: contain; }
+.memory-editor-field { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.memory-editor-content-field { flex: 1 0 auto; }
+.memory-editor-label { font-size: 14px; font-weight: 600; line-height: 1.4; }
+.memory-editor input, .memory-editor select, .memory-editor textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  padding: 11px 12px;
+  font: inherit;
+  font-size: 16px;
+  line-height: 1.5;
+}
+.memory-editor textarea { flex: 1; min-height: 220px; resize: none; line-height: 1.8; }
+.memory-editor input:focus, .memory-editor select:focus, .memory-editor textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.memory-editor-details { flex-shrink: 0; border-top: 1px solid var(--border); padding-top: 12px; }
+.memory-editor-details summary { cursor: pointer; color: var(--text2); font-size: 14px; line-height: 24px; padding: 8px 0; }
+.memory-editor-detail-fields { display: grid; grid-template-columns: minmax(0, 1fr) 120px; gap: 16px; padding: 10px 0 2px; }
+.memory-editor-hint { color: var(--text2); font-size: 12px; line-height: 1.5; }
+.memory-editor-footer { flex-shrink: 0; padding: 12px 24px max(16px, env(safe-area-inset-bottom)); border-top: 1px solid var(--border); background: var(--surface); }
+.memory-editor-error { margin-bottom: 10px; color: var(--danger, #cf222e); font-size: 13px; line-height: 1.5; max-height: 4.5em; overflow-y: auto; }
+.memory-editor-actions { display: grid; grid-template-columns: minmax(92px, 1fr) minmax(0, 2fr); gap: 12px; }
+.memory-editor-actions button { min-height: 48px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; transition: filter .15s, transform .15s; }
+.memory-editor-cancel { background: var(--surface2); color: var(--text); }
+.memory-editor-save { background: var(--accent); color: #fff; border-color: var(--accent) !important; }
+.memory-editor-actions button:hover { filter: brightness(.96); }
+.memory-editor-actions button:active { transform: translateY(1px); }
+.memory-editor-actions button:focus-visible, .memory-editor-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.memory-editor :disabled { opacity: .6; cursor: wait; }
+@media (max-width: 600px) {
+  .memory-editor { top: var(--memory-editor-top, 0px); width: 100%; height: var(--memory-editor-height, 100dvh); border: 0; border-radius: 0; }
+  .memory-editor-header { padding: max(16px, env(safe-area-inset-top)) 18px 12px; }
+  html.aion-app:not(.aion-iframe) .memory-editor-header { padding-top: max(34px, env(safe-area-inset-top)); }
+  .memory-editor-body { padding: 16px 18px; gap: 14px; }
+  .memory-editor textarea { min-height: 240px; }
+  .memory-editor-detail-fields { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .memory-editor-footer { padding: 12px 18px max(14px, env(safe-area-inset-bottom)); }
+}

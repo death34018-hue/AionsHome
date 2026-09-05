@@ -10,7 +10,7 @@ from datetime import datetime
 
 import aiosqlite
 
-from config import DB_PATH, DEFAULT_MODEL, load_worldbook, SETTINGS
+from config import DB_PATH, DEFAULT_MODEL, load_worldbook, SETTINGS, resolve_model_transport_mode
 from database import get_db
 from ws import manager
 from band_commands import process_band_vibration, with_band_vibration_attachment
@@ -33,6 +33,8 @@ from proactive_companionship import (
     claim_proactive_timer,
     proactive_ability_text,
 )
+from safe_live_stream import consume_safe_live_stream
+from realtime_stream_transport import RealtimeTransportOutcome, consume_realtime_transport
 from autonomy_state import autonomy_prompt_text
 from wechat_bridge import (
     dispatch_wechat_message,
@@ -68,8 +70,59 @@ async def _consume_background_stream(
     return result
 
 
+async def _consume_background_realtime_stream(
+    source_factory,
+    *,
+    model_key: str,
+    tts_streamer: TTSStreamer | None = None,
+) -> RealtimeTransportOutcome:
+    """Use the shared opt-in dispatcher for chat-targeted wakeup replies."""
+
+    async def safe_consumer(source):
+        command_filter = WebCommandStreamFilter()
+
+        async def on_commit(chunk: str) -> None:
+            if not tts_streamer:
+                return
+            visible = command_filter.feed(chunk)
+            if visible:
+                await tts_streamer.feed_async(visible)
+
+        result = await consume_safe_live_stream(source, on_commit)
+        if result.stop_reason is None and tts_streamer:
+            visible_tail = command_filter.flush()
+            if visible_tail:
+                await tts_streamer.feed_async(visible_tail)
+        return result, ""
+
+    async def legacy_consumer(source):
+        result = await _consume_background_stream(
+            source,
+            WebCommandStreamFilter(),
+            tts_streamer,
+        )
+        return result, ""
+
+    return await consume_realtime_transport(
+        mode=resolve_model_transport_mode(model_key),
+        source_factory=source_factory,
+        safe_consumer=safe_consumer,
+        legacy_consumer=legacy_consumer,
+        reset_visible=lambda: None,
+        tts_streamer=tts_streamer,
+    )
+
+
 def _new_background_meta() -> dict:
     return dict(BACKGROUND_CLI_META)
+
+
+def _load_connor_stream_runtime():
+    """Resolve Connor's route-owned model stream without creating an import cycle."""
+    from chatroom import load_chatroom_config
+    from routes.chatroom import _resolve_connor_model, _stream_connor_model
+
+    return _resolve_connor_model, _stream_connor_model, load_chatroom_config
 
 
 async def _broadcast_trigger_debug(
@@ -353,6 +406,16 @@ class ScheduleManager:
         """将系统消息和 AI 回复保存到 Aion 私聊"""
         system_atts = list(system_atts or [])
         if sys_content:
+            if ai_msg_id and not any(
+                isinstance(item, dict)
+                and item.get("type") == "system_notice_order"
+                and item.get("before_msg_id")
+                for item in system_atts
+            ):
+                system_atts.append({
+                    "type": "system_notice_order",
+                    "before_msg_id": ai_msg_id,
+                })
             now = time.time()
             sys_msg_id = f"msg_{int(now*1000)}_st"
             system_att_json = (
@@ -409,6 +472,16 @@ class ScheduleManager:
         """将系统消息和 AI 回复保存到聊天室（群聊/Connor 私聊）"""
         system_atts = list(system_atts or [])
         if sys_content:
+            if ai_msg_id and not any(
+                isinstance(item, dict)
+                and item.get("type") == "system_notice_order"
+                and item.get("before_msg_id")
+                for item in system_atts
+            ):
+                system_atts.append({
+                    "type": "system_notice_order",
+                    "before_msg_id": ai_msg_id,
+                })
             now = time.time()
             sys_msg_id = f"cm_{int(now*1000)}_sys"
             system_att_json = (
@@ -648,46 +721,46 @@ class ScheduleManager:
         inject_app_supervision_context(messages)
 
         # 预生成 ai_msg_id（TTS 分段文件命名需要）
+        use_realtime_wakeup = is_chatroom and not is_proactive
         ai_msg_id = f"msg_{int(time.time()*1000)}_sa"
         usage_meta = _new_background_meta()
         debug_model_key = model_key
         has_error = False
         error_text = None
-        alarm_command_filter = WebCommandStreamFilter()
 
         # Connor 来源时根据配置的模型调用
         if origin == "connor":
-            from chatroom import stream_connor_cli, load_chatroom_config as _lcc_cr
-            from ai_providers import CLI_STATUS_PREFIX as _CSP
+            _resolve_connor_model, _stream_connor_model, _lcc_cr = _load_connor_stream_runtime()
 
-            _connor_model = (_lcc_cr().get("connor_model") or "Codex").strip() or "Codex"
+            _connor_model = _resolve_connor_model(_lcc_cr().get("connor_model"))
             debug_model_key = _connor_model
 
             alarm_tts = None
             tts_voice = _tts_voice_for_target(is_chatroom, "connor")
             if tts_voice:
-                alarm_tts = TTSStreamer(ai_msg_id, tts_voice, manager)
+                alarm_tts = TTSStreamer(
+                    ai_msg_id,
+                    tts_voice,
+                    manager,
+                    low_latency_first_chunk=use_realtime_wakeup and resolve_model_transport_mode(_connor_model) == "safe_live",
+                )
 
-            if _connor_model == "Codex":
-                async def content_stream():
-                    async for chunk in stream_connor_cli(messages=messages, meta=usage_meta):
-                        if chunk.startswith(_CSP):
-                            continue
-                        yield chunk
-            else:
-                _temp = SETTINGS.get("temperature")
-
-                async def content_stream():
-                    async for chunk in stream_ai(messages, _connor_model, meta=usage_meta, temperature=_temp):
-                        if chunk.startswith(CLI_STATUS_PREFIX):
-                            continue
-                        yield chunk
+            async def content_stream():
+                async for chunk in _stream_connor_model(messages, _connor_model, usage_meta):
+                    if chunk.startswith(CLI_STATUS_PREFIX):
+                        continue
+                    yield chunk
         else:
             # Aion 来源用常规 stream_ai
             alarm_tts = None
             tts_voice = _tts_voice_for_target(is_chatroom, "aion")
             if tts_voice:
-                alarm_tts = TTSStreamer(ai_msg_id, tts_voice, manager)
+                alarm_tts = TTSStreamer(
+                    ai_msg_id,
+                    tts_voice,
+                    manager,
+                    low_latency_first_chunk=use_realtime_wakeup and resolve_model_transport_mode(model_key) == "safe_live",
+                )
 
             _temp = SETTINGS.get("temperature")
 
@@ -697,11 +770,21 @@ class ScheduleManager:
                         continue
                     yield chunk
 
-        stream_result = await _consume_background_stream(
-            content_stream(),
-            alarm_command_filter,
-            alarm_tts,
-        )
+        if use_realtime_wakeup:
+            transport_outcome = await _consume_background_realtime_stream(
+                content_stream,
+                model_key=debug_model_key,
+                tts_streamer=alarm_tts,
+            )
+            if transport_outcome.manual_retry_required:
+                return
+            stream_result = transport_outcome.result
+        else:
+            stream_result = await _consume_background_stream(
+                content_stream(),
+                WebCommandStreamFilter(),
+                alarm_tts,
+            )
         full_text = stream_result.committed_text
         has_error = stream_result.stop_reason is not None
         error_text = stream_result.diagnostic_error or stream_result.stop_reason
@@ -840,12 +923,12 @@ class ScheduleManager:
 
         now_str = datetime.now().strftime("%Y年%m月%d日  %H:%M:%S")
 
-        # 获取最近 1 小时的设备活动摘要（6 条）
+        # 当前设备状态与近期使用历史并存，补齐本轮尚未生成摘要的变化。
         activity_summary_text = ""
         user_dynamics_text = ""
         try:
-            from activity import get_device_context_for_prompt, get_user_dynamics_for_prompt
-            activity_summary_text = get_device_context_for_prompt()
+            from activity import get_monitor_activity_for_prompt, get_user_dynamics_for_prompt
+            activity_summary_text = get_monitor_activity_for_prompt()
             user_dynamics_text = get_user_dynamics_for_prompt(hours=1)
         except Exception:
             pass
@@ -880,7 +963,7 @@ class ScheduleManager:
             trigger_prompt += no_image_context + "\n"
         if activity_summary_text:
             trigger_prompt += (
-                f"\n以下是{user_name}过去一小时的设备使用动态（手机/电脑应用使用情况，每10分钟一条摘要）：\n"
+                f"\n以下是{user_name}的设备当前状态与近期使用历史（分别标注）：\n"
                 f"{activity_summary_text}\n"
             )
         trigger_prompt += user_dynamics_block
@@ -978,45 +1061,45 @@ class ScheduleManager:
         inject_app_supervision_context(messages)
 
         # 预生成 ai_msg_id（TTS 分段文件命名需要）
+        use_realtime_wakeup = is_chatroom and not is_proactive
         ai_msg_id = f"msg_{int(time.time()*1000)}_sm"
         usage_meta = _new_background_meta()
         debug_model_key = model_key
         has_error = False
         error_text = None
-        monitor_command_filter = WebCommandStreamFilter()
 
         # Connor 来源时根据配置的模型调用
         if origin == "connor":
-            from chatroom import stream_connor_cli, load_chatroom_config as _lcc_cr
-            from ai_providers import CLI_STATUS_PREFIX as _CSP
+            _resolve_connor_model, _stream_connor_model, _lcc_cr = _load_connor_stream_runtime()
 
-            _connor_model = (_lcc_cr().get("connor_model") or "Codex").strip() or "Codex"
+            _connor_model = _resolve_connor_model(_lcc_cr().get("connor_model"))
             debug_model_key = _connor_model
 
             monitor_tts = None
             tts_voice = _tts_voice_for_target(is_chatroom, "connor")
             if tts_voice:
-                monitor_tts = TTSStreamer(ai_msg_id, tts_voice, manager)
+                monitor_tts = TTSStreamer(
+                    ai_msg_id,
+                    tts_voice,
+                    manager,
+                    low_latency_first_chunk=use_realtime_wakeup and resolve_model_transport_mode(_connor_model) == "safe_live",
+                )
 
-            if _connor_model == "Codex":
-                async def content_stream():
-                    async for chunk in stream_connor_cli(messages=messages, meta=usage_meta):
-                        if chunk.startswith(_CSP):
-                            continue
-                        yield chunk
-            else:
-                _temp = SETTINGS.get("temperature")
-
-                async def content_stream():
-                    async for chunk in stream_ai(messages, _connor_model, meta=usage_meta, temperature=_temp):
-                        if chunk.startswith(CLI_STATUS_PREFIX):
-                            continue
-                        yield chunk
+            async def content_stream():
+                async for chunk in _stream_connor_model(messages, _connor_model, usage_meta):
+                    if chunk.startswith(CLI_STATUS_PREFIX):
+                        continue
+                    yield chunk
         else:
             monitor_tts = None
             tts_voice = _tts_voice_for_target(is_chatroom, "aion")
             if tts_voice:
-                monitor_tts = TTSStreamer(ai_msg_id, tts_voice, manager)
+                monitor_tts = TTSStreamer(
+                    ai_msg_id,
+                    tts_voice,
+                    manager,
+                    low_latency_first_chunk=use_realtime_wakeup and resolve_model_transport_mode(model_key) == "safe_live",
+                )
 
             _temp = SETTINGS.get("temperature")
 
@@ -1026,11 +1109,21 @@ class ScheduleManager:
                         continue
                     yield chunk
 
-        stream_result = await _consume_background_stream(
-            content_stream(),
-            monitor_command_filter,
-            monitor_tts,
-        )
+        if use_realtime_wakeup:
+            transport_outcome = await _consume_background_realtime_stream(
+                content_stream,
+                model_key=debug_model_key,
+                tts_streamer=monitor_tts,
+            )
+            if transport_outcome.manual_retry_required:
+                return
+            stream_result = transport_outcome.result
+        else:
+            stream_result = await _consume_background_stream(
+                content_stream(),
+                WebCommandStreamFilter(),
+                monitor_tts,
+            )
         full_text = stream_result.committed_text
         has_error = stream_result.stop_reason is not None
         error_text = stream_result.diagnostic_error or stream_result.stop_reason
@@ -1366,6 +1459,10 @@ async def _process_background_reply_commands(
         source_ref=source_id or "",
     )
     await broadcast_app_supervision_command(supervision_command)
+    from widget_control import process_widget_control_commands
+    cleaned = await process_widget_control_commands(
+        cleaned, "connor" if sender == "connor" else "aion"
+    )
     return cleaned
 
 

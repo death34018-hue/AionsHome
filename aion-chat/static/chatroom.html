@@ -10,8 +10,10 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#050923">
-<link rel="stylesheet" href="/static/chatroom.css?v=system-event-mobile-width-20260706b-chatroom-mobile-focus-20260704-band-vibration-note-20260717-persona-mobile-performance-20260721-monitor-camera-thumb-20260731-mobile-no-x-20260820-video-attachments-20260822">
+<link rel="stylesheet" href="/static/chatroom.css?v=monologue-speaker-colors-soft-20260905">
+<link rel="stylesheet" href="/static/memory-editor.css?v=20260905">
 <link rel="stylesheet" href="/static/proactive-orbit.css?v=20260817f">
+<link rel="stylesheet" href="/static/taobao-card.css?v=20260831-bubble-aligned">
 <link rel="stylesheet" href="/static/voice-call.css?v=voice-call-polish-20260704g">
 </head>
 <body>
@@ -311,35 +313,6 @@
         </div>
         <!-- 记忆列表 -->
         <div id="memList" class="memory-list"></div>
-        <!-- 添加/编辑表单 -->
-        <div id="memForm" style="display:none; margin-bottom:12px; padding:10px; background:var(--bg); border-radius:8px;">
-          <input type="hidden" id="memEditId">
-          <div class="field" style="margin-bottom:8px;">
-            <label>内容</label>
-            <textarea id="memContent" rows="3" placeholder="记忆内容..."></textarea>
-          </div>
-          <div style="display:flex; gap:8px; margin-bottom:8px;">
-            <div class="field" style="width:96px; margin-bottom:0;">
-              <label>记忆标签</label>
-              <select id="memKind">
-                <option value="long_term">长期重要</option>
-                <option value="daily">日常</option>
-              </select>
-            </div>
-            <div class="field" style="flex:1; margin-bottom:0;">
-              <label>关键词</label>
-              <input id="memKeywords" type="text" placeholder="逗号分隔">
-            </div>
-            <div class="field" style="width:80px; margin-bottom:0;">
-              <label>重要度</label>
-              <input id="memImportance" type="number" min="0" max="1" step="0.1" value="0.5">
-            </div>
-          </div>
-          <div style="display:flex; gap:6px;">
-            <button class="save-btn" style="flex:1; padding:7px;" onclick="saveMemory()">保存记忆</button>
-            <button class="save-btn" style="flex:none; padding:7px 14px; background:var(--text3);" onclick="hideMemForm()">取消</button>
-          </div>
-        </div>
         <div class="memory-footer-actions">
           <button class="mem-add-btn" onclick="showAddMemory()">+ 手动添加</button>
           <button class="mem-add-btn" style="background:var(--text3);" onclick="triggerDigest()">📝 总结记忆</button>
@@ -465,11 +438,20 @@
   </div>
 
   <script src="/static/hug_pillow_ai.js?v=hug-pillow-ai-20260726"></script>
-  <script src="/static/monitor-camera-snapshot.js?v=20260820"></script>
+  <script src="/static/monitor-camera-snapshot.js?v=20260902-compact"></script>
+  <script src="/static/system-notice-ui.js?v=20260902"></script>
   <script src="/static/schedule-command-filter.js?v=20260805-next-chat-20260816"></script>
   <script src="/static/lounge-visit-ui.js?v=20260815"></script>
   <script src="/static/proactive-orbit.js?v=20260816"></script>
-  <script src="/static/chatroom.js?v=chatroom-mobile-focus-20260704-band-vibration-note-20260717-persona-mobile-performance-20260721-composer-mobile-performance-20260724-hug-pillow-ai-20260726-monitor-camera-20260731-schedule-command-tolerance-20260805-voice-message-actions-20260805-lounge-status-20260815-next-chat-finish-20260816-proactive-orbit-20260816-video-attachments-20260822"></script>
-  <script src="/static/voice-call.js?v=voice-call-polish-20260704g"></script>
+  <script src="/static/chat-image-album.js?v=20260830"></script>
+  <script src="/static/taobao-card.js?v=20260831-compact"></script>
+  <script src="/static/native-tts-audio.js?v=20260903-mix"></script>
+  <script src="/static/vendor/markdown-it-15.0.1.min.js?v=15.0.1"></script>
+  <script src="/static/chatroom-markdown.js?v=user-markdown-bubbles-20260904"></script>
+  <script src="/static/message-row-focus.js?v=20260904-editor-focus"></script>
+  <script src="/static/memory-editor.js?v=20260905"></script>
+  <script src="/static/chatroom.js?v=memory-editor-20260905"></script>
+  <script src="/static/voice-call-policy.js?v=voice-latency-20260902a"></script>
+  <script src="/static/voice-call.js?v=voice-latency-20260902a"></script>
 </body>
 </html>

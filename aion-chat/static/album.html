@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>相册</title>
+  <link rel="icon" href="/public/album-icon.png" type="image/png">
+  <link rel="stylesheet" href="/static/album.css">
+  <link rel="stylesheet" href="/static/theme.css">
+</head>
+<body>
+  <header class="album-header">
+    <button id="backButton" class="icon-button" type="button" aria-label="返回首页">‹</button>
+    <div class="heading"><h1>相册</h1><p id="photoCount">收藏日常里的每一帧</p></div>
+    <button id="selectButton" type="button" aria-pressed="false">选择</button>
+    <button id="uploadButton" class="primary" type="button">＋ 上传照片</button>
+  </header>
+  <main class="album-shell">
+    <nav id="albumTabs" class="album-tabs" aria-label="相册分类"><button type="button" class="active" aria-pressed="true">全部照片</button></nav>
+    <div class="album-toolbar">
+      <nav class="filters" aria-label="照片来源">
+        <button data-filter="all" class="active" aria-pressed="true" type="button">全部</button>
+        <button data-filter="generated" aria-pressed="false" type="button">AI 生成</button>
+        <button data-filter="upload" aria-pressed="false" type="button">我上传的</button>
+        <button data-filter="favorite" aria-pressed="false" type="button">收藏</button>
+      </nav>
+      <div class="search-tools">
+        <input id="searchInput" type="search" maxlength="200" aria-label="搜索照片" placeholder="搜索标题、备注或提示词">
+        <button id="refreshButton" type="button" aria-label="刷新相册">刷新</button>
+      </div>
+    </div>
+    <div id="notice" class="notice" role="status" aria-live="polite"></div>
+    <div id="photoScroll" class="photo-scroll" role="region" aria-label="滚动浏览照片" tabindex="0">
+    <section id="photoList" class="photo-grid" aria-label="照片，按时间从新到旧排列" aria-busy="true"></section>
+    <div id="emptyState" class="empty-state" hidden>
+      <div class="empty-frame" aria-hidden="true">＋</div>
+      <h2 id="emptyTitle">相册的第一页，留给下一次心动</h2>
+      <p id="emptyHint">AI 新生成的照片会自动收进来，也可以上传你想留下的照片。聊天里发送的图片不会自动收录。</p>
+      <button id="emptyUploadButton" type="button">上传第一张照片</button>
+    </div>
+    <button id="loadMoreButton" class="load-more" type="button" hidden>查看更多照片</button>
+    <p class="storage-note">原图独立保存在本机 · 移出相册不删除文件</p>
+    </div>
+  </main>
+
+  <div id="selectionBar" class="selection-bar" hidden>
+    <span id="selectionCount" role="status" aria-live="polite">已选 0 张</span>
+    <button id="moveButton" class="primary" type="button" disabled>移动到…</button>
+  </div>
+  <dialog id="moveDialog" class="small-dialog" aria-labelledby="moveHeading">
+    <form id="moveForm">
+      <h2 id="moveHeading">移动到相册</h2>
+      <p id="moveSummary"></p>
+      <label>目标相册<select id="moveAlbum" required></select></label>
+      <p class="hint">只修改分类，原图、日期、标题和生成提示词都会保留。</p>
+      <p id="moveMessage" role="status" aria-live="polite"></p>
+      <div class="dialog-actions"><button id="cancelMoveButton" type="button">取消</button><button id="confirmMoveButton" class="primary" type="submit">确认移动</button></div>
+    </form>
+  </dialog>
+  <dialog id="photoDialog" class="photo-dialog" aria-label="照片大图" aria-describedby="viewerHelp">
+    <section class="viewer" aria-label="全屏看图">
+      <p id="viewerHelp" class="sr-only">轻点图片显示操作栏，左右滑动切换照片，下滑关闭。键盘可用左右方向键切图、Escape 关闭、Tab 显示操作栏。</p>
+      <div class="image-stage" id="imageStage" tabindex="0" aria-label="轻点显示操作栏"><img id="fullImage" alt="" draggable="false"><p id="missingImage" hidden>无法加载原图，文件可能已被手动移走或删除。</p></div>
+      <div id="viewerControls" class="viewer-controls" inert>
+        <div class="viewer-top"><span id="photoPosition"></span><button id="closePhotoButton" type="button" aria-label="关闭大图">×</button></div>
+        <button id="previousButton" class="photo-nav previous" type="button" aria-label="上一张">‹</button>
+        <button id="nextButton" class="photo-nav next" type="button" aria-label="下一张">›</button>
+        <div class="viewer-bottom">
+          <p id="viewerMessage" role="status"></p>
+          <div class="viewer-actions"><button id="favoriteButton" type="button" aria-label="收藏照片" aria-pressed="false">♡</button><button id="detailsButton" type="button">详情</button><a id="downloadLink">下载</a><button id="removeButton" type="button">移出相册</button></div>
+        </div>
+      </div>
+    </section>
+  </dialog>
+  <dialog id="detailsDialog" class="small-dialog details-dialog" aria-labelledby="detailHeading">
+    <form id="metadataForm">
+      <div class="detail-heading-row"><h2 id="detailHeading">照片详情</h2><span id="photoViewStatus" class="photo-view-status" role="status" aria-live="polite"></span></div>
+      <label>标题<input id="photoTitle" maxlength="160" placeholder="给这一帧起个名字"></label>
+      <label>日期<input id="photoDate" type="date" required></label>
+      <label>所属相册<select id="photoAlbum"><option value="family">家庭相册</option></select></label>
+      <p class="hint">只有家庭相册中的照片，才会在启用“翻看家庭相册”自主行动后供 AI 翻看。</p>
+      <section id="promptSection" class="prompt-section" aria-labelledby="promptHeading" hidden>
+        <h3 id="promptHeading">生成提示词</h3>
+        <pre id="promptText"></pre>
+      </section>
+      <p id="detailMessage" role="status"></p>
+      <div class="dialog-actions"><button id="cancelDetailsButton" type="button">取消</button><button id="savePhotoButton" class="primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="uploadDialog" class="small-dialog" aria-labelledby="uploadHeading">
+    <form id="uploadForm">
+      <h2 id="uploadHeading">把照片放进相册</h2>
+      <p>支持 JPG、PNG、WebP、GIF，每张最多 40 MB。聊天图片也可以通过长按菜单手动添加。</p>
+      <label class="file-picker">选择照片<input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple required></label>
+      <p id="selectedFiles" class="selected-files">可一次选择多张照片</p>
+      <label>照片日期（可选）<input id="uploadDate" type="date"></label>
+      <label>放入相册<select id="uploadAlbum"><option value="family">家庭相册</option></select></label>
+      <p class="hint">上传旧照片时可以填写拍摄日期；不填则按上传当天排列，之后也能修改。原始上传时间会单独保留。</p>
+      <p id="uploadStatus" role="status" aria-live="polite"></p>
+      <div class="dialog-actions"><button id="cancelUploadButton" type="button">取消</button><button id="confirmUploadButton" class="primary" type="submit">上传到相册</button></div>
+    </form>
+  </dialog>
+  <dialog id="removeDialog" class="small-dialog" aria-labelledby="removeHeading">
+    <h2 id="removeHeading">移出相册？</h2><p>这张照片将不再出现在相册中。本机图片文件和聊天里的图片都会保留，也不会自动重新入册。</p>
+    <div class="dialog-actions"><button id="cancelRemoveButton" type="button">取消</button><button id="confirmRemoveButton" class="danger" type="button">确认移出</button></div>
+  </dialog>
+  <script src="/static/theme.js"></script>
+  <script src="/static/album.js"></script>
+</body>
+</html>

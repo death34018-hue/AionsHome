@@ -696,6 +696,14 @@ def _extract_hints(app: str, titles: set[str]) -> list[str]:
     return seen[:3]
 
 
+def _describe_current_pc_app(app: str, title: str = "") -> str:
+    """Combine the foreground process with useful current-window context."""
+    titles = {title} if title else set()
+    display = _beautify_app(app, titles) or app
+    hints = [hint for hint in _extract_hints(app, titles) if hint != display]
+    return f"{display}（{', '.join(hints)}）" if hints else display
+
+
 def _format_duration(seconds: float) -> str:
     """格式化持续时间为可读字符串"""
     minutes = round(seconds / 60)
@@ -829,6 +837,16 @@ def _summarize_window(entries: list[dict], window_start_ts: float, window_end_ts
     return " | ".join(parts)
 
 
+def is_device_usage_entry(entry: dict) -> bool:
+    """设备历史只统计应用/屏幕记录，传感器和通知仍保留在原始日志中。"""
+    return (
+        entry.get("device") in {"pc", "phone"}
+        and bool(entry.get("app"))
+        and entry.get("app") != "device_context"
+        and entry.get("kind") not in {"phone_context", "notification", "notification_removed"}
+    )
+
+
 def generate_activity_summary(hours: int = KEEP_HOURS) -> list[dict]:
     """
     对最近 N 小时的原始活动日志生成 10 分钟窗口摘要。
@@ -843,7 +861,7 @@ def generate_activity_summary(hours: int = KEEP_HOURS) -> list[dict]:
     # 过滤系统应用（不做 resolve，保留原始 app 名给 _beautify_app 用）
     filtered = []
     for e in entries:
-        if e.get("device") == "home" and e.get("kind") == "home_sensor":
+        if not is_device_usage_entry(e):
             continue
         app = e.get("app", "")
         if "." in app and app in KNOWN_APPS and KNOWN_APPS[app] is None:
@@ -987,6 +1005,57 @@ def get_activity_summary_for_prompt(n: int = 6) -> str:
     return "\n".join(lines)
 
 
+def get_monitor_activity_for_prompt() -> str:
+    """监督同时参考当前观测、历史摘要和当前未完成窗口内的使用变化。"""
+    if not is_activity_tracking_enabled():
+        return ""
+
+    parts = []
+    current = get_device_context_for_prompt()
+    if current:
+        parts.append(current)
+    history = get_activity_summary_for_prompt(6)
+    if history:
+        parts.append("【近期设备使用摘要（最近6条完整摘要，每10分钟汇总）】\n" + history)
+
+    now = time.time()
+    dt = datetime.fromtimestamp(now)
+    window_start = dt.replace(minute=dt.minute // 10 * 10, second=0, microsecond=0)
+    entries = sorted(
+        (e for e in read_recent_activity(1)
+         if is_device_usage_entry(e) and window_start.timestamp() <= e["timestamp"] <= now),
+        key=lambda e: e["timestamp"],
+    )
+    last_by_device = {}
+    changes = []
+    for entry in entries:
+        device = entry["device"]
+        app = resolve_app_name(entry["app"], entry.get("title", ""))
+        if app is None:
+            continue
+        if device == "phone":
+            description = {"screen_off": "锁屏/熄屏", "screen_on": "亮屏"}.get(app)
+            if description is None:
+                description = f"打开了{app}"
+            label = "手机"
+        else:
+            description = "前台窗口：" + _describe_current_pc_app(app, entry.get("title", ""))
+            label = "电脑"
+        if last_by_device.get(device) == description:
+            continue
+        last_by_device[device] = description
+        timestamp = datetime.fromtimestamp(entry["timestamp"]).strftime("%H:%M:%S")
+        changes.append(f"[{timestamp}] {label}：{description}")
+    if changes:
+        parts.append(
+            f"【本轮设备记录（{window_start:%H:%M}至今，尚未形成十分钟摘要；最多展示最近30次变化）】\n"
+            + "\n".join(changes[-30:])
+        )
+    if history or changes:
+        parts.append("以上历史记录不代表当前状态；当前锁屏也不代表此前没有使用手机，请按时间顺序结合判断。")
+    return "\n\n".join(parts)
+
+
 def _context_log_entry(event: dict) -> dict:
     timestamp = float(event.get("timestamp") or time.time())
     entry = dict(event)
@@ -1043,8 +1112,9 @@ def get_current_pc_context(now: float | None = None) -> dict:
     if recent_pc:
         latest = max(recent_pc, key=lambda entry: entry.get("timestamp", 0))
         if now - float(latest.get("timestamp") or 0) <= 180:
-            result["app"] = _beautify_app(latest.get("app", ""), {latest.get("title", "")})
-            result["title"] = latest.get("title", "")
+            title = latest.get("title", "")
+            result["app"] = _describe_current_pc_app(latest.get("app", ""), title)
+            result["title"] = title
             result["window_observed_at"] = latest.get("timestamp")
     return result
 

@@ -9,17 +9,44 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#ff8359">
 <style>
-.loc-panel-status { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:12px; }
-.loc-stat { background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:6px 10px; flex:1; min-width:120px; }
-.loc-stat-label { display:block; font-size:10px; color:var(--text3); }
-.loc-stat-val { font-size:13px; color:var(--text); }
-.loc-cfg-section { margin-top:12px; }
-.loc-cfg-section h4 { font-size:13px; color:var(--accent); cursor:pointer; padding:6px 0; user-select:none; }
-.loc-cfg-row { display:flex; align-items:center; gap:6px; margin-bottom:6px; flex-wrap:wrap; }
-.loc-cfg-row label { font-size:12px; color:var(--text); display:flex; align-items:center; gap:4px; }
-.loc-cfg-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
-.loc-cfg-grid label { font-size:11px; color:var(--text3); display:block; margin-bottom:2px; }
-.loc-cfg-grid input { width:100%; padding:5px 6px; font-size:12px; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:6px; box-sizing:border-box; outline:none; }
+.loc-panel-status { margin-bottom:12px; padding:14px; border:1px solid var(--border); border-radius:18px; background:var(--surface); box-shadow:0 4px 14px rgba(0,0,0,.04); }
+.loc-current { display:flex; align-items:center; gap:12px; padding:0 0 14px; }
+.loc-current-icon { display:flex; align-items:center; justify-content:center; flex-shrink:0; width:58px; height:58px; border-radius:50%; background:var(--surface2); font-size:30px; }
+.loc-current-info { min-width:0; }
+.loc-current-state { display:block; color:var(--text); font-size:22px; font-weight:600; line-height:1.35; }
+.loc-current-address { display:block; margin-top:5px; color:var(--text2); font-size:13px; line-height:1.65; overflow-wrap:anywhere; }
+.loc-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) minmax(0,1.4fr); gap:6px; }
+.loc-stat { min-width:0; padding:10px 8px; background:var(--surface2); border:1px solid var(--border); border-radius:12px; }
+.loc-stat-label { display:flex; align-items:center; gap:4px; font-size:10px; color:var(--text3); }
+.loc-stat-val { display:block; margin-top:7px; font-size:12px; line-height:1.5; font-variant-numeric:tabular-nums; color:var(--text); overflow-wrap:anywhere; }
+#lpAmapUsage { font-size:11px; }
+.loc-sync-row { margin-bottom:14px; }
+.loc-btn { display:flex; align-items:center; justify-content:center; gap:5px; min-width:0; min-height:40px; padding:10px 12px; border:1px solid var(--accent); border-radius:12px; background:var(--accent); color:#fff; font-family:inherit; font-size:12px; line-height:1.5; cursor:pointer; transition:filter .2s, box-shadow .2s; }
+.loc-btn:hover { filter:brightness(1.05); }
+.loc-btn:active { filter:brightness(.96); }
+.loc-btn:disabled { opacity:.65; cursor:wait; }
+.loc-btn-secondary { background:var(--surface); color:var(--text); border-color:var(--border); }
+.loc-sync-row .loc-btn { width:100%; font-size:14px; }
+.loc-cfg-section { margin-top:12px; padding:14px; border:1px solid var(--border); border-radius:18px; background:var(--surface); box-shadow:0 4px 14px rgba(0,0,0,.04); }
+.loc-cfg-section h4 { display:flex; align-items:center; justify-content:space-between; font-size:15px; color:var(--text); cursor:pointer; padding:0; user-select:none; }
+.loc-cfg-section h4 span { color:var(--accent); font-size:11px; }
+#locCfgBody { padding-top:14px; }
+.loc-cfg-row { display:flex; align-items:center; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+.loc-cfg-row label { font-size:12px; color:var(--text); display:flex; align-items:center; gap:6px; }
+.loc-cfg-row input[type="checkbox"] { width:15px; height:15px; accent-color:var(--accent); }
+.loc-quiet-times { display:flex; align-items:center; gap:7px; flex:1; min-width:190px; color:var(--text3); font-size:12px; }
+.loc-cfg-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.loc-cfg-grid label, .loc-key-field label { font-size:11px; color:var(--text3); display:block; margin-bottom:5px; }
+.loc-key-field { margin-bottom:10px; }
+.loc-cfg-section input:not([type="checkbox"]) { width:100%; min-width:0; min-height:36px; padding:8px 10px; font-family:inherit; font-size:12px; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:10px; box-sizing:border-box; outline:none; transition:border-color .2s; }
+.loc-cfg-section input:not([type="checkbox"]):focus, .loc-btn:focus-visible { border-color:var(--accent); outline:2px solid var(--accent); outline-offset:2px; }
+.loc-cfg-actions { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-top:12px; }
+@media (max-width:380px) {
+  .loc-panel-status, .loc-cfg-section { padding:12px; }
+  .loc-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .loc-cfg-actions { gap:8px; }
+  .loc-cfg-actions .loc-btn { padding:9px 6px; font-size:11px; }
+}
 .loc-poi-section { margin-top:12px; }
 .loc-poi-category h5 { font-size:13px; color:var(--text); margin:8px 0 4px; }
 .poi-count { font-size:11px; color:var(--text3); }
@@ -46,15 +73,23 @@
   <div class="page-content">
     <!-- 状态概览 -->
     <div class="loc-panel-status">
-      <div class="loc-stat"><span class="loc-stat-label">状态</span> <span class="loc-stat-val" id="lpState">--</span></div>
-      <div class="loc-stat"><span class="loc-stat-label">位置</span> <span class="loc-stat-val" id="lpAddr">--</span></div>
-      <div class="loc-stat"><span class="loc-stat-label">距家</span> <span class="loc-stat-val" id="lpDist">--</span></div>
-      <div class="loc-stat"><span class="loc-stat-label">天气</span> <span class="loc-stat-val" id="lpWeather">--</span></div>
-      <div class="loc-stat"><span class="loc-stat-label">更新</span> <span class="loc-stat-val" id="lpTime">--</span></div>
+      <div class="loc-current">
+        <span class="loc-current-icon" aria-hidden="true">📍</span>
+        <div class="loc-current-info">
+          <span class="loc-current-state" id="lpState">--</span>
+          <span class="loc-current-address" id="lpAddr">--</span>
+        </div>
+      </div>
+      <div class="loc-metrics">
+        <div class="loc-stat"><span class="loc-stat-label"><span aria-hidden="true">📍</span>距家</span> <span class="loc-stat-val" id="lpDist">--</span></div>
+        <div class="loc-stat"><span class="loc-stat-label"><span aria-hidden="true">☀️</span>天气</span> <span class="loc-stat-val" id="lpWeather">--</span></div>
+        <div class="loc-stat"><span class="loc-stat-label"><span aria-hidden="true">🕒</span>更新</span> <span class="loc-stat-val" id="lpTime">--</span></div>
+        <div class="loc-stat"><span class="loc-stat-label"><span aria-hidden="true">📊</span>今日高德请求</span> <span class="loc-stat-val" id="lpAmapUsage">--</span></div>
+      </div>
     </div>
     <!-- 立即同步按钮 -->
-    <div style="display:flex;gap:6px;margin-bottom:12px;align-items:center">
-      <button id="btnForceSync" class="btn-save" style="flex:1;font-size:13px;padding:8px 0" onclick="forceSync()">🔄 同步位置</button>
+    <div class="loc-sync-row">
+      <button id="btnForceSync" class="btn-save loc-btn" onclick="forceSync()">🔄 同步位置</button>
     </div>
     <!-- 配置区 -->
     <div class="loc-cfg-section">
@@ -63,13 +98,15 @@
         <div class="loc-cfg-row">
           <label><input type="checkbox" id="lp_enabled" style="accent-color:var(--accent)"> 启用定位</label>
           <label><input type="checkbox" id="lp_quiet" style="accent-color:var(--accent)"> 静默时段</label>
-          <input type="time" id="lp_qstart" value="00:00" style="width:70px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px;font-size:11px">
-          <span style="color:var(--text3);font-size:11px">~</span>
-          <input type="time" id="lp_qend" value="08:00" style="width:70px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 4px;font-size:11px">
+          <div class="loc-quiet-times">
+            <input type="time" id="lp_qstart" value="00:00">
+            <span>~</span>
+            <input type="time" id="lp_qend" value="08:00">
+          </div>
         </div>
-        <div style="margin-bottom:6px">
-          <label style="font-size:11px;color:var(--text3)">高德 Web服务 API Key</label>
-          <input type="text" id="lp_amap_key" placeholder="32位十六进制" autocomplete="off" class="form-input" style="font-size:12px;padding:5px 6px">
+        <div class="loc-key-field">
+          <label>高德 Web服务 API Key</label>
+          <input type="text" id="lp_amap_key" placeholder="32位十六进制" autocomplete="off" class="form-input">
         </div>
         <div class="loc-cfg-grid">
           <div><label>家经度</label><input type="text" id="lp_home_lng" placeholder="经度" autocomplete="off"></div>
@@ -77,9 +114,9 @@
           <div><label>离家阈值(m)</label><input type="number" id="lp_threshold" placeholder="500" autocomplete="off"></div>
           <div><label>POI半径(m)</label><input type="number" id="lp_poi_radius" placeholder="2000" autocomplete="off"></div>
         </div>
-        <div style="display:flex;gap:6px;margin-top:6px">
-          <button class="btn-save" style="font-size:11px;padding:4px 10px;flex:1" onclick="saveLocPanel()">💾 保存配置</button>
-          <button class="btn-save" style="font-size:11px;padding:4px 10px;flex:1;background:var(--surface2);color:var(--text)" onclick="setHomeLoc()">📍 用当前定位设为家</button>
+        <div class="loc-cfg-actions">
+          <button class="btn-save loc-btn" onclick="saveLocPanel()">💾 保存配置</button>
+          <button class="btn-save loc-btn loc-btn-secondary" onclick="setHomeLoc()">📍 用当前定位设为家</button>
         </div>
         <div id="lpCfgMsg" style="font-size:11px;color:var(--text2);margin-top:4px"></div>
       </div>
@@ -87,7 +124,7 @@
     <!-- POI 列表 -->
     <div class="loc-poi-section">
       <h4 style="margin:0 0 8px;font-size:13px;color:var(--accent)">📌 周边 POI</h4>
-      <div id="locPoiContent"><div class="loc-poi-empty">暂无 POI 数据（外出时自动搜索）</div></div>
+      <div id="locPoiContent"><div class="loc-poi-empty">暂无 POI 数据（需要时按需搜索）</div></div>
     </div>
   </div>
 </div>
@@ -109,7 +146,10 @@ async function loadLocPanel() {
   try {
     const loc = await api("GET", "/api/location/config");
     $("lp_enabled").checked = loc.enabled || false;
-    $("lp_amap_key").value = loc.amap_key || "";
+    $("lp_amap_key").value = "";
+    $("lp_amap_key").placeholder = loc.amap_key_masked || "32位十六进制";
+    const usage = (loc.amap_usage_today || {}).counts || {};
+    $("lpAmapUsage").textContent = `${usage.total || 0}（地址${usage.regeo || 0} / 天气${usage.weather || 0} / POI ${usage.poi || 0}）`;
     $("lp_home_lng").value = (loc.home_lng && loc.home_lat) ? loc.home_lng : "";
     $("lp_home_lat").value = (loc.home_lng && loc.home_lat) ? loc.home_lat : "";
     $("lp_threshold").value = loc.home_threshold || 500;
@@ -137,7 +177,7 @@ function updateLocPanelStatus(s) {
 
 function renderLocPois(pois) {
   const el = $("locPoiContent");
-  if (!pois || !Object.keys(pois).length) { el.innerHTML = '<div class="loc-poi-empty">暂无 POI 数据（外出时自动搜索）</div>'; return; }
+  if (!pois || !Object.keys(pois).length) { el.innerHTML = '<div class="loc-poi-empty">暂无 POI 数据（需要时按需搜索）</div>'; return; }
   const typeIcons = {"餐饮美食":"🍜","风景名胜":"🏞️","休闲娱乐":"🎮","购物":"🛒","酒店住宿":"🏨","生活服务":"🔧"};
   let html = '';
   for (const [category, items] of Object.entries(pois)) {

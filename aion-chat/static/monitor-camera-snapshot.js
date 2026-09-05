@@ -27,9 +27,12 @@
       : '';
     const attrs = imageAttrs ? ` ${imageAttrs}` : '';
     const url = escapeHtml(snapshot.url);
+    const compactSummary = opts.compact && String(opts.summaryText || '').trim()
+      ? `${escapeHtml(String(opts.summaryText).trim())} · 查看画面`
+      : '📷 查看本次摄像头画面';
 
     return `<details class="monitor-camera-snapshot">
-      <summary>📷 查看本次摄像头画面</summary>
+      <summary>${compactSummary}</summary>
       <div class="monitor-camera-snapshot-frame">
         <img src="${url}" alt="本次摄像头画面" loading="lazy"${attrs} onerror="this.closest('details').hidden=true">
       </div>

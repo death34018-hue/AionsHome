@@ -90,7 +90,56 @@ class ModelVideoCapabilityConfigTests(unittest.TestCase):
         )
 
 
+class ModelReasoningEffortConfigTests(unittest.TestCase):
+    def test_reasoning_effort_defaults_to_api_and_migrates_medium_to_high(self):
+        routes = normalize_custom_model_routes([{
+            "id": "route-1",
+            "name": "test",
+            "base_url": "https://relay.example/v1",
+            "models": [
+                {"key": "legacy", "model": "legacy-model"},
+                {
+                    "key": "balanced",
+                    "model": "balanced-model",
+                    "use_default_reasoning_effort": False,
+                    "reasoning_effort": "medium",
+                },
+            ],
+        }])
+
+        models = routes[0]["models"]
+        self.assertEqual(
+            [(model["use_default_reasoning_effort"], model["reasoning_effort"]) for model in models],
+            [(True, "high"), (False, "high")],
+        )
+
+
 class LatestUserVoiceRetentionTests(unittest.TestCase):
+    def test_selected_image_survives_later_ai_transcript_entry(self):
+        for processor in (
+            _process_voice_attachments_in_history,
+            _process_voice_attachments,
+        ):
+            with self.subTest(processor=processor.__name__):
+                history = [
+                    {
+                        "role": "user",
+                        "content": "当前用户消息 - 用户：看照片",
+                        "attachments": ["/uploads/photo.png"],
+                    },
+                    {
+                        "role": "user",
+                        "content": "历史消息 - AI：我看到了",
+                    },
+                ]
+
+                processor(history)
+
+                self.assertEqual(
+                    history[0].get("attachments"),
+                    ["/uploads/photo.png"],
+                )
+
     def test_private_history_keeps_voice_on_latest_user_even_with_assistant_after_it(self):
         history = [
             {"role": "user", "content": "", "attachments": [voice_attachment()]},

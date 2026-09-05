@@ -93,6 +93,13 @@
             android:exported="false"
             android:screenOrientation="portrait" />
 
+        <activity
+            android:name=".widget.WidgetRecordActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.AionChat.WidgetRecord" />
+
         <!-- WebView 聊天页 -->
         <activity
             android:name=".WebViewActivity"
@@ -135,6 +142,19 @@
         <receiver
             android:name=".homecoming.HomecomingAlarmReceiver"
             android:exported="false" />
+
+        <receiver
+            android:name=".widget.CompanionWidgetProvider"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_companion_info" />
+        </receiver>
 
         <receiver
             android:name=".homecoming.HomecomingBootReceiver"

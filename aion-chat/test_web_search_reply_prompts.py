@@ -1,5 +1,8 @@
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+from routes import chatroom as chatroom_routes
 
 
 def _extract_segment(source, start_marker, end_marker):
@@ -42,6 +45,49 @@ class WebSearchReplyPromptTests(unittest.TestCase):
                 prompt_segment = _extract_segment(source, *markers)
                 for phrase in required_phrases:
                     self.assertIn(phrase, prompt_segment)
+
+
+class ChatroomWebSearchPersonaTests(unittest.IsolatedAsyncioTestCase):
+    async def test_connor_search_followup_receives_connor_persona_for_named_codex_model(self):
+        captured_messages = []
+
+        async def fake_connor_stream(messages, model_key):
+            captured_messages.extend(messages)
+            yield "简短回答"
+
+        async def passthrough_reply_commands(text, **_kwargs):
+            return text
+
+        with (
+            patch("chatroom._read_connor_persona", return_value="CONNOR_PERSONA_SENTINEL"),
+            patch("config.load_worldbook", return_value={"user_name": "测试用户", "user_persona": ""}),
+            patch.object(
+                chatroom_routes,
+                "run_web_commands",
+                new=AsyncMock(return_value=["【联网搜索结果】\n测试资料"]),
+            ),
+            patch.object(
+                chatroom_routes,
+                "_load_room_and_messages",
+                new=AsyncMock(return_value=({"id": "room-1"}, [])),
+            ),
+            patch.object(chatroom_routes, "_stream_connor_model", new=fake_connor_stream),
+            patch.object(chatroom_routes, "_save_msg", new=AsyncMock()),
+            patch("schedule._process_background_reply_commands", new=passthrough_reply_commands),
+        ):
+            await chatroom_routes._chatroom_web_search(
+                "room-1",
+                "connor",
+                "Codex-Sol",
+                {"searches": ["测试查询"], "extracts": []},
+            )
+
+        persona_messages = [
+            message
+            for message in captured_messages
+            if "CONNOR_PERSONA_SENTINEL" in str(message.get("content") or "")
+        ]
+        self.assertEqual(1, len(persona_messages))
 
 
 if __name__ == "__main__":

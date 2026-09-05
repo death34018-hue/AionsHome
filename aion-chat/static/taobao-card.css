@@ -1,0 +1,63 @@
+.taobao-notice-card {
+  display: flex; align-items: center; gap: 9px; box-sizing: border-box;
+  width: min(240px, 100%); min-width: 0; margin: 6px 0 2px; padding: 8px 10px;
+  border: 1px solid #edb58d66; border-radius: 12px;
+  background: #fff5e9; color: #553c2f; text-decoration: none; text-align: left;
+  transition: background-color .15s;
+}
+/* Receipts remain system messages, but sit on the AI bubble's text edge. */
+.msg-row.system:has(> .taobao-notice-card) {
+  align-self: flex-start; align-items: stretch;
+  width: min(240px, calc(74% - 50px)); max-width: calc(100% - 50px);
+  margin: 6px 0 6px 50px;
+}
+.system-event-msg:has(> .taobao-notice-card) {
+  align-self: flex-start; align-items: stretch;
+  width: min(240px, calc(85% - var(--user-link-preview-offset)));
+  max-width: calc(100% - var(--user-link-preview-offset));
+  margin: 6px 0 6px var(--user-link-preview-offset); padding: 0;
+}
+.msg-row.system:has(> .taobao-notice-card) .system-notice,
+.system-event-msg:has(> .taobao-notice-card) .system-event-text { text-align: left; }
+.system-event-msg:has(> .taobao-notice-card) .system-event-text { padding-right: 18px; }
+@media (max-width: 768px) {
+  .msg-row.system:has(> .taobao-notice-card) {
+    width: min(240px, calc(90% - 36px)); max-width: calc(100% - 36px);
+    margin-left: 36px;
+  }
+}
+@media (max-width: 700px) {
+  .system-event-msg:has(> .taobao-notice-card) {
+    width: min(240px, calc(88% - var(--user-link-preview-offset)));
+  }
+}
+@media (max-width: 430px) {
+  .msg-row.system:has(> .taobao-notice-card) {
+    width: min(240px, calc(90% - 30px)); max-width: calc(100% - 30px);
+    margin-left: 30px;
+  }
+}
+.taobao-notice-preview { display: block; flex: 0 0 40px; width: 40px; height: 40px; }
+.taobao-notice-preview img, .taobao-notice-placeholder {
+  display: block; width: 40px; height: 40px; object-fit: cover;
+  border-radius: 7px; background: #f3e5d5;
+}
+.taobao-notice-placeholder { display: grid; place-items: center; color: #947562; font-size: 10px; }
+.taobao-notice-copy { display: block; flex: 1; min-width: 0; }
+.taobao-notice-heading { display: flex; align-items: baseline; gap: 7px; font-size: 12px; font-weight: 600; line-height: 18px; }
+.taobao-notice-heading > span { font-size: 10px; font-weight: 400; color: #947562; }
+.taobao-notice-title { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; line-height: 18px; color: #947562; }
+.taobao-notice-arrow { flex: 0 0 auto; color: #af6035; font-size: 18px; }
+.taobao-notice-card:hover, .taobao-notice-card:active { background: #ffecd8; }
+.taobao-notice-card:focus-visible { outline: 2px solid #d77843; outline-offset: 3px; }
+body[data-theme="dark"] .taobao-notice-card {
+  background: #142543; color: var(--text, #f5f7ff); border-color: #83b7ff50;
+}
+body[data-theme="dark"] .taobao-notice-heading > span,
+body[data-theme="dark"] .taobao-notice-title { color: #abbbdc; }
+body[data-theme="dark"] .taobao-notice-arrow { color: #8bbaff; }
+body[data-theme="dark"] .taobao-notice-preview img,
+body[data-theme="dark"] .taobao-notice-placeholder { background: #203456; color: #abbbdc; }
+body[data-theme="dark"] .taobao-notice-card:hover,
+body[data-theme="dark"] .taobao-notice-card:active { background: #1b3153; }
+body[data-theme="dark"] .taobao-notice-card:focus-visible { outline-color: #8bbaff; }

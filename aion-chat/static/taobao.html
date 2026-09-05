@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#fff6eb">
+  <title>淘宝心愿角 · 逛淘宝</title>
+  <link rel="icon" href="/public/funIcon_0034_逛淘宝.png" type="image/png">
+  <link id="aion-theme-css" rel="stylesheet" href="/static/theme.css">
+  <link rel="stylesheet" href="/static/taobao.css?v=20260831-scroll-history">
+</head>
+<body>
+  <header class="topbar">
+    <a id="backLink" class="back" href="/" aria-label="返回首页">‹</a>
+    <img class="app-image" src="/public/funIcon_0034_逛淘宝.png" alt="">
+    <div><h1>淘宝心愿角</h1></div>
+    <button id="settingsButton" type="button">连接设置</button>
+  </header>
+  <main>
+    <nav class="view-tabs" aria-label="心愿角内容"><button id="feedTab" type="button" aria-pressed="true">逛街动态</button><button id="basketTab" type="button" aria-pressed="false">收藏篮 <span id="count">0</span></button></nav>
+    <div id="notice" class="notice" role="status" aria-live="polite">正在打开我们的心愿角…</div>
+    <section id="feedView">
+      <article class="outing-panel">
+        <section class="companions" aria-label="两位 AI 的逛街状态"><div id="companionCards"></div></section>
+        <div class="section-heading"><h2>最近逛街</h2><span class="small-label">只收藏，还没买</span></div>
+        <div id="latestTrip"></div>
+        <div class="section-heading recent-heading"><h3>最近带回的喜欢</h3><span class="muted">点开看小感想</span></div>
+        <div id="recentProducts" class="product-strip" aria-label="最近收藏商品"></div>
+        <p id="recentEmpty" class="empty" hidden>这里还空着，等一次心动的偶遇。</p>
+        <button id="tripDetailButton" class="full-record primary" type="button" hidden>查看完整逛街记录 ›</button>
+      </article>
+      <section class="history-section" aria-labelledby="historyTitle">
+        <div class="section-heading"><h2 id="historyTitle">往期逛街</h2><span class="muted">在框内滑动翻看</span></div>
+        <div class="history-scroll" role="region" aria-labelledby="historyTitle" tabindex="0">
+          <div id="historyList"></div>
+          <button id="moreTrips" type="button" hidden>再翻一些记录</button>
+        </div>
+      </section>
+    </section>
+    <section id="basketView" aria-labelledby="basketTitle" hidden>
+      <div class="section-heading"><h2 id="basketTitle">所有收藏 <span id="basketCount"></span></h2></div>
+      <nav id="filters" aria-label="按挑选者筛选"></nav>
+      <div id="wishlist" class="product-grid" aria-live="polite"></div>
+      <p id="empty" class="empty" hidden>这个篮子还没有收藏，等下一次闲逛回来吧。</p>
+      <button id="moreItems" type="button" hidden>显示更多收藏</button>
+    </section>
+    <div class="roam-bar">
+      <label>谁去逛一逛<select id="actor"><option value="aion">AI</option><option value="connor">第二AI</option></select></label>
+      <button class="primary" id="roamButton" type="button">自己去逛</button>
+      <button id="refreshButton" type="button">刷新</button>
+    </div>
+    <details class="search-panel">
+      <summary>手动搜一搜 / 测试真实商品</summary>
+      <form id="searchForm" class="search-form">
+        <label>搜索词<input id="keyword" type="search" maxlength="120" required placeholder="例如：机械手桌面支架" autocomplete="off"></label>
+        <button type="submit" id="searchButton">通过 MCP 搜索</button>
+      </form>
+      <p class="muted">自选逛街会根据近期上下文决定搜索词，不读取淘宝浏览历史。手动收藏可补上用途和小感想。</p>
+      <div id="results" class="product-grid"></div>
+    </details>
+
+    <footer><span id="connectionLabel">正在读取连接设置…</span><p>价格是发现时快照，以淘宝商品页为准。删除仅影响对应的本地收藏或逛街小记。</p></footer>
+  </main>
+  <dialog id="detailDialog" aria-labelledby="detailTitle"><div class="detail-header"><h2 id="detailTitle">逛街小记</h2><button id="closeDetail" type="button" aria-label="关闭详情">×</button></div><div id="detailBody"></div><p id="detailNotice" role="status"></p></dialog>
+
+  <dialog id="settingsDialog">
+    <form id="settingsForm">
+      <h2>淘宝连接</h2>
+      <label>连接方式<select id="transport"><option value="native_bridge">MCP 原生桥接（本项目提供）</option><option value="http">淘宝官方 HTTP MCP</option></select></label>
+      <p class="muted">桥接通过标准 MCP 调用本机淘宝官方原生工具。它不是淘宝自带的 HTTP 服务。两种方式都需要电脑上的淘宝已启动、登录并启用 AI 代理。</p>
+      <label id="urlField">官方 MCP 地址<input id="mcpUrl" type="url" maxlength="500"></label>
+      <label class="checkbox"><input id="autonomyEnabled" type="checkbox">允许在已有的自主醒来中选择逛淘宝</label>
+      <p class="muted">不会新增定时任务；仍需在自主意识中启用该角色。没有每周件数限制。</p>
+      <p id="settingsNotice" role="status"></p>
+      <div class="dialog-actions"><button id="checkButton" type="button">检查已保存的连接</button><button type="button" id="closeSettings">关闭</button><button class="primary" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="saveDialog">
+    <form id="saveForm">
+      <h2>放进收藏篮</h2>
+      <p id="saveTitle"></p>
+      <label>收藏归属<select id="saveActor"></select></label>
+      <label>想给谁<input id="recipient" maxlength="200" placeholder="自己、朋友、家里的狗狗…"></label>
+      <label>想用来做什么<input id="purpose" maxlength="2000"></label>
+      <label>为什么喜欢<textarea id="reflection" rows="4" maxlength="2000" placeholder="留一点当时的心情。"></textarea></label>
+      <p id="saveNotice" role="status"></p>
+      <div class="dialog-actions"><button type="button" id="cancelSave">取消</button><button id="confirmSave" class="primary" type="submit">保存收藏</button></div>
+    </form>
+  </dialog>
+  <script src="/static/theme.js"></script>
+  <script src="/static/taobao-card.js?v=20260831-compact"></script>
+  <script src="/static/taobao.js?v=20260903-independent-delete-actions"></script>
+</body>
+</html>

@@ -195,8 +195,8 @@ class VoiceCallOverlayTests(unittest.TestCase):
         self.assertIn("drop-shadow(0 0 16px", css)
         self.assertIn("{ main: '#166dff', glow: '#39c5ff', soft: '#0d4fbd' }", js)
         self.assertIn("{ main: '#124cff', glow: '#35a8ff', soft: '#6d7dff' }", js)
-        self.assertIn("voice-call-polish-20260704g", chat_html)
-        self.assertIn("voice-call-polish-20260704g", chatroom_html)
+        self.assertIn("voice-latency-20260902a", chat_html)
+        self.assertIn("voice-latency-20260902a", chatroom_html)
 
     def test_voice_call_mobile_top_chrome_caption_and_back_button_are_polished(self):
         js = (ROOT / "static" / "voice-call.js").read_text(encoding="utf-8")
@@ -220,8 +220,8 @@ class VoiceCallOverlayTests(unittest.TestCase):
         self.assertIn("width: 32px;", css)
         self.assertIn("filter: drop-shadow(0 0 12px", css)
 
-        self.assertIn("voice-call-polish-20260704g", chat_html)
-        self.assertIn("voice-call-polish-20260704g", chatroom_html)
+        self.assertIn("voice-latency-20260902a", chat_html)
+        self.assertIn("voice-latency-20260902a", chatroom_html)
 
 
 if __name__ == "__main__":

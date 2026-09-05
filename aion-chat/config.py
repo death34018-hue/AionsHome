@@ -31,6 +31,9 @@ else:
     DB_PATH = DATA_DIR / "chat.db"
 UPLOADS_DIR = DATA_DIR / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
+ALBUM_DIR = DATA_DIR / "album"
+ALBUM_IMAGES_DIR = ALBUM_DIR / "images"
+ALBUM_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
 SONGS_DIR = DATA_DIR / "songs"
 SONGS_DIR.mkdir(exist_ok=True)
 CODEX_UPLOADS_DIR = BASE_DIR.parent / "Connor-Codex" / "uploads"
@@ -215,6 +218,14 @@ def sanitize_filename(name):
 
 # ── 模型配置 ─────────────────────────────────────
 CUSTOM_OPENAI_PROVIDER = "custom_openai"
+CUSTOM_REASONING_EFFORTS = {"low", "high", "max"}
+MODEL_TRANSPORT_MODES = {"legacy", "safe_live"}
+SAFE_LIVE_MODEL_DEFAULTS = {
+    "Codex-Astra": "safe_live",
+    "Codex-Sol": "safe_live",
+    "3.8Vertex": "safe_live",
+    "官Gem3.8flash": "safe_live",
+}
 DEPRECATED_MODEL_PROVIDERS = {"gemini_cli", "antigravity_cli"}
 DEPRECATED_MODEL_KEYS = {"CLI-3.1pro", "AGY-3.1pro"}
 
@@ -222,11 +233,11 @@ BUILTIN_MODELS = {
     "硅基GLM-5.2":      {"provider": "siliconflow", "model": "zai-org/GLM-5.2", "vision": False},
     #  "硅基Kimi2.7":      {"provider": "siliconflow", "model": "moonshotai/Kimi-K2.7-Code", "vision": True},
     #  "硅基DS-v4":      {"provider": "siliconflow", "model": "deepseek-ai/DeepSeek-V4-Pro", "vision": False},
-    "官Gem3.6flash":  {"provider": "gemini", "model": "gemini-3.6-flash", "vision": True},
-    "官Gem3.7flash":  {"provider": "gemini", "model": "gemini-3.7-flash", "vision": True},
+    "官Gem3.8flash":  {"provider": "gemini", "model": "gemini-3.8-flash", "vision": True},
     "官Gem3.1pro":  {"provider": "gemini", "model": "gemini-3.1-pro-preview", "vision": True},
     # "Codex-5.5":            {"provider": "codex_cli",  "model": "gpt-5.5", "vision": True},
-    "Codex-Sol":      {"provider": "codex_cli",  "model": "gpt-5.6-sol", "vision": True},
+    # "Codex-Astra":    {"provider": "codex_cli",  "model": "gpt-6-astra", "vision": True, "transport_mode": "safe_live"},
+    "Codex-Sol":      {"provider": "codex_cli",  "model": "gpt-5.6-sol", "vision": True, "transport_mode": "safe_live"},
     # "Codex":          {"provider": "codex_cli",  "model": "gpt-5.6-terra", "vision": True},
     # "Codex-Luna":     {"provider": "codex_cli",  "model": "gpt-5.6-luna", "vision": True},
     # "CLI-3.1pro":       {"provider": "gemini_cli", "model": "gemini-3.1-pro-preview", "vision": True},
@@ -236,6 +247,19 @@ BUILTIN_MODELS = {
 
 def _clean_text(value) -> str:
     return str(value or "").strip()
+
+
+def normalize_model_transport_modes(value) -> dict[str, str]:
+    """Keep only explicit, supported per-model transport overrides."""
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for raw_key, raw_mode in value.items():
+        key = _clean_text(raw_key)
+        mode = _clean_text(raw_mode).lower()
+        if key and mode in MODEL_TRANSPORT_MODES:
+            normalized[key] = mode
+    return normalized
 
 
 def normalize_custom_model_routes(value) -> list[dict]:
@@ -267,12 +291,20 @@ def normalize_custom_model_routes(value) -> list[dict]:
                 vision = True
                 audio = False
                 video = False
+                use_default_reasoning_effort = True
+                reasoning_effort = "high"
             elif isinstance(raw_model, dict):
                 model_id = _clean_text(raw_model.get("model") or raw_model.get("model_id"))
                 model_key = _clean_text(raw_model.get("key") or raw_model.get("name") or model_id)
                 vision = bool(raw_model.get("vision", True))
                 audio = raw_model.get("audio") is True
                 video = raw_model.get("video") is True
+                use_default_reasoning_effort = raw_model.get("use_default_reasoning_effort") is not False
+                reasoning_effort = _clean_text(raw_model.get("reasoning_effort")).lower()
+                if reasoning_effort == "medium":
+                    reasoning_effort = "high"
+                if reasoning_effort not in CUSTOM_REASONING_EFFORTS:
+                    reasoning_effort = "high"
             else:
                 continue
             if not model_id or not model_key:
@@ -286,6 +318,8 @@ def normalize_custom_model_routes(value) -> list[dict]:
                 "vision": vision,
                 "audio": audio,
                 "video": video,
+                "use_default_reasoning_effort": use_default_reasoning_effort,
+                "reasoning_effort": reasoning_effort,
             })
         if models:
             routes.append({
@@ -311,6 +345,8 @@ def refresh_custom_models() -> None:
                 "vision": bool(item.get("vision", True)),
                 "audio": item.get("audio") is True,
                 "video": item.get("video") is True,
+                "use_default_reasoning_effort": item.get("use_default_reasoning_effort") is not False,
+                "reasoning_effort": item.get("reasoning_effort", "high"),
                 "base_url": route["base_url"],
                 "api_key": route.get("api_key", ""),
                 "route_id": route["id"],
@@ -322,6 +358,26 @@ MODELS = {}
 refresh_custom_models()
 
 DEFAULT_MODEL = "Gemini-3.5-flash"
+
+
+def model_supports_safe_live(model_key: str | None) -> bool:
+    """Only individually approved model routes may use safe-live."""
+    key = _clean_text(model_key)
+    return key in MODELS and key in SAFE_LIVE_MODEL_DEFAULTS
+
+
+def resolve_model_transport_mode(model_key: str | None) -> str:
+    """Resolve one request's transport mode, always failing closed to legacy."""
+    key = _clean_text(model_key)
+    if not model_supports_safe_live(key):
+        return "legacy"
+    overrides = normalize_model_transport_modes(SETTINGS.get("model_transport_modes"))
+    if key in overrides:
+        return overrides[key]
+    configured = _clean_text((MODELS.get(key) or {}).get("transport_mode")).lower()
+    if configured in MODEL_TRANSPORT_MODES:
+        return configured
+    return SAFE_LIVE_MODEL_DEFAULTS.get(key, "legacy")
 
 
 def is_model_deprecated(model_key: str | dict | None) -> bool:

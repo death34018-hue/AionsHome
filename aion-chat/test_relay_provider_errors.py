@@ -155,6 +155,31 @@ class RelayProviderErrorPassthroughTests(unittest.IsolatedAsyncioTestCase):
             "max_tokens": 123,
         })
 
+    async def test_custom_openai_sends_selected_reasoning_effort_only_when_overridden(self):
+        response = FakeStreamResponse(status_code=200, lines=["data: [DONE]"])
+        cfg = {
+            "base_url": "https://relay.example/v1",
+            "api_key": "test-key",
+            "model": "unit-model",
+            "use_default_reasoning_effort": False,
+            "reasoning_effort": "max",
+        }
+        factory = fake_client_factory(response)
+
+        with patch("ai_providers.httpx.AsyncClient", new=factory):
+            chunks = [
+                chunk
+                async for chunk in call_custom_openai(
+                    [{"role": "user", "content": "hello"}],
+                    cfg,
+                )
+            ]
+
+        self.assertEqual(chunks, [])
+        payload = factory.clients[0].calls[0][1]["json"]
+        self.assertEqual(payload["reasoning_effort"], "max")
+        self.assertNotIn("thinking", payload)
+
     async def test_custom_openai_audio_capability_emits_input_audio(self):
         response = FakeStreamResponse(status_code=200, lines=["data: [DONE]"])
         cfg = {

@@ -65,6 +65,7 @@ class TheaterRegenerateTests(unittest.IsolatedAsyncioTestCase):
             async def fake_stream_ai(history, model, usage_meta, **kwargs):
                 captured["history"] = history
                 captured["model"] = model
+                captured["stream_kwargs"] = kwargs
                 yield "new reply"
 
             old_db_path = database.DB_PATH
@@ -108,6 +109,7 @@ class TheaterRegenerateTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse((cache_dir / "tm_old_ai.mp3").exists())
                 self.assertFalse((cache_dir / "tm_old_ai_s0.mp3").exists())
                 self.assertEqual(captured["model"], "new-model")
+                self.assertIs(captured["stream_kwargs"].get("include_device_context"), False)
                 self.assertNotIn("discard this reply", json.dumps(captured["history"]))
                 self.assertEqual(
                     captured["history"][:2],

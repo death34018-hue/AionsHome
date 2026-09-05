@@ -18,6 +18,8 @@ body[data-theme="dark"] .schedule-page { --sch-muted:#c5c9ef; --sch-subtle:#aeb5
 .sch-tab-panel { display:none; flex:1; min-height:0; }
 .sch-tab-panel.active { display:flex; min-height:0; flex-direction:column; gap:10px; }
 .sch-tab-panel[hidden] { display:none; }
+.sch-current-workspace { flex:1; min-height:0; display:grid; grid-template-rows:minmax(0,13fr) minmax(180px,7fr); gap:10px; }
+.sch-schedule-block { min-height:0; display:flex; flex-direction:column; gap:8px; }
 .sch-list { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; border:1px solid var(--border); border-radius:14px; background:color-mix(in srgb,var(--surface) 88%,transparent); box-shadow:0 10px 30px color-mix(in srgb,var(--text) 6%,transparent); }
 .sch-item { display:flex; align-items:flex-start; gap:9px; padding:11px 12px; border-bottom:1px solid var(--border); transition:background .16s ease; }
 .sch-item:hover { background:color-mix(in srgb,var(--accent) 5%,transparent); }
@@ -49,12 +51,27 @@ body[data-theme="dark"] .schedule-page { --sch-muted:#c5c9ef; --sch-subtle:#aeb5
 .sch-add-row2 select { padding:7px 9px; border:1px solid var(--border); border-radius:10px; background:var(--surface2); color:var(--text); font-size:12px; flex-shrink:0; }
 .sch-add-row2 button { padding:8px 15px; border:none; border-radius:10px; background:var(--sch-add-bg); color:var(--sch-add-fg); font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap; flex-shrink:0; box-shadow:0 5px 14px color-mix(in srgb,var(--sch-add-bg) 28%,transparent); }
 .sch-add-section input:focus,.sch-add-section select:focus { border-color:var(--accent); outline:2px solid color-mix(in srgb,var(--accent) 18%,transparent); outline-offset:1px; }
+.private-memo-section { min-height:0; display:flex; flex-direction:column; padding:9px 10px; border:1px solid var(--border); border-radius:14px; background:var(--surface); box-shadow:0 8px 24px color-mix(in srgb,var(--text) 5%,transparent); }
+.private-memo-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
+.private-memo-title { font-size:14px; font-weight:750; color:var(--text); }
+.private-memo-mic { width:44px; height:44px; border:0; border-radius:50%; color:white; font-size:22px; cursor:pointer; background:linear-gradient(145deg,#62c9ff,#8068ff 58%,#d975ff); box-shadow:0 5px 15px color-mix(in srgb,#8068ff 35%,transparent); }
+.private-memo-list { min-height:0; overflow-y:auto; }
+.private-memo-item { display:flex; align-items:center; gap:8px; min-height:38px; border-top:1px solid var(--border); }
+.private-memo-item.completed .private-memo-content { color:var(--sch-subtle); text-decoration:line-through; }
+.private-memo-content { flex:1; min-width:0; font-size:14px; line-height:1.4; color:var(--text); word-break:break-word; }
+.memo-check { width:22px; height:22px; border:2px solid var(--accent); border-radius:50%; background:transparent; color:white; padding:0; flex-shrink:0; }
+.memo-check.completed { border:0; background:var(--accent); }
+.memo-action { width:30px; height:30px; border:0; border-radius:50%; background:transparent; color:var(--sch-muted); font-size:15px; }
+.memo-action.danger { color:var(--danger); }
+.private-memo-empty { padding:15px 8px; text-align:center; color:var(--sch-muted); font-size:12px; }
+.private-memo-completed-toggle { border:0; background:transparent; color:var(--sch-muted); text-align:left; padding:7px 0 2px; font-size:12px; }
 @media (max-width:420px) {
   .schedule-page { padding:10px 12px 12px; }
   .sch-add-row2 { flex-wrap:wrap; }
   .sch-add-row2 input { flex-basis:calc(100% - 92px); }
   .sch-add-row2 select { flex:1; }
   .sch-add-row2 button { flex-basis:100%; width:100%; min-height:46px; font-size:15px; border-radius:12px; }
+  .sch-current-workspace { grid-template-rows:minmax(0,13fr) minmax(190px,7fr); }
 }
 @media (prefers-reduced-motion:reduce) {
   .sch-tab,.sch-item { transition:none; }
@@ -73,18 +90,31 @@ body[data-theme="dark"] .schedule-page { --sch-muted:#c5c9ef; --sch-subtle:#aeb5
       <button class="sch-tab" id="schTabHistory" role="tab" tabindex="-1" aria-selected="false" aria-controls="schPanelHistory" onclick="switchScheduleTab('history')" onkeydown="handleScheduleTabKeydown(event, 'history')">历史 0</button>
     </div>
     <section class="sch-tab-panel active" id="schPanelActive" role="tabpanel" aria-labelledby="schTabActive">
-      <div class="sch-list" id="schList"><div class="sch-empty">暂无日程</div></div>
-      <div class="sch-add-section">
-        <input type="text" id="schAddContent" placeholder="日程内容...">
-        <div class="sch-add-row2">
-          <input type="datetime-local" id="schAddTime">
-          <select id="schAddType">
-            <option value="alarm">🔔 闹铃</option>
-            <option value="reminder">📋 日程</option>
-            <option value="monitor">👁 监督</option>
-          </select>
-          <button onclick="addScheduleManual()">添加</button>
+      <div class="sch-current-workspace">
+        <div class="sch-schedule-block">
+          <div class="sch-list" id="schList"><div class="sch-empty">暂无日程</div></div>
+          <div class="sch-add-section">
+            <input type="text" id="schAddContent" placeholder="日程内容...">
+            <div class="sch-add-row2">
+              <input type="datetime-local" id="schAddTime">
+              <select id="schAddType">
+                <option value="alarm">🔔 闹铃</option>
+                <option value="reminder">📋 日程</option>
+                <option value="monitor">👁 监督</option>
+              </select>
+              <button onclick="addScheduleManual()">添加</button>
+            </div>
+          </div>
         </div>
+        <section class="private-memo-section" aria-label="快捷备忘">
+          <div class="private-memo-head">
+            <span class="private-memo-title">📝 快捷备忘</span>
+            <button class="private-memo-mic" onclick="openPrivateMemoRecorder()" aria-label="按住录音添加备忘">🎙</button>
+          </div>
+          <div class="private-memo-list" id="privateMemoList"><div class="private-memo-empty">暂无备忘</div></div>
+          <button class="private-memo-completed-toggle" id="privateMemoCompletedToggle" onclick="toggleCompletedMemos()">已完成 0 ▾</button>
+          <div class="private-memo-list" id="privateMemoCompleted" hidden></div>
+        </section>
       </div>
     </section>
     <section class="sch-tab-panel" id="schPanelHistory" role="tabpanel" aria-labelledby="schTabHistory" hidden>
@@ -98,11 +128,15 @@ body[data-theme="dark"] .schedule-page { --sch-muted:#c5c9ef; --sch-subtle:#aeb5
 <script>
 connectCommonWS(msg => {
   if (ScheduleUI.shouldReloadSchedules(msg)) loadSchedules();
+  if (ScheduleUI.shouldReloadPrivateMemos(msg)) loadPrivateMemos();
 });
 
 (async function init() {
   await loadSchedules();
+  await loadPrivateMemos();
 })();
+
+window.onAionPrivateMemosChanged = () => loadPrivateMemos();
 
 async function loadSchedules() {
   const result = await ScheduleUI.loadScheduleLists(api);
@@ -138,6 +172,71 @@ function renderScheduleList(list, elementId, emptyText, history) {
     history,
     escapeHtml: escHtml,
   })).join('');
+}
+
+let activePrivateMemos = [];
+let completedPrivateMemos = [];
+
+async function loadPrivateMemos() {
+  const result = await ScheduleUI.loadPrivateMemoLists(api);
+  if (result.active !== null) activePrivateMemos = result.active;
+  if (result.completed !== null) completedPrivateMemos = result.completed;
+  renderPrivateMemoList(activePrivateMemos, 'privateMemoList', '暂无备忘');
+  renderPrivateMemoList(completedPrivateMemos, 'privateMemoCompleted', '暂无已完成备忘');
+  $('privateMemoCompletedToggle').textContent = `已完成 ${completedPrivateMemos.length} ▾`;
+  result.errors.forEach(error => console.error('loadPrivateMemos:', error));
+}
+
+function renderPrivateMemoList(list, elementId, emptyText) {
+  const el = $(elementId);
+  el.innerHTML = list.length
+    ? list.map(item => ScheduleUI.privateMemoItemHtml(item, { escapeHtml: escHtml })).join('')
+    : `<div class="private-memo-empty">${emptyText}</div>`;
+}
+
+function openPrivateMemoRecorder() {
+  if (window.AionPrivateMemos?.openRecorder) {
+    window.AionPrivateMemos.openRecorder();
+  } else {
+    alert('请在手机 App 中使用录音功能');
+  }
+}
+
+function notifyNativeMemoChanged() {
+  window.AionPrivateMemos?.refreshWidget?.();
+}
+
+async function completePrivateMemo(id) {
+  await api('PATCH', `/api/private-memos/${encodeURIComponent(id)}`, { status: 'completed' });
+  notifyNativeMemoChanged();
+  loadPrivateMemos();
+}
+
+async function restorePrivateMemo(id) {
+  await api('PATCH', `/api/private-memos/${encodeURIComponent(id)}`, { status: 'active' });
+  notifyNativeMemoChanged();
+  loadPrivateMemos();
+}
+
+async function editPrivateMemo(id) {
+  const item = activePrivateMemos.find(memo => String(memo.id) === String(id));
+  if (!item) return;
+  const content = prompt('修改备忘', item.content || '');
+  if (content === null || !content.trim()) return;
+  await api('PATCH', `/api/private-memos/${encodeURIComponent(id)}`, { content: content.trim() });
+  notifyNativeMemoChanged();
+  loadPrivateMemos();
+}
+
+async function deletePrivateMemo(id) {
+  if (!confirm('确定删除这条备忘？')) return;
+  await api('DELETE', `/api/private-memos/${encodeURIComponent(id)}`);
+  notifyNativeMemoChanged();
+  loadPrivateMemos();
+}
+
+function toggleCompletedMemos() {
+  $('privateMemoCompleted').hidden = !$('privateMemoCompleted').hidden;
 }
 
 async function addScheduleManual() {

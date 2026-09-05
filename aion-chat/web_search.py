@@ -14,7 +14,7 @@ TAVILY_EXTRACT_URL = "https://api.tavily.com/extract"
 WEB_SEARCH_CMD_PATTERN = re.compile(r"\[WEB_SEARCH\s*[：:]\s*([^\]]+)\]", re.IGNORECASE)
 WEB_EXTRACT_CMD_PATTERN = re.compile(r"\[WEB_EXTRACT\s*[：:]\s*([^\]]+)\]", re.IGNORECASE)
 _WEB_CMD_START_RE = re.compile(
-    r"\[(?:(?:WEB_SEARCH|WEB_EXTRACT)\s*[：:]|BAND_VIBRATE\s*:"
+    r"(?:\[|［|【)\s*(?:(?:WEB_SEARCH|WEB_EXTRACT|MEMORY_SEARCH)\s*[：:]|BAND_VIBRATE\s*:"
     r"|BAND_NOTE_(?:SINGLE|CALL)\s*[：:]|APP_(?:LOCK|TEMP_UNLOCK|UNLOCK)\s*:"
     r"|DEVICE_(?:LOCK|TEMP_UNLOCK)\s*:|DEVICE_UNLOCK"
     r"|拍拍抱枕:)",
@@ -171,7 +171,8 @@ class WebCommandStreamFilter:
 
         while buf:
             if self._in_command:
-                end = buf.find("]")
+                ends = [pos for pos in (buf.find("]"), buf.find("］"), buf.find("】")) if pos >= 0]
+                end = min(ends) if ends else -1
                 if end < 0:
                     return "".join(out)
                 buf = buf[end + 1:]
@@ -235,6 +236,12 @@ def _truncate(text: str, max_chars: int) -> str:
 
 
 def _possible_command_prefix_len(text: str) -> int:
+    memory_probes = tuple(
+        f"{opening}{spacing}MEMORY_SEARCH{colon}"
+        for opening in ("[", "［", "【")
+        for spacing in ("", " ")
+        for colon in (":", "：")
+    )
     probes = (
         "[WEB_SEARCH:", "[WEB_SEARCH：", "[WEB_EXTRACT:", "[WEB_EXTRACT：",
         "[BAND_VIBRATE:",
@@ -243,7 +250,7 @@ def _possible_command_prefix_len(text: str) -> int:
         "[APP_LOCK:", "[APP_TEMP_UNLOCK:", "[APP_UNLOCK:",
         "[DEVICE_LOCK:", "[DEVICE_TEMP_UNLOCK:", "[DEVICE_UNLOCK]",
         "[拍拍抱枕:",
-    )
+    ) + memory_probes
     max_len = min(len(text), max(len(item) for item in probes) - 1)
     upper = text.upper()
     for size in range(max_len, 0, -1):

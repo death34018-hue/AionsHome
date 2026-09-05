@@ -31,6 +31,8 @@ DEFAULT_HEART_CONFIG = {
 }
 
 CONFIG_FIELDS = tuple(DEFAULT_HEART_CONFIG.keys())
+PROMPT_HEART_FRESH_MINUTES = 10
+PROMPT_HEART_FRESH_SECONDS = PROMPT_HEART_FRESH_MINUTES * 60
 
 CATEGORY_LABELS = {
     "attention_low": "关注过低",
@@ -495,26 +497,35 @@ async def build_heart_rate_summary_for_prompt(limit: int = 8) -> str:
         async with get_db() as db:
             cfg = await get_heart_config(db)
             records = await get_recent_heart_rates(db, limit)
-            events = await get_heart_events(db, 3)
+            events = await get_heart_events(db, 20)
     except Exception:
         return ""
 
     if not records:
         return ""
 
+    now = time.time()
+    latest_seen = records[0]
+    fresh_records = [
+        record for record in records
+        if -60 <= now - float(record["measured_at"]) <= PROMPT_HEART_FRESH_SECONDS
+    ]
+    if not fresh_records:
+        latest_hr = int(latest_seen["heart_rate"])
+        latest_at = float(latest_seen["measured_at"])
+        age_seconds = now - latest_at
+        return (
+            f"最近心率数据：{latest_hr} bpm（{_fmt_time(latest_at)}，{_fmt_age(age_seconds)}）。\n"
+            f"状态：数据已超过 {PROMPT_HEART_FRESH_MINUTES} 分钟未更新，不能用于判断当前状态；"
+            "可能是穿戴设备没电、摘下或手机未同步。"
+        )
+
+    records = fresh_records
     latest = records[0]
     latest_hr = int(latest["heart_rate"])
     latest_at = float(latest["measured_at"])
-    now = time.time()
     age_seconds = now - latest_at
     category = classify_heart_rate(latest_hr, cfg)
-    stale = age_seconds > cfg["stale_minutes"] * 60
-
-    if stale:
-        return (
-            f"最近心率数据：{latest_hr} bpm（{_fmt_time(latest_at)}，{_fmt_age(age_seconds)}）。\n"
-            f"状态：数据已超过 {cfg['stale_minutes']} 分钟未更新，可能是穿戴设备没电、摘下或手机未同步；可以根据情况自然提醒她带好手环。"
-        )
 
     chronological = list(reversed(records[: min(6, len(records))]))
     trend = " -> ".join(str(int(r["heart_rate"])) for r in chronological)
@@ -529,11 +540,13 @@ async def build_heart_rate_summary_for_prompt(limit: int = 8) -> str:
             details = {}
         if details.get("source") != "mi_band_7":
             continue
-        if now - float(event["created_at"]) <= 6 * 3600:
+        measured_at = float(event.get("measured_at") or 0)
+        if -60 <= now - measured_at <= PROMPT_HEART_FRESH_SECONDS:
             fresh_events.append(event)
     if fresh_events:
         event_text = "；".join(
-            f"{event_label(e['event_type'])}：{e['summary']}" for e in fresh_events[:2]
+            f"{event_label(e['event_type'])}（{_fmt_time(e['measured_at'])}）：{e['summary']}"
+            for e in fresh_events[:2]
         )
 
     return (

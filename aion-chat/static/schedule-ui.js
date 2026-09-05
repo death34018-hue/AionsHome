@@ -81,6 +81,42 @@
     return Boolean(message && message.type === 'schedule_changed');
   }
 
+  function privateMemoItemHtml(item, options = {}) {
+    const escapeHtml = options.escapeHtml || defaultEscapeHtml;
+    const completed = item.status === 'completed';
+    const encodedId = encodeURIComponent(String(item.id || '')).replaceAll("'", '%27');
+    const content = escapeHtml(item.content || '');
+    const action = completed
+      ? `<button class="memo-check completed" onclick="restorePrivateMemo(decodeURIComponent('${encodedId}'))" aria-label="恢复备忘">✓</button>`
+      : `<button class="memo-check" onclick="completePrivateMemo(decodeURIComponent('${encodedId}'))" aria-label="完成备忘"></button>`;
+    const edit = completed
+      ? ''
+      : `<button class="memo-action" onclick="editPrivateMemo(decodeURIComponent('${encodedId}'))" aria-label="编辑备忘">✎</button>`;
+    return `<div class="private-memo-item${completed ? ' completed' : ''}">
+      ${action}<span class="private-memo-content">${content}</span>${edit}
+      <button class="memo-action danger" onclick="deletePrivateMemo(decodeURIComponent('${encodedId}'))" aria-label="删除备忘">✕</button>
+    </div>`;
+  }
+
+  async function loadPrivateMemoLists(request) {
+    const [activeResult, completedResult] = await Promise.allSettled([
+      request('GET', '/api/private-memos?status=active'),
+      request('GET', '/api/private-memos?status=completed'),
+    ]);
+    return {
+      active: activeResult.status === 'fulfilled' ? activeResult.value : null,
+      completed: completedResult.status === 'fulfilled' ? completedResult.value : null,
+      errors: [
+        ...(activeResult.status === 'rejected' ? [activeResult.reason] : []),
+        ...(completedResult.status === 'rejected' ? [completedResult.reason] : []),
+      ],
+    };
+  }
+
+  function shouldReloadPrivateMemos(message) {
+    return Boolean(message && message.type === 'private_memos_changed');
+  }
+
   function normalizeScheduleTab(tab) {
     return tab === 'history' ? 'history' : 'active';
   }
@@ -148,11 +184,14 @@
   return {
     handleScheduleTabKeydown,
     loadScheduleLists,
+    loadPrivateMemoLists,
     normalizeScheduleTab,
     scheduleItemHtml,
+    privateMemoItemHtml,
     scheduleTypePresentation,
     selectScheduleTab,
     shouldReloadSchedules,
+    shouldReloadPrivateMemos,
     updateScheduleTabCounts,
   };
 }));

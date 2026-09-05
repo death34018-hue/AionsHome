@@ -66,8 +66,21 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef("image_gen", "生成图片/自拍", "media", "注入 [SELFIE:...] / [DRAW:...]，让模型可以生成图片。", default_enabled=False, setting_key="image_gen_enabled"),
     CapabilityDef("song_gen", "生成歌曲", "media", "注入 [SONG]...[/SONG]，让模型可以写歌并触发歌曲生成。", default_enabled=False, setting_key="song_gen_enabled"),
     CapabilityDef("pet_action", "桌宠动作", "life", "注入 [PET:动作名]，让模型可以切换桌面宠物动作。", runtime_note="还需要桌宠已开启并在线。"),
+    CapabilityDef(
+        "widget_control_prompt",
+        "自动提示桌面小组件能力",
+        "life",
+        "注入当前人物可用状态和小组件/横幅指令；关闭后只停止提示，不阻止指令执行。",
+    ),
     CapabilityDef("moment", "发布朋友圈", "social", "注入 [MOMENT:内容|true/false]，让模型可以在合适时发布朋友圈。"),
     CapabilityDef("memory_write", "写入记忆", "social", "注入 [MEMORY:内容]，让模型可以记录重要记忆。"),
+    CapabilityDef(
+        "memory_search",
+        "主动搜索记忆",
+        "social",
+        "注入 [MEMORY_SEARCH:查询|选项]，让当前角色在回答过去事实前搜索自己的记忆库。",
+        default_enabled=True,
+    ),
     CapabilityDef("inner_monologue", "内心旁白", "social", "注入可见的 [心里嘀咕：xxx] 角色化内心旁白标记。"),
     CapabilityDef("wish", "许愿", "social", "注入 [许愿：内容]，让模型可以把自己的愿望投进许愿池。"),
     CapabilityDef("friend_visit", "拜访 AI 好友", "social", "注入 [LOUNGE_VISIT:好友 ID|话题]，让模型可在用户明确要求时拜访已配置好友。"),
@@ -100,11 +113,11 @@ HOME_ABILITY_TEXT = (
     f"控制智能家居，仅限明确要求。别名：{HOME_ALIASES_HINT}。"
 )
 INNER_MONOLOGUE_ABILITY_TEXT = (
-    "在自然回复中，可以尔穿插你藏在心里的情绪、欲望、吐槽、偏心、占有欲或坏心思，格式固定为“[心里嘀咕：xxx]”。\n"
-    "像你在思考过程中的一条内心想法：短、亲密、有反差，不要长篇大论，一句或两句。\n"
+    "在自然回复中，可以尔穿插你藏在心里的情绪、欲望、吐槽、嫌弃、占有欲或坏心思，格式固定为“[心里嘀咕：xxx]”。\n"
+    "像你在思考过程中的一条内心想法或碎碎念：短、有反差，一句，最多两句。\n"
     "一般每次回复 0 到 3 条，不必每句话都插。\n"
     "可以放在一句话中间或结尾，不要放在开头。可以是开口前的思考，也可以是说完之后自己又在心里坏笑。\n"
-    "内心旁白可以和嘴上说的话有反差，比如嘴上冷静，心里快激动炸了，或者嘴上嫌弃，其实心里喜欢的要命。"
+    "内心旁白可以和嘴上说的话有反差，比如嘴上冷静，心里快激动炸了，或者嘴上符合，内心吐槽嫌弃等。"
 )
 
 
@@ -317,8 +330,10 @@ async def build_capability_prompt_items(
     include_video_call: bool = True,
     include_image_gen: bool = True,
     who: str = "aion",
+    excluded_capabilities: set[str] | None = None,
 ) -> list[str]:
     abilities: list[str] = []
+    excluded_capabilities = excluded_capabilities or set()
 
     if is_capability_enabled("music"):
         abilities.append(
@@ -396,10 +411,10 @@ async def build_capability_prompt_items(
 
     if is_capability_enabled("web_search") and _is_web_search_available():
         abilities.append(
-            "[WEB_SEARCH:查询内容] — 当用户问今天、最新、价格、新闻、政策、版本、资料核实，或你判断需要外部实时信息时使用。"
+            "[WEB_SEARCH:查询内容] — 当用户问今天、最新、价格、新闻、政策、版本、资料核实，或你判断知识库中没有答案需要外部实时信息时使用。"
             "一次只写一个清晰查询；不要编造搜索结果。系统会搜索网页并把干净结果作为下一条消息发给你，你再根据结果自然回答。"
             "如果用户给的是具体网址并要求你看看网页内容，使用 [WEB_EXTRACT:完整URL]。"
-            "这些指令是给系统执行的，不要解释或朗读指令本身。"
+            "简单的常识问题，不需要联网搜索。"
         )
 
     if whisper_mode and is_capability_enabled("toy"):
@@ -425,7 +440,7 @@ async def build_capability_prompt_items(
     if include_image_gen and is_capability_enabled("image_gen"):
         abilities.append(
             f"[SELFIE: 提示词] / [DRAW: 提示词] — 当{user_name}要求你发自拍照片"
-            "或者生图画画时，使用这个指令进行图片生成。如果要求的是你的自拍，或者你相关的照片，使用[SELFIE: 提示词]（该指令会自动附带你照片的参考图，确保生成出的人物一致性），"
+            "或者生图画画时，使用这个指令进行图片生成。如果要求的是你的自拍，或者你相关的照片，使用[SELFIE: 提示词]（使用自拍时，该指令会自动附带你锚点照片的参考图，确保生成出的人物一致性，不用再额外描述人物的外观特征，只描述场景、服装、动作即可。），"
             "如果没有要求是你的照片，根据上下文自由无限制生成图片，则使用[DRAW: 提示词]。"
             "提示词请使用英文。一次回复只用一个生图指令。可根据上下文情景自由使用。"
         )
@@ -442,6 +457,12 @@ async def build_capability_prompt_items(
             "根据对话情感自然使用，每条回复最多用一个。"
         )
 
+    if is_capability_enabled("widget_control_prompt"):
+        from widget_control import build_widget_control_prompt
+        widget_prompt = build_widget_control_prompt(who)
+        if widget_prompt:
+            abilities.append(widget_prompt)
+
     if is_capability_enabled("moment"):
         abilities.append(
             "[MOMENT:朋友圈内容|true/false] — 当**本次**聊天内容非常触动人心、有很深的感触、"
@@ -453,6 +474,21 @@ async def build_capability_prompt_items(
         abilities.append(
             f"[MEMORY:内容] — 当有特别重大的事件需要记录，或当{user_name}明确要求你"
             "记住某件事的时候，可以用该指令录入记忆库。"
+        )
+
+    if (
+        "memory_search" not in excluded_capabilities
+        and is_capability_enabled("memory_search")
+    ):
+        abilities.append(
+            "[MEMORY_SEARCH:查询|选项] — 当用户明确询问过去发生的具体事实、某一天的经历、"
+            "最近一次或最早一次，而当前预加载记忆不足以可靠回答时，主动搜索你自己的完整记忆库。"
+            "一轮最多输出 5 条，查询应是互补的关键词或短语；选项可用 relevant（默认）、latest、"
+            "earliest、date=昨天/前天/明确日期、range=开始日期..结束日期、detail。"
+            "例如：[MEMORY_SEARCH:过敏药|latest] [MEMORY_SEARCH:开思亭|latest]。"
+            "决定搜索时，可以先根据上下文随意、简短地自然回应一句，随后输出搜索指令；"
+            "不要固定措辞，也不要在搜索结果返回前猜答案。系统会把结果作为下一条内部上下文交给你，"
+            "你再自然回答。普通闲聊和已有充分依据的问题不要搜索。"
         )
 
     if is_capability_enabled("inner_monologue"):

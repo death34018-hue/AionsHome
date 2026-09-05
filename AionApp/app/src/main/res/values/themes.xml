@@ -15,4 +15,14 @@
         <item name="android:textColorPrimary">#e0e0e0</item>
         <item name="colorAccent">#ff8359</item>
     </style>
+
+    <style name="Theme.AionChat.WidgetRecord" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:colorAccent">#7567E8</item>
+        <item name="android:navigationBarColor">#4011131C</item>
+        <item name="android:statusBarColor">#4011131C</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

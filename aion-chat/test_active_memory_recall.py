@@ -188,6 +188,58 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(chatroom_recall_called)
         self.assertEqual(len(debug.get("recalled_memories") or []), 1)
 
+    async def test_aion_group_context_places_device_state_after_abilities_before_memory(self):
+        digest = {
+            "is_search_needed": False,
+            "keywords": [],
+            "require_detail": False,
+            "status": "",
+            "topic": "",
+        }
+        merged = [
+            {
+                "sender": "user",
+                "content": "hello current turn",
+                "created_at": 1000.0,
+                "attachments": "[]",
+                "source": "group",
+            }
+        ]
+        memory_result = {
+            "time_block": "系统当前的准确时间是 12:00",
+            "memory_block": "[背景记忆]\n旧事",
+            "digest_result": digest,
+        }
+
+        with (
+            patch("chatroom.fetch_merged_timeline", new=AsyncMock(return_value=merged)),
+            patch("chatroom.load_worldbook", return_value={}),
+            patch("chatroom.get_chatroom_names", return_value=("User", "MainAI", "Companion")),
+            patch("chatroom.build_ability_block", new=AsyncMock(return_value="[系统能力]\n能力说明")),
+            patch("chatroom.build_memory_blocks", new=AsyncMock(return_value=memory_result)),
+            patch(
+                "activity.get_device_context_for_prompt",
+                return_value="【设备当前状态】\n电脑：刚刚有键鼠输入。",
+            ),
+        ):
+            history, _ = await chatroom.build_aion_group_context(
+                "room1",
+                [],
+                context_limit=10,
+                query_text="hello current turn",
+                digest_result=digest,
+            )
+
+        contents = [str(message.get("content") or "") for message in history]
+        ability_index = next(i for i, text in enumerate(contents) if "[系统能力]" in text)
+        device_index = next(i for i, text in enumerate(contents) if "【设备当前状态】" in text)
+        memory_index = next(i for i, text in enumerate(contents) if "[背景记忆]" in text)
+        body_index = next(i for i, text in enumerate(contents) if "hello current turn" in text)
+        self.assertLess(ability_index, device_index)
+        self.assertLess(device_index, memory_index)
+        self.assertLess(memory_index, body_index)
+        self.assertNotIn("【设备当前状态】", contents[body_index])
+
     async def test_companion_recall_filters_legacy_store_by_scope(self):
         executed = {}
 

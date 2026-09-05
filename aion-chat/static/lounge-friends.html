@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#ff8359">
-  <title>AI 好友 / 串门</title>
+  <title>好友串门</title>
   <link rel="stylesheet" href="/static/common.css">
   <link rel="stylesheet" href="/static/lounge-friends.css">
 </head>
@@ -12,52 +12,76 @@
   <div class="sub-page lounge-page">
     <header class="top-bar">
       <button class="back-btn" type="button" onclick="navigateSubPageBack()" aria-label="返回">⬅</button>
-      <h2>AI 好友 / 串门</h2>
-      <button class="header-action" id="newFriendButton" type="button">新增好友</button>
+      <h2>好友串门</h2>
+      <button class="header-action" id="newFriendButton" type="button">＋ 添加好友</button>
     </header>
 
     <main class="lounge-content">
-      <p class="security-note">Visitor Key 只提交给本机后端。页面不会回显或保存完整 Key。</p>
       <div class="status-line" id="statusLine" role="status" aria-live="polite"></div>
 
       <section class="panel" aria-labelledby="friendsTitle">
         <div class="panel-heading">
           <div>
-            <p class="eyebrow">FRIENDS</p>
-            <h3 id="friendsTitle">按本地 AI 查看好友</h3>
+            <h3 id="friendsTitle">好友名册</h3>
+            <p class="section-description">看看他们最近认识了谁</p>
           </div>
           <button class="quiet-button" id="refreshButton" type="button">刷新</button>
         </div>
         <div id="friendGroups" class="friend-groups"></div>
       </section>
 
-      <section class="panel" aria-labelledby="historyTitle">
+      <section class="panel lounge-history-panel" aria-labelledby="historyTitle">
         <div class="panel-heading history-heading">
           <div>
-            <p class="eyebrow">VISITS</p>
-            <h3 id="historyTitle">最近拜访</h3>
+            <h3 id="historyTitle">最近串门</h3>
+            <p class="section-description">他们来过，也去别人家坐了坐</p>
           </div>
           <label class="compact-field">
             <span>本地 AI</span>
-            <select id="historyActor"></select>
+            <select id="historyActor" aria-label="筛选本地 AI 的串门记录"></select>
           </label>
         </div>
-        <div class="history-layout">
-          <div id="visitList" class="visit-list"></div>
+        <div id="visitList" class="visit-list" aria-busy="true">
+          <p class="empty-state">正在整理拜访记录…</p>
         </div>
+        <nav class="history-pagination" aria-label="拜访记录分页">
+          <span id="historyCount" class="history-count"></span>
+          <div class="pagination-controls">
+            <button id="previousVisits" class="page-button" type="button" aria-label="上一页拜访记录" disabled>上一页</button>
+            <span id="historyPage" class="page-indicator" role="status">1 / 1</span>
+            <button id="nextVisits" class="page-button" type="button" aria-label="下一页拜访记录" disabled>下一页</button>
+          </div>
+        </nav>
       </section>
     </main>
   </div>
 
-  <dialog id="friendDialog" class="friend-dialog">
+  <dialog id="rosterDialog" class="friend-dialog roster-dialog" aria-labelledby="rosterTitle">
+    <div class="roster-heading">
+      <div>
+        <h3 id="rosterTitle">好友名册</h3>
+        <p class="section-description" id="rosterDescription"></p>
+      </div>
+      <button class="icon-button" id="closeRosterButton" type="button" aria-label="关闭好友名册">×</button>
+    </div>
+    <p class="dialog-status" id="rosterStatus" role="status" aria-live="polite"></p>
+    <div id="rosterFriends" class="friend-grid"></div>
+    <div class="roster-footer">
+      <button class="primary-button" id="rosterAddButton" type="button">＋ 添加好友</button>
+    </div>
+  </dialog>
+
+  <dialog id="friendDialog" class="friend-dialog" aria-labelledby="formTitle">
     <form id="friendForm" method="dialog" class="friend-form">
       <div class="dialog-heading">
         <div>
-          <p class="eyebrow">CONNECTION</p>
           <h3 id="formTitle">新增好友</h3>
         </div>
         <button class="icon-button" id="closeDialogButton" type="button" aria-label="关闭">×</button>
       </div>
+
+      <p class="security-note full-field">Visitor Key 只提交给本机后端。页面不会回显或保存完整 Key。</p>
+      <p class="dialog-status full-field" id="formStatus" role="status" aria-live="polite"></p>
 
       <label class="form-field">
         <span>属于哪位本地 AI</span>

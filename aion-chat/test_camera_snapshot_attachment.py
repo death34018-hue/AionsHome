@@ -203,7 +203,13 @@ class MonitorSystemAttachmentTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(
-            [snapshot],
+            [
+                snapshot,
+                {
+                    "type": "system_notice_order",
+                    "before_msg_id": "assistant-private",
+                },
+            ],
             await self._attachments_for("messages", "role", "system"),
         )
         self.assertEqual(
@@ -238,7 +244,13 @@ class MonitorSystemAttachmentTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(
-            [snapshot],
+            [
+                snapshot,
+                {
+                    "type": "system_notice_order",
+                    "before_msg_id": "assistant-chatroom",
+                },
+            ],
             await self._attachments_for(
                 "chatroom_messages",
                 "sender",

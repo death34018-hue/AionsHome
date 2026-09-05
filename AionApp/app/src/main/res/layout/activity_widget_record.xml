@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#5A11131C"
+    android:padding="22dp">
+
+    <LinearLayout
+        android:layout_width="320dp"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/widget_record_panel"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingStart="22dp"
+        android:paddingTop="14dp"
+        android:paddingEnd="22dp"
+        android:paddingBottom="20dp">
+
+        <TextView
+            android:id="@+id/widget_record_close"
+            android:layout_width="40dp"
+            android:layout_height="36dp"
+            android:layout_gravity="end"
+            android:gravity="center"
+            android:text="×"
+            android:textColor="#775D50"
+            android:textSize="25sp" />
+
+        <TextView
+            android:id="@+id/widget_record_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="@string/widget_record_hint"
+            android:textColor="#624537"
+            android:textSize="16sp"
+            android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/widget_record_microphone"
+            android:layout_width="116dp"
+            android:layout_height="116dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/widget_record_button_pressed"
+            android:contentDescription="@string/widget_record_hold"
+            android:padding="5dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/widget_microphone" />
+
+        <EditText
+            android:id="@+id/widget_record_text"
+            android:layout_width="match_parent"
+            android:layout_height="96dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/widget_memo_card"
+            android:gravity="top|start"
+            android:hint="@string/widget_transcription_hint"
+            android:inputType="textCapSentences|textMultiLine"
+            android:padding="12dp"
+            android:textColor="#4D372D"
+            android:textColorHint="#9E867A"
+            android:textSize="15sp"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/widget_record_actions"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/widget_record_retry"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:text="@string/widget_retry" />
+
+            <Button
+                android:id="@+id/widget_record_save"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="10dp"
+                android:layout_weight="1"
+                android:text="@string/widget_save" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

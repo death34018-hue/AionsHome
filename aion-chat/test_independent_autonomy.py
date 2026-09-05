@@ -121,6 +121,27 @@ class IndependentAutonomyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("用户已经 1 小时 35 分钟没有发送新消息", prompts[0])
         self.assertNotIn("状态包", prompts[0])
 
+    async def test_disabled_rest_is_not_offered_but_bad_model_responses_still_fall_back(self):
+        cfg = {"actions": {"rest": False, "home_dynamics": True}}
+        for response in ({"action": "home_dynamics"}, {}, None, [], {"action": "rest"}, RuntimeError("offline")):
+            ask = AsyncMock(side_effect=response) if isinstance(response, Exception) else AsyncMock(return_value=response)
+            with self.subTest(response=response), \
+                 patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value=cfg)), \
+                 patch.object(autonomy, "recent_niche_index", new=AsyncMock(return_value=[])), \
+                 patch.object(autonomy, "_ask_actor_json", new=ask):
+                result = await autonomy._select_action("connor")
+                self.assertNotIn("- rest:", ask.await_args.args[1])
+                self.assertIn("- home_dynamics:", ask.await_args.args[1])
+                self.assertEqual(result["action"], "home_dynamics" if response == {"action": "home_dynamics"} else "rest")
+                self.assertEqual(ask.await_count, 1)
+
+    async def test_no_enabled_action_avoids_model_call(self):
+        with patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value={"actions": {"rest": False}})), \
+             patch.object(autonomy, "_ask_actor_json", new=AsyncMock(return_value={})) as ask:
+            result = await autonomy._select_action("connor")
+            self.assertEqual(result["action"], "rest")
+            ask.assert_not_awaited()
+
     async def test_run_actor_does_not_touch_other_actor(self):
         manager = autonomy.IdleAutonomyManager()
         timer = {"actor": "aion", "enabled": True, "timer_started_at": 1_000, "next_wake_at": 1_300}

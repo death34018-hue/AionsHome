@@ -52,6 +52,7 @@ function loadMessageRenderer() {
         : ''
     )).join(''),
     timeStr: () => '00:00',
+    window: { LoungeVisitUI: null },
   };
   vm.createContext(context);
   vm.runInContext(`${rendererSource}\nthis.renderMessage = msgHTML;`, context);

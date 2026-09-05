@@ -11,6 +11,28 @@ from routes import activity as activity_routes
 
 
 class DeviceContextApiSmokeTest(unittest.TestCase):
+    def test_device_history_omits_context_events_but_keeps_apps_and_screen(self):
+        entries = [
+            {"device": "phone", "app": "com.tencent.mobileqq", "timestamp": 1},
+            {"device": "phone", "app": "device_context", "kind": "phone_context",
+             "slot": "motion", "timestamp": 2},
+            {"device": "phone", "app": "device_context", "kind": "notification",
+             "timestamp": 3},
+            {"device": "phone", "app": "com.xingin.xhs", "timestamp": 4},
+            {"device": "phone", "app": "screen_off", "timestamp": 5},
+        ]
+        app = FastAPI()
+        app.include_router(activity_routes.router)
+        with (
+            patch.object(activity_routes, "read_recent_activity", return_value=entries),
+            patch.object(activity_routes, "read_activity_logs", return_value=entries),
+        ):
+            client = TestClient(app)
+            for url in ("/api/activity/recent", "/api/activity/logs/2026-08-30"):
+                result = client.get(url).json()["entries"]
+                self.assertEqual(["QQ", "小红书", "screen_off"], [e["app"] for e in result])
+        self.assertEqual("com.tencent.mobileqq", entries[0]["app"])
+
     def test_phone_notification_status_and_removal_round_trip(self):
         original_store = activity.device_context_store
         activity.device_context_store = DeviceContextStore()

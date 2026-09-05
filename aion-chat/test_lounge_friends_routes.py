@@ -16,6 +16,8 @@ if str(ROOT) not in sys.path:
 
 from lounge_friends import LoungeFriendStore
 from lounge_visit import LoungeVisitResult
+from lounge_receptions import LoungeReceptionHistory
+from test_lounge_receptions import reception_path
 
 
 ACTORS = [
@@ -164,7 +166,7 @@ class FakeCoordinator:
 
 
 @pytest.fixture
-def route_env(tmp_path):
+def route_env(tmp_path, reception_path):
     store = LoungeFriendStore(tmp_path / "lounge_friends.json", clock=lambda: 10.0)
     manager = FakeMCPManager()
     repository = FakeRepository()
@@ -200,6 +202,7 @@ def route_env(tmp_path):
                 report_publisher=report_publisher,
                 active_manual_actors=coordinator.active_manual_actors,
                 task_registry=task_registry,
+                reception_history=LoungeReceptionHistory(reception_path),
             )
         )
     client = TestClient(app)
@@ -356,6 +359,24 @@ def test_visit_detail_requires_actor_ownership_without_metadata_leak(route_env):
     assert response.status_code == 404
     assert "primary-only-metadata" not in repr(response.json())
     assert "primary-only-message" not in repr(response.json())
+
+
+def test_history_merges_receptions_only_for_host_and_exposes_read_only_detail(route_env):
+    client, _store, _manager, repository, _coordinator = route_env
+    repository.visits.append(dict(repository.visits[0], id='outbound-host', actor_id='connor'))
+    listed = client.get('/api/lounge-visits', params={'actor_id': 'connor', 'limit': 3})
+    assert listed.status_code == 200
+    assert [(v['id'], v['direction']) for v in listed.json()['visits']] == [
+        ('reception:second', 'inbound'), ('reception:first', 'inbound'), ('outbound-host', 'outbound'),
+    ]
+    limited = client.get('/api/lounge-visits', params={'actor_id': 'connor', 'limit': 1})
+    assert len(limited.json()['visits']) == 1
+    detail = client.get('/api/lounge-visits/reception:first', params={'actor_id': 'connor'})
+    assert detail.status_code == 200
+    assert [m['content'] for m in detail.json()['messages']] == ['初次见面', '你好', '欢迎\n进来坐']
+    assert client.get('/api/lounge-visits/reception:first', params={'actor_id': 'aion'}).status_code == 404
+    assert client.delete('/api/lounge-visits/reception:first', params={'actor_id': 'connor'}).status_code == 404
+    assert client.post('/api/lounge-visits/reception:second/cancel', json={'actor_id': 'connor'}).status_code == 404
 
 
 def test_visit_history_delete_is_actor_scoped_and_rejects_running(route_env):

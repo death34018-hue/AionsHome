@@ -27,6 +27,14 @@ class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((await autonomy_state.get_actor_config("aion", db=self.db))["enabled"])
         self.assertFalse((await autonomy_state.get_actor_config("connor", db=self.db))["enabled"])
 
+    async def test_rest_defaults_on_for_legacy_config_and_can_be_disabled_per_actor(self):
+        await self.db.execute("UPDATE autonomy_actor_configs SET actions_json='{}'")
+        await self.db.commit()
+        self.assertTrue((await autonomy_state.get_actor_config("connor", db=self.db))["actions"].get("rest"))
+        await autonomy_state.update_actor_config("connor", actions={"rest": False}, db=self.db)
+        self.assertFalse((await autonomy_state.get_actor_config("connor", db=self.db))["actions"]["rest"])
+        self.assertTrue((await autonomy_state.get_actor_config("aion", db=self.db))["actions"]["rest"])
+
     async def test_relationship_date_starts_unset_and_persists_per_actor(self):
         aion = await autonomy_state.get_actor_config("aion", db=self.db)
         connor = await autonomy_state.get_actor_config("connor", db=self.db)

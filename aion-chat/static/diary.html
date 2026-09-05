@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>日记本</title>
 <link rel="stylesheet" href="/static/common.css">
+<link rel="stylesheet" href="/static/content-markdown.css?v=compact-spacing-20260904">
 <link rel="manifest" href="/manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#ff8359">
@@ -306,6 +307,8 @@ body[data-theme="light"] .diary-input {
 </div>
 <script src="/static/theme.js?v=theme-20260606"></script>
 <script src="/static/common.js?v=diary-back-20260621"></script>
+<script src="/static/vendor/markdown-it-15.0.1.min.js?v=15.0.1"></script>
+<script src="/static/chatroom-markdown.js?v=social-markdown-20260904"></script>
 <script>
 const DIARY_THEME_KEY = 'aion_chat_theme';
 function applyDiaryTheme(theme) {
@@ -369,6 +372,12 @@ function switchAuthor(author) {
   loadDiaries(1, false);
 }
 
+function renderMarkdownBody(value) {
+  return window.ChatroomMarkdown?.render
+    ? window.ChatroomMarkdown.render(String(value || ''))
+    : escHtml(value || '');
+}
+
 function renderList() {
   const container = document.getElementById('diaryList');
   if (!allItems.length) {
@@ -401,7 +410,7 @@ function renderList() {
       </div>
       <div class="diary-title">${escHtml(title)}</div>
       <div class="diary-body">
-        <div class="diary-content">${escHtml(item.content)}</div>
+        <div class="diary-content markdown-body social-markdown">${renderMarkdownBody(item.content)}</div>
         ${source}
       </div>
     </div>`;

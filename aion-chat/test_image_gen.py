@@ -11,6 +11,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import image_gen
+from album import AlbumStore
+from test_album import sample_image
 from routes import chatroom as chatroom_routes
 
 
@@ -21,7 +23,7 @@ class FakeImageGenResponse:
         return None
 
     def json(self):
-        image_data = base64.b64encode(b"unit image bytes").decode("ascii")
+        image_data = base64.b64encode(sample_image()).decode("ascii")
         return {
             "candidates": [
                 {
@@ -56,6 +58,9 @@ class FakeAsyncClient:
 
 
 class ImageGenerationModelTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.enterContext(patch.dict(image_gen.SETTINGS, {}, clear=True))
+
     async def test_generate_image_uses_gemini_flash_lite_image_endpoint(self):
         clients = []
 
@@ -65,16 +70,17 @@ class ImageGenerationModelTests(unittest.IsolatedAsyncioTestCase):
             return client
 
         with tempfile.TemporaryDirectory() as tmpdir:
+            store = AlbumStore(Path(tmpdir))
             with (
                 patch("image_gen.get_key", return_value="test-key"),
-                patch("image_gen.UPLOADS_DIR", Path(tmpdir)),
-                patch("image_gen.time.time", return_value=1234.567),
+                patch("album.get_album_store", return_value=store),
                 patch("image_gen.httpx.AsyncClient", new=client_factory),
             ):
                 filename = await image_gen.generate_image("draw a tiny lantern")
 
-            self.assertEqual(filename, "img_gen_1234567.png")
-            self.assertEqual((Path(tmpdir) / filename).read_bytes(), b"unit image bytes")
+            self.assertTrue(filename.startswith("album/"))
+            self.assertEqual((store.images_dir / Path(filename).name).read_bytes(), sample_image())
+            self.assertEqual(store.list_photos()["photos"][0]["prompt"], "draw a tiny lantern")
 
         url, kwargs = clients[0].calls[0]
         self.assertIn(
@@ -100,10 +106,9 @@ class ImageGenerationModelTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch("image_gen.get_key", return_value="test-key"),
-                patch("image_gen.UPLOADS_DIR", tmp_path),
+                patch("album.get_album_store", return_value=AlbumStore(tmp_path)),
                 patch("image_gen.REFERENCE_IMAGE_PATH", default_ref),
                 patch("image_gen.SECONDARY_REFERENCE_IMAGE_PATH", secondary_ref),
-                patch("image_gen.time.time", return_value=1234.567),
                 patch("image_gen.httpx.AsyncClient", new=client_factory),
             ):
                 await image_gen.generate_image(
@@ -135,10 +140,9 @@ class ImageGenerationModelTests(unittest.IsolatedAsyncioTestCase):
 
             with (
                 patch("image_gen.get_key", return_value="test-key"),
-                patch("image_gen.UPLOADS_DIR", tmp_path),
+                patch("album.get_album_store", return_value=AlbumStore(tmp_path)),
                 patch("image_gen.REFERENCE_IMAGE_PATH", default_ref),
                 patch("image_gen.SECONDARY_REFERENCE_IMAGE_PATH", missing_secondary_ref),
-                patch("image_gen.time.time", return_value=1234.567),
                 patch("image_gen.httpx.AsyncClient", new=client_factory),
             ):
                 await image_gen.generate_image(

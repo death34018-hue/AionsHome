@@ -32,7 +32,7 @@
 .cam-toggle-label { font-size:13px; color:var(--text); }
 .cam-config-row { width:100%; min-width:0; display:flex; align-items:center; gap:8px; margin:6px 0; flex-wrap:wrap; }
 .cam-config-row label { font-size:12px; color:var(--text2); white-space:nowrap; min-width:50px; }
-.cam-config-row select, .cam-config-row input { min-width:0; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:7px 9px; font-size:12px; outline:none; }
+.cam-config-row select, .cam-config-row input { min-width:0; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:7px 9px; font-size:12px; outline:none; }
 .cam-config-row input { width:60px; text-align:center; }
 .cam-config-row input[type="time"] { width:100%; min-width:0; }
 .cam-status { width:100%; box-sizing:border-box; font-size:11px; color:var(--text2); margin-top:10px; padding:8px 12px; text-align:center; border-radius:10px; background:var(--surface2); }
@@ -48,23 +48,29 @@
 .phone-camera-note { font-size:11px; line-height:1.5; color:var(--text3); margin-top:5px; }
 .phone-arm-btn { flex:1; justify-content:center; padding:9px 14px; font-weight:600; }
 .phone-arm-btn.armed { background:var(--danger); border-color:var(--danger); color:#fff; }
-.cam-settings-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
-.cam-field { min-width:0; padding:10px; border-radius:10px; background:var(--surface2); }
+.cam-settings-grid { display:grid; grid-template-columns:minmax(0,1.2fr) minmax(0,1fr); gap:10px; }
+.cam-field { min-width:0; padding:10px; border-radius:14px; background:var(--surface2); }
 .cam-field-label { display:block; margin-bottom:7px; font-size:11px; color:var(--text3); }
+.cam-field input, .cam-quiet-times input { width:100%; min-width:0; min-height:36px; box-sizing:border-box; padding:8px; border:1px solid var(--border); border-radius:10px; background:var(--surface); color:var(--text); font-family:inherit; font-size:13px; font-variant-numeric:tabular-nums; outline:none; }
+.cam-config-row input, .cam-config-row select, .cam-wake-row select, .cam-field input, .cam-quiet-times input { transition:border-color .2s, box-shadow .2s; }
+.cam-config-row input:focus, .cam-config-row select:focus, .cam-wake-row select:focus, .cam-field input:focus, .cam-quiet-times input:focus { border-color:var(--accent); outline:2px solid var(--accent); outline-offset:2px; }
 .cam-inline-inputs { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr) auto; align-items:center; gap:6px; font-size:12px; color:var(--text2); }
 .cam-inline-inputs input { width:100%; min-width:0; box-sizing:border-box; }
-.cam-retention-input { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:7px; }
+.cam-retention-input { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:7px; font-size:12px; color:var(--text2); }
 .cam-retention-input input { width:100%; min-width:0; box-sizing:border-box; }
 .cam-wake-row { display:grid; grid-template-columns:minmax(0,1fr); gap:7px; margin-bottom:10px; }
 .cam-wake-row label { font-size:11px; color:var(--text3); }
 .cam-wake-row select { width:100%; min-width:0; box-sizing:border-box; padding:9px 10px; border:1px solid var(--border); border-radius:10px; background:var(--surface2); color:var(--text); font-size:13px; }
 .cam-smart-note { margin:-2px 0 10px; padding:8px 10px; border-radius:9px; background:rgba(255,131,89,.10); color:var(--text2); font-size:11px; line-height:1.5; }
 .cam-quiet-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:10px; margin-top:10px; }
-.cam-quiet-times { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:center; gap:8px; margin-top:8px; }
+.cam-quiet-times { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:center; gap:8px; margin-top:8px; font-size:12px; color:var(--text2); }
 .cam-apply-btn { width:100%; margin-top:12px; background:var(--accent,#ff8359); border-color:var(--accent,#ff8359); color:#fff; font-weight:600; }
 @media (max-width:520px) {
   .cam-source-card, .cam-sentinel-card { padding:12px; border-radius:12px; }
-  .cam-settings-grid { grid-template-columns:minmax(0,1fr); gap:8px; }
+  .cam-settings-grid { gap:8px; }
+  .cam-field { padding:8px; }
+  .cam-inline-inputs { gap:4px; }
+  .cam-field input { padding:8px 4px; }
   .cam-source-tab { font-size:11px; padding:9px 2px; }
   .cam-config-row label { min-width:auto; }
   #localCamRow select, #esp32CamRow input { flex:1 1 140px; }

@@ -1,5 +1,4 @@
 (() => {
-  const SILENCE_MS = 2000;
   const MAX_RECORD_MS = 45000;
   const CALIBRATION_FRAMES = 20;
   // TTS caption pacing: increase these if text runs ahead of the voice.
@@ -35,6 +34,7 @@
     surface: '',
     speaker: 'assistant',
     speakerName: 'AI',
+    ttsMsgId: '',
     caption: '正在连接麦克风...',
     status: 'connecting',
     startedAt: 0,
@@ -252,7 +252,7 @@
 
     overlay.querySelector('[data-action="minimize"]').addEventListener('click', close);
     overlay.querySelector('[data-action="hangup"]').addEventListener('click', close);
-    overlay.querySelector('[data-action="mute"]').addEventListener('click', toggleMute);
+    overlay.querySelector('[data-action="mute"]').addEventListener('click', handleMicAction);
     overlay.querySelector('[data-action="mode"]').addEventListener('click', toggleMode);
 
     els.holdBtn.addEventListener('pointerdown', beginHold, { passive: false });
@@ -386,6 +386,27 @@
     else setStatus('listening', state.mode === 'handsfree' ? '我在听，你可以直接说话。' : '按住按钮后开始说话。', '通话中');
   }
 
+  function handleMicAction() {
+    const interrupted = window.VoiceCallPolicy?.requestInterruption({
+      active: state.active,
+      speaking: state.speaking,
+      adapter: state.adapter,
+      msgId: state.ttsMsgId,
+    });
+    if (!interrupted) {
+      toggleMute();
+      return;
+    }
+    state.speaking = false;
+    state.ttsMsgId = '';
+    state.muted = false;
+    resetRecordingState();
+    clearCaptionSegments();
+    els.muteBtn?.classList.remove('muted');
+    if (els.muteLabel) els.muteLabel.textContent = '静音';
+    setStatus('listening', '已停止播放，我在听。', '通话中');
+  }
+
   function resetRecordingState() {
     state.autoRecording = false;
     state.manualRecording = false;
@@ -404,6 +425,7 @@
     state.active = true;
     state.muted = false;
     state.speaking = false;
+    state.ttsMsgId = '';
     state.processing = false;
     state.calibration = [];
     state.noiseFloor = 0.006;
@@ -430,6 +452,7 @@
     state.active = false;
     state.processing = false;
     state.speaking = false;
+    state.ttsMsgId = '';
     resetRecordingState();
     clearCaptionSegments();
     stopInput();
@@ -556,7 +579,8 @@
       state.silenceStartedAt = 0;
     } else {
       if (!state.silenceStartedAt) state.silenceStartedAt = now;
-      if (now - state.silenceStartedAt >= SILENCE_MS) {
+      const silenceMs = window.VoiceCallPolicy?.silenceTimeoutMs(now - state.segmentStartedAt) || 1200;
+      if (now - state.silenceStartedAt >= silenceMs) {
         processFrames();
       }
     }
@@ -675,9 +699,11 @@
     const sender = payload.sender || state.adapter?.speakerForMessage?.(payload.msgId || payload.msg_id) || 'assistant';
     const name = payload.speakerName || state.adapter?.getSpeakerName?.(sender) || state.adapter?.getDefaultSpeakerName?.() || 'AI';
     state.speaking = true;
+    state.ttsMsgId = payload.msgId || payload.msg_id || '';
     resetRecordingState();
     setSpeaker(sender, name);
     setStatus('speaking', null, '正在说话');
+    if (els.muteLabel) els.muteLabel.textContent = '插话';
     startCaptionSegments(payload.text || '正在播放语音...');
   }
 
@@ -689,6 +715,8 @@
   function handleTTSEnd() {
     if (!state.active) return;
     state.speaking = false;
+    state.ttsMsgId = '';
+    if (els.muteLabel) els.muteLabel.textContent = state.muted ? '已静音' : '静音';
     clearCaptionSegments();
     setTimeout(() => {
       if (!state.active || state.speaking || state.processing || state.muted) return;

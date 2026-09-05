@@ -149,31 +149,6 @@ function navigateSubPageBack() {
   }
 }
 
-function navigateCommonSubPage(path) {
-  const target = String(path || '/');
-  if (window.parent !== window && typeof window.parent.openSubPage === 'function') {
-    window.parent.openSubPage(target);
-  } else {
-    window.location.href = target;
-  }
-}
-
-function installLoungeFriendsShortcut() {
-  if (window.location.pathname !== '/settings' || document.getElementById('loungeFriendsShortcut')) return;
-  const topBar = document.querySelector('.top-bar');
-  if (!topBar) return;
-  const shortcut = document.createElement('button');
-  shortcut.id = 'loungeFriendsShortcut';
-  shortcut.type = 'button';
-  shortcut.className = 'action-btn secondary';
-  shortcut.textContent = 'AI 好友 / 串门';
-  shortcut.addEventListener('click', () => {
-    const returnTo = `${window.location.pathname}${window.location.search}`;
-    navigateCommonSubPage(`/lounge-friends?return=${encodeURIComponent(returnTo)}`);
-  });
-  topBar.appendChild(shortcut);
-}
-
 // iframe 子页面默认返回 Home；带 return 参数时回到指定的父页面功能。
 if (window.parent !== window) {
   document.addEventListener('DOMContentLoaded', () => {
@@ -181,9 +156,6 @@ if (window.parent !== window) {
     if (backBtn) backBtn.onclick = navigateSubPageBack;
   });
 }
-
-if (document.body) installLoungeFriendsShortcut();
-else document.addEventListener('DOMContentLoaded', installLoungeFriendsShortcut, { once: true });
 
 async function api(method, url, body, options = {}) {
   const controller = new AbortController();

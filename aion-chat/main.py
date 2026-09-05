@@ -22,7 +22,7 @@ logging.getLogger("uvicorn.access").addFilter(_QuietCamFilter())
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
-from config import BASE_DIR, DATA_DIR, PUBLIC_DIR, UPLOADS_DIR, SONGS_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, load_cam_config
+from config import BASE_DIR, DATA_DIR, PUBLIC_DIR, UPLOADS_DIR, ALBUM_IMAGES_DIR, SONGS_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, load_cam_config
 from database import init_db, get_db
 from active_window_state import restore_active_windows
 from ws import manager
@@ -35,7 +35,11 @@ from routes import chat, cam as cam_routes, files, settings, memories
 from routes import voice as voice_routes
 from routes import music as music_routes
 from routes import music_station as music_station_routes
+from routes import taobao as taobao_routes
+from routes import album as album_routes
 from routes import schedule as schedule_routes
+from routes import private_memos as private_memos_routes
+from routes import widget_control as widget_control_routes
 from routes import location as location_routes
 from routes import heart_whispers as heart_whispers_routes
 from routes import moments as moments_routes
@@ -236,6 +240,8 @@ app.add_middleware(SecurityAccessMiddleware, service=security_access_service)
 
 # 静态文件
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+# 更具体的相册挂载必须在 /uploads 之前；URL 兼容聊天附件，磁盘目录独立。
+app.mount("/uploads/album", StaticFiles(directory=str(ALBUM_IMAGES_DIR)), name="album-images")
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 app.mount("/songs", StaticFiles(directory=str(SONGS_DIR)), name="songs")
 app.mount("/cr-uploads", StaticFiles(directory=str(CODEX_UPLOADS_DIR)), name="cr-uploads")
@@ -252,7 +258,11 @@ app.include_router(memories.router)
 app.include_router(voice_routes.router)
 app.include_router(music_routes.router)
 app.include_router(music_station_routes.router)
+app.include_router(taobao_routes.router)
+app.include_router(album_routes.router)
 app.include_router(schedule_routes.router)
+app.include_router(private_memos_routes.router)
+app.include_router(widget_control_routes.router)
 app.include_router(location_routes.router)
 app.include_router(heart_whispers_routes.router)
 app.include_router(moments_routes.router)
@@ -311,9 +321,19 @@ async def chat_page():
     return FileResponse(BASE_DIR / "static" / "chat.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
+@app.get("/album")
+async def album_page():
+    return FileResponse(BASE_DIR / "static" / "album.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
 @app.get("/music-station")
 async def music_station_page():
     return FileResponse(BASE_DIR / "static" / "music-station.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/taobao")
+async def taobao_page():
+    return FileResponse(BASE_DIR / "static" / "taobao.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/settings")
 async def settings_page():

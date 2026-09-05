@@ -99,6 +99,24 @@ class WeChatModeStateTests(unittest.TestCase):
 
 
 class WeChatBubbleRendererTests(unittest.TestCase):
+    def test_inner_monologue_accepts_mixed_ascii_and_corner_brackets(self):
+        event = {
+            "type": "msg_created",
+            "data": {
+                "id": "msg-mixed-brackets",
+                "role": "assistant",
+                "content": "笑死了。【心里嘀咕：睡饱了才有力气窝进怀里。]",
+                "attachments": [],
+            },
+        }
+
+        self.assertEqual(
+            render_wechat_bubbles(event, source_label="私聊", sender_name="Companion"),
+            [
+                "Companion：笑死了。💭心里嘀咕：睡饱了才有力气窝进怀里。",
+            ],
+        )
+
     def test_plain_lines_and_inner_monologue_become_separate_messages(self):
         event = {
             "type": "msg_created",

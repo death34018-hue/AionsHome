@@ -12,6 +12,7 @@ from config import (
     DB_PATH, SCREENSHOTS_DIR, MONITOR_LOGS_DIR,
     get_key, get_sentinel_config, load_worldbook, load_chat_status, load_cam_config,
     normalize_camera_wake_mode, save_cam_config, DEFAULT_MODEL, SETTINGS,
+    resolve_model_transport_mode,
 )
 from database import get_db
 from ws import manager
@@ -27,6 +28,13 @@ SENTINEL_LEGACY_WAKE_TARGETS = {
     "aion": "main_ai",
     "connor": "second_ai",
 }
+
+
+def _load_connor_model_resolver():
+    """Load the route-owned Connor model resolver without a startup import cycle."""
+    from routes.chatroom import _resolve_connor_model
+
+    return _resolve_connor_model
 
 
 def build_monitor_layout_guidance(include_pc_screen: bool) -> str:
@@ -1351,12 +1359,12 @@ class CameraMonitor:
         except Exception:
             recent_chat_text = ""
 
-        # 获取最近 1 小时的设备活动摘要（6 条）
+        # 当前设备状态与近期使用历史并存，补齐本轮尚未生成摘要的变化。
         activity_summary_text = ""
         user_dynamics_text = ""
         try:
-            from activity import get_device_context_for_prompt, get_user_dynamics_for_prompt
-            activity_summary_text = get_device_context_for_prompt()
+            from activity import get_monitor_activity_for_prompt, get_user_dynamics_for_prompt
+            activity_summary_text = get_monitor_activity_for_prompt()
             user_dynamics_text = get_user_dynamics_for_prompt(hours=1)
         except Exception:
             pass
@@ -1394,7 +1402,7 @@ class CameraMonitor:
 最近的聊天记录：
 {recent_chat_text if recent_chat_text else "（暂无聊天记录）"}
 
-{user_name}近一小时的设备使用动态（手机/电脑应用使用情况，每10分钟一条摘要）：
+{user_name}的设备当前状态与近期使用历史（分别标注）：
 {activity_summary_text if activity_summary_text else "（暂无设备活动记录）"}
 {user_dynamics_block}
 {heart_rate_block}
@@ -1652,7 +1660,7 @@ class CameraMonitor:
         )
         from schedule import (
             _broadcast_trigger_debug,
-            _consume_background_stream,
+            _consume_background_realtime_stream,
             _new_background_meta,
             _process_background_reply_commands,
             _tts_voice_for_target,
@@ -1691,6 +1699,10 @@ class CameraMonitor:
             f"最新一条监控日志原文（哨兵看到的画面完整描述）：{trigger_log}"
         )
         core_parts.append(f"最近的监控记录：\n{recent_detail}")
+        from activity import get_monitor_activity_for_prompt
+        device_activity = get_monitor_activity_for_prompt()
+        if device_activity:
+            core_parts.append(device_activity)
         contact_scene = (
             "群聊里"
             if room_type == "group"
@@ -1746,15 +1758,20 @@ class CameraMonitor:
         await inject_autonomy_ability(messages, "connor")
         inject_app_supervision_context(messages)
 
+        _resolve_connor_model = _load_connor_model_resolver()
         cfg = load_chatroom_config()
-        model_key = (cfg.get("connor_model") or "Codex").strip() or "Codex"
+        model_key = _resolve_connor_model(cfg.get("connor_model"))
         core_msg_id = f"cm_{int(time.time() * 1000)}_cr"
         usage_meta = _new_background_meta()
-        command_filter = WebCommandStreamFilter()
         core_tts = None
         tts_voice = _tts_voice_for_target(True, "connor")
         if tts_voice:
-            core_tts = TTSStreamer(core_msg_id, tts_voice, manager)
+            core_tts = TTSStreamer(
+                core_msg_id,
+                tts_voice,
+                manager,
+                low_latency_first_chunk=resolve_model_transport_mode(model_key) == "safe_live",
+            )
 
         if model_key == "Codex":
             async def content_stream():
@@ -1779,11 +1796,14 @@ class CameraMonitor:
                         continue
                     yield chunk
 
-        stream_result = await _consume_background_stream(
-            content_stream(),
-            command_filter,
-            core_tts,
+        transport_outcome = await _consume_background_realtime_stream(
+            content_stream,
+            model_key=model_key,
+            tts_streamer=core_tts,
         )
+        if transport_outcome.manual_retry_required:
+            return
+        stream_result = transport_outcome.result
         full_text = _strip_leading_cli_role_header(stream_result.committed_text)
         safety_notice = stream_result.notice
         if not full_text.strip() and not safety_notice:
@@ -1885,7 +1905,7 @@ class CameraMonitor:
 
         from schedule import (
             _broadcast_trigger_debug,
-            _consume_background_stream,
+            _consume_background_realtime_stream,
             _new_background_meta,
             _process_background_reply_commands,
             schedule_mgr,
@@ -1925,6 +1945,10 @@ class CameraMonitor:
             core_parts.append(f"这段时间{user_name}的整体状况：{summary}")
         core_parts.append(f"最新一条监控日志原文（哨兵看到的画面完整描述）：{trigger_log}")
         core_parts.append(f"最近的监控记录：\n{recent_detail}")
+        from activity import get_monitor_activity_for_prompt
+        device_activity = get_monitor_activity_for_prompt()
+        if device_activity:
+            core_parts.append(device_activity)
         contact_scene = "群聊里" if is_chatroom else f"{ai_name} 与 {user_name} 的私聊里"
         core_parts.append(
             f"你现在是在{contact_scene}主动联系她。"
@@ -1996,9 +2020,13 @@ class CameraMonitor:
         if manager.any_tts_enabled():
             tts_voice = manager.get_tts_voice()
             if tts_voice:
-                core_tts = TTSStreamer(core_msg_id, tts_voice, manager)
+                core_tts = TTSStreamer(
+                    core_msg_id,
+                    tts_voice,
+                    manager,
+                    low_latency_first_chunk=resolve_model_transport_mode(model_key) == "safe_live",
+                )
 
-        core_command_filter = WebCommandStreamFilter()
         _temp = SETTINGS.get("temperature")
 
         async def content_stream():
@@ -2007,11 +2035,14 @@ class CameraMonitor:
                     continue
                 yield chunk
 
-        stream_result = await _consume_background_stream(
-            content_stream(),
-            core_command_filter,
-            core_tts,
+        transport_outcome = await _consume_background_realtime_stream(
+            content_stream,
+            model_key=model_key,
+            tts_streamer=core_tts,
         )
+        if transport_outcome.manual_retry_required:
+            return
+        stream_result = transport_outcome.result
         full_text = stream_result.committed_text
         has_error = stream_result.stop_reason is not None
         error_text = stream_result.diagnostic_error or stream_result.stop_reason
@@ -2037,6 +2068,10 @@ class CameraMonitor:
             "sentinel",
         )
         system_atts = [snapshot_attachment] if snapshot_attachment else []
+        system_atts.append({
+            "type": "system_notice_order",
+            "before_msg_id": core_msg_id,
+        })
         if is_chatroom:
             await schedule_mgr._save_to_chatroom(
                 target["room_id"],
@@ -2587,6 +2622,10 @@ async def perform_cam_check(conv_id: str, model_key: str):
         "cam_check",
     )
     system_atts = [snapshot_attachment] if snapshot_attachment else []
+    system_atts.append({
+        "type": "system_notice_order",
+        "before_msg_id": msg_id,
+    })
     # 插入系统提示：查看了监控画面
     sys_now = time.time()
     sys_msg_id = f"msg_{int(sys_now*1000)}_cc_sys"

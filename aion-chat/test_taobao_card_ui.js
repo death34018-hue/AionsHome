@@ -1,0 +1,23 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const context = {window: {}, URL};
+vm.runInNewContext(fs.readFileSync('static/taobao-card.js', 'utf8'), context);
+const render = context.window.TaobaoCards.render;
+const html = render([{type: 'taobao_trip', trip_id: 'abc123', count: 4,
+  products: Array.from({length: 4}, (_, i) => ({title: '<商品'+i+'>', image: i ? 'https://img.alicdn.com/a.jpg' : 'javascript:alert(1)'}))}]);
+assert.equal((html.match(/class="taobao-notice-preview"/g) || []).length, 1);
+assert.ok((html.match(/<img /g) || []).length <= 1, 'multiple products must not grow into a photo grid');
+assert.ok(html.includes('/taobao?trip=abc123'));
+assert.ok(html.includes('4 件'));
+assert.ok(html.includes('&lt;商品1&gt;'));
+assert.ok(html.includes('&lt;商品0&gt;'));
+assert.ok(!html.includes('javascript:'));
+assert.equal(render([{type:'image',url:'image.png'}]), '');
+assert.equal(render([{type:'taobao_trip',trip_id:'" onclick="alert(1)',products:[]}]), '');
+const linked = render([{type:'taobao_trip',trip_id:'trip123',count:1,products:[{title:'商品'}]}], {returnTo:'/chatroom?room=group-7'});
+assert.ok(linked.includes('return=%2Fchatroom%3Froom%3Dgroup-7'), 'card must carry its original room');
+const pictured = render([{type:'taobao_trip',trip_id:'trip123',count:1,products:[{title:'充电器',image:'https://img.alicdn.com/a.jpg'}]}]);
+assert.equal((pictured.match(/<img /g) || []).length, 1);
+assert.ok(pictured.includes('referrerpolicy="no-referrer"'));
+console.log('shopping card: previews, return route, escaping and attachment isolation OK');

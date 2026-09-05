@@ -490,7 +490,13 @@ async def send_message(conv_id: str, body: MsgCreate):
         try:
             await _q.put({"id": ai_msg_id, "type": "start"})
             async def content_stream():
-                async for chunk in stream_ai(history, model_key, usage_meta, temperature=temperature):
+                async for chunk in stream_ai(
+                    history,
+                    model_key,
+                    usage_meta,
+                    temperature=temperature,
+                    include_device_context=False,
+                ):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         continue
@@ -660,7 +666,13 @@ async def regenerate_message(conv_id: str, body: TheaterRegenerateRequest,
         try:
             await _q.put({"id": ai_msg_id, "type": "start"})
             async def content_stream():
-                async for chunk in stream_ai(history, model_key, usage_meta, temperature=temperature):
+                async for chunk in stream_ai(
+                    history,
+                    model_key,
+                    usage_meta,
+                    temperature=temperature,
+                    include_device_context=False,
+                ):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         continue

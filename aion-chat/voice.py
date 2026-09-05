@@ -36,10 +36,14 @@ VAD_FRAME_BYTES = VAD_FRAME_SIZE * 2  # int16 = 2 bytes
 VAD_MODE = 2                   # 0=最宽松 ~ 3=最严格，2 适合中等环境
 MIN_SPEECH_FRAMES = 8          # 连续 8 帧(240ms)以上才算说话
 MAX_SILENCE_FRAMES = 27        # ~0.8秒静音截断唤醒词 (27×30ms)
-CMD_SILENCE_SECS = 1.5         # 说话后1.5秒静音 → 一句话结束
 MIN_RECORD_SECS = 0.5
 
 HANGUP_KEYWORDS = ["再见", "拜拜", "挂断", "结束通话", "挂了"]
+
+
+def command_silence_frames(recorded_frames: int) -> int:
+    """短句停顿约 0.8 秒，长句保留约 1.2 秒思考空间。"""
+    return 27 if recorded_frames < 67 else 40
 
 
 class VoiceWakeup:
@@ -200,7 +204,8 @@ class VoiceWakeup:
                 frames.append(frame.copy())
                 if not is_speech:
                     silence_n += 1
-                    if silence_n > silence_frames:
+                    silence_limit = silence_frames(len(frames)) if callable(silence_frames) else silence_frames
+                    if silence_n > silence_limit:
                         break
                 else:
                     silence_n = 0
@@ -290,8 +295,6 @@ class VoiceWakeup:
             print(f"[Voice] Started with WebRTC VAD (mode={VAD_MODE})")
             self._broadcast_state("voice_state", {"enabled": True, "status": "waiting", "wake_word": self.wake_word})
 
-            cmd_silence = int(SAMPLE_RATE / VAD_FRAME_SIZE * CMD_SILENCE_SECS)
-
             while not self._stop_evt.is_set():
                 # ══ 待命：等待唤醒词 ══
                 print(f"[Voice] === Waiting for wakeup (ai_speaking={self.ai_speaking}, in_call={self.in_call}) ===")
@@ -338,7 +341,7 @@ class VoiceWakeup:
                     # 等 AI 说完（持续读取流，防止缓冲区溢出）
                     while self.ai_speaking and not self._stop_evt.is_set():
                         try:
-                            stream.read(FRAME_SIZE)
+                            stream.read(VAD_FRAME_SIZE)
                         except Exception:
                             time.sleep(0.1)
 
@@ -351,7 +354,7 @@ class VoiceWakeup:
                         "message": "聆听中..."
                     })
 
-                    user_audio = self._record(stream, cmd_silence, timeout_sec=60)
+                    user_audio = self._record(stream, command_silence_frames, timeout_sec=60)
 
                     if self._stop_evt.is_set():
                         break

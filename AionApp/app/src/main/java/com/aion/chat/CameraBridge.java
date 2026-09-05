@@ -37,6 +37,7 @@ public class CameraBridge {
     private final CameraPreviewSessionGate sessionGate =
             new CameraPreviewSessionGate();
     private int facing;
+    private boolean photoMode;
     private int sensorRotation;
     private int previewWidth, previewHeight;
     private volatile String lastFrameB64 = null;
@@ -72,9 +73,20 @@ public class CameraBridge {
 
     @JavascriptInterface
     public synchronized boolean start(String facingStr) {
+        return startCamera(facingStr, false);
+    }
+
+    /** 聊天拍照独立提高清晰度，不改变视频通话的预览负载。 */
+    @JavascriptInterface
+    public synchronized boolean startPhoto(String facingStr) {
+        return startCamera(facingStr, true);
+    }
+
+    private boolean startCamera(String facingStr, boolean forPhoto) {
         if (!previewState.canStart()
                 || PhoneCameraPreviewCoordinator.shared().isEventActive()) return false;
         if (previewState.isRunning()) stop();
+        photoMode = forPhoto;
 
         facing = "user".equals(facingStr)
                 ? Camera.CameraInfo.CAMERA_FACING_FRONT
@@ -100,9 +112,9 @@ public class CameraBridge {
 
         Camera.Parameters params = camera.getParameters();
 
-        // 选择接近 640×480 的预览尺寸（清晰度和性能平衡）
+        // 拍照接近 1280×960；视频通话等入口仍使用 640×480。
         Camera.Size best = null;
-        int target = 640 * 480;
+        int target = photoMode ? 1280 * 960 : 640 * 480;
         for (Camera.Size s : params.getSupportedPreviewSizes()) {
             if (best == null
                     || Math.abs(s.width * s.height - target) < Math.abs(best.width * best.height - target))
@@ -234,8 +246,10 @@ public class CameraBridge {
     }
 
     @JavascriptInterface
-    public boolean flip() {
-        return start(facing == Camera.CameraInfo.CAMERA_FACING_FRONT ? "environment" : "user");
+    public synchronized boolean flip() {
+        return startCamera(
+                facing == Camera.CameraInfo.CAMERA_FACING_FRONT ? "environment" : "user",
+                photoMode);
     }
 
     /** 返回最近一帧的 base64 JPEG（已旋转为竖屏，前端直接显示） */
@@ -246,14 +260,18 @@ public class CameraBridge {
 
     /** 截图：高质量 JPEG（已旋转，前置已镜像翻转） */
     @JavascriptInterface
-    public String capture() {
+    public synchronized String capture() {
         byte[] nv21 = lastRotatedNv21;
         if (nv21 == null) return null;
         try {
             // 用旋转后的数据直接压 JPEG（高质量）
             YuvImage yuv = new YuvImage(nv21, ImageFormat.NV21, rotatedWidth, rotatedHeight, null);
             ByteArrayOutputStream buf = new ByteArrayOutputStream();
-            yuv.compressToJpeg(new Rect(0, 0, rotatedWidth, rotatedHeight), 40, buf);
+            int quality = photoMode ? 90 : 40;
+            // 自拍镜像前的中间 JPEG 保留细节，最终文件仍以 quality 编码。
+            int sourceQuality = photoMode && facing == Camera.CameraInfo.CAMERA_FACING_FRONT
+                    ? 100 : quality;
+            yuv.compressToJpeg(new Rect(0, 0, rotatedWidth, rotatedHeight), sourceQuality, buf);
 
             // 前置摄像头需要水平镜像
             if (facing == Camera.CameraInfo.CAMERA_FACING_FRONT) {
@@ -264,7 +282,7 @@ public class CameraBridge {
                     m.postScale(-1, 1);
                     Bitmap mirrored = Bitmap.createBitmap(bmp, 0, 0, bmp.getWidth(), bmp.getHeight(), m, false);
                     buf.reset();
-                    mirrored.compress(Bitmap.CompressFormat.JPEG, 40, buf);
+                    mirrored.compress(Bitmap.CompressFormat.JPEG, quality, buf);
                     bmp.recycle();
                     if (mirrored != bmp) mirrored.recycle();
                 }

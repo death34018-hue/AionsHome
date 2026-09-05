@@ -95,6 +95,14 @@ public final class MiBandProtocol {
         };
     }
 
+    public static List<byte[]> buildManagedHealthSettings() {
+        return Arrays.asList(
+                new byte[] {0x05, 0x08, 0x02, 0x00, 0x01, 0x01, 0x10, 0x01},
+                new byte[] {0x05, 0x08, 0x02, 0x00, 0x01, 0x12, 0x0b, 0x00},
+                new byte[] {0x05, 0x08, 0x02, 0x00, 0x01, 0x13, 0x0b, 0x00},
+                new byte[] {0x05, 0x08, 0x02, 0x00, 0x01, 0x31, 0x0b, 0x00});
+    }
+
     public static List<ActivitySample> parseActivity(long startMillis, byte[] payload) {
         if (payload == null || payload.length % 8 != 0) {
             throw new IllegalArgumentException("activity payload length must be divisible by 8");

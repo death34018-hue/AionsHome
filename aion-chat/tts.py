@@ -70,7 +70,7 @@ _STRIP_PATTERNS = [
     re.compile(r'\[MEMORY:[^\]]*\]'),
     re.compile(r'\[微信消息[：:][^\]]*\]'),
     re.compile(r'\[拍拍抱枕:(?:拍打开关|拍拍调慢|拍拍调快)\]'),
-    re.compile(r'\[心里嘀咕\s*[：:]\s*[^\]]*\]'),
+    re.compile(r'[\[【]心里嘀咕\s*[：:]\s*[^\]】]*[\]】]'),
     re.compile(r'\[查看动态:\d+\]'),
     re.compile(r'\[SELFIE:[^\]]*\]'),
     re.compile(r'\[DRAW:[^\]]*\]'),
@@ -99,8 +99,8 @@ def _strip_tags(text: str) -> str:
 def _has_unclosed_tag(text: str) -> bool:
     """检查是否有未闭合的特殊标签。"""
     # 检查 [TAG:... 没有闭合的 ]
-    last_open = text.rfind('[')
-    if last_open >= 0 and ']' not in text[last_open:]:
+    last_open = max(text.rfind('['), text.rfind('【'))
+    if last_open >= 0 and not any(close in text[last_open:] for close in (']', '】')):
         return True
     # 检查 <meta> 没有闭合的 </meta>
     meta_opens = text.count('<meta>')
@@ -320,13 +320,18 @@ class TTSStreamer:
         max_concurrency: int = 2,
         max_pending_segments: int = 6,
         max_segments: int = 40,
+        low_latency_first_chunk: bool = False,
     ):
         self.msg_id = msg_id
         self.voice = voice
         self._ws = ws_manager
         self._sse_queue = sse_queue
+        if low_latency_first_chunk:
+            min_chars, max_chars = 60, 100
         self._min_chars = max(1, min_chars)
         self._max_chars = max(self._min_chars, max_chars)
+        self._first_min_chars = 12 if low_latency_first_chunk else self._min_chars
+        self._first_max_chars = 24 if low_latency_first_chunk else self._max_chars
         self._cache_dir = cache_dir or TTS_CACHE_DIR
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._audio_url_prefix = audio_url_prefix.rstrip("/")
@@ -346,6 +351,7 @@ class TTSStreamer:
         self._cache_max_bytes = cache_max_bytes
         self._event_data = dict(event_data or {})
         self._cancelled = False
+        self._emitted_audio_segments = 0
 
     @property
     def worker_task_count(self) -> int:
@@ -362,6 +368,50 @@ class TTSStreamer:
     @property
     def segment_limit_reached(self) -> bool:
         return self._segment_limit_reached
+
+    @property
+    def has_emitted_audio(self) -> bool:
+        return self._emitted_audio_segments > 0
+
+    def discard_pending_text(self) -> None:
+        """Drop text that has not crossed the synthesis checkpoint."""
+        if self._seq == 0 and not self.has_emitted_audio:
+            self._buffer = ""
+            self._deferred_segments.clear()
+
+    async def rewind_before_audio(self) -> bool:
+        """Cancel unplayed synthesis and make this streamer reusable for one retry."""
+        if self.has_emitted_audio:
+            return False
+        self._cancelled = True
+        self._buffer = ""
+        self._deferred_segments.clear()
+        if self._queue is not None:
+            while True:
+                try:
+                    self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                else:
+                    self._queue.task_done()
+        for task in self._workers:
+            if not task.done():
+                task.cancel()
+        if self._workers:
+            await asyncio.gather(*self._workers, return_exceptions=True)
+        if self.has_emitted_audio:
+            self._cleanup_owned_files()
+            return False
+        self._cleanup_owned_files()
+        self._queue = None
+        self._workers = []
+        self._deferred_segments.clear()
+        self._segment_paths.clear()
+        self._seq = 0
+        self._segment_limit_reached = False
+        self._merge_task = None
+        self._cancelled = False
+        return True
 
     def _with_event_data(self, data: dict) -> dict:
         return {**self._event_data, **data}
@@ -437,7 +487,8 @@ class TTSStreamer:
         if self._cancelled or _has_unclosed_tag(self._buffer):
             return None
         clean = _strip_tags(self._buffer)
-        if len(clean) < self._min_chars:
+        min_chars, _ = self._current_segment_limits()
+        if len(clean) < min_chars:
             return None
         cut_pos = self._find_cut_position()
         if cut_pos is None:
@@ -464,7 +515,13 @@ class TTSStreamer:
         逻辑：纯文本到达 min_chars 后，开始找句号；最远到 max_chars，找逗号；还没有就强切。
         返回原始 buffer 中的切分索引。
         """
-        return _find_cut_position_for_text(self._buffer, self._min_chars, self._max_chars)
+        min_chars, max_chars = self._current_segment_limits()
+        return _find_cut_position_for_text(self._buffer, min_chars, max_chars)
+
+    def _current_segment_limits(self) -> tuple[int, int]:
+        if self._seq == 0:
+            return self._first_min_chars, self._first_max_chars
+        return self._min_chars, self._max_chars
 
     def _dispatch(self, text: str):
         """Compatibility hook for one-off callers and existing tests."""
@@ -648,6 +705,9 @@ class TTSStreamer:
             if self._cache_max_bytes and self._cache_dir.resolve() == TTS_CACHE_DIR.resolve():
                 await asyncio.to_thread(cleanup_tts_cache_dir, self._cache_dir, self._cache_max_bytes, skip={cache_path})
 
+            # Crossing into notification is irreversible: the client may receive
+            # the chunk before this coroutine resumes, so checkpoint first.
+            self._emitted_audio_segments += 1
             await self._notify({
                 "type": "tts_chunk",
                 "data": self._with_event_data({

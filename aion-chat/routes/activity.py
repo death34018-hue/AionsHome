@@ -16,7 +16,7 @@ from activity import (
     is_activity_tracking_enabled, set_activity_tracking_enabled,
     pc_display_tracker, record_phone_context, record_notification,
     remove_notification_context, get_device_context_snapshot,
-    get_device_context_for_prompt,
+    get_device_context_for_prompt, is_device_usage_entry,
 )
 from ws import manager
 from database import get_db
@@ -182,13 +182,12 @@ def _resolve_entries(entries: list) -> list:
     """对历史条目做名称解析 + 过滤"""
     result = []
     for e in entries:
-        if e.get("device") == "home" and e.get("kind") == "home_sensor":
+        if not is_device_usage_entry(e):
             continue
         resolved = resolve_app_name(e.get("app", ""), e.get("title", ""))
         if resolved is None:
             continue  # 过滤系统应用
-        e["app"] = resolved
-        result.append(e)
+        result.append({**e, "app": resolved})
     return result
 
 
@@ -355,9 +354,16 @@ async def get_timeline(hours: int = 24, limit: int = 300):
             title = _idle_event_timeline_title(r, actor, shown_diary_ids, shown_moment_ids)
             if not title:
                 continue
+            try:
+                meta = json.loads(r["metadata"] or "{}")
+            except (ValueError, TypeError):
+                meta = {}
+            album_photos = meta.get("album_photos", []) if meta.get("selected_action") == "album_browse" else []
+            photo_urls = [p["url"] for p in album_photos[:2]
+                          if isinstance(p, dict) and str(p.get("url", "")).startswith("/uploads/album/")]
             items.append(_timeline_item(
                 r["created_at"], "idle_event", actor,
-                title, _clip(r["detail"]), r["id"],
+                title, r["detail"] if meta.get("selected_action") == "album_browse" else _clip(r["detail"]), r["id"], photo_urls,
             ))
 
     user_groups = await list_grouped_user_events(since=cutoff, limit=limit)

@@ -77,6 +77,7 @@ import com.aion.chat.miband.MiBandCommandInbox;
 import com.aion.chat.miband.MiBandRuntime;
 import com.aion.chat.miband.MiBandStatus;
 import com.aion.chat.miband.MiBandSyncSchedule;
+import com.aion.chat.widget.WidgetStateSyncClient;
 
 import android.app.usage.UsageStats;
 import android.app.usage.UsageStatsManager;
@@ -2168,6 +2169,7 @@ public class AionPushService extends Service {
                     fetchPendingMiBandCommands();
                     syncAppSupervisionRuntimeConfig();
                     fetchPendingAppSupervisionCommands();
+                    WidgetStateSyncClient.sync(AionPushService.this);
                 }
 
                 @Override
@@ -2513,6 +2515,10 @@ public class AionPushService extends Service {
             JSONObject data = json.optJSONObject("data");
 
             switch (type) {
+                case "widget_state_changed": {
+                    WidgetStateSyncClient.sync(this);
+                    break;
+                }
                 case "phone_camera_capture": {
                     dispatchPhoneCameraCapture(data);
                     break;

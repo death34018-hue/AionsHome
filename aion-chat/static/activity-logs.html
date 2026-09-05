@@ -780,12 +780,15 @@ function renderEntries() {
       ? `<div class="log-title">${escHtml(e.title)}</div>`
       : '';
     // 动作描述
-    const action = e.device === 'phone' ? '打开了' : '正在使用';
+    const screenLabel = e.device === 'phone'
+      ? ({screen_off: '锁屏 / 熄屏', screen_on: '亮屏'})[e.app]
+      : '';
+    const action = screenLabel ? '' : (e.device === 'phone' ? '打开了' : '正在使用');
     return `<div class="log-entry">
       <span class="log-device ${deviceCls}">${deviceLabel}</span>
       <div class="log-body">
         <span class="log-time">${escHtml(e.time || '')}</span>
-        <span class="log-action">${action} </span><span class="log-app">${escHtml(e.app || '')}</span>
+        <span class="log-action">${action} </span><span class="log-app">${escHtml(screenLabel || e.app || '')}</span>
         ${titleHtml}
       </div>
     </div>`;

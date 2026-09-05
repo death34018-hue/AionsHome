@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 import tempfile
 
-from config import get_key, MODELS, UPLOADS_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, SETTINGS, get_sentinel_config, DATA_DIR, resolve_model_key, is_model_deprecated
+from config import get_key, MODELS, UPLOADS_DIR, ALBUM_IMAGES_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, SETTINGS, get_sentinel_config, DATA_DIR, resolve_model_key, is_model_deprecated
 from codex_app_server import (
     CodexAppServerEvent,
     build_codex_app_server_command,
@@ -349,6 +349,8 @@ def _resolve_attachment_path(att) -> Path | None:
         # /cr-uploads/2026-05-07/xxx.jpg → CODEX_UPLOADS_DIR/2026-05-07/xxx.jpg
         rel = att[len("/cr-uploads/"):]
         return CODEX_UPLOADS_DIR / rel
+    elif att.startswith("/uploads/album/"):
+        return ALBUM_IMAGES_DIR / Path(att).name
     elif att.startswith("/uploads/"):
         return UPLOADS_DIR / att[len("/uploads/"):]
     elif att.startswith("/screenshots/"):
@@ -659,6 +661,8 @@ async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None
         payload["temperature"] = temperature
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
+    if cfg.get("use_default_reasoning_effort") is False:
+        payload["reasoning_effort"] = cfg.get("reasoning_effort", "high")
     async with httpx.AsyncClient(timeout=120) as client:
         async with client.stream("POST", url, json=payload, headers=headers) as resp:
             if resp.status_code != 200:
@@ -2127,7 +2131,12 @@ async def _sentinel_describe_images(messages: list) -> list:
 
 
 # ── 统一调度 ──────────────────────────────────────
-def with_current_device_context(messages: list) -> list:
+def with_current_device_context(
+    messages: list,
+    *,
+    insert_at: int | None = None,
+    add_acknowledgement: bool = False,
+) -> list:
     prepared = [dict(message) for message in messages]
     if any(
         "【设备当前状态】" in str(message.get("content") or "")
@@ -2140,6 +2149,16 @@ def with_current_device_context(messages: list) -> list:
     except Exception:
         device_context = ""
     if not device_context:
+        return prepared
+
+    if insert_at is not None:
+        index = max(0, min(len(prepared), int(insert_at)))
+        prepared.insert(index, {"role": "user", "content": device_context})
+        if add_acknowledgement:
+            prepared.insert(index + 1, {
+                "role": "assistant",
+                "content": "收到，我会结合当前设备状态判断。",
+            })
         return prepared
 
     for index in range(len(prepared) - 1, -1, -1):

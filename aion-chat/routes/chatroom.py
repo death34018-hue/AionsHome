@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from config import DEFAULT_MODEL, DATA_DIR, CODEX_UPLOADS_DIR, MODELS, SETTINGS, get_sentinel_config, resolve_model_key
+from config import DEFAULT_MODEL, DATA_DIR, CODEX_UPLOADS_DIR, ALBUM_IMAGES_DIR, MODELS, SETTINGS, get_sentinel_config, resolve_model_key, resolve_model_transport_mode
 from database import get_db
 from ws import manager
 from active_window_state import record_chatroom_active
@@ -36,6 +36,7 @@ from context_builder import (
     PRIVATE_WHISPER_CMD_PATTERN, VIDEO_CALL_CMD, META_TAG_PATTERN, strip_tool_commands,
     WISH_CMD_PATTERN,
     append_message_meta,
+    build_ability_block,
 )
 from music_station import record_music_request
 from memory import (
@@ -52,11 +53,14 @@ from luckin import handle_luckin_commands, luckin_payment_attachments
 from link_preview import build_link_preview_attachments, strip_urls_for_message
 from song_gen import clean_song_visible_reply
 from stream_reply import resolve_stream_failure
+from widget_control import process_widget_control_commands
 from stream_safety import (
     CHAT_STREAM_POLICY,
     StreamSafetyResult,
     consume_safe_stream,
 )
+from safe_live_stream import consume_safe_live_stream
+from realtime_stream_transport import consume_realtime_transport
 from band_commands import process_band_vibration, with_band_vibration_attachment
 from hug_pillow_commands import process_hug_pillow_commands
 from app_supervision_ai import (
@@ -81,8 +85,42 @@ from lounge_visit_commands import (
     handle_lounge_visit_commands,
     is_chat_visit_friend_allowed,
 )
+from capabilities import is_capability_enabled
+from active_memory_search import (
+    MemorySearchRequest,
+    extract_memory_search_requests,
+    format_memory_search_context,
+    search_actor_memories,
+)
 
 router = APIRouter(prefix="/api/chatroom", tags=["chatroom"])
+
+
+def _chatroom_memory_search_requests(text: str) -> list[MemorySearchRequest]:
+    _cleaned, requests = extract_memory_search_requests(
+        text, enabled=is_capability_enabled("memory_search")
+    )
+    return requests
+
+
+def _chatroom_memory_search_parse(
+    text: str,
+) -> tuple[str, list[MemorySearchRequest]]:
+    return extract_memory_search_requests(
+        text, enabled=is_capability_enabled("memory_search")
+    )
+
+
+def _memory_actor_for_speaker(speaker: str) -> str:
+    return "connor" if str(speaker).strip().lower() == "connor" else "aion"
+
+
+def _chatroom_memory_status_text(speaker: str) -> str:
+    return f"{_name_for_identity(_memory_actor_for_speaker(speaker))}正在翻找记忆……"
+
+
+def _chatroom_memory_completed_text(speaker: str) -> str:
+    return f"{_name_for_identity(_memory_actor_for_speaker(speaker))}翻找了记忆"
 
 
 async def _consume_chatroom_stream(
@@ -109,6 +147,74 @@ async def _consume_chatroom_stream(
             "content": f"\n\n[{result.notice}]",
         })
     return result
+
+
+async def _consume_safe_chatroom_stream(
+    source,
+    queue,
+    *,
+    chunk_type: str,
+    tts_streamer: TTSStreamer | None = None,
+) -> tuple[StreamSafetyResult, str]:
+    visible_text = ""
+    stream_filter = WebCommandStreamFilter()
+    lounge_filter = LoungeVisitCommandStreamFilter()
+
+    async def on_commit(chunk: str) -> None:
+        nonlocal visible_text
+        visible = lounge_filter.feed(stream_filter.feed(chunk))
+        if visible:
+            visible_text += visible
+            await queue.put({"type": chunk_type, "content": visible})
+            if tts_streamer:
+                await tts_streamer.feed_async(visible)
+
+    result = await consume_safe_live_stream(source, on_commit)
+    if result.stop_reason is None:
+        visible_tail = lounge_filter.feed(stream_filter.flush()) + lounge_filter.flush()
+        if visible_tail:
+            visible_text += visible_tail
+            await queue.put({"type": chunk_type, "content": visible_tail})
+            if tts_streamer:
+                await tts_streamer.feed_async(visible_tail)
+    return result, visible_text
+
+
+async def _consume_chatroom_realtime_stream(
+    source_factory,
+    queue,
+    *,
+    chunk_type: str,
+    model_key: str = "",
+    tts_streamer: TTSStreamer | None = None,
+    transport_mode: str | None = None,
+):
+    mode = transport_mode or resolve_model_transport_mode(model_key)
+
+    async def safe_consumer(source):
+        return await _consume_safe_chatroom_stream(
+            source,
+            queue,
+            chunk_type=chunk_type,
+            tts_streamer=tts_streamer,
+        )
+
+    async def legacy_consumer(source):
+        result = await _consume_chatroom_stream(source, queue, chunk_type=chunk_type)
+        return result, ""
+
+    async def reset_visible():
+        reset_type = "connor_reset" if chunk_type == "connor_chunk" else "aion_reset"
+        await queue.put({"type": reset_type})
+
+    return await consume_realtime_transport(
+        mode=mode,
+        source_factory=source_factory,
+        safe_consumer=safe_consumer,
+        legacy_consumer=legacy_consumer,
+        reset_visible=reset_visible,
+        tts_streamer=tts_streamer,
+    )
 
 
 def _done_streaming_response() -> StreamingResponse:
@@ -242,13 +348,12 @@ def _process_voice_attachments(history: list):
                 if is_kept:
                     non_media_atts.append(att.get("url", ""))
             else:
-                if is_kept:
-                    non_media_atts.append(att)
+                non_media_atts.append(att)
         if media_transcripts:
             vt = "\n".join(media_transcripts)
             orig = msg["content"].strip() if msg.get("content") else ""
             msg["content"] = vt + (f"\n{orig}" if orig else "")
-        if is_kept:
+        if non_media_atts:
             msg["attachments"] = non_media_atts
         else:
             msg.pop("attachments", None)
@@ -327,6 +432,43 @@ async def _append_system_message_attachment(
         {"type": "chatroom_msg_updated", "data": msg},
     )
     return msg
+
+
+async def _complete_chatroom_memory_search_status(
+    room_id: str, msg_id: str, speaker: str
+) -> None:
+    if not room_id or not msg_id:
+        return
+    content = _chatroom_memory_completed_text(speaker)
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE chatroom_messages SET content=? WHERE id=? AND room_id=? AND sender='system'",
+            (content, msg_id, room_id),
+        )
+        cur = await db.execute(
+            "SELECT created_at, attachments FROM chatroom_messages WHERE id=? AND room_id=? AND sender='system'",
+            (msg_id, room_id),
+        )
+        row = await cur.fetchone()
+        await db.commit()
+    if not row:
+        return
+    try:
+        attachments = json.loads(row[1] or "[]")
+    except (TypeError, json.JSONDecodeError):
+        attachments = []
+    msg = {
+        "id": msg_id,
+        "room_id": room_id,
+        "sender": "system",
+        "content": content,
+        "created_at": row[0],
+        "attachments": attachments,
+    }
+    await broadcast_synced(
+        manager,
+        {"type": "chatroom_msg_updated", "data": msg},
+    )
 
 
 def _name_for_identity(identity: str) -> str:
@@ -502,6 +644,18 @@ async def _process_chatroom_commands(
     triggered = {}  # 收集需要后续处理的动作
     who_identity = "connor" if who.lower() == "connor" else "aion"
     who_label = _name_for_identity(who_identity)
+
+    memory_clean_text, memory_requests = _chatroom_memory_search_parse(full_text)
+    if memory_requests:
+        notice = await _chatroom_sys_msg(
+            room_id, _chatroom_memory_status_text(who_identity), _q
+        )
+        triggered["memory_search"] = {
+            "requests": memory_requests,
+            "original_question": user_text,
+            "system_msg_id": notice["id"],
+        }
+        return memory_clean_text.strip(), triggered
 
     full_text, supervision_command = await queue_app_supervision_reply_command(
         full_text,
@@ -861,6 +1015,7 @@ async def _process_chatroom_commands(
     # 清理 META 标签
     full_text = META_TAG_PATTERN.sub("", full_text)
 
+    full_text = await process_widget_control_commands(full_text, who_identity)
     return _visible_chatroom_text(full_text), triggered
 
 
@@ -1041,6 +1196,12 @@ def _fire_chatroom_followups(triggered: dict, room_id: str, sender: str, model_k
         asyncio.create_task(_chatroom_poi_check(room_id, sender, model_key, triggered["poi"]))
     if triggered.get("web_search"):
         asyncio.create_task(_chatroom_web_search(room_id, sender, model_key, triggered["web_search"]))
+    if triggered.get("memory_search"):
+        asyncio.create_task(
+            _chatroom_memory_search(
+                room_id, sender, model_key, triggered["memory_search"]
+            )
+        )
     if triggered.get("image_gen"):
         ig = triggered["image_gen"]
         asyncio.create_task(_chatroom_image_gen(room_id, sender, ig["prompt"], ig["is_selfie"]))
@@ -1403,6 +1564,15 @@ async def _chatroom_web_search(room_id: str, sender: str, model_key: str, payloa
     recent = _render_recent_room_messages_for_ai(msgs)
 
     prefix_msgs = []
+    if sender == "connor":
+        from chatroom import _read_connor_persona
+
+        connor_persona = _read_connor_persona()
+        if connor_persona:
+            prefix_msgs.append({
+                "role": "system",
+                "content": connor_persona,
+            })
     if wb.get("ai_persona") and sender == "aion":
         prefix_msgs.append({"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"})
         prefix_msgs.append({"role": "assistant", "content": "收到，我会按照设定扮演角色。"})
@@ -1456,6 +1626,117 @@ async def _chatroom_web_search(room_id: str, sender: str, model_key: str, payloa
         return
     await _save_msg(room_id, sender, full_text, msg_id=reply_msg_id, auto_tts=tts_from_model)
     print(f"[CHATROOM_WEB_SEARCH] {sender} 搜索完成, room={room_id}, searches={len(searches)}, extracts={len(extracts)}")
+
+
+async def _chatroom_memory_search(room_id: str, sender: str, model_key: str, payload: dict):
+    """Search only the speaking actor's store and append one formal reply."""
+    from config import load_worldbook
+
+    requests = payload.get("requests") or []
+    original_question = str(payload.get("original_question") or "").strip()
+    if not requests:
+        return
+    actor = _memory_actor_for_speaker(sender)
+    try:
+        results = await asyncio.wait_for(
+            search_actor_memories(actor, requests), timeout=30.0
+        )
+        memory_context = format_memory_search_context(results, original_question)
+    except Exception as exc:
+        memory_context = (
+            "[主动记忆搜索回执]\n"
+            f"原始问题：{original_question[:500]}\n"
+            f"系统搜索失败：{type(exc).__name__}。请明确说明暂时无法核实，不要猜测。"
+        )
+
+    wb = load_worldbook()
+    await _complete_chatroom_memory_search_status(
+        room_id,
+        str(payload.get("system_msg_id") or ""),
+        actor,
+    )
+    user_name = wb.get("user_name", "用户")
+    ai_name = wb.get("ai_name", "AI")
+    sender_label = _name_for_identity(actor)
+    prefix_msgs: list[dict] = []
+    if actor == "connor":
+        from chatroom import _read_connor_persona
+        connor_persona = _read_connor_persona()
+        if connor_persona:
+            prefix_msgs.append({"role": "system", "content": connor_persona})
+    elif wb.get("ai_persona"):
+        prefix_msgs.extend([
+            {"role": "user", "content": f"[系统设定 - {ai_name}人设]\n{wb['ai_persona']}"},
+            {"role": "assistant", "content": "收到，我会按照设定扮演角色。"},
+        ])
+    if wb.get("user_persona"):
+        prefix_msgs.extend([
+            {"role": "user", "content": f"[系统设定 - {user_name}信息]\n{wb['user_persona']}"},
+            {"role": "assistant", "content": "收到，我会记住你的信息。"},
+        ])
+    ability_block = await build_ability_block(
+        user_name,
+        who=actor,
+        model_key=model_key,
+        excluded_capabilities={"memory_search"},
+    )
+    if ability_block:
+        prefix_msgs.extend([
+            {"role": "user", "content": ability_block},
+            {"role": "assistant", "content": "好的，需要时我会使用这些指令。"},
+        ])
+    _, msgs = await _load_room_and_messages(room_id, limit=10)
+    recent = _render_recent_room_messages_for_ai(msgs)
+    memory_prompt = (
+        f"{sender_label}刚才为了回答{user_name}的这个原始问题而翻找了自己的记忆：\n"
+        f"{original_question[:1000]}\n\n{memory_context}\n\n"
+        f"请以{sender_label}自己的口吻直接、自然地回答{user_name}。不要写成检索报告；"
+        "如果证据不足或冲突就坦白说明。本轮不要再次输出 MEMORY_SEARCH 指令。"
+    )
+    messages = prefix_msgs + recent + [{"role": "user", "content": memory_prompt}]
+
+    full_text = ""
+    tts_from_model = True
+    try:
+        if actor == "aion":
+            async for chunk in stream_ai(messages, model_key, temperature=SETTINGS.get("temperature")):
+                if not chunk.startswith(CLI_STATUS_PREFIX):
+                    full_text += chunk
+        else:
+            async for chunk in _stream_connor_model(messages, model_key):
+                if not chunk.startswith(CLI_STATUS_PREFIX):
+                    full_text += chunk
+    except Exception as exc:
+        resolution = resolve_stream_failure(full_text, exc, "记忆搜索完成但回复生成失败")
+        full_text = resolution.visible_text
+        tts_from_model = resolution.had_partial_text
+
+    full_text, _ignored = extract_memory_search_requests(full_text, enabled=True)
+    if not full_text.strip():
+        return
+    from schedule import _process_background_reply_commands
+    reply_msg_id = f"cm_{time.time_ns()}_{actor[:1]}"
+    full_text = await _process_background_reply_commands(
+        full_text,
+        target={"type": "chatroom", "room_id": room_id},
+        conv_id=None,
+        sender=actor,
+        ai_msg_id=reply_msg_id,
+    )
+    full_text = _normalize_cli_bubble_breaks(
+        _visible_chatroom_text(full_text), model_key
+    )
+    if actor == "connor":
+        full_text = _rewrite_connor_paths(full_text)
+    if not full_text.strip():
+        return
+    await _save_msg(
+        room_id, actor, full_text, msg_id=reply_msg_id, auto_tts=tts_from_model
+    )
+    print(
+        f"[CHATROOM_MEMORY_SEARCH] {actor} 搜索完成, room={room_id}, "
+        f"queries={len(requests)}, results={len(results) if 'results' in locals() else 0}"
+    )
 
 
 async def _chatroom_image_gen(room_id: str, sender: str, prompt: str, is_selfie: bool):
@@ -1559,7 +1840,7 @@ async def _extract_and_save_images(text: str) -> list[str]:
     return saved
 
 
-_CONNOR_IMG_TAG_RE = re.compile(r'\[\[image:/uploads/')
+_CONNOR_IMG_TAG_RE = re.compile(r'\[\[image:/uploads/(?!album/)')
 
 
 def _rewrite_connor_paths(text: str) -> str:
@@ -1577,7 +1858,9 @@ def _attachments_to_connor_images(attachments: list) -> list[dict]:
         if not url:
             continue
         # /cr-uploads/2026-05-07/xxx.jpg → Connor-Codex/uploads/2026-05-07/xxx.jpg
-        if url.startswith("/cr-uploads/"):
+        if url.startswith("/uploads/album/"):
+            abs_path = str(ALBUM_IMAGES_DIR / Path(url).name)
+        elif url.startswith("/cr-uploads/"):
             rel = url[len("/cr-uploads/"):]
             abs_path = str(CODEX_UPLOADS_DIR / rel).replace("/", "\\")
         else:
@@ -3259,6 +3542,16 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
     error_text = None
     tts_from_model = True
     usage_meta: dict = {}
+    transport_mode = resolve_model_transport_mode(_resolve_connor_model(connor_model_key))
+    live_tts = None
+    if transport_mode == "safe_live" and tts_enabled and tts_connor_voice:
+        live_tts = TTSStreamer(
+            connor_msg_id,
+            tts_connor_voice,
+            manager,
+            sse_queue=_q,
+            low_latency_first_chunk=True,
+        )
 
     async def content_stream():
         nonlocal has_reply
@@ -3269,11 +3562,18 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
             has_reply = True
             yield chunk
 
-    stream_result = await _consume_chatroom_stream(
-        content_stream(),
+    transport_outcome = await _consume_chatroom_realtime_stream(
+        content_stream,
         _q,
         chunk_type="connor_chunk",
+        model_key=_resolve_connor_model(connor_model_key),
+        tts_streamer=live_tts,
+        transport_mode=transport_mode,
     )
+    if transport_outcome.manual_retry_required:
+        await _q.put({"type": "connor_failed", "content": "回复连接异常，可重试"})
+        return
+    stream_result = transport_outcome.result
     full_text = stream_result.committed_text
     safety_notice = stream_result.notice
     has_error = stream_result.stop_reason is not None
@@ -3303,11 +3603,25 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
 
     clean_text = _normalize_cli_bubble_breaks(clean_text, connor_model_key)
 
+    if triggered.get("memory_search") and not clean_text:
+        await _q.put({"type": "connor_done", "message": None})
+        _fire_chatroom_followups(
+            triggered, room_id, "connor", connor_model_key, connor_msg_id
+        )
+        return
+
     # TTS 用干净文本
     if tts_enabled and tts_connor_voice and clean_text and tts_from_model:
-        tts = TTSStreamer(connor_msg_id, tts_connor_voice, manager, sse_queue=_q)
-        tts.feed(clean_text)
-        await tts.flush()
+        if live_tts is None:
+            live_tts = TTSStreamer(
+                connor_msg_id,
+                tts_connor_voice,
+                manager,
+                sse_queue=_q,
+            )
+        if transport_outcome.used_fallback or transport_mode != "safe_live":
+            live_tts.feed(clean_text)
+        await live_tts.flush()
 
     if safety_notice:
         clean_text = f"{clean_text}\n\n[{safety_notice}]".strip()
@@ -3423,6 +3737,16 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
     error_text = None
     tts_from_model = True
     usage_meta: dict = {}
+    transport_mode = resolve_model_transport_mode(model_key)
+    live_tts = None
+    if transport_mode == "safe_live" and tts_enabled and tts_voice:
+        live_tts = TTSStreamer(
+            aion_msg_id,
+            tts_voice,
+            manager,
+            sse_queue=_q,
+            low_latency_first_chunk=True,
+        )
 
     async def content_stream():
         async for chunk in stream_ai(aion_history, model_key, usage_meta):
@@ -3431,11 +3755,18 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
                 continue
             yield chunk
 
-    stream_result = await _consume_chatroom_stream(
-        content_stream(),
+    transport_outcome = await _consume_chatroom_realtime_stream(
+        content_stream,
         _q,
         chunk_type="aion_chunk",
+        model_key=model_key,
+        tts_streamer=live_tts,
+        transport_mode=transport_mode,
     )
+    if transport_outcome.manual_retry_required:
+        await _q.put({"type": "aion_failed", "content": "回复连接异常，可重试"})
+        return digest_out
+    stream_result = transport_outcome.result
     full_text = stream_result.committed_text
     safety_notice = stream_result.notice
     has_error = stream_result.stop_reason is not None
@@ -3461,11 +3792,18 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
 
     clean_text = _normalize_cli_bubble_breaks(clean_text, model_key)
 
+    if triggered.get("memory_search") and not clean_text:
+        await _q.put({"type": "aion_done", "message": None})
+        _fire_chatroom_followups(triggered, room_id, "aion", model_key, aion_msg_id)
+        return digest_out
+
     # TTS 用干净文本
     if tts_enabled and tts_voice and clean_text and tts_from_model:
-        tts = TTSStreamer(aion_msg_id, tts_voice, manager, sse_queue=_q)
-        tts.feed(clean_text)
-        await tts.flush()
+        if live_tts is None:
+            live_tts = TTSStreamer(aion_msg_id, tts_voice, manager, sse_queue=_q)
+        if transport_outcome.used_fallback or transport_mode != "safe_live":
+            live_tts.feed(clean_text)
+        await live_tts.flush()
 
     if safety_notice:
         clean_text = f"{clean_text}\n\n[{safety_notice}]".strip()
@@ -3514,6 +3852,16 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
     error_text = None
     tts_from_model = True
     usage_meta: dict = {}
+    transport_mode = resolve_model_transport_mode(_resolve_connor_model(connor_model_key))
+    live_tts = None
+    if transport_mode == "safe_live" and tts_enabled and tts_voice:
+        live_tts = TTSStreamer(
+            connor_msg_id,
+            tts_voice,
+            manager,
+            sse_queue=_q,
+            low_latency_first_chunk=True,
+        )
 
     async def content_stream():
         async for chunk in _stream_connor_model(connor_history, connor_model_key, usage_meta):
@@ -3522,11 +3870,18 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
                 continue
             yield chunk
 
-    stream_result = await _consume_chatroom_stream(
-        content_stream(),
+    transport_outcome = await _consume_chatroom_realtime_stream(
+        content_stream,
         _q,
         chunk_type="connor_chunk",
+        model_key=_resolve_connor_model(connor_model_key),
+        tts_streamer=live_tts,
+        transport_mode=transport_mode,
     )
+    if transport_outcome.manual_retry_required:
+        await _q.put({"type": "connor_failed", "content": "回复连接异常，可重试"})
+        return digest_out
+    stream_result = transport_outcome.result
     full_text = stream_result.committed_text
     safety_notice = stream_result.notice
     has_error = stream_result.stop_reason is not None
@@ -3556,11 +3911,25 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
 
     clean_text = _normalize_cli_bubble_breaks(clean_text, connor_model_key)
 
+    if triggered.get("memory_search") and not clean_text:
+        await _q.put({"type": "connor_done", "message": None})
+        _fire_chatroom_followups(
+            triggered, room_id, "connor", connor_model_key, connor_msg_id
+        )
+        return digest_out
+
     # TTS 用干净文本
     if tts_enabled and tts_voice and clean_text and tts_from_model:
-        tts = TTSStreamer(connor_msg_id, tts_voice, manager, sse_queue=_q)
-        tts.feed(clean_text)
-        await tts.flush()
+        if live_tts is None:
+            live_tts = TTSStreamer(
+                connor_msg_id,
+                tts_voice,
+                manager,
+                sse_queue=_q,
+            )
+        if transport_outcome.used_fallback or transport_mode != "safe_live":
+            live_tts.feed(clean_text)
+        await live_tts.flush()
 
     if safety_notice:
         clean_text = f"{clean_text}\n\n[{safety_notice}]".strip()

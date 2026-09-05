@@ -1,7 +1,7 @@
 import asyncio
 import unittest
 
-from routes.chat import _consume_chat_stream
+from routes.chat import _consume_chat_realtime_stream, _consume_chat_stream
 from stream_safety import StreamActivity
 
 
@@ -32,6 +32,34 @@ class _TTSProbe:
 
 
 class ChatStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
+    async def test_safe_live_failure_clears_provisional_text_then_uses_legacy_once(self):
+        queue = asyncio.Queue()
+        attempts = 0
+
+        def source_factory():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return _Chunks(["安全正文。" * 8, "�" * 8])
+            return _Chunks(["旧管线完整回复"])
+
+        result, visible_text, used_fallback, manual_retry = await _consume_chat_realtime_stream(
+            source_factory,
+            queue,
+            model_key="Codex-Sol",
+            transport_mode="safe_live",
+        )
+
+        events = []
+        while not queue.empty():
+            events.append(await queue.get())
+        self.assertEqual(attempts, 2)
+        self.assertTrue(used_fallback)
+        self.assertFalse(manual_retry)
+        self.assertEqual(result.committed_text, "旧管线完整回复")
+        self.assertEqual(visible_text, "旧管线完整回复")
+        self.assertIn({"type": "stream_reset"}, events)
+
     async def test_provider_activity_is_not_visible_or_sent_to_tts(self):
         queue = asyncio.Queue()
         tts = _TTSProbe()

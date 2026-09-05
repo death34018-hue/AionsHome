@@ -5,6 +5,8 @@ from __future__ import annotations
 
 # A value of None means the app is omitted from historical activity logs.
 KNOWN_APPS = {
+    # This app
+    "com.aion.chat": "在小家里",
     # Social / communication
     "com.tencent.mm": "微信",
     "com.tencent.mobileqq": "QQ",

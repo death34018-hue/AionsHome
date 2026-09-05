@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncContextManager, Callable
@@ -14,6 +15,7 @@ from chatroom import get_chatroom_names
 from config import DATA_DIR
 from database import get_db
 from lounge_friends import LoungeFriend, LoungeFriendStore
+from lounge_receptions import LoungeReceptionHistory, RECEPTION_PREFIX
 from lounge_visit import LoungeVisitCoordinator, LoungeVisitResult
 from lounge_visit_repository import LoungeVisitRepository
 from lounge_visit_tasks import lounge_visit_tasks
@@ -176,8 +178,10 @@ def create_router(
     report_publisher: Callable = publish_outbound_report,
     active_manual_actors: set[str] | None = None,
     task_registry=lounge_visit_tasks,
+    reception_history: LoungeReceptionHistory | None = None,
 ) -> APIRouter:
     router = APIRouter(tags=["lounge-friends"])
+    receptions = reception_history if reception_history is not None else LoungeReceptionHistory()
     manual_actors = active_manual_actors if active_manual_actors is not None else set()
 
     def actors() -> list[dict[str, str]]:
@@ -360,16 +364,32 @@ def create_router(
             owned_friend(actor_id, friend_id)
         async with repository_provider() as repository:
             visits = await repository.recent(actor_id, friend_id, limit)
-        return {"visits": visits}
+        visits = [dict(visit, direction="outbound") for visit in visits]
+        warning = ""
+        if friend_id is None:
+            try:
+                visits.extend(await receptions.recent(actor_id, limit))
+            except (OSError, ValueError, sqlite3.Error):
+                warning = "被拜访记录暂时无法读取，请稍后刷新重试。"
+        visits.sort(key=lambda visit: (visit["started_at"], visit["id"]), reverse=True)
+        return {"visits": visits[:limit], "warning": warning}
 
     @router.get("/api/lounge-visits/{visit_id}")
     async def lounge_visit_detail(visit_id: str, actor_id: str):
         require_actor(actor_id)
+        if visit_id.startswith(RECEPTION_PREFIX):
+            try:
+                visit = await receptions.get(actor_id, visit_id)
+            except (OSError, ValueError, sqlite3.Error):
+                raise HTTPException(status_code=503, detail="被拜访记录暂时无法读取") from None
+            if visit is None:
+                raise HTTPException(status_code=404, detail="Visit not found")
+            return visit
         async with repository_provider() as repository:
             visit = await repository.get(actor_id, visit_id)
         if visit is None:
             raise HTTPException(status_code=404, detail="Visit not found")
-        return visit
+        return dict(visit, direction="outbound")
 
     @router.post("/api/lounge-visits/{visit_id}/cancel")
     async def cancel_lounge_visit(visit_id: str, body: ActorBody):
