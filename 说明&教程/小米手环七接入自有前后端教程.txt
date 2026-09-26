@@ -409,4 +409,3 @@ WebSocket 事件至少包含 `status`、`battery`、`heart_rate`、`health_setti
 ```
 
 实现参考：[Gadgetbridge 源码](https://codeberg.org/Freeyourgadget/Gadgetbridge) 与其 [Zepp OS 文档](https://gadgetbridge.org/)。公开分发衍生代码前请核对 AGPL-3.0 义务并保留来源说明。
-

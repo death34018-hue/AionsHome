@@ -101,14 +101,11 @@ class CodexCliMinimalModeTests(unittest.TestCase):
         )
         self.assertFalse(parsed["features"]["shell_tool"])
         self.assertFalse(parsed["features"]["multi_agent"])
-        self.assertEqual(
-            parsed["features"]["multi_agent_v2"]["root_agent_usage_hint_text"],
-            "",
-        )
-        self.assertEqual(
-            parsed["features"]["multi_agent_v2"]["multi_agent_mode_hint_text"],
-            "",
-        )
+        self.assertFalse(parsed["features"]["multi_agent_v2"])
+        for feature in ("goals", "code_mode", "code_mode_only", "sleep_tool",
+                        "plugins", "apps", "image_generation", "skill_search",
+                        "skill_mcp_dependency_install"):
+            self.assertFalse(parsed["features"][feature])
         self.assertFalse(parsed["features"]["remote_plugin"])
         self.assertFalse(parsed["include_apps_instructions"])
         self.assertFalse(parsed["include_permissions_instructions"])
@@ -122,24 +119,50 @@ class CodexCliMinimalModeTests(unittest.TestCase):
             all(not item["enabled"] for item in parsed["skills"]["config"])
         )
         self.assertTrue(all(command.index(value) < app_server_index for value in overrides))
-        self.assertFalse(any("web_search" in value for value in overrides))
-        self.assertFalse(any("view_image" in value for value in overrides))
+        self.assertEqual(parsed["web_search"], "disabled")
+        self.assertTrue(parsed["features"]["view_image"])
+        self.assertFalse(parsed["tools"]["experimental_request_user_input"]["enabled"])
+        self.assertFalse(parsed["tools"]["update_plan"]["enabled"])
+        self.assertEqual(
+            Path(parsed["model_catalog_json"]),
+            Path(ai_providers._CODEX_CHAT_HOME) / "companion-models.json",
+        )
+
+    def test_chat_catalog_removes_model_forced_tools_without_changing_model_parameters(self):
+        from codex_chat_profile import build_chat_model_catalog
+
+        source = {"models": [{
+            "slug": "gpt-6-sol", "context_window": 272000,
+            "input_modalities": ["text", "image"],
+            "tool_mode": "code_mode_only", "multi_agent_version": "v2",
+            "experimental_supported_tools": ["clock", "send_user_message_async"],
+            "apply_patch_tool_type": "freeform", "supports_search_tool": True,
+        }]}
+        original = json.dumps(source)
+        model = build_chat_model_catalog(source)["models"][0]
+        self.assertEqual(model["slug"], "gpt-6-sol")
+        self.assertEqual(model["context_window"], 272000)
+        self.assertEqual(model["input_modalities"], ["text", "image"])
+        self.assertEqual(model["tool_mode"], "disabled")
+        self.assertIsNone(model["multi_agent_version"])
+        self.assertIsNone(model["apply_patch_tool_type"])
+        self.assertEqual(model["experimental_supported_tools"], [])
+        self.assertFalse(model["supports_search_tool"])
+        self.assertEqual(json.dumps(source), original)
 
     def test_real_cli_prompt_omits_multi_agent_guidance(self):
         script = ai_providers._CODEX_SCRIPT
         if not script or not Path(script).is_file():
             self.skipTest("bundled Codex CLI is unavailable")
 
-        command = ai_providers._build_codex_chat_command(
-            "node",
-            script,
-            ai_providers._CODEX_WORKSPACE,
-            "",
-        )
-        app_server_index = command.index("app-server")
-        command = command[:app_server_index] + ["debug", "prompt-input", "hello"]
-
         with tempfile.TemporaryDirectory() as tmpdir:
+            from codex_chat_profile import prepare_chat_model_catalog
+            prepare_chat_model_catalog(Path(tmpdir), "node", script)
+            with patch.object(ai_providers, "_CODEX_CHAT_HOME", tmpdir):
+                command = ai_providers._build_codex_chat_command(
+                    "node", script, ai_providers._CODEX_WORKSPACE, "",
+                )
+            command = command[:-2] + ["debug", "prompt-input", "hello"]
             env = {
                 **os.environ,
                 "CODEX_HOME": tmpdir,
@@ -232,14 +255,22 @@ class CodexCliMinimalModeTests(unittest.TestCase):
             with (
                 patch.object(ai_providers, "_CODEX_HOME", str(desktop_home)),
                 patch.object(ai_providers, "_CODEX_CHAT_HOME", str(chat_home)),
+                patch.object(ai_providers, "prepare_chat_model_catalog", create=True),
             ):
-                env = ai_providers._build_codex_chat_environment({"PATH": "test"})
+                env = ai_providers._build_codex_chat_environment({
+                    "PATH": "test", "CODEX_APP_TOOLS_PIPE_PATH": "desktop-pipe",
+                    "CODEX_PERMISSION_PROFILE": "desktop-profile",
+                    "CODEX_THREAD_ID": "desktop-thread",
+                })
 
             self.assertEqual((chat_home / "auth.json").read_text(encoding="utf-8"), '{"token":"test"}')
             self.assertEqual(env["CODEX_HOME"], str(chat_home))
             self.assertEqual(env["HOME"], str(chat_home.parent))
             self.assertEqual(env["USERPROFILE"], str(chat_home.parent))
             self.assertEqual(env["NO_COLOR"], "1")
+            self.assertNotIn("CODEX_APP_TOOLS_PIPE_PATH", env)
+            self.assertNotIn("CODEX_PERMISSION_PROFILE", env)
+            self.assertNotIn("CODEX_THREAD_ID", env)
             self.assertEqual(
                 desktop_config.read_text(encoding="utf-8"),
                 'model = "desktop-model"',

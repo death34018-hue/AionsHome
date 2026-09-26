@@ -17,6 +17,7 @@ from codex_app_server import (
     build_codex_app_server_command,
     stream_codex_app_server,
 )
+from codex_chat_profile import prepare_chat_model_catalog
 from stream_safety import StreamActivity
 
 # CLI 状态前缀：yield 此前缀的 chunk 会被 _bg_generate 拦截为状态事件，不送入 TTS 和正文
@@ -1784,9 +1785,21 @@ def _build_codex_chat_environment(base_env: dict | None = None) -> dict:
         if not chat_auth.exists() or desktop_auth.stat().st_mtime_ns > chat_auth.stat().st_mtime_ns:
             shutil.copy2(desktop_auth, chat_auth)
 
+    # Do not inherit desktop task tools/identity when the home server was
+    # launched from a Codex terminal. Repair has its own environment builder.
+    excluded = {
+        "CODEX_APP_TOOLS_PIPE_PATH", "CODEX_THREAD_ID", "CODEX_SESSION_ID",
+        "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "CODEX_PERMISSION_PROFILE",
+    }
+    environment = {
+        key: value for key, value in (base_env if base_env is not None else os.environ).items()
+        if key not in excluded
+    }
+    if _CODEX_SCRIPT:
+        prepare_chat_model_catalog(chat_home, shutil.which("node") or "node", _CODEX_SCRIPT)
     chat_profile_root = str(chat_home.parent)
     return {
-        **(base_env or os.environ),
+        **environment,
         "NO_COLOR": "1",
         "CODEX_HOME": str(chat_home),
         "HOME": chat_profile_root,
@@ -1805,10 +1818,24 @@ def _build_codex_chat_command(
     overrides = [
         'model_verbosity="high"',
         f"model_instructions_file={json.dumps(str(_CODEX_COMPANION_INSTRUCTIONS_FILE), ensure_ascii=False)}",
+        f"model_catalog_json={json.dumps(str(Path(_CODEX_CHAT_HOME) / 'companion-models.json'), ensure_ascii=False)}",
         f"developer_instructions={json.dumps(_CODEX_CHAT_DEVELOPER_INSTRUCTIONS, ensure_ascii=False)}",
         "features.shell_tool=false",
         "features.multi_agent=false",
-        'features.multi_agent_v2={ root_agent_usage_hint_text = "", multi_agent_mode_hint_text = "" }',
+        "features.multi_agent_v2=false",
+        "features.code_mode=false",
+        "features.code_mode_only=false",
+        "features.goals=false",
+        "features.sleep_tool=false",
+        "features.plugins=false",
+        "features.apps=false",
+        "features.image_generation=false",
+        "features.skill_search=false",
+        "features.skill_mcp_dependency_install=false",
+        "features.view_image=true",
+        'web_search="disabled"',
+        "tools.experimental_request_user_input.enabled=false",
+        "tools.update_plan.enabled=false",
         "features.remote_plugin=false",
         "include_apps_instructions=false",
         "include_permissions_instructions=false",
