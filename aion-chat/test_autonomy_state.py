@@ -35,6 +35,31 @@ class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((await autonomy_state.get_actor_config("connor", db=self.db))["actions"]["rest"])
         self.assertTrue((await autonomy_state.get_actor_config("aion", db=self.db))["actions"]["rest"])
 
+    async def test_board_actions_persist_independently_per_actor(self):
+        for actor in autonomy_state.ACTOR_IDS:
+            actions = (await autonomy_state.get_actor_config(actor, db=self.db))["actions"]
+            self.assertIn("board_check", actions)
+            self.assertIn("board_visit", actions)
+            self.assertFalse(actions["board_check"])
+            self.assertFalse(actions["board_visit"])
+
+        await autonomy_state.update_actor_config(
+            "connor", actions={"board_check": True, "board_visit": True}, db=self.db
+        )
+        saved = (await autonomy_state.get_actor_config("connor", db=self.db))["actions"]
+        self.assertTrue(saved["board_check"])
+        self.assertTrue(saved["board_visit"])
+        self.assertFalse(
+            (await autonomy_state.get_actor_config("aion", db=self.db))["actions"]["board_check"]
+        )
+
+        await autonomy_state.update_actor_config(
+            "connor", actions={"board_check": False}, db=self.db
+        )
+        saved = (await autonomy_state.get_actor_config("connor", db=self.db))["actions"]
+        self.assertFalse(saved["board_check"])
+        self.assertTrue(saved["board_visit"])
+
     async def test_relationship_date_starts_unset_and_persists_per_actor(self):
         aion = await autonomy_state.get_actor_config("aion", db=self.db)
         connor = await autonomy_state.get_actor_config("connor", db=self.db)

@@ -10,7 +10,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#ff8359">
-<link rel="stylesheet" href="/static/chat.css?v=compact-settings-20260912">
+<link rel="stylesheet" href="/static/chat.css?v=subpage-navigation-20260924">
 <link rel="stylesheet" href="/static/ai-message-editor.css?v=20260920">
 <link rel="stylesheet" href="/static/pat.css?v=inline-order-20260910">
 <link rel="stylesheet" href="/static/proactive-orbit.css?v=20260817f">
@@ -142,16 +142,6 @@
 
 
 
-
-  <div class="alarm-overlay" id="alarmOverlay">
-    <div class="alarm-box">
-      <div class="alarm-icon">⏰</div>
-      <h3>日程提醒</h3>
-      <div class="alarm-content" id="alarmContent"></div>
-      <div class="alarm-time" id="alarmTime"></div>
-      <button onclick="dismissAlarm()">确认</button>
-    </div>
-  </div>
 
   <main class="chat-area">
     <div class="chat-header">
@@ -293,9 +283,78 @@
   </div>
 
   <div id="subPageFrames">
+    <div id="subPageLoading" role="status" hidden>
+      <div id="subPageLoadingText">正在打开页面…</div>
+      <div class="sub-page-loading-actions">
+        <button id="subPageLoadingRetry" hidden onclick="window.AionSubPageNavigation.retry()">重试</button>
+        <button id="subPageLoadingHome" onclick="openSubPage('/')">返回桌面</button>
+      </div>
+    </div>
     <iframe id="subPageFrame" class="sub-page-frame" sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-modals" allow="autoplay"></iframe>
   </div>
 </div>
+<script id="subpage-navigation">
+// Shared by the early desktop and the full chat shell; no extra startup request.
+window.AionSubPageNavigation = (() => {
+  const panel = document.getElementById('subPageLoading');
+  const label = document.getElementById('subPageLoadingText');
+  const retryButton = document.getElementById('subPageLoadingRetry');
+  const watched = new WeakSet();
+  let active = null, timer = null;
+  function hide() {
+    clearTimeout(timer);
+    panel.hidden = true;
+    active = null;
+  }
+  function ready(frame) {
+    delete frame.dataset.navigationPending;
+    frame.dataset.navigationReady = '1';
+    frame.style.visibility = 'visible';
+    if (active === frame) hide();
+  }
+  function show(frame) {
+    hide();
+    active = frame;
+    if (!watched.has(frame)) {
+      watched.add(frame);
+      frame.addEventListener('load', () => {
+        // Ignore the empty document created when an iframe is first attached.
+        try {
+          if (frame.contentWindow.location.href === 'about:blank') return;
+        } catch (_) {
+          // A browser error document (or expired external login) is unreadable.
+          // Keep recovery controls available instead of leaving a blank frame.
+          frame.dataset.navigationFailed = '1';
+          if (active === frame) {
+            clearTimeout(timer);
+            label.textContent = '页面暂时无法打开，请检查连接后重试';
+            retryButton.hidden = false;
+          }
+          return;
+        }
+        ready(frame);
+      });
+    }
+    if (frame.dataset.navigationReady === '1') return;
+    frame.dataset.navigationPending = '1';
+    frame.style.visibility = 'hidden';
+    label.textContent = '正在打开页面…';
+    retryButton.hidden = true;
+    panel.hidden = false;
+    timer = setTimeout(() => {
+      label.textContent = '连接较慢，可以继续等待或重试';
+      retryButton.hidden = false;
+    }, 15000);
+  }
+  function retry() {
+    if (!active) return;
+    const url = active.src;
+    active.dataset.navigationFailed = '1';
+    window.openSubPage(url);
+  }
+  return { show, hide, retry, ready };
+})();
+</script>
 <script id="initial-desktop">
 // Start the desktop before any external chat script can block the parser.
 // chat.js adopts this same frame once it is ready, preserving early navigation.
@@ -312,7 +371,7 @@
     }
   } catch (_) {}
   const overlay = document.getElementById('subPageOverlay');
-  const frame = document.createElement('iframe');
+  let frame = document.createElement('iframe');
   frame.className = 'sub-page-frame';
   frame.dataset.startupFrame = '1';
   frame.setAttribute('sandbox', 'allow-same-origin allow-scripts allow-forms allow-popups allow-modals');
@@ -323,17 +382,31 @@
     const target = new URL(url, location.origin);
     window.__aionStartupPage = url;
     frame.dataset.startupPath = target.pathname;
-    if (frame.src !== target.href) frame.src = target.href;
+    if (frame.src !== target.href || frame.dataset.navigationFailed === '1') {
+      // A fresh frame cannot expose the previous document during a slow request.
+      const replacement = frame.cloneNode(false);
+      replacement.removeAttribute('src');
+      delete replacement.dataset.navigationReady;
+      delete replacement.dataset.navigationFailed;
+      frame.replaceWith(replacement);
+      frame = replacement;
+      window.AionSubPageNavigation.show(frame);
+      frame.src = target.href;
+    }
     overlay.classList.toggle('home-subpage', target.pathname === '/');
     overlay.classList.add('show');
   };
   window.closeSubPage = () => {
     window.__aionStartupPage = '/chat';
     overlay.classList.remove('show');
+    window.AionSubPageNavigation.hide();
   };
   window.openWhisper = () => { window.__aionStartupWhisper = true; };
   window.handleNativeBack = () => {
     if (window.__aionStartupPage === '/') return 'dialog';
+    if (new URL(window.__aionStartupPage, location.origin).pathname === '/lounge-board') {
+      try { if (frame.contentWindow?.handleLoungeBoardBack?.()) return 'handled'; } catch(e) {}
+    }
     window.openSubPage('/');
     return 'handled';
   };
@@ -342,7 +415,8 @@
 </script>
 <script src="/static/hug_pillow_ai.js?v=hug-pillow-ai-20260726"></script>
 <script src="/static/monitor-camera-snapshot.js?v=20260902-compact"></script>
-<script src="/static/system-notice-ui.js?v=20260920-toy-background"></script>
+<script src="/static/toy-ankni-protocol.js?v=20260924-duration"></script>
+<script src="/static/system-notice-ui.js?v=20260924-heart"></script>
 <script src="/static/lounge-visit-ui.js?v=20260815"></script>
 <script src="/static/proactive-orbit.js?v=20260816"></script>
 <script src="/static/chat-image-album.js?v=20260830"></script>
@@ -356,7 +430,9 @@
 <script src="/static/tts-voices.js?v=minimax-20260916"></script>
 <script src="/static/chat-font-size.js?v=20260912"></script>
 <script src="/static/ai-message-editor.js?v=20260920"></script>
-<script src="/static/chat.js?v=ai-edit-20260920"></script>
+<script src="/static/chat-image-upload.js?v=20260924"></script>
+<script src="/static/chat-image-preview.js?v=20260924"></script>
+<script src="/static/chat.js?v=20260926-board-back"></script>
 <script src="/static/voice-call-policy.js?v=voice-latency-20260902a"></script>
 <script src="/static/voice-call.js?v=voice-latency-20260902a"></script>
 

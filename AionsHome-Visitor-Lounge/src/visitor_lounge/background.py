@@ -234,7 +234,7 @@ def _contains_prohibited_inference(text: str) -> bool:
 
 
 class BackgroundCoordinator:
-    """Perform one isolated scan or manage a cancellable 30-second scan loop."""
+    """Perform one isolated scan or manage a cancellable one-minute scan loop."""
 
     def __init__(
         self,
@@ -244,7 +244,7 @@ class BackgroundCoordinator:
         scheduler: SummaryScheduler | None = None,
         summary_generator: SummaryGenerator | None = None,
         clock: Callable[[], datetime] = utc_now,
-        interval_seconds: float = 1800,
+        interval_seconds: float = 60,
         summary_timeout_seconds: float = 120,
         stop_cleanup_timeout_seconds: float = 1,
         task_waiter: TaskWaiter = _wait_tasks,
@@ -295,7 +295,7 @@ class BackgroundCoordinator:
         return self.prompt_builder.summary(context, previous_memory)
 
     def suspend_idle_visits(self, now: datetime) -> int:
-        return self.repository.suspend_idle_visits(now, idle_minutes=30)
+        return self.repository.suspend_idle_visits(now, idle_minutes=5)
 
     def enqueue_due_summaries(self, now: datetime) -> list[SummaryJob]:
         jobs = self.repository.due_summary_jobs(now)

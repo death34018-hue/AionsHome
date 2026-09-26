@@ -47,6 +47,8 @@ ACTION_DEFS = {
     "xhs_roam": "去小红书查看指定账号最新帖子并按人设评论或回复",
     "taobao_roam": "按照自己的近期兴趣去淘宝搜索真实商品，挑选后保存在独立收藏篮并写小感想（不加购、不购买）",
     "friend_visit": "拜访一位 AI 好友",
+    "board_check": "自己去看看家里的朋友留言板，决定要不要接话",
+    "board_visit": "到朋友家的留言板看看，决定要不要留句话或分享新鲜事",
 }
 
 SEEKY_ACTIONS = {
@@ -602,10 +604,25 @@ async def _select_action(actor: str, *, manual: bool = False, idle_minutes: int 
         enabled.remove("web_roam")
     if "friend_visit" in enabled:
         try:
-            if not eligible_lounge_friends(actor):
+            from visitor_lounge.home_board import live_chat_enabled
+            if not live_chat_enabled() or not eligible_lounge_friends(actor):
                 enabled.remove("friend_visit")
         except Exception:
             enabled.remove("friend_visit")
+    if "board_check" in enabled:
+        try:
+            from visitor_lounge.home_board import BOARD, _enabled
+            if not _enabled() or not BOARD.unread_threads(actor, limit=1):
+                enabled.remove("board_check")
+        except Exception:
+            enabled.remove("board_check")
+    if "board_visit" in enabled:
+        try:
+            from visitor_lounge.home_board import FRIENDS, _enabled
+            if not _enabled() or not any(item["allow_autonomous"] for item in FRIENDS.public()):
+                enabled.remove("board_visit")
+        except Exception:
+            enabled.remove("board_visit")
     if "xhs_roam" in enabled:
         try:
             from xhs_lite import is_ready_for_auto
@@ -2179,6 +2196,12 @@ async def _run_actor_once(actor: str, *, manual: bool = False, idle_minutes: int
             result = await autonomous_roam(actor)
         elif action == "friend_visit":
             result = await _run_friend_visit(actor)
+        elif action == "board_check":
+            from visitor_lounge.home_board import inspect_actor
+            result = await inspect_actor(actor)
+        elif action == "board_visit":
+            from visitor_lounge.home_board import visit_friend_board
+            result = await visit_friend_board(actor)
         else:
             result = {}
         outcome = str(getattr(result, "outcome", "finished"))
@@ -2209,6 +2232,8 @@ async def _run_actor_once(actor: str, *, manual: bool = False, idle_minutes: int
         "xhs_roam": f"{actor_name}去小红书逛了一圈",
         "taobao_roam": f"{actor_name}去淘宝逛了一圈，收藏留在逛淘宝页面",
         "friend_visit": f"{actor_name}拜访了一位 AI 好友",
+        "board_check": f"{actor_name}去看了朋友留言板",
+        "board_visit": f"{actor_name}到朋友家留言板串门了",
     }
     title = action_titles.get(action, f"{actor_name}进行了一次自主行动")
     if outcome in {"round_limit", "failed", "no_direction", "tool_failed"}:

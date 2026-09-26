@@ -61,6 +61,7 @@ async def _default_inbound_handler(**kwargs: Any) -> Any:
 
     body = WeChatInbound(
         content=kwargs["content"],
+        attachments=kwargs.get("attachments") or [],
         source_type=kwargs["source_type"],
         source_id=kwargs["source_id"],
         auto_reply=bool(kwargs.get("auto_reply", True)),
@@ -194,6 +195,7 @@ class OpenClawWeixinBridgeRuntime:
         if not self.enabled():
             return
         from openclaw_weixin import (
+            MESSAGE_ITEM_IMAGE,
             extract_text_from_message,
             get_updates,
             load_accounts,
@@ -213,15 +215,67 @@ class OpenClawWeixinBridgeRuntime:
                     continue
                 if message.get("message_type") == 2:
                     continue
+                sender = str(message.get("from_user_id") or "")
+                context_token = str(message.get("context_token") or "")
+                for item in message.get("item_list") or []:
+                    if isinstance(item, dict) and item.get("type") == MESSAGE_ITEM_IMAGE and item.get("image_item"):
+                        await self.handle_image_message(
+                            account_id=account.account_id,
+                            wechat_user_id=sender,
+                            context_token=context_token,
+                            image_item=item["image_item"],
+                        )
                 text = extract_text_from_message(message)
-                if not text:
-                    continue
-                await self.handle_text_message(
-                    account_id=account.account_id,
-                    wechat_user_id=str(message.get("from_user_id") or ""),
-                    context_token=str(message.get("context_token") or ""),
-                    text=text,
-                )
+                if text:
+                    await self.handle_text_message(
+                        account_id=account.account_id,
+                        wechat_user_id=sender,
+                        context_token=context_token,
+                        text=text,
+                    )
+
+    async def handle_image_message(
+        self, *, account_id: str, wechat_user_id: str,
+        context_token: str, image_item: dict[str, Any],
+    ) -> bool:
+        from openclaw_weixin import download_image_item
+
+        binding = find_wechat_binding_for_sender(account_id, wechat_user_id, settings=self.settings)
+        if not binding:
+            await self._send_text(
+                account_id=account_id, wechat_user_id=wechat_user_id,
+                context_token=context_token,
+                content="请先在 AionsHome 创建绑定码，再发送：bind <绑定码>。",
+            )
+            return False
+        updated = update_wechat_binding_context(
+            binding, context_token=context_token, now=self.now(), settings=self.settings,
+        )
+        try:
+            url = await download_image_item(image_item)
+        except Exception as exc:
+            print(f"[WECHAT_OPENCLAW] image download failed: {type(exc).__name__}: {exc}")
+            await self._send_text(
+                account_id=account_id, wechat_user_id=wechat_user_id,
+                context_token=context_token,
+                content="图片接收失败，请重新发送。",
+            )
+            return False
+        key = f"{account_id}:{wechat_user_id}"
+        pending = self.settings.setdefault("wechat_bridge_pending_images", {})
+        route = {"source_type": updated["source_type"], "source_id": updated["source_id"]}
+        current = pending.get(key) or {}
+        if current.get("route") != route:
+            current = {"route": route, "images": []}
+        current["images"].append(url)
+        pending[key] = current
+        await _maybe_await(self.save_settings(self.settings))
+        await self._send_text(
+            account_id=account_id, wechat_user_id=wechat_user_id,
+            context_token=context_token,
+            content="图片已暂存，发送下一条文字后会和图片一起交给 AI。",
+        )
+        return True
 
     async def _send_text(self, *, account_id: str, wechat_user_id: str, context_token: str, content: str) -> Any:
         if self.send_text:
@@ -355,13 +409,23 @@ class OpenClawWeixinBridgeRuntime:
 
         await _maybe_await(self.save_settings(self.settings))
         mode = find_wechat_mode_for_sender(self.settings, account_id, wechat_user_id)
-        await self.inbound_handler(
+        key = f"{account_id}:{wechat_user_id}"
+        pending = (self.settings.get("wechat_bridge_pending_images") or {}).get(key) or {}
+        route = {"source_type": updated["source_type"], "source_id": updated["source_id"]}
+        attachments = list(pending.get("images") or []) if pending.get("route") == route else []
+        inbound_kwargs = dict(
             content=text,
             source_type=updated["source_type"],
             source_id=updated["source_id"],
             auto_reply=True,
             mark_channel=not bool(mode and mode.get("enabled")),
         )
+        if attachments:
+            inbound_kwargs["attachments"] = attachments
+        await self.inbound_handler(**inbound_kwargs)
+        if pending:
+            self.settings.get("wechat_bridge_pending_images", {}).pop(key, None)
+            await _maybe_await(self.save_settings(self.settings))
         return True
 
 

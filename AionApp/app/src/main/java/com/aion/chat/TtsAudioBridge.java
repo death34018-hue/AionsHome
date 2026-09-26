@@ -32,6 +32,25 @@ public final class TtsAudioBridge {
     }
 
     @JavascriptInterface
+    public void setAutoPlaybackState(boolean enabled, String voice, double activeAt) {
+        if (!Double.isFinite(activeAt)) return;
+        android.content.SharedPreferences prefs = context.getSharedPreferences("aion_prefs", Context.MODE_PRIVATE);
+        synchronized (TtsAudioBridge.class) {
+            if (activeAt < Double.longBitsToDouble(prefs.getLong("background_tts_active_at", 0))) return;
+            prefs.edit().putBoolean("background_tts_enabled", enabled)
+                    .putString("background_tts_voice", voice == null ? "" : voice)
+                    .putLong("background_tts_active_at", Double.doubleToLongBits(activeAt))
+                    .putLong("background_tts_updated", System.nanoTime()).apply();
+        }
+    }
+
+    @JavascriptInterface
+    public void stopAutoPlayback() {
+        context.getSharedPreferences("aion_prefs", Context.MODE_PRIVATE).edit()
+                .putLong("background_tts_stop", System.nanoTime()).apply();
+    }
+
+    @JavascriptInterface
     public int getLoudnessGainDb() {
         return PlaybackLoudness.getGainDb(context);
     }

@@ -271,6 +271,24 @@ test('native chapter playback failure falls back to the same cached segment and 
   assert.equal(c.player.paused,true);assert.equal(browserPlayers.length,2);assert.equal(notices.length,1);
 });
 
+test('a completed chapter with an old review flag still reads as completed', () => {
+  const elements=new Map([['messages',{querySelector:()=>({})}]]);
+  const current={id:'chapter-six',number:6,title:'第六章',content:'读完的正文',status:'ready',needs_review:true,images:[]};
+  const c=vm.createContext({planningView:false,book:{},chapter:()=>current,chapters:[current],
+    conversations:[{id:'book',title:'故事'}],currentConvId:'book',selected:current.id,statusNames:{ready:'已完成'},
+    readingFollow:null,TheaterFollow:{paragraphs:text=>`<p>${text}</p>`},escHtml:text=>text,
+    button:(label,handler)=>`<button onclick="${handler}">${label}</button>`,
+    $:id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',hidden:false});return elements.get(id);}});
+  vm.runInContext(section('  function renderDirectory()', '  function toolbar()'),c);
+  vm.runInContext(section('  function renderNovel()', '  function backgroundPoll()'),c);
+  c.renderDirectory();
+  c.renderNovel();
+  assert.match(elements.get('studioDirectory').innerHTML,/已完成/);
+  assert.doesNotMatch(elements.get('studioDirectory').innerHTML,/待确认/);
+  assert.doesNotMatch(elements.get('novelNotice').innerHTML,/确认衔接无误/);
+  assert.equal(elements.get('novelCompletion').innerHTML,'');
+});
+
 test('dialogue replay checks existing recordings without requiring a selected voice',async()=>{
   const calls=[];
   const c=vm.createContext({ttsVoice:'',novel:()=>false,player:null,chapters:[],conversations:[],currentConvId:'story',

@@ -179,6 +179,7 @@ def create_router(
     active_manual_actors: set[str] | None = None,
     task_registry=lounge_visit_tasks,
     reception_history: LoungeReceptionHistory | None = None,
+    live_chat_available: Callable[[], bool] = lambda: True,
 ) -> APIRouter:
     router = APIRouter(tags=["lounge-friends"])
     receptions = reception_history if reception_history is not None else LoungeReceptionHistory()
@@ -324,6 +325,8 @@ def create_router(
 
     @router.post("/api/lounge-friends/{friend_id}/visit")
     async def visit_lounge_friend(friend_id: str, body: ManualVisitBody):
+        if not live_chat_available():
+            raise HTTPException(status_code=403, detail="即时串门暂未开放")
         friend = owned_friend(body.actor_id, friend_id)
         topic = body.topic.strip()
         if not topic or len(topic) > 500:
@@ -443,4 +446,12 @@ def create_router(
     return router
 
 
-router = create_router()
+def _local_live_chat_available() -> bool:
+    try:
+        from visitor_lounge.home_board import live_chat_enabled
+        return live_chat_enabled()
+    except ImportError:
+        return True
+
+
+router = create_router(live_chat_available=_local_live_chat_available)

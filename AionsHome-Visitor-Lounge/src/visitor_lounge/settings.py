@@ -38,6 +38,8 @@ class Settings:
     input_token_price_per_million: float | None = None
     output_token_price_per_million: float | None = None
     timezone_name: str = "Asia/Shanghai"
+    chat_enabled: bool = True
+    board_enabled: bool = False
 
     def validate(self) -> "Settings":
         try:
@@ -104,5 +106,7 @@ class Settings:
                 else None
             ),
             timezone_name=str(raw.get("admin", {}).get("timezone") or "Asia/Shanghai"),
+            chat_enabled=bool(raw.get("features", {}).get("chat_enabled", True)),
+            board_enabled=bool(raw.get("features", {}).get("board_enabled", False)),
         )
         return settings.validate()

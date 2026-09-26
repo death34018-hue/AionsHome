@@ -15,6 +15,8 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 
 from visitor_lounge.background import BackgroundCoordinator
+from visitor_lounge.board import BoardRepository
+from visitor_lounge.board_api import visitor_board_router
 from visitor_lounge.container import Container
 from visitor_lounge.mcp_app import create_mcp_server
 from visitor_lounge.oauth_routes import register_oauth_routes
@@ -112,12 +114,13 @@ def _request_is_https(request: Request) -> bool:
     return request.url.scheme.casefold() == "https" or original_scheme == "https"
 
 
-def _visitor_ui_context(settings: Settings) -> dict[str, str]:
+def _visitor_ui_context(settings: Settings) -> dict[str, object]:
     return {
         "host_name": settings.host_display_name,
         "standby_name": settings.standby_display_name,
         "host_avatar": "/static/avatars/host.jpg",
         "standby_avatar": "/static/avatars/standby.png",
+        "board_enabled": settings.board_enabled,
     }
 
 
@@ -167,6 +170,7 @@ class SendMessage(BaseModel):
 
 def create_visitor_app(container: Container) -> FastAPI:
     repository = VisitorRepository(container.database)
+    board = BoardRepository(container.database)
     keys = KeyService(repository, container.settings)
     sessions = SessionService(repository, container.settings)
     service = container.visitor_service or VisitorService(container)
@@ -239,6 +243,10 @@ def create_visitor_app(container: Container) -> FastAPI:
             raise HTTPException(status_code=401, detail="会话已失效")
         return session
 
+    app.include_router(visitor_board_router(
+        board, require_session, repository, container.settings,
+    ))
+
     @app.get("/")
     async def visitor_page(
         request: Request,
@@ -262,11 +270,15 @@ def create_visitor_app(container: Container) -> FastAPI:
                     "disclosure_version": container.settings.recording_disclosure_version,
                 },
             )
-        return templates.TemplateResponse(
-            request=request,
-            name="visitor_chat.html",
-            context=service.state(session.visitor_id),
-        )
+        if container.settings.board_enabled:
+            return templates.TemplateResponse(
+                request=request, name="visitor_board.html",
+                context={**_visitor_ui_context(container.settings), "visitor_name": visitor.display_name},
+            )
+        if not container.settings.chat_enabled:
+            raise HTTPException(status_code=403, detail="会客室暂未开放")
+        return templates.TemplateResponse(request=request, name="visitor_chat.html",
+                                          context=service.state(session.visitor_id))
 
     @app.post("/api/login")
     async def login(body: LoginBody, request: Request):
@@ -276,11 +288,16 @@ def create_visitor_app(container: Container) -> FastAPI:
             raise HTTPException(status_code=429, detail=GENERIC_LOGIN_ERROR) from None
         if visitor_id is None:
             raise HTTPException(status_code=401, detail=GENERIC_LOGIN_ERROR)
-        service.record_login(visitor_id)
+        if container.settings.chat_enabled:
+            service.record_login(visitor_id)
+        elif container.settings.board_enabled:
+            service.effective_visitor(visitor_id)
+            board.resume_visitor(visitor_id)
         raw_cookie = sessions.issue(visitor_id, body.device_id)
         visitor = repository.visitor(visitor_id)
         response = JSONResponse(
-            {"next": "claim" if visitor.display_name is None else "chat"}
+            {"next": "claim" if visitor.display_name is None else (
+                "board" if container.settings.board_enabled else "chat")}
         )
         response.set_cookie(
             COOKIE_NAME,
@@ -301,26 +318,33 @@ def create_visitor_app(container: Container) -> FastAPI:
             raise HTTPException(status_code=422, detail="需要同意记录说明")
         try:
             name = normalize_visitor_name(body.name, set())
-            first_welcome = service.reception.get().first_welcome.replace(
-                "{访客名字}", name
-            ).replace("{接待人名字}", container.settings.host_display_name)
+            first_welcome = (
+                service.reception.get().first_welcome.replace(
+                    "{访客名字}", name
+                ).replace("{接待人名字}", container.settings.host_display_name)
+                if container.settings.chat_enabled else None
+            )
             repository.claim_name(
                 session.visitor_id,
                 name,
                 container.settings.recording_disclosure_version,
                 greeting=first_welcome,
-                greeting_at=container.clock(),
+                greeting_at=container.clock() if first_welcome else None,
             )
         except (InvalidVisitorName, VisitorAlreadyClaimed):
             raise HTTPException(status_code=422, detail="这个名字暂时不能使用") from None
-        return {"next": "chat", "visitor_name": name}
+        return {"next": "board" if container.settings.board_enabled else "chat", "visitor_name": name}
 
     @app.get("/api/state")
     async def state(session=Depends(require_session)):
+        if not container.settings.chat_enabled:
+            raise HTTPException(status_code=403, detail="即时聊天暂未开放")
         return service.state(session.visitor_id)
 
     @app.post("/api/messages", status_code=202)
     async def send_message(body: SendMessage, session=Depends(require_session)):
+        if not container.settings.chat_enabled:
+            raise HTTPException(status_code=403, detail="即时聊天暂未开放")
         try:
             ticket = await coordinator.submit(
                 visitor_id=session.visitor_id,
@@ -384,6 +408,8 @@ def create_visitor_app(container: Container) -> FastAPI:
         session=Depends(require_session),
         last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
     ):
+        if not container.settings.chat_enabled:
+            raise HTTPException(status_code=403, detail="即时聊天暂未开放")
         try:
             service.assert_job_owner(job_id, session.visitor_id)
         except JobAccessDenied:

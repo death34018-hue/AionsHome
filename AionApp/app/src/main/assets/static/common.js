@@ -121,8 +121,12 @@ function connectCommonWS(extraHandler) {
     if (msg.type === "monitor_alert") {
       const data = msg.data || {};
       if (!data.phone_camera_native_capture) {
-        const audio = new Audio('/public/AionMonitoralart.mp3');
-        audio.play().catch(() => {});
+        if (window.AionTtsAudio && typeof window.AionTtsAudio.play === 'function') {
+          window.AionTtsAudio.play('tts-monitor-alert', '/public/AionMonitoralart.mp3');
+        } else {
+          const audio = new Audio('/public/AionMonitoralart.mp3');
+          audio.play().catch(() => {});
+        }
       }
       sendSystemNotification('📷 监控提醒', msg.data?.content || '哨兵监控即将分析');
       return;

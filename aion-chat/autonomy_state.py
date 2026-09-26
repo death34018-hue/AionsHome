@@ -31,9 +31,12 @@ ACTION_IDS = (
     "xhs_roam",
     "taobao_roam",
     "friend_visit",
+    "board_check",
+    "board_visit",
     "seeky_interaction",
     "wish_pool",
 )
+DEFAULT_OFF_ACTIONS = {"album_browse", "board_check", "board_visit"}
 
 _AUTONOMY_WAKE_ACTOR = ContextVar("autonomy_wake_actor", default="")
 
@@ -74,7 +77,7 @@ def _clamp_minutes(value: Any, fallback: int) -> int:
 
 
 def _default_actions() -> dict[str, bool]:
-    return {key: key != "album_browse" for key in ACTION_IDS}
+    return {key: key not in DEFAULT_OFF_ACTIONS for key in ACTION_IDS}
 
 
 async def ensure_autonomy_tables(db) -> None:
@@ -144,7 +147,7 @@ def _decode_actions(raw: str | None) -> dict[str, bool]:
         stored = json.loads(raw or "{}")
     except (TypeError, json.JSONDecodeError):
         stored = {}
-    return {key: bool(stored.get(key, key != "album_browse")) for key in ACTION_IDS}
+    return {key: bool(stored.get(key, key not in DEFAULT_OFF_ACTIONS)) for key in ACTION_IDS}
 
 
 def _config_from_row(row) -> dict:

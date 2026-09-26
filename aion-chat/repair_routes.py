@@ -6,6 +6,7 @@ import asyncio
 import hmac
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import time
@@ -79,7 +80,7 @@ def work_model(store, active=None):
         return {"name": current["name"], "running": True}
     from repair_codex import model_name
     try:
-        return {"name": model_name(), "running": False}
+        return {"name": model_name(store), "running": False}
     except RuntimeError:
         return {"name": "", "running": False}
 
@@ -92,6 +93,30 @@ async def repair_page():
 @router.get("/api/repair/health")
 async def health():
     return {"ok": True}
+
+
+@router.get("/api/repair/model")
+async def get_model(store=Depends(access)):
+    from config import MODELS
+    from repair_codex import DEFAULT_WORK_MODEL, model_name
+    name = model_name(store)
+    options = list(dict.fromkeys([DEFAULT_WORK_MODEL, name] + [
+        cfg['model'] for cfg in MODELS.values() if cfg.get('provider') == 'codex_cli'
+    ]))
+    return {"name": name, "options": options}
+
+
+class ModelBody(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+
+
+@router.put("/api/repair/model")
+async def set_model(body: ModelBody, store=Depends(access)):
+    name = body.name.strip()
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}', name):
+        raise HTTPException(400, "请填写有效的模型名称，例如 gpt-6-sol。")
+    store.runtime('model_name', name)
+    return {"name": name}
 
 
 @router.get("/api/repair/bootstrap")

@@ -24,6 +24,7 @@ from visitor_lounge.repository import RuntimeStateRepository, _insert_message
 GIBIBYTE = 1024**3
 RESOURCE_STATE_HEARTBEAT = timedelta(seconds=5)
 SAFETY_LOCK_DURATION = timedelta(hours=24)
+_MCP_GENERATION_RETRY_DELAYS = (1.0, 3.0)
 _windows_cpu_lock = Lock()
 _windows_cpu_times: tuple[int, int] | None = None
 
@@ -548,40 +549,58 @@ class GenerationScheduler:
             self._start_model_call(request.job_id, request.visitor_id)
             self._started_visitors.append(request.visitor_id)
             ticket.emit(JobEvent("started", {"job_id": request.job_id}))
-            async with asyncio.timeout(self.settings.generation_timeout_seconds):
-                async for chunk in self.adapter.generate(request):
-                    if chunk.kind == "text" and chunk.text:
-                        ticket.visible_text += chunk.text
-                        self._append_visible_text(request.job_id, chunk.text)
-                        ticket.emit(
-                            JobEvent(
-                                "text",
-                                {
-                                    "text": chunk.text,
-                                    "visible_text": ticket.visible_text,
-                                },
-                            )
-                        )
-                    elif chunk.kind == "usage":
-                        reported_usage = _validated_usage(chunk.usage)
-                        if reported_usage is not None:
-                            usage = reported_usage
-                            usage_reported = True
-                            self._persist_usage(request.job_id, usage)
-                            ticket.emit(JobEvent("usage", usage))
-                    elif chunk.kind == "completed":
-                        action = (
-                            chunk.action
-                            if chunk.action
-                            in {
-                                "continue",
-                                "closing",
-                                "end",
-                                "suspend",
-                                "safety_lock",
-                            }
-                            else "continue"
-                        )
+            retry_delays = (
+                _MCP_GENERATION_RETRY_DELAYS if request.source == "mcp" else ()
+            )
+            for attempt in range(len(retry_delays) + 1):
+                try:
+                    async with asyncio.timeout(
+                        self.settings.generation_timeout_seconds
+                    ):
+                        async for chunk in self.adapter.generate(request):
+                            if chunk.kind == "text" and chunk.text:
+                                ticket.visible_text += chunk.text
+                                self._append_visible_text(request.job_id, chunk.text)
+                                ticket.emit(
+                                    JobEvent(
+                                        "text",
+                                        {
+                                            "text": chunk.text,
+                                            "visible_text": ticket.visible_text,
+                                        },
+                                    )
+                                )
+                            elif chunk.kind == "usage":
+                                reported_usage = _validated_usage(chunk.usage)
+                                if reported_usage is not None:
+                                    usage = reported_usage
+                                    usage_reported = True
+                                    self._persist_usage(request.job_id, usage)
+                                    ticket.emit(JobEvent("usage", usage))
+                            elif chunk.kind == "completed":
+                                action = (
+                                    chunk.action
+                                    if chunk.action
+                                    in {
+                                        "continue",
+                                        "closing",
+                                        "end",
+                                        "suspend",
+                                        "safety_lock",
+                                    }
+                                    else "continue"
+                                )
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    if attempt >= len(retry_delays):
+                        raise
+                    ticket.visible_text = ""
+                    usage = {}
+                    usage_reported = False
+                    self._reset_generation_attempt(request.job_id)
+                    await asyncio.sleep(retry_delays[attempt])
             self._complete_job(ticket, action)
             self._finish_ticket(
                 ticket,
@@ -718,6 +737,21 @@ class GenerationScheduler:
                 WHERE id = ?
                 """,
                 (text, job_id),
+            )
+
+    def _reset_generation_attempt(self, job_id: str) -> None:
+        with self.database.transaction(immediate=True) as conn:
+            conn.execute(
+                "UPDATE generation_jobs SET visible_text = '' WHERE id = ?",
+                (job_id,),
+            )
+            conn.execute(
+                """
+                UPDATE model_calls
+                SET usage_reported = 0, input_tokens = 0, output_tokens = 0
+                WHERE job_id = ?
+                """,
+                (job_id,),
             )
 
     def _set_terminal_status(self, job_id: str, status: str) -> None:

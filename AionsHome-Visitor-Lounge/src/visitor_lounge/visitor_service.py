@@ -188,7 +188,7 @@ class VisitorService:
             if message.id != job.message_id
         ][-MAX_HISTORY_MESSAGES:]
         try:
-            trusted_home_context = await self.home_context.fetch(
+            trusted_home_context_blocks = await self.home_context.fetch(
                 validated,
                 [
                     {
@@ -208,7 +208,7 @@ class VisitorService:
                 history,
                 self.background.recent_summaries(visitor_id, limit=1),
                 self.quota.state(visitor_id),
-                trusted_home_context=trusted_home_context,
+                trusted_home_context_blocks=trusted_home_context_blocks,
             )
             request = GenerationRequest(
                 job_id=reservation.job_id,

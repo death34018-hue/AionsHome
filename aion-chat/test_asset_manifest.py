@@ -22,6 +22,7 @@ def test_client_asset_manifest_excludes_large_user_content_but_includes_app_docu
     assert not any(path.startswith("/public/wallpaper/") for path in paths)
     assert "/" in paths
     assert "/memory" in paths
+    assert "/app-supervision" in paths
     assert "/moments" in paths
     assert all((PUBLIC_DIR / path.removeprefix("/public/")).is_file()
                for path in paths if path.startswith("/public/"))

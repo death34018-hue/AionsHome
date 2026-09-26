@@ -11,6 +11,13 @@ let chatroomConnorModel = 'Codex';
 let chatroomReplyOrder = 'random';
 let isReplyOnce = false;
 let chatroomModels = [];
+let crStartupModelsReady = false;
+
+function crRequireModels() {
+  if (crStartupModelsReady) return true;
+  toast('正在加载模型设置，请稍后发送');
+  return false;
+}
 let pendingAttachments = [];  // [{url, type, name}]
 let crMessagesById = {};
 let memSourceMemId = null;
@@ -442,6 +449,7 @@ function crCurrentTTSVoice() {
 }
 
 function crSendTTSState() {
+  window.AionTtsAudio?.setAutoPlaybackState?.(crTtsEnabled, crCurrentTTSVoice(), crTtsPlaybackActiveAt);
   if (!crWs || crWs.readyState !== WebSocket.OPEN) return;
   crWs.send(JSON.stringify({
     type: 'tts_state',
@@ -536,7 +544,7 @@ function crShowToyCapsule(msgId, commands) {
   scrollToBottom();
 }
 
-function crHandleToyCommand(data) {
+async function crHandleToyCommand(data) {
   if (!data || !data.commands || !data.commands.length) return;
   const msgId = data.msg_id || '';
   const commands = data.commands.map(c => String(c || '').trim().toUpperCase()).filter(Boolean);
@@ -703,6 +711,7 @@ window.ChatroomVoiceCallAdapter = {
     crStopTTS();
   },
   async sendText(text) {
+    if (!crRequireModels()) return;
     const content = String(text || "").trim();
     if (!content) return;
     if (!currentRoom) throw new Error("请先选择聊天室");
@@ -748,6 +757,7 @@ window.ChatroomVoiceCallAdapter = {
 };
 
 function crStopTTS() {
+  window.AionTtsAudio?.stopAutoPlayback?.();
   _ttsEngine.stop();
 }
 
@@ -2068,6 +2078,7 @@ function crClearSystemLog() {
 }
 
 async function fetchCurrentModel(configPromise) {
+  const initial = { aion: chatroomModel, connor: chatroomConnorModel, order: chatroomReplyOrder };
   try {
     const [convs, models, cfg] = await Promise.all([
       fetch('/api/conversations').then(resp => resp.json()),
@@ -2075,9 +2086,9 @@ async function fetchCurrentModel(configPromise) {
       configPromise || api('/config'),
     ]);
     if (Array.isArray(models)) chatroomModels = models;
-    if (cfg?.connor_model) chatroomConnorModel = cfg.connor_model;
-    if (cfg?.reply_order) chatroomReplyOrder = cfg.reply_order;
-    if (Array.isArray(convs) && convs.length > 0 && convs[0].model) {
+    if (cfg?.connor_model && chatroomConnorModel === initial.connor) chatroomConnorModel = cfg.connor_model;
+    if (cfg?.reply_order && chatroomReplyOrder === initial.order) chatroomReplyOrder = cfg.reply_order;
+    if (chatroomModel === initial.aion && Array.isArray(convs) && convs.length > 0 && convs[0].model) {
       chatroomModel = convs[0].model;
     }
     updateHeaderActions();
@@ -3288,6 +3299,7 @@ function cancelChatroomEdit() {
 }
 
 async function saveChatroomEdit(msgId) {
+  if (!crRequireModels()) return;
   const ta = document.getElementById(`edit_${msgId}`);
   const msg = crMessagesById[msgId];
   if (!ta || ta.disabled || !msg || !crCanEditMessage()) return;
@@ -3347,6 +3359,7 @@ async function saveChatroomEdit(msgId) {
 }
 
 async function regenerateChatroomMsg(msgId) {
+  if (!crRequireModels()) return;
   const msg = crMessagesById[msgId];
   if (!msg || !crIsAiSender(msg.sender) || !crCanEditMessage()) return;
   if (_crControl.active || _crControl.retryStop) {
@@ -3698,7 +3711,9 @@ function crShowMemoryRecordCard(msgId) {
 composer.addEventListener('submit', async (e) => {
   e.preventDefault();
   if (_crControl.active) { _crControl.stop(); return; }
+  if (!crRequireModels()) return;
   const text = inputEl.value.trim();
+  if (pendingAttachments.some(a => a.uploading)) { toast('图片或附件还在上传，请稍等'); return; }
   if ((!text && !pendingAttachments.length) || !currentRoom || isSending) return;
 
   const generation = _crControl.begin(currentRoom.id);
@@ -3708,6 +3723,7 @@ composer.addEventListener('submit', async (e) => {
   resizeInput();
 
   const attachments = pendingAttachments.map(a => a.url);
+  pendingAttachments.forEach(a => ChatImageUpload.release(a));
   pendingAttachments = [];
   renderPreview();
 
@@ -3896,6 +3912,7 @@ inputEl.addEventListener('keydown', (e) => {
 // ══════════════════════════════════════════════════
 
 async function triggerAiChat() {
+  if (!crRequireModels()) return;
   if (!currentRoom || currentRoom.type !== 'group' || isSending || isAiChatting || isReplyOnce) return;
   const generation = _crControl.begin(currentRoom.id);
   isAiChatting = true;
@@ -3926,6 +3943,7 @@ async function triggerAiChat() {
 }
 
 async function triggerReplyOnce(speaker) {
+  if (!crRequireModels()) return;
   if (!currentRoom || currentRoom.type !== 'group' || isSending || isAiChatting || isReplyOnce) return;
   if (!['aion', 'connor'].includes(speaker)) return;
 
@@ -6199,7 +6217,7 @@ let imageLongPressState = null;
 let imageLongPressSuppressClickUntil = 0;
 
 function imageInteractionAttrs() {
-  return 'onclick="return openImageFromElement(event, this)" oncontextmenu="showImageSaveMenu(this.src); return false;" onpointerdown="startImageLongPress(event, this.src)" onpointermove="moveImageLongPress(event)" onpointerup="cancelImageLongPress()" onpointerleave="cancelImageLongPress()" onpointercancel="cancelImageLongPress()" draggable="false"';
+  return 'onclick="return openImageFromElement(event, this)" oncontextmenu="showImageSaveMenu(ChatImagePreview.original(this)); return false;" onpointerdown="startImageLongPress(event, ChatImagePreview.original(this))" onpointermove="moveImageLongPress(event)" onpointerup="cancelImageLongPress()" onpointerleave="cancelImageLongPress()" onpointercancel="cancelImageLongPress()" draggable="false"';
 }
 
 function bindImageSaveOnly(img, clickHandler) {
@@ -6231,7 +6249,7 @@ function openImageFromElement(event, img) {
     if (event) event.preventDefault();
     return false;
   }
-  openImageViewer(img.src);
+  openImageViewer(ChatImagePreview.original(img));
   return false;
 }
 
@@ -6453,7 +6471,7 @@ function renderAttachments(atts, options = {}) {
       } else if (/\.(mp3|wav|m4a|aac|ogg)(?:[?#].*)?$/i.test(url)) {
         html += `<audio src="${esc(url)}" controls preload="metadata"></audio>`;
       } else {
-        html += `<img src="${esc(url)}" ${imageInteractionAttrs()}>`;
+        html += `<img ${ChatImagePreview.attributes(url)} ${imageInteractionAttrs()}>`;
       }
     }
   });
@@ -6464,20 +6482,15 @@ function renderAttachments(atts, options = {}) {
 }
 
 async function handleChatroomFileSelect(input) {
-  for (const file of input.files) {
-    const fd = new FormData();
-    fd.append('file', file);
+  const files = Array.from(input.files);
+  input.value = '';
+  for (const file of files) {
     try {
-      const res = await fetch(`${API}/upload`, { method: 'POST', body: fd });
-      const data = await res.json();
-      if (data.error) { toast(data.error); continue; }
-      pendingAttachments.push(data);
+      await ChatImageUpload.add(`${API}/upload`, file, pendingAttachments, renderPreview);
     } catch (err) {
-      toast('上传失败: ' + err.message);
+      toast(err.message);
     }
   }
-  input.value = '';
-  renderPreview();
 }
 
 function renderPreview() {
@@ -6486,14 +6499,17 @@ function renderPreview() {
   area.className = 'preview-area has-files';
   area.innerHTML = pendingAttachments.map((a, i) => {
     const isVideo = String(a.type || '').startsWith('video/') || /\.(mp4|webm|mov)(?:[?#].*)?$/i.test(a.url || '');
+    const src = esc(a.previewUrl || a.url || '');
     const media = isVideo
-      ? `<video src="${a.url}" muted preload="metadata" playsinline></video>`
-      : `<img src="${a.url}">`;
-    return `<div class="preview-item">${media}<button class="preview-remove" onclick="removeChatroomAttachment(${i})">✕</button></div>`;
+      ? `<video src="${src}" muted preload="metadata" playsinline></video>`
+      : `<img src="${src}">`;
+    const status = a.uploading ? `<span style="position:absolute;bottom:0;left:0;right:0;background:#000a;color:white;font-size:11px;text-align:center" role="status">${esc(a.status)}</span>` : '';
+    return `<div class="preview-item">${media}${status}<button class="preview-remove" onclick="removeChatroomAttachment(${i})">✕</button></div>`;
   }).join('');
 }
 
 function removeChatroomAttachment(i) {
+  ChatImageUpload.release(pendingAttachments[i]);
   pendingAttachments.splice(i, 1);
   renderPreview();
 }
@@ -6519,21 +6535,13 @@ document.getElementById('fileInput').addEventListener('change', function() {
 inputEl.addEventListener('paste', async (e) => {
   const items = e.clipboardData && e.clipboardData.items;
   if (!items) return;
-  for (const item of items) {
-    if (!item.type.startsWith('image/')) continue;
-    e.preventDefault();
-    const file = item.getAsFile();
-    if (!file) continue;
-    const fd = new FormData();
-    fd.append('file', file);
+  const files = Array.from(items).filter(item => item.type.startsWith('image/')).map(item => item.getAsFile()).filter(Boolean);
+  if (files.length) e.preventDefault();
+  for (const file of files) {
     try {
-      const res = await fetch(`${API}/upload`, { method: 'POST', body: fd });
-      const data = await res.json();
-      if (data.error) { toast(data.error); continue; }
-      pendingAttachments.push(data);
-      renderPreview();
+      await ChatImageUpload.add(`${API}/upload`, file, pendingAttachments, renderPreview);
     } catch (err) {
-      toast('粘贴上传失败: ' + err.message);
+      toast(err.message);
     }
   }
 });
@@ -6607,8 +6615,7 @@ function escWithImages(str) {
     // Connor 端 /uploads/ 在聊天室对应 /cr-uploads/
     let imgUrl = match[1];
     if (imgUrl.startsWith('/uploads/')) imgUrl = '/cr-uploads/' + imgUrl.slice('/uploads/'.length);
-    const safeUrl = esc(imgUrl);
-    result += `<img class="cr-inline-img" src="${safeUrl}" ${imageInteractionAttrs()} loading="lazy">`;
+    result += `<img class="cr-inline-img" ${ChatImagePreview.attributes(imgUrl)} ${imageInteractionAttrs()}>`;
     lastIdx = imgRe.lastIndex;
   }
   const tail = str.slice(lastIdx);
@@ -6757,15 +6764,10 @@ async function crCapturePhoto() {
   crCloseCamera();
   const resp = await fetch(dataUrl);
   const blob = await resp.blob();
-  const fd = new FormData();
-  fd.append('file', blob, 'photo_' + Date.now() + '.jpg');
+  const photo = new File([blob], 'photo_' + Date.now() + '.jpg', { type: blob.type });
   try {
-    const res = await fetch(`${API}/upload`, { method: 'POST', body: fd });
-    const data = await res.json();
-    if (data.error) { toast(data.error); return; }
-    pendingAttachments.push(data);
-    renderPreview();
-  } catch (err) { toast('上传失败: ' + err.message); }
+    await ChatImageUpload.add(`${API}/upload`, photo, pendingAttachments, renderPreview);
+  } catch (err) { toast(err.message); }
 }
 
 // ══════════════════════════════════════════════════
@@ -6831,6 +6833,7 @@ function _crInitVoiceHoldBtn() {
 }
 
 async function _crVoiceStartRecord(evt) {
+  if (!crRequireModels()) return;
   if (_crVoiceRecording || isSending) return;
   _crVoiceResumeAmbient = false;
   if (crAmbientUseNative && crAmbientCanRun()) {
@@ -6985,6 +6988,7 @@ function _crBuildWav(chunks) {
 }
 
 async function _crVoiceSend(audioBlob, duration) {
+  if (!crRequireModels()) return;
   if (!currentRoom || isSending) return;
 
   // 1. 上传音频
@@ -7365,8 +7369,10 @@ function crToyCloseEditor() { document.getElementById('crToyEditorOverlay').clas
   // must wait for the room list, reducing startup from many round trips to two.
   const configPromise = api('/config');
   const roomPromise = api('/rooms');
-  const listenerPromise = crAmbientRefreshListenerState().catch(() => null);
-  const modelPromise = fetchCurrentModel(configPromise);
+  // Auxiliary requests must not hold the room list, cached messages or WebSocket hostage.
+  crAmbientRefreshListenerState().then(() => crAmbientSyncRunning()).catch(() => null);
+  fetchCurrentModel(configPromise).catch(() => null).finally(() => { crStartupModelsReady = true; });
+  crLoadProactiveCompanionshipStatus().catch(() => null);
 
   try {
     const cfg = await configPromise;
@@ -7378,9 +7384,6 @@ function crToyCloseEditor() { document.getElementById('crToyEditorOverlay').clas
     chatroomReplyOrder = cfg.reply_order || 'random';
     crApplyAmbientVoiceConfig(cfg);
   } catch(e) {}
-  await listenerPromise;
-  await modelPromise;
-  await crLoadProactiveCompanionshipStatus();
   try {
     rooms = await roomPromise;
     renderRoomList();

@@ -28,10 +28,10 @@ test('diary author switch cannot be overwritten by a slower previous request', a
 test('memory reconnection reads the current server list without applying old event data', () => {
   let handler, options, loads = 0;
   const ctx = vm.createContext({
-    connectCommonWS(fn, opts) { handler = fn; options = opts; },
+    connectRetainedPageWS(fn, opts) { handler = fn; options = opts; },
     loadMemories() { loads++; },
   });
-  vm.runInContext(block(read('memory.html'), 'connectCommonWS(msg =>', '(async function init()'), ctx);
+  vm.runInContext(block(read('memory.html'), 'connectRetainedPageWS(msg =>', '(async function init()'), ctx);
   assert.equal(typeof options?.reconcile, 'function');
   options.reconcile();
   handler({ type: 'memory_updated', data: { id: 'old', content: 'historical' } });
@@ -87,7 +87,7 @@ test('family timeline preserves the latest selected range when requests finish o
   const pending = [];
   const el = { value: '24' };
   const ctx = vm.createContext({
-    timelineRequestId: 0, $: () => el,
+    timelineRequestId: 0, timelineLoading: false, $: () => el,
     api: () => new Promise(resolve => pending.push(resolve)),
     renderTimelineEvent: item => item.id,
   });

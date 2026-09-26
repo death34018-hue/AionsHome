@@ -10,6 +10,30 @@ const MonitorCameraSnapshot = require('./static/monitor-camera-snapshot.js');
 
 const ROOT = __dirname;
 
+test('ANKNI notices expand into per-segment seconds and user mode names in both chats', () => {
+  const raw='[ANKNI:LOOP:2000,2;3000,5;1000,0;2500,10;200,9]';
+  const attachments=[{type:'ankni_command_notice',raw,format:'duration_modes_v1'}];
+  for(const render of [privateSystemRenderer(),chatroomSystemRenderer()]) {
+    const html=render({id:'ankni',role:'system',sender:'system',content:'ANKNI编排 · 5 段循环',attachments});
+    assert.match(html,/<summary>💗趴趴猫 控制 · 5段心动<\/summary>/);
+    assert.ok(html.includes('2秒-渐入佳境；3秒-蛮牛冲撞；1秒-停止；2.5秒-冲刺；0.2秒-快速震弹'));
+    assert.doesNotMatch(html,/<details[^>]*\sopen|ANKNI:LOOP/);
+  }
+  assert.equal(attachments[0].raw,raw);
+  const old='[ANKNI:LOOP:2000,30,0]';
+  const html=SystemNoticeUI.renderSystemNoticeContent('ANKNI编排 · 1 段循环',{
+    attachments:[{type:'ankni_command_notice',raw:old+'<script>bad</script>'}],
+  });
+  assert.ok(html.includes(old));
+  assert.match(html,/&lt;script&gt;/);
+  assert.doesNotMatch(html,/<script>/);
+  const oldCumulative='[ANKNI:LOOP:2000,5;3000,6]';
+  const historical=SystemNoticeUI.renderSystemNoticeContent('ANKNI编排 · 2 段循环',{
+    attachments:[{type:'ankni_command_notice',raw:oldCumulative}],
+  });
+  assert.ok(historical.includes(oldCumulative),'historical end-time commands must not be reinterpreted as durations');
+});
+
 test('new toy command notices remain collapsed and escape text around translated commands in both chats', () => {
   const attachments = [{type: 'svakom_command_notice', raw: '[SVAKOM:STOP]<script>bad</script>', status: '已广播，执行未确认'}];
   const html = SystemNoticeUI.renderSystemNoticeContent('新玩具编排 · 停止', {attachments});

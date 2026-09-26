@@ -4,6 +4,26 @@ const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
 
+test('phone TTS settings reach the background service even without a page socket', () => {
+  for (const [file, name, state] of [
+    ['chat.js', '_sendTTSState', {ws: null, ttsEnabled: true, ttsVoiceId: 'voice', ttsPlaybackActiveAt: 20, _clientId: 'private'}],
+    ['chatroom.js', 'crSendTTSState', {crWs: null, crTtsEnabled: true, crCurrentTTSVoice: () => 'voice', crTtsPlaybackActiveAt: 30, crAmbientClientId: 'room'}],
+  ]) {
+    const source = fs.readFileSync(path.join(__dirname, 'static', file), 'utf8');
+    const start = source.indexOf(`function ${name}(`);
+    const end = source.indexOf('\n}', start) + 2;
+    const sent = [];
+    const context = vm.createContext({ ...state, window: {
+      AionTtsAudio: { setAutoPlaybackState: (...args) => sent.push(args) },
+    }});
+    vm.runInContext(source.slice(start, end), context);
+    context[name]();
+    assert.equal(sent.length, 1, file);
+    assert.equal(sent[0][0], true);
+    assert.equal(sent[0][1], 'voice');
+  }
+});
+
 test('private TTS finishes a missing first segment and unblocks the next message', async () => {
   const source = fs.readFileSync(path.join(__dirname, 'static/chat.js'), 'utf8');
   const start = source.indexOf('function enqueueTTSChunk(');

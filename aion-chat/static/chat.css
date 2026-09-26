@@ -1181,6 +1181,10 @@ body[data-theme="light"] .link-preview-card:hover {
 #subPageBar button { background:none; border:none; font-size:20px; cursor:pointer; color:var(--text); padding:4px 8px; }
 #subPageBar span { font-size:14px; color:var(--text2); flex:1; }
 #subPageFrames { flex:1; min-height:0; width:100%; position:relative; z-index:1; background:var(--subpage-frame-bg); }
+#subPageLoading { position:absolute; inset:0; z-index:2; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; background:var(--subpage-frame-bg, #181820); color:var(--text, #ddd); font-size:14px; }
+#subPageLoading[hidden], #subPageLoading button[hidden] { display:none; }
+.sub-page-loading-actions { display:flex; gap:12px; }
+.sub-page-loading-actions button { border:1px solid currentColor; border-radius:8px; padding:8px 14px; background:transparent; color:inherit; cursor:pointer; }
 .sub-page-frame { position:absolute; inset:0; border:none; width:100%; height:100%; background:var(--subpage-frame-bg); display:none; }
 #subPageOverlay.home-subpage .sub-page-frame { background:transparent; }
 

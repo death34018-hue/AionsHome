@@ -136,6 +136,7 @@
       <button class="mem-tab active" data-kind="all" onclick="setMemoryKindFilter('all')">全部</button>
       <button class="mem-tab" data-kind="daily" onclick="setMemoryKindFilter('daily')">日常</button>
       <button class="mem-tab" data-kind="long_term" onclick="setMemoryKindFilter('long_term')">长期重要</button>
+      <button class="mem-tab" id="memRefreshBtn" onclick="refreshMemoryList()">刷新</button>
     </div>
     <div class="mem-count" id="memCount"></div>
     <div class="mem-list" id="memList"><div class="mem-empty">暂无记忆</div></div>
@@ -175,7 +176,7 @@
 </div>
 
 <script src="/static/theme.js?v=theme-20260606"></script>
-<script src="/static/common.js"></script>
+<script src="/static/common.js?v=retained-pages-20260924"></script>
 <script src="/static/memory-editor.js?v=20260905"></script>
 <script>
 const MEM_TYPE_LABELS = {
@@ -290,10 +291,10 @@ function restoreMemorySnapshot() {
 }
 
 // 使用服务器当前列表统一校准内容、排序和分类计数。
-connectCommonWS(msg => {
+connectRetainedPageWS(msg => {
   if (["memory_added", "memory_updated", "memory_deleted", "memory_collection_changed",
-       "sync_reset_required"].includes(msg.type)) loadMemories({ reset: true });
-}, { reconcile: () => loadMemories({ reset: true }) });
+       "sync_reset_required"].includes(msg.type)) loadMemories({ reset: true, quiet: true });
+}, { reconcile: () => loadMemories({ reset: true, quiet: true }) });
 
 (async function init() {
   restoreMemorySnapshot();
@@ -302,8 +303,25 @@ connectCommonWS(msg => {
   loadCompressionDraft();
 })();
 
+function memoryRefreshBlocked() {
+  // Reading older pages or editing takes priority over automatic list refresh.
+  return !!document.querySelector('dialog[open]') || !!_memoryKindMenuId
+    || $('memList').scrollTop > 0 || _allMemories.length > MEMORY_PAGE_SIZE;
+}
+
+function refreshMemoryList() {
+  if (document.querySelector('dialog[open]')) {
+    showToast('请先完成当前编辑');
+    return;
+  }
+  _memoryKindMenuId = null;
+  $('memList').scrollTop = 0;
+  return loadMemories({ reset: true });
+}
+
 async function loadMemories(options = {}) {
   const append = !!options.append;
+  if (options.quiet && (_memoryLoading || memoryRefreshBlocked())) return;
   if (append && _memoryLoading) return;
   const requestId = ++_memoryRequestId;
   const query = ($("memSearch").value || "").trim();
@@ -315,6 +333,7 @@ async function loadMemories(options = {}) {
     params.set("kind", _memoryKindFilter);
     const result = await api("GET", `/api/memories?${params}`);
     if (requestId !== _memoryRequestId) return;
+    if (options.quiet && memoryRefreshBlocked()) return;
     const items = Array.isArray(result) ? result : (result.items || []);
     if (!append) _allMemories = [];
     items.forEach(item => upsertMemory(item, false));

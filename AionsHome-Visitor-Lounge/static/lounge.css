@@ -117,7 +117,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .admin-metrics strong { display: block; margin: 8px 0 4px; font: 500 1.5rem Georgia, serif; }
 .key-reveal-panel { display: grid; grid-template-columns: minmax(180px,1fr) minmax(260px,2fr) auto; align-items: center; gap: 14px; border-color: rgba(212,166,93,.55); }
 .key-reveal-panel[hidden] { display: none; }
-.key-value { overflow-wrap: anywhere; }
+.key-value { overflow-wrap: anywhere; user-select: all; -webkit-user-select: all; }
 .visitor-management-toolbar { margin-bottom: 12px; padding: 12px; background: rgba(0,0,0,.15); border-radius: 13px; }
 .visitor-management-toolbar input[type="search"] { max-width: 420px; }
 .select-visible { display: inline-flex; align-items: center; gap: 7px; padding: 8px 10px; }

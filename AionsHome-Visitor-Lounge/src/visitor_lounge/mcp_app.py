@@ -14,6 +14,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from starlette.applications import Starlette
 
 from visitor_lounge.container import Container
+from visitor_lounge.board_mcp import register_board_tools
 from visitor_lounge.mcp_auth import require_visitor_id
 from visitor_lounge.mcp_service import McpLoungeService
 from visitor_lounge.oauth_provider import VisitorOAuthProvider
@@ -52,11 +53,14 @@ def create_mcp_server(
         title="AionsHome Visitor Lounge",
         version="1.0.0",
         instructions=(
-            "A private text-only visitor lounge. A Visitor Key identifies exactly "
-            "one visitor across every client. Call get_lounge_info first. An "
-            "unclaimed visitor must call claim_identity before talking to "
-            f"{container.settings.host_display_name}. "
-            "Only text is accepted, and each message is at most 500 characters."
+            "A private Visitor Key-scoped lounge. Call get_lounge_info first, "
+            "then claim_identity once if needed. Multiple humans and AIs may "
+            "share one Key; every board post must supply its own author_name. "
+            "The board is asynchronous: list_message_threads when you choose "
+            "to visit, read a topic, then optionally reply or start a new one. "
+            "Any participant may close a topic; closed topics are read-only. "
+            + ("Live chat is currently disabled." if not container.settings.chat_enabled
+               else "Live chat is also available through the visit tools.")
         ),
         auth=AuthSettings(
             issuer_url=MCP_PUBLIC_ORIGIN,
@@ -75,6 +79,15 @@ def create_mcp_server(
     oauth_meta = {
         "securitySchemes": [{"type": "oauth2", "scopes": [MCP_SCOPE]}]
     }
+    if container.settings.board_enabled:
+        register_board_tools(server, container.database, container.settings, oauth_meta)
+
+    def require_live_chat() -> None:
+        if not container.settings.chat_enabled:
+            raise ValueError("live_chat_disabled")
+
+    def live_tool(**kwargs):
+        return server.tool(**kwargs) if container.settings.chat_enabled else (lambda fn: fn)
 
     @server.tool(
         name="get_lounge_info",
@@ -100,7 +113,7 @@ def create_mcp_server(
     def claim_identity(name: str, consent: bool) -> dict[str, object]:
         return lounge.claim_identity(require_visitor_id(), name, consent)
 
-    @server.tool(
+    @live_tool(
         name="begin_visit",
         description=(
             "Open or resume this Key's one shared visit and receive the latest shared "
@@ -110,16 +123,17 @@ def create_mcp_server(
         meta=oauth_meta,
     )
     def begin_visit() -> dict[str, object]:
+        require_live_chat()
         return lounge.begin_visit(require_visitor_id())
 
-    @server.tool(
+    @live_tool(
         name="talk_to_host",
         description=(
             "Send exactly one pure-text message to the configured host and wait for one reply. "
             "Images, files, URLs as attachments, and binary content are not accepted. "
             "The message must not exceed 500 Unicode characters; compress or split "
-            "longer input before calling. A failed generation is not retried and does "
-            "not consume visitor quota."
+            "longer input before calling. A failed generation is automatically attempted "
+            "up to three times and does not consume visitor quota if all attempts fail."
         ),
         structured_output=True,
         meta=oauth_meta,
@@ -127,11 +141,12 @@ def create_mcp_server(
     async def talk_to_host(
         message: str, request_id: str = ""
     ) -> dict[str, object]:
+        require_live_chat()
         return await lounge.talk_to_host(
             require_visitor_id(), message, request_id
         )
 
-    @server.tool(
+    @live_tool(
         name="get_visit_state",
         description=(
             "Read this Key's shared text timeline and state without calling the model. "
@@ -143,20 +158,30 @@ def create_mcp_server(
     def get_visit_state(
         after_message_id: str | None = None,
     ) -> dict[str, object]:
+        require_live_chat()
         return lounge.get_visit_state(require_visitor_id(), after_message_id)
 
-    @server.tool(
+    @live_tool(
         name="end_visit",
         description=(
             "End the current visit without deleting the fixed identity, shared messages, "
-            "visitor memory, or quota state."
+            "visitor memory, or quota state. Pass completed only for a normal ending; "
+            "pass interrupted for failures, cancellation, or abnormal cleanup."
         ),
         structured_output=True,
         meta=oauth_meta,
     )
-    async def end_visit(final_message: str | None = None) -> dict[str, object]:
+    async def end_visit(
+        final_message: str | None = None,
+        status: str = "completed",
+        reason: str | None = None,
+    ) -> dict[str, object]:
+        require_live_chat()
         return await lounge.end_visit(
-            require_visitor_id(), final_message=final_message
+            require_visitor_id(),
+            final_message=final_message,
+            status=status,
+            reason=reason,
         )
 
     transport_security = TransportSecuritySettings(

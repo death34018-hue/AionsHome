@@ -31,7 +31,7 @@ const source=fs.readFileSync('static/chat.js','utf8');
 const decision=source.slice(source.indexOf('function shouldNavigatePersistentSubPage('),source.indexOf('function isPersistentSubPage('));
 const host={URL,location:{origin:'http://localhost:8080'}};
 vm.createContext(host);vm.runInContext(decision,host);
-const frame={src:'/chatroom',contentWindow:{location:{href:'http://localhost:8080/taobao?trip=abc'}}};
+const frame={dataset:{navigationReady:'1'},src:'/chatroom',contentWindow:{location:{href:'http://localhost:8080/taobao?trip=abc'}}};
 assert.equal(host.shouldNavigatePersistentSubPage(frame,'/chatroom'),true,'recover iframe that navigated away');
 frame.contentWindow.location.href='http://localhost:8080/chatroom?room=group-7';
 assert.equal(host.shouldNavigatePersistentSubPage(frame,'/chatroom'),false,'keep healthy cached room');

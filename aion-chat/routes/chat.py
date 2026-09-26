@@ -1,3 +1,4 @@
+from toy_profiles import allow_legacy as allow_legacy_toy, state as toy_selection_state
 """
 聊天核心路由：对话 CRUD、消息 CRUD、send_message、regenerate
 """
@@ -93,7 +94,7 @@ THEATER_ITEM_PATTERN = re.compile(r'\[剧场道具[：:]([^\]]+)\]')
 _SYSTEM_MSG_CONTEXT_KEYWORDS = ('查看了监控', '搜索了', '点歌', '点了一首', '推荐了', '查看了动态', '视频通话', '本条为微信消息')
 from context_builder import (
     fetch_merged_timeline, render_merged_timeline, build_health_summary,
-    build_ability_block, WISH_CMD_PATTERN, _build_recall_query, strip_tool_commands,
+    build_ability_block, board_memory_context, WISH_CMD_PATTERN, _build_recall_query, strip_tool_commands,
     BAND_VIBRATE_CMD_PATTERN,
 )
 from music import search_songs, get_audio_url
@@ -1385,6 +1386,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     debug_top6 = []
     debug_top6_data = []
     debug_recalled = []
+    board_memory = board_memory_context("aion", body.content)
 
     digest_result = await instant_digest(actual_recent)
     recall_keywords = digest_result.get("keywords", [])
@@ -1416,6 +1418,8 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     health_text = await build_health_summary()
     if health_text:
         bg_block += health_text
+    if board_memory:
+        bg_block += "\n\n" + board_memory
     if surfaced:
         unresolved_lines = [
             f"📌 {format_recalled_memories_for_prompt([m])[2:]}（还没做/还没去）"
@@ -1554,8 +1558,11 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
 
             from svakom_ai import process_commands as process_svakom_commands
             full_text = await process_svakom_commands(full_text, ai_msg_id, conv_id=conv_id)
-            toy_matches = TOY_CMD_PATTERN.findall(full_text)
-            if toy_matches:
+            from ankni_ai import process_commands as process_ankni_commands
+            full_text = await process_ankni_commands(full_text, ai_msg_id, conv_id=conv_id)
+            toy_matches = TOY_CMD_PATTERN.findall(full_text) if allow_legacy_toy() else []
+            full_text = TOY_CMD_PATTERN.sub("", full_text)
+            if toy_matches and allow_legacy_toy():
                 full_text = TOY_CMD_PATTERN.sub("", full_text).strip()
 
             pet_matches = PET_CMD_PATTERN.findall(full_text)
@@ -1730,8 +1737,8 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
             await broadcast_app_supervision_command(supervision_command)
             await export_conversation(conv_id)
 
-            if toy_matches:
-                toy_data = {'type': 'toy_command', 'commands': toy_matches, 'msg_id': ai_msg_id}
+            if toy_matches and allow_legacy_toy():
+                toy_data = {'type': 'toy_command', 'commands': toy_matches, 'msg_id': ai_msg_id, 'epoch': toy_selection_state()['epoch']}
                 await _q.put(toy_data)
                 await manager.broadcast({"type": "toy_command", "data": toy_data})
                 await _toy_sys_msg(conv_id, toy_matches)
@@ -2023,6 +2030,7 @@ async def send_message(conv_id: str, body: MsgCreate):
     debug_top6 = []
     debug_top6_data = []
     debug_recalled = []
+    board_memory = board_memory_context("aion", body.content)
 
     if body.fast_mode:
         # ── 快速模式：仅注入当前时间，跳过哨兵和记忆 ──
@@ -2031,6 +2039,8 @@ async def send_message(conv_id: str, body: MsgCreate):
         health_text = await build_health_summary()
         if health_text:
             bg_block += health_text
+        if board_memory:
+            bg_block += "\n\n" + board_memory
         history.insert(cap_idx + inject_offset, {"role": "user", "content": bg_block})
         history.insert(cap_idx + inject_offset + 1, {"role": "assistant", "content": "收到。"})
         inject_offset += 2
@@ -2069,6 +2079,8 @@ async def send_message(conv_id: str, body: MsgCreate):
         health_text = await build_health_summary()
         if health_text:
             bg_block += health_text
+        if board_memory:
+            bg_block += "\n\n" + board_memory
         if surfaced:
             unresolved_lines = [
                 f"📌 {format_recalled_memories_for_prompt([m])[2:]}（还没做/还没去）"
@@ -2217,8 +2229,11 @@ async def send_message(conv_id: str, body: MsgCreate):
             # 检测 [TOY:x] 指令
             from svakom_ai import process_commands as process_svakom_commands
             full_text = await process_svakom_commands(full_text, ai_msg_id, conv_id=conv_id)
-            toy_matches = TOY_CMD_PATTERN.findall(full_text)
-            if toy_matches:
+            from ankni_ai import process_commands as process_ankni_commands
+            full_text = await process_ankni_commands(full_text, ai_msg_id, conv_id=conv_id)
+            toy_matches = TOY_CMD_PATTERN.findall(full_text) if allow_legacy_toy() else []
+            full_text = TOY_CMD_PATTERN.sub("", full_text)
+            if toy_matches and allow_legacy_toy():
                 full_text = TOY_CMD_PATTERN.sub("", full_text).strip()
 
             # 检测 [PET:xxx] 桌宠指令
@@ -2444,8 +2459,8 @@ async def send_message(conv_id: str, body: MsgCreate):
             await export_conversation(conv_id)
 
             # 推送 [TOY:x] 指令到前端
-            if toy_matches:
-                toy_data = {'type': 'toy_command', 'commands': toy_matches, 'msg_id': ai_msg_id}
+            if toy_matches and allow_legacy_toy():
+                toy_data = {'type': 'toy_command', 'commands': toy_matches, 'msg_id': ai_msg_id, 'epoch': __import__('toy_profiles').state()['epoch']}
                 await _q.put(toy_data)
                 await manager.broadcast({"type": "toy_command", "data": toy_data})
                 await _toy_sys_msg(conv_id, toy_matches)
@@ -3523,6 +3538,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
     debug_top6 = []
     debug_top6_data = []
     debug_recalled = []
+    board_memory = board_memory_context("aion", lounge_request_text)
 
     if fast_mode:
         # ── 快速模式：仅注入当前时间 ──
@@ -3531,6 +3547,8 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
         health_text = await build_health_summary()
         if health_text:
             bg_block += health_text
+        if board_memory:
+            bg_block += "\n\n" + board_memory
         history.insert(cap_idx + inject_offset, {"role": "user", "content": bg_block})
         history.insert(cap_idx + inject_offset + 1, {"role": "assistant", "content": "收到。"})
         inject_offset += 2
@@ -3549,6 +3567,8 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
         health_text = await build_health_summary()
         if health_text:
             bg_block += health_text
+        if board_memory:
+            bg_block += "\n\n" + board_memory
         if surfaced:
             unresolved_lines = [
                 f"📌 {format_recalled_memories_for_prompt([m])[2:]}（还没做/还没去）"
@@ -3707,8 +3727,11 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             # 检测 [TOY:x] 指令
             from svakom_ai import process_commands as process_svakom_commands
             full_text = await process_svakom_commands(full_text, ai_msg_id, conv_id=conv_id)
-            toy_matches = TOY_CMD_PATTERN.findall(full_text)
-            if toy_matches:
+            from ankni_ai import process_commands as process_ankni_commands
+            full_text = await process_ankni_commands(full_text, ai_msg_id, conv_id=conv_id)
+            toy_matches = TOY_CMD_PATTERN.findall(full_text) if allow_legacy_toy() else []
+            full_text = TOY_CMD_PATTERN.sub("", full_text)
+            if toy_matches and allow_legacy_toy():
                 full_text = TOY_CMD_PATTERN.sub("", full_text).strip()
 
             # 检测 [PET:xxx] 桌宠指令
@@ -3886,8 +3909,8 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             await export_conversation(conv_id)
 
             # 推送 [TOY:x] 指令到前端
-            if toy_matches:
-                toy_data = {'type': 'toy_command', 'commands': toy_matches, 'msg_id': ai_msg_id}
+            if toy_matches and allow_legacy_toy():
+                toy_data = {'type': 'toy_command', 'commands': toy_matches, 'msg_id': ai_msg_id, 'epoch': __import__('toy_profiles').state()['epoch']}
                 await _q.put(toy_data)
                 await manager.broadcast({"type": "toy_command", "data": toy_data})
                 await _toy_sys_msg(conv_id, toy_matches)

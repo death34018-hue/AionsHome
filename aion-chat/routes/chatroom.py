@@ -1,3 +1,4 @@
+from toy_profiles import allow_legacy as allow_legacy_toy, state as toy_selection_state
 """
 聊天室 API 路由：房间 CRUD、发消息(SSE)、AI 互聊、记忆接口
 """
@@ -1081,11 +1082,14 @@ async def _process_chatroom_commands(
     # ── 玩具 ──
     from svakom_ai import process_commands as process_svakom_commands
     full_text = await process_svakom_commands(full_text, msg_id, room_id=room_id)
-    toy_matches = TOY_CMD_PATTERN.findall(full_text)
-    if toy_matches:
+    from ankni_ai import process_commands as process_ankni_commands
+    full_text = await process_ankni_commands(full_text, msg_id, room_id=room_id)
+    toy_matches = TOY_CMD_PATTERN.findall(full_text) if allow_legacy_toy() else []
+    full_text = TOY_CMD_PATTERN.sub("", full_text)
+    if toy_matches and allow_legacy_toy():
         full_text = TOY_CMD_PATTERN.sub("", full_text)
         triggered["toy_commands"] = toy_matches
-        toy_data = {"type": "toy_command", "commands": toy_matches, "msg_id": msg_id}
+        toy_data = {"type": "toy_command", "commands": toy_matches, "msg_id": msg_id, "epoch": toy_selection_state()["epoch"]}
         await _q.put(toy_data)
         await ws_manager.broadcast({"type": "toy_command", "data": toy_data})
 

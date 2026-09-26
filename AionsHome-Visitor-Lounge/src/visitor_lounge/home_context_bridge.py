@@ -7,6 +7,11 @@ from pathlib import Path
 import httpx
 
 
+_ALLOWED_CONTEXT_KINDS = frozenset(
+    {"persona", "home_chat", "dynamic_state", "memory_summary", "safety"}
+)
+
+
 class HomeContextBridge:
     def __init__(
         self,
@@ -19,11 +24,13 @@ class HomeContextBridge:
         self.endpoint = endpoint
         self.transport = transport
 
-    async def fetch(self, query_text: str, recent_messages: list[dict]) -> str:
+    async def fetch(
+        self, query_text: str, recent_messages: list[dict]
+    ) -> list[dict[str, str]]:
         try:
             token = self.token_path.read_text("utf-8").strip()
             if not token:
-                return ""
+                return []
             async with httpx.AsyncClient(timeout=5.0, transport=self.transport) as client:
                 response = await client.post(
                     self.endpoint,
@@ -35,10 +42,23 @@ class HomeContextBridge:
                     },
                 )
             if response.status_code != 200:
-                return ""
-            return str(response.json().get("trusted_home_context") or "")[:12000]
+                return []
+            raw_blocks = response.json().get("trusted_home_context_blocks")
+            if not isinstance(raw_blocks, list):
+                return []
+            blocks: list[dict[str, str]] = []
+            for raw in raw_blocks:
+                if not isinstance(raw, dict):
+                    continue
+                kind = raw.get("kind")
+                content = raw.get("content")
+                if kind not in _ALLOWED_CONTEXT_KINDS or not isinstance(content, str):
+                    continue
+                if content:
+                    blocks.append({"kind": kind, "content": content[:12000]})
+            return blocks
         except Exception:
-            return ""
+            return []
 
     async def publish_reception_report(
         self,
@@ -47,6 +67,7 @@ class HomeContextBridge:
         *,
         turn_count: int,
         status: str = "completed",
+        reason: str | None = None,
     ) -> bool:
         try:
             token = self.token_path.read_text("utf-8").strip()
@@ -60,6 +81,7 @@ class HomeContextBridge:
                     json={
                         "visitor_name": str(visitor_name or "朋友")[:80],
                         "status": status,
+                        "reason": reason,
                         "turn_count": max(0, int(turn_count or 0)),
                         "messages": messages[-16:],
                     },

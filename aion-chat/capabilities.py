@@ -95,8 +95,9 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef("friend_visit", "拜访 AI 好友", "social", "注入 [LOUNGE_VISIT:好友 ID|话题]，让模型可在用户明确要求时拜访已配置好友。"),
     CapabilityDef("transfer", "钱包转账", "life", "注入 [转账：n元]，让模型可以在余额足够时转账。"),
     CapabilityDef("private_whisper", "群聊悄悄话", "special", "注入 [悄悄话：内容]，让群聊角色可以向私聊窗口发送悄悄话。", runtime_note="仅群聊上下文会注入。"),
-    CapabilityDef("toy", "密语玩具", "special", "注入 [TOY:1]~[TOY:9] / [TOY:STOP]，让密语模式下可以控制玩具。", runtime_note="仅密语模式会注入。"),
-    CapabilityDef("svakom", "新玩具 · AI 循环编排", "life", "独立控制 SL278H 的主体模式、主体震动力度和小部件拍打；关闭会停止 AI 编排，不影响手动控制。", default_enabled=False, runtime_note="开启即注入说明，不要求连接或密语模式；与玩具页开关同步。"),
+    CapabilityDef("toy", "SOSEXY · 密语玩具", "special", "注入 [TOY:1]~[TOY:9] / [TOY:STOP]，让密语模式下可以控制玩具。", runtime_note="仅选用 SOSEXY 且在密语模式时注入。"),
+    CapabilityDef("ankni", "ANKNI MX · AI 编排", "life", "按每段持续时间编排十种内置模式和停止，只有选中 ANKNI 时生效。", default_enabled=False),
+    CapabilityDef("svakom", "SVAKOM SL278H · AI 循环编排", "life", "独立控制 SL278H 的主体模式、主体震动力度和小部件拍打；关闭会停止 AI 编排，不影响手动控制。", default_enabled=False, runtime_note="仅选用 SVAKOM 且开启时注入；不要求连接或密语模式，与玩具页开关同步。"),
     CapabilityDef("luckin", "瑞幸下单", "life", "注入 [LUCKIN:...]，让模型可以在明确要求时创建瑞幸订单。", runtime_note="还需要瑞幸 MCP 开启。"),
     CapabilityDef("health_context", "健康数据", "context", "注入近期健康摘要。", default_enabled=False, setting_key="health_share_enabled"),
     CapabilityDef("web_search", "联网搜索/网页读取", "context", "注入 [WEB_SEARCH:查询] / [WEB_EXTRACT:URL]，让模型可主动联网搜索或读取用户分享的网页。", default_enabled=True, setting_key="web_search_enabled", runtime_note="需要配置 Tavily API key。"),
@@ -343,6 +344,9 @@ def set_capability_enabled(key: str, enabled: bool) -> dict:
         settings[key] = bool(enabled)
         SETTINGS[CAPABILITY_SETTINGS_KEY] = settings
     save_settings(SETTINGS)
+    if key == "ankni":
+        from ankni_ai import invalidate_permission
+        invalidate_permission()
     if key == "svakom":
         from svakom_ai import invalidate_permission
         invalidate_permission()
@@ -528,11 +532,17 @@ async def build_capability_prompt_items(
     who: str = "aion",
     excluded_capabilities: set[str] | None = None,
 ) -> list[str]:
+    import toy_profiles
+    toy_profiles.capture_permission(legacy_enabled=whisper_mode and is_capability_enabled("toy") and "toy" not in (excluded_capabilities or set()))
     abilities: list[str] = []
     excluded_capabilities = excluded_capabilities or set()
     from svakom_ai import capture_permission, reference_strength_prompt, PROMPT as SVAKOM_PROMPT
     if capture_permission(excluded="svakom" in excluded_capabilities):
         abilities.append(SVAKOM_PROMPT + '\n' + reference_strength_prompt())
+
+    from ankni_ai import capture_permission as capture_ankni, PROMPT as ANKNI_PROMPT
+    if capture_ankni(excluded="ankni" in excluded_capabilities):
+        abilities.append(ANKNI_PROMPT)
 
     if is_capability_enabled("music"):
         abilities.append(
@@ -619,7 +629,7 @@ async def build_capability_prompt_items(
             "简单的常识问题，不需要联网搜索。"
         )
 
-    if whisper_mode and is_capability_enabled("toy"):
+    if toy_profiles.active() == "sosexy" and whisper_mode and is_capability_enabled("toy") and "toy" not in excluded_capabilities:
         abilities.append(
             f"[TOY:1]~[TOY:9] — 控制{user_name}身上的情趣玩具切换到对应预设档位"
             "（1最温柔，9最强烈）。[TOY:STOP] — 停止玩具。"

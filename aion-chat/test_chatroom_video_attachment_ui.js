@@ -31,6 +31,7 @@ const renderPreviewSource = script.slice(
 );
 const area = {className: '', innerHTML: ''};
 const previewContext = {
+  esc: value => String(value),
   pendingAttachments: [{url: '/cr-uploads/2026-08-22/latest.mp4', type: 'video/mp4'}],
   document: {getElementById: () => area},
 };

@@ -823,6 +823,42 @@ def test_start_validation_creates_only_the_lounge_runtime_path(tmp_path) -> None
     assert not (project / ".codex-home").exists()
 
 
+def test_start_validation_discards_reused_pid_without_stopping_process(tmp_path) -> None:
+    project = _fixture_script_project(tmp_path)
+    _write_fixture_environment(project)
+    runtime = project / ".runtime"
+    runtime.mkdir()
+    unrelated = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        text=True,
+    )
+    try:
+        (runtime / "supervisor.pid").write_text(
+            str(unrelated.pid), encoding="ascii"
+        )
+
+        validated = subprocess.run(
+            [
+                _powershell(),
+                "-NoProfile",
+                "-File",
+                project / "scripts/start.ps1",
+                "-ValidateOnly",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        assert validated.returncode == 0, validated.stderr
+        assert unrelated.poll() is None
+        assert not (runtime / "supervisor.pid").exists()
+    finally:
+        if unrelated.poll() is None:
+            unrelated.terminate()
+            unrelated.wait(timeout=10)
+
+
 def _start_fixture_process(
     project: Path, *, marker: str, wrong_executable: bool = False
 ) -> subprocess.Popen[str]:

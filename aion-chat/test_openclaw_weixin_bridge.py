@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import io
 import json
 import sys
 import tempfile
@@ -83,6 +85,32 @@ class OpenClawWeixinAdapterTests(unittest.TestCase):
         }
 
         self.assertEqual(extract_text_from_message(message), "first\nsecond")
+
+    def test_decrypt_image_prefers_top_level_hex_key(self):
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from openclaw_weixin import decrypt_image_bytes
+
+        key = bytes.fromhex("00112233445566778899aabbccddeeff")
+        plaintext = b"image bytes"
+        padded = plaintext + bytes([5]) * 5
+        encrypted = Cipher(algorithms.AES(key), modes.ECB()).encryptor().update(padded)
+        image_item = {
+            "aeskey": key.hex(),
+            "media": {"aes_key": base64.b64encode(b"wrong-wrong-wron").decode()},
+        }
+
+        self.assertEqual(decrypt_image_bytes(encrypted, image_item), plaintext)
+
+    def test_decrypt_image_accepts_base64_encoded_hex_key(self):
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from openclaw_weixin import decrypt_image_bytes
+
+        key_hex = "00112233445566778899aabbccddeeff"
+        padded = b"photo" + bytes([11]) * 11
+        encrypted = Cipher(algorithms.AES(bytes.fromhex(key_hex)), modes.ECB()).encryptor().update(padded)
+        image_item = {"media": {"aes_key": base64.b64encode(key_hex.encode()).decode()}}
+
+        self.assertEqual(decrypt_image_bytes(encrypted, image_item), b"photo")
 
 
 class WeChatBindingTests(unittest.TestCase):
@@ -207,6 +235,83 @@ class WeChatBindingTests(unittest.TestCase):
 
 
 class OpenClawRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_downloaded_weixin_image_is_saved_as_attachment(self):
+        from openclaw_weixin import download_image_item
+        from types import SimpleNamespace
+        from PIL import Image
+        import config
+
+        buffer = io.BytesIO()
+        Image.new("RGB", (1, 1), (255, 0, 0)).save(buffer, format="PNG")
+        png = buffer.getvalue()
+        response = SimpleNamespace(content=png, raise_for_status=lambda: None)
+
+        class Client:
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *args):
+                return None
+            async def get(self, url):
+                self_url.append(url)
+                return response
+
+        self_url = []
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(config, "UPLOADS_DIR", Path(td)), \
+             patch.dict(sys.modules, {"httpx": SimpleNamespace(AsyncClient=lambda **kwargs: Client())}):
+            url = await download_image_item({"media": {"full_url": "https://novac2c.cdn.weixin.qq.com/c2c/image"}})
+            self.assertEqual((Path(td) / url.removeprefix("/uploads/")).read_bytes(), png)
+        self.assertEqual(self_url, ["https://novac2c.cdn.weixin.qq.com/c2c/image"])
+
+    async def test_image_waits_for_next_text_and_reaches_ai_as_one_message(self):
+        from types import SimpleNamespace
+        from wechat_bridge import create_wechat_binding
+        from wechat_openclaw_runtime import OpenClawWeixinBridgeRuntime
+
+        settings = {"wechat_bridge_enabled": True, "wechat_bridge_transport": "openclaw"}
+        create_wechat_binding(
+            source_type="aion_private", source_id="conv-1", account_id="bot-1",
+            wechat_user_id="peer-1", settings=settings,
+        )
+        inbound = AsyncMock()
+        sent = AsyncMock()
+        runtime = OpenClawWeixinBridgeRuntime(
+            settings=settings, save_settings=lambda value: None,
+            inbound_handler=inbound, send_text=sent,
+        )
+        updates = [{"msgs": [{
+            "message_type": 1, "from_user_id": "peer-1", "context_token": "ctx",
+            "item_list": [
+                {"type": 2, "image_item": {"media": {"full_url": "https://novac2c.cdn.weixin.qq.com/c2c/one"}}},
+                {"type": 2, "image_item": {"media": {"full_url": "https://novac2c.cdn.weixin.qq.com/c2c/two"}}},
+            ],
+        }], "get_updates_buf": "one"}, {"msgs": [{
+            "message_type": 1, "from_user_id": "peer-1", "context_token": "ctx",
+            "item_list": [{"type": 1, "text_item": {"text": "这张图里是什么？"}}],
+        }], "get_updates_buf": "two"}]
+        with patch("openclaw_weixin.load_accounts", return_value=[SimpleNamespace(account_id="bot-1")]), \
+             patch("openclaw_weixin.load_sync_buf", return_value=""), \
+             patch("openclaw_weixin.save_sync_buf"), \
+             patch("openclaw_weixin.get_updates", AsyncMock(side_effect=updates)), \
+             patch("openclaw_weixin.download_image_item", AsyncMock(side_effect=[
+                 "/uploads/one.png", "/uploads/two.png",
+             ])):
+            await runtime.poll_once()
+            inbound.assert_not_awaited()
+            self.assertTrue(settings.get("wechat_bridge_pending_images"))
+            runtime = OpenClawWeixinBridgeRuntime(
+                settings=settings, save_settings=lambda value: None,
+                inbound_handler=inbound, send_text=sent,
+            )
+            await runtime.poll_once()
+
+        inbound.assert_awaited_once()
+        payload = inbound.await_args.kwargs
+        self.assertEqual(payload["content"], "这张图里是什么？")
+        self.assertEqual(payload["attachments"], ["/uploads/one.png", "/uploads/two.png"])
+        self.assertEqual(payload["source_id"], "conv-1")
+        self.assertFalse(settings.get("wechat_bridge_pending_images"))
+
     async def test_startup_repairs_saved_rebinding_without_enabling_disabled_mode(self):
         from wechat_bridge import create_wechat_binding
         from wechat_mode import find_wechat_mode_for_sender, set_wechat_mode
@@ -517,6 +622,28 @@ class OpenClawRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             find_wechat_mode_for_sender(settings, "bot-1", "friend@im.wechat")["enabled"]
         )
+
+
+class WeChatInboundAttachmentTests(unittest.IsolatedAsyncioTestCase):
+    async def test_inbound_passes_images_to_private_chat_send(self):
+        from types import SimpleNamespace
+        import routes
+        from routes.wechat import WeChatInbound, receive_wechat_message
+
+        send = AsyncMock(return_value=SimpleNamespace(body_iterator=None))
+        fake_chat = SimpleNamespace(MsgCreate=lambda **kwargs: SimpleNamespace(**kwargs), send_message=send)
+        with patch.object(routes, "chat", fake_chat, create=True), \
+             patch.dict(sys.modules, {"routes.chat": fake_chat}):
+            result = await receive_wechat_message(WeChatInbound(
+                content="看看这张图", source_type="aion_private", source_id="conv-1",
+                attachments=["/uploads/one.png"], mark_channel=False,
+            ))
+            await asyncio.sleep(0)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(send.await_args.args[0], "conv-1")
+        self.assertEqual(send.await_args.args[1].content, "看看这张图")
+        self.assertEqual(send.await_args.args[1].attachments, ["/uploads/one.png"])
 
 
 if __name__ == "__main__":

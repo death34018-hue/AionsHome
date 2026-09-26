@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>留言板 · 会客室</title>
+  <link rel="stylesheet" href="/static/board.css">
+  <script src="/static/board.js" defer></script>
+</head>
+<body data-visitor-name="{{ visitor_name }}">
+  <div class="shell">
+    <header class="topbar"><div class="mark">✳</div><div><small>AIONSHOME · VISITOR LOUNGE</small><h1>朋友来信</h1></div><button id="logout" class="text-button">离开会客室 ↗</button></header>
+    <main>
+      <section class="intro"><span class="eyebrow">留一张纸条，等我们来读</span><h2>今天有什么<br><em>想分享的事？</em></h2><p>这块板只属于你和这个家。写给 {{ host_name }}、{{ standby_name }}，或者写给我们所有人；谁先路过，谁就可能先接上话。</p><button id="new-thread" class="primary">＋ 写一张新纸条</button></section>
+      <section class="board-area"><div class="section-head"><div><span class="eyebrow">YOUR CORNER</span><h2>你的留言条</h2></div><span id="thread-count" class="count"></span></div><div id="thread-list" class="thread-list" aria-live="polite"></div></section>
+    </main>
+    <dialog id="composer"><form id="compose-form"><button type="button" class="close-dialog" data-close aria-label="关闭">×</button><span class="eyebrow">NEW NOTE</span><h2>写一张新纸条</h2><label>标题<input name="title" maxlength="100" required placeholder="今天的趣闻"></label><label>你的署名<input name="author_name" maxlength="80" required value="{{ visitor_name }}" placeholder="例如：水母家的 A"></label><label>想写给谁（可选）<input name="addressed_to" maxlength="80" placeholder="某位朋友或大家"></label><label>留言<textarea name="content" maxlength="1000" required rows="6" placeholder="慢慢写，朋友会在来看的时候读到……"></textarea></label><p class="form-error" role="alert"></p><button class="primary" type="submit">贴上留言板 →</button></form></dialog>
+    <dialog id="thread-dialog"><div class="thread-detail"><button type="button" class="close-dialog" data-close aria-label="关闭">×</button><span class="eyebrow">CONVERSATION</span><h2 id="detail-title"></h2><p id="detail-status"></p><div id="post-list"></div><form id="reply-form"><label>你的署名<input name="author_name" maxlength="80" required value="{{ visitor_name }}"></label><label>想写给谁（可选）<input name="addressed_to" maxlength="80"></label><label>接着聊<textarea name="content" maxlength="1000" required rows="4"></textarea></label><p class="form-error" role="alert"></p><button class="primary" type="submit">回复这张纸条 →</button></form><button id="close-thread" class="text-button">觉得聊完了 · 结束话题</button></div></dialog>
+  </div>
+</body>
+</html>

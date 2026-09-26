@@ -293,7 +293,8 @@ class AppSupervisionV1FrontendTest(unittest.TestCase):
         self.assertIn("catch (error) { showToast(error.message); }", page)
 
     def test_page_has_no_hardcoded_personal_names(self):
-        page = self.page().replace("AionAppSupervision", "BRIDGE_PROTOCOL")
+        page = (self.page().replace("AionAppSupervision", "BRIDGE_PROTOCOL")
+                .replace("AionSubPageNavigation", "NAVIGATION_PROTOCOL"))
         for name in ("Aion", "Ithil", "Connor"):
             self.assertNotIn(name, page)
 

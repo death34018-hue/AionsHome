@@ -99,7 +99,7 @@ class WeChatModeStateTests(unittest.TestCase):
 
 
 class WeChatBubbleRendererTests(unittest.TestCase):
-    def test_inner_monologue_accepts_mixed_ascii_and_corner_brackets(self):
+    def test_inner_monologue_with_mixed_brackets_is_not_sent(self):
         event = {
             "type": "msg_created",
             "data": {
@@ -113,11 +113,11 @@ class WeChatBubbleRendererTests(unittest.TestCase):
         self.assertEqual(
             render_wechat_bubbles(event, source_label="私聊", sender_name="Companion"),
             [
-                "Companion：笑死了。💭心里嘀咕：睡饱了才有力气窝进怀里。",
+                "Companion：笑死了。",
             ],
         )
 
-    def test_plain_lines_and_inner_monologue_become_separate_messages(self):
+    def test_plain_text_keeps_lines_without_inner_monologue(self):
         event = {
             "type": "msg_created",
             "data": {
@@ -131,11 +131,23 @@ class WeChatBubbleRendererTests(unittest.TestCase):
 
         self.assertEqual(
             render_wechat_bubbles(event, source_label="私聊", sender_name="Companion"),
-            [
-                "Companion：第一句。",
-                "Companion：第二句。",
-                "Companion：💭心里嘀咕：其实很想她",
-            ],
+            ["Companion：第一句。\n第二句。"],
+        )
+
+    def test_only_inner_monologue_does_not_create_wechat_message(self):
+        event = {
+            "type": "msg_created",
+            "data": {
+                "id": "msg-only-monologue",
+                "role": "assistant",
+                "content": "[心里嘀咕：这句只留在聊天里]",
+                "attachments": [],
+            },
+        }
+
+        self.assertEqual(
+            render_wechat_bubbles(event, source_label="私聊", sender_name="Companion"),
+            [],
         )
 
     def test_structured_markdown_stays_together(self):

@@ -127,6 +127,93 @@ CREATE TABLE IF NOT EXISTS messages (
         CHECK(delivery_status IN ('accepted', 'failed'))
 );
 
+CREATE TABLE IF NOT EXISTS board_threads (
+    id TEXT PRIMARY KEY,
+    visitor_id TEXT NOT NULL REFERENCES visitors(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'closed')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    closed_at TEXT,
+    closed_by TEXT
+);
+
+CREATE INDEX IF NOT EXISTS board_threads_by_visitor
+    ON board_threads(visitor_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS board_posts (
+    id TEXT PRIMARY KEY,
+    thread_id TEXT NOT NULL REFERENCES board_threads(id) ON DELETE CASCADE,
+    visitor_id TEXT NOT NULL REFERENCES visitors(id) ON DELETE CASCADE,
+    author_side TEXT NOT NULL CHECK(author_side IN ('visitor', 'home')),
+    author_name TEXT NOT NULL,
+    content TEXT NOT NULL,
+    addressed_to TEXT,
+    request_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(visitor_id, request_id)
+);
+
+CREATE INDEX IF NOT EXISTS board_posts_by_thread
+    ON board_posts(thread_id, created_at);
+
+CREATE TABLE IF NOT EXISTS board_seen (
+    actor_id TEXT NOT NULL CHECK(actor_id IN ('aion', 'connor')),
+    visitor_id TEXT NOT NULL REFERENCES visitors(id) ON DELETE CASCADE,
+    thread_id TEXT NOT NULL REFERENCES board_threads(id) ON DELETE CASCADE,
+    last_post_id TEXT NOT NULL REFERENCES board_posts(id) ON DELETE CASCADE,
+    seen_at TEXT NOT NULL,
+    PRIMARY KEY(actor_id, thread_id)
+);
+
+CREATE TABLE IF NOT EXISTS board_patrol_configs (
+    actor_id TEXT PRIMARY KEY CHECK(actor_id IN ('aion', 'connor')),
+    enabled INTEGER NOT NULL DEFAULT 0,
+    min_interval_minutes INTEGER NOT NULL DEFAULT 120,
+    max_interval_minutes INTEGER NOT NULL DEFAULT 240,
+    next_check_at REAL,
+    last_checked_at REAL,
+    last_status TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS board_experiences (
+    id TEXT PRIMARY KEY,
+    actor_id TEXT NOT NULL CHECK(actor_id IN ('aion', 'connor')),
+    visitor_id TEXT NOT NULL REFERENCES visitors(id) ON DELETE CASCADE,
+    thread_id TEXT NOT NULL REFERENCES board_threads(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('read', 'reply', 'start', 'close')),
+    summary TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS board_experiences_actor_recent
+    ON board_experiences(actor_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS board_outbound_experiences (
+    id TEXT PRIMARY KEY,
+    actor_id TEXT NOT NULL CHECK(actor_id IN ('aion', 'connor')),
+    friend_id TEXT NOT NULL,
+    friend_name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS board_outbound_experiences_actor_recent
+    ON board_outbound_experiences(actor_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS board_outbound_threads (
+    friend_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    friend_name TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    thread_json TEXT,
+    PRIMARY KEY (friend_id, thread_id)
+);
+CREATE INDEX IF NOT EXISTS board_outbound_threads_recent
+    ON board_outbound_threads(updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS summaries (
     id TEXT PRIMARY KEY,
     visitor_id TEXT NOT NULL REFERENCES visitors(id) ON DELETE CASCADE,

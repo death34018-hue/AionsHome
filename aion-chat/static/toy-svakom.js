@@ -576,9 +576,9 @@
           } catch (error) { rejectPending(error?.message || String(error)); }
         });
       },
-      async disconnect() { rejectPending('连接已取消'); bridge.disconnect(); connected = false; },
-      isConnected() { try { return connected || Boolean(bridge.isConnected()); } catch (error) { return connected; } },
-      async sendHex(hex) { bridge.sendData(hex); },
+      async disconnect() { rejectPending('连接已取消'); if (!bridge.getProfile || bridge.getProfile() === 'svakom') bridge.disconnect(); connected = false; },
+      isConnected() { try { return (!bridge.getProfile || bridge.getProfile() === 'svakom') && (connected || Boolean(bridge.isConnected())); } catch (error) { return connected; } },
+      async sendHex(hex) { if (bridge.getProfile && bridge.getProfile() !== 'svakom') throw new Error('当前连接不属于 SVAKOM'); bridge.sendData(hex); },
       async executeText(command) {
         if (command.startsWith('LOOP:') && Number(bridge.getSvakomControlVersion?.() || 0) < 3) throw new Error('AI 循环编排需要安装新版 App 1.24');
         bridge.executeCommand(command);
@@ -587,7 +587,7 @@
         if (typeof bridge.setSvakomVibrationLevel !== 'function') throw new Error('实时调力度需要更新 App；当前可调好后点击震动模式应用');
         if (!bridge.setSvakomVibrationLevel(level)) throw new Error('震动力度未能应用，请查看连接记录');
       },
-      async stopAll() { bridge.emergencyStop(); },
+      async stopAll() { if (!bridge.getProfile || bridge.getProfile() === 'svakom') bridge.emergencyStop(); },
       describe() { return { ...info }; },
       onConnected(profile, deviceName) {
         if (!pending) return;
@@ -787,7 +787,10 @@
     connectButton.addEventListener('click', async () => {
       try {
         if (controller.getState().connected) { await manualTakeover(); await controller.disconnect(); }
-        else await controller.connect();
+        else {
+          if ((await root.ToyNavigation.readSelection()).active !== 'svakom') throw new Error('请先选用 SVAKOM');
+          await controller.connect();
+        }
       } catch (error) {}
     });
     stopButton.addEventListener('click', async () => {

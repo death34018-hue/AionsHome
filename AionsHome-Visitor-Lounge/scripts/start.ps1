@@ -25,7 +25,13 @@ foreach ($record in @('visitor', 'visitor.launcher', 'admin', 'admin.launcher', 
     $pidFile = Join-Path $runtimeDirectory "$record.pid"
     if (-not (Test-Path -LiteralPath $pidFile -PathType Leaf)) { continue }
     $recordedPid = Read-LoungePid -PidFile $pidFile
-    if ($null -ne (Get-LoungeProcessInfo -ProcessId $recordedPid)) {
+    $process = Get-LoungeProcessInfo -ProcessId $recordedPid
+    if ($null -ne $process -and
+        (Test-LoungeProcessIdentity `
+            -Process $process `
+            -Role $role `
+            -ProjectRoot $projectRoot
+        )) {
         throw "Recorded $role PID $recordedPid is still live; refusing duplicate start."
     }
     Remove-Item -LiteralPath $pidFile

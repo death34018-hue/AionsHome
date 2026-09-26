@@ -98,7 +98,7 @@ _STRIP_PATTERNS = [
     re.compile(r'[\[［]\s*NEXT_CHAT\s*[:：]\s*[^\]］]+\s*[\]］]', re.IGNORECASE),
     re.compile(r'\[LUCKIN:[^\]]*\]', re.IGNORECASE),
     re.compile(r'\[TOY:[^\]]*\]'),
-    re.compile(r'\[SVAKOM\b[^\]]*(?:\]|$)', re.IGNORECASE),
+    re.compile(r'\[(?:SVAKOM|ANKNI)\b[^\]]*(?:\]|$)', re.IGNORECASE),
     re.compile(r'\[MOMENT:[^\]]*\]'),
     re.compile(r'\[MEMORY:[^\]]*\]'),
     re.compile(r'\[微信消息[：:][^\]]*\]'),

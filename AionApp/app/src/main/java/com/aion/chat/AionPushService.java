@@ -261,6 +261,10 @@ public class AionPushService extends Service {
     private volatile int serverStepRestore = -1;    // 服务端恢复的步数（重装 APK 后使用）
     private volatile boolean stepRestorePending = false; // 正在从服务端恢复步数
     private Handler mainHandler;  // 主线程 Handler，传感器回调需要 Looper
+    private BackgroundTtsPlayer backgroundTtsPlayer;
+    private SharedPreferences.OnSharedPreferenceChangeListener backgroundTtsSettingsListener;
+    private double backgroundTtsActiveAt;
+    private boolean backgroundTtsClosing;
     private static final String PREF_STEP_DAY_START = "step_day_start_counter";
     private static final String PREF_STEP_REBOOT_OFFSET = "step_reboot_offset";
     private static final String PREF_STEP_LAST_KNOWN = "step_last_known_counter";
@@ -277,6 +281,15 @@ public class AionPushService extends Service {
         Log.i(TAG, "=== onCreate ===");
         createNotificationChannels();
         mainHandler = new Handler(Looper.getMainLooper());
+        backgroundTtsPlayer = new BackgroundTtsPlayer(this, mainHandler, this::onBackgroundTtsChanged);
+        backgroundTtsSettingsListener = (prefs, key) -> {
+            if ("background_tts_stop".equals(key)) { backgroundTtsPlayer.stop(); return; }
+            if (!"background_tts_updated".equals(key)) return;
+            if (!prefs.getBoolean("background_tts_enabled", false)) backgroundTtsPlayer.stop();
+            sendBackgroundTtsState();
+        };
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+                .registerOnSharedPreferenceChangeListener(backgroundTtsSettingsListener);
         phoneCameraController = new PhoneCameraController(this);
         android.content.SharedPreferences phoneCameraPrefs =
                 getSharedPreferences("phone_camera_arm", MODE_PRIVATE);
@@ -390,6 +403,8 @@ public class AionPushService extends Service {
 
             if (PushServiceStartPolicy.ACTION_SET_FOREGROUND.equals(action)) {
                 isForegroundActive = intent.getBooleanExtra("active", false);
+                if (!isForegroundActive) backgroundTtsActiveAt = System.currentTimeMillis() / 1000.0;
+                sendBackgroundTtsState();
                 // WebView takes over playback while the page is foregrounded.
                 if (isForegroundActive) stopMusic();
                 Log.d(TAG, "foreground=" + isForegroundActive);
@@ -496,6 +511,7 @@ public class AionPushService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             // Android 14+: 需要声明所有用到的前台服务类型
             int serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+            if (backgroundTtsPlayer.hasPending()) serviceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
             if (phoneScreenEnabled || mediaProjection != null) {
                 serviceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
             }
@@ -561,6 +577,10 @@ public class AionPushService extends Service {
     @Override
     public void onDestroy() {
         Log.i(TAG, "=== onDestroy ===");
+        backgroundTtsClosing = true;
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+                .unregisterOnSharedPreferenceChangeListener(backgroundTtsSettingsListener);
+        if (backgroundTtsPlayer != null) backgroundTtsPlayer.stop();
         shouldRun = false;
         com.aion.chat.supervision.AppSupervisionRuntime runtime =
                 com.aion.chat.supervision.AppSupervisionRuntime.get();
@@ -2161,6 +2181,7 @@ public class AionPushService extends Service {
                         registration.put("type", "register_client");
                         registration.put("client_id", getPhoneCameraClientId());
                         ws.send(registration.toString());
+                        mainHandler.post(AionPushService.this::sendBackgroundTtsState);
                         if (phoneCameraState.isArmed()) {
                             postPhoneCameraArmState(true);
                         }
@@ -2184,6 +2205,7 @@ public class AionPushService extends Service {
                 @Override
                 public void onFailure(WebSocket ws, Throwable t, Response resp) {
                     if (gen != wsGeneration.get()) return;
+                    mainHandler.post(() -> { if (!backgroundTtsClosing) backgroundTtsPlayer.connectionLost(); });
                     String err = t != null ? t.getMessage() : "unknown";
                     Log.w(TAG, ">>> FAIL gen=" + gen + ": " + err);
                     wsConnecting.set(false);
@@ -2201,6 +2223,7 @@ public class AionPushService extends Service {
                 @Override
                 public void onClosed(WebSocket ws, int code, String reason) {
                     if (gen != wsGeneration.get()) return;
+                    mainHandler.post(() -> { if (!backgroundTtsClosing) backgroundTtsPlayer.connectionLost(); });
                     Log.i(TAG, ">>> CLOSED gen=" + gen + " code=" + code);
                     wsConnecting.set(false);
                     wsConnected.set(false);
@@ -2536,6 +2559,19 @@ public class AionPushService extends Service {
             JSONObject data = json.optJSONObject("data");
 
             switch (type) {
+                case "generation_stopped": {
+                    mainHandler.post(() -> backgroundTtsPlayer.cancelGeneration(data));
+                    break;
+                }
+                case "tts_chunk":
+                case "tts_done": {
+                    mainHandler.post(() -> {
+                        if (backgroundTtsClosing || !getSharedPreferences(PREFS, MODE_PRIVATE)
+                                .getBoolean("background_tts_enabled", false)) return;
+                        backgroundTtsPlayer.receive(type, data, getHttpBase());
+                    });
+                    break;
+                }
                 case "widget_state_changed": {
                     WidgetStateSyncClient.sync(this);
                     break;
@@ -2918,6 +2954,41 @@ public class AionPushService extends Service {
         }
     }
 
+    private void sendBackgroundTtsState() {
+        if (backgroundTtsClosing || webSocket == null || !wsConnected.get()) return;
+        SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        boolean enabled = prefs.getBoolean("background_tts_enabled", false);
+        double selectedAt = Double.longBitsToDouble(prefs.getLong("background_tts_active_at", 0));
+        try {
+            JSONObject state = new JSONObject();
+            state.put("type", "tts_state");
+            state.put("enabled", enabled);
+            state.put("voice", prefs.getString("background_tts_voice", ""));
+            // Finish a message already owned by this queue when returning to the page.
+            state.put("can_play", !isForegroundActive || backgroundTtsPlayer.hasPending());
+            // The page mirrors selectedAt too. Keep its next message behind any
+            // speech still draining here, rather than running two phone players.
+            double activeAt = Math.max(selectedAt, backgroundTtsActiveAt);
+            state.put("active_at", activeAt + (backgroundTtsPlayer.hasPending() ? 0.001 : 0));
+            webSocket.send(state.toString());
+        } catch (Exception error) {
+            Log.w(TAG, "background TTS state failed", error);
+        }
+    }
+
+    private void onBackgroundTtsChanged() {
+        if (backgroundTtsClosing) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            int types = getForegroundServiceType();
+            if (types != 0) {
+                if (backgroundTtsPlayer.hasPending()) types |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
+                else types &= ~ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
+                startForeground(NOTIF_FOREGROUND, buildKeepAlive(PushServiceStartPolicy.keepAliveText(wsConnected.get())), types);
+            }
+        }
+        sendBackgroundTtsState();
+    }
+
     private long startPhoneCameraAlert() {
         stopPhoneCameraAlert();
         MediaPlayer player = new MediaPlayer();
@@ -3131,6 +3202,7 @@ public class AionPushService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             int serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                     | ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+            if (backgroundTtsPlayer.hasPending()) serviceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
                     == PackageManager.PERMISSION_GRANTED) {
                 serviceType |= ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;

@@ -10,6 +10,20 @@ from routes import settings as settings_routes
 
 
 class ModelTransportModeTest(unittest.TestCase):
+    def test_codex_6_sol_is_visible_with_safe_live_transport(self):
+        self.assertEqual(
+            config.BUILTIN_MODELS["Codex-6-Sol"],
+            {
+                "provider": "codex_cli",
+                "model": "gpt-6-sol",
+                "vision": True,
+                "transport_mode": "safe_live",
+            },
+        )
+        self.assertIn("Codex-6-Sol", dict(config.iter_visible_models()))
+        with patch("config.SETTINGS", {}):
+            self.assertEqual(resolve_model_transport_mode("Codex-6-Sol"), "safe_live")
+
     def test_codex_astra_is_registered_as_a_safe_live_codex_pipeline(self):
         self.assertEqual(
             config.BUILTIN_MODELS["Codex-Astra"],

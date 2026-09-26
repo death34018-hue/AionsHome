@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/wechat", tags=["wechat"])
 
 class WeChatInbound(BaseModel):
     content: str
+    attachments: list[str] = []
     source_type: Optional[str] = None
     source_id: Optional[str] = None
     conv_id: Optional[str] = None
@@ -67,13 +68,16 @@ async def _drain_streaming_response(response) -> None:
         pass
 
 
-async def _save_private_user_message(conv_id: str, content: str) -> dict:
+async def _save_private_user_message(conv_id: str, content: str, attachments: list[str] | None = None) -> dict:
+    import json
+
+    attachments = attachments or []
     now = time.time()
     msg_id = f"msg_{time.time_ns()}_wechat_user"
     async with get_db() as db:
         await db.execute(
             "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
-            (msg_id, conv_id, "user", content, now, "[]"),
+            (msg_id, conv_id, "user", content, now, json.dumps(attachments, ensure_ascii=False)),
         )
         await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
         await db.commit()
@@ -83,7 +87,7 @@ async def _save_private_user_message(conv_id: str, content: str) -> dict:
         "role": "user",
         "content": content,
         "created_at": now,
-        "attachments": [],
+        "attachments": attachments,
     }
     await manager.broadcast({"type": "msg_created", "data": msg})
     await export_conversation(conv_id)
@@ -112,6 +116,7 @@ async def receive_wechat_message(body: WeChatInbound, authorization: str | None 
                 source_id,
                 chat_routes.MsgCreate(
                     content=content,
+                    attachments=body.attachments,
                     context_limit=body.context_limit,
                     client_id="wechat",
                 ),
@@ -119,7 +124,7 @@ async def receive_wechat_message(body: WeChatInbound, authorization: str | None 
             asyncio.create_task(_drain_streaming_response(response))
             return {"ok": True, "source_type": source_type, "source_id": source_id, "auto_reply": True}
 
-        msg = await _save_private_user_message(source_id, content)
+        msg = await _save_private_user_message(source_id, content, body.attachments)
         return {"ok": True, "source_type": source_type, "source_id": source_id, "auto_reply": False, "message": msg}
 
     if source_type == "chatroom":
@@ -130,6 +135,7 @@ async def receive_wechat_message(body: WeChatInbound, authorization: str | None 
                 source_id,
                 chatroom_routes.MsgSend(
                     content=content,
+                    attachments=body.attachments,
                     model=body.model or DEFAULT_MODEL,
                     connor_model=body.connor_model or "Codex",
                 ),
@@ -137,7 +143,7 @@ async def receive_wechat_message(body: WeChatInbound, authorization: str | None 
             asyncio.create_task(_drain_streaming_response(response))
             return {"ok": True, "source_type": source_type, "source_id": source_id, "auto_reply": True}
 
-        msg = await chatroom_routes._save_msg(source_id, "user", content, attachments=[])
+        msg = await chatroom_routes._save_msg(source_id, "user", content, attachments=body.attachments)
         return {"ok": True, "source_type": source_type, "source_id": source_id, "auto_reply": False, "message": msg}
 
     raise HTTPException(status_code=400, detail=f"unsupported source_type: {source_type}")

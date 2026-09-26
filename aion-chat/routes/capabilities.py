@@ -88,3 +88,38 @@ async def update_proactive_companionship(actor: str, body: CapabilityToggle):
     payload = await proactive_status_payload()
     await manager.broadcast({"type": "proactive_companionship_changed", "data": payload})
     return {"ok": True, "data": payload}
+
+
+class ToySelection(BaseModel):
+    profile: str
+
+
+@router.get('/api/toys/selection')
+async def get_toy_selection():
+    import toy_profiles
+    return toy_profiles.state()
+
+
+@router.put('/api/toys/selection')
+async def select_toy(body: ToySelection):
+    import toy_profiles
+    try:
+        current = toy_profiles.select(body.profile)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    await manager.broadcast({'type': 'toy_profile_changed', 'data': current})
+    return current
+
+
+@router.get('/api/ankni-ai')
+async def get_ankni_ai():
+    from ankni_ai import state
+    return state()
+
+
+@router.post('/api/ankni-ai/takeover')
+async def takeover_ankni_ai():
+    from ankni_ai import invalidate_permission
+    current = invalidate_permission()
+    await manager.broadcast({'type': 'ankni_revoked', 'data': current})
+    return current

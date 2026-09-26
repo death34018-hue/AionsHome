@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>连接测速</title>
+<style>
+  body{font:16px/1.6 system-ui,sans-serif;background:#faf7f2;color:#302d29;margin:0;padding:24px;max-width:680px;margin-inline:auto}
+  h1{font-size:24px}p{color:#655f56}button{font:inherit;background:#76573e;color:white;border:0;border-radius:10px;padding:12px 18px;margin:8px 8px 12px 0;cursor:pointer}
+  button:disabled{opacity:.5}textarea{box-sizing:border-box;width:100%;min-height:330px;padding:14px;border:1px solid #d5cabb;border-radius:10px;font:14px/1.7 ui-monospace,monospace;background:white;color:#302d29}
+</style>
+<h1>连接测速</h1>
+<p>测手机流量时，请先关闭 Wi-Fi。测试约用 2MB 流量，不调用 AI，不保存测试上传，也不读取聊天内容。可分别在家庭 Wi-Fi 和流量下各测一次。</p>
+<button id="start">开始测试</button><button id="copy" disabled>复制结果</button>
+<p id="status" role="status">准备就绪</p>
+<textarea id="result" readonly aria-label="测速结果"></textarea>
+<script>
+  const start = document.getElementById('start'), copy = document.getElementById('copy');
+  const result = document.getElementById('result'), status = document.getElementById('status');
+  function log(text) { result.value += text + '\n'; }
+  async function measure(label, url, options = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
+    status.textContent = label;
+    const begin = performance.now();
+    try {
+      const response = await fetch(url, { ...options, cache: 'no-store', signal: controller.signal });
+      const firstByte = performance.now() - begin;
+      if (!response.ok || response.redirected) throw new Error(`HTTP ${response.status}${response.redirected ? '，请重新登录后测试' : ''}`);
+      const body = await response.arrayBuffer();
+      const total = performance.now() - begin;
+      log(`${label}：首包 ${Math.round(firstByte)}ms，总计 ${Math.round(total)}ms，收到 ${(body.byteLength / 1024).toFixed(1)}KB`);
+      return { response, body, total };
+    } catch (e) { log(`${label}：${e.name === 'AbortError' ? '超过 30 秒' : e.message}`); return null; }
+    finally { clearTimeout(timer); }
+  }
+  start.onclick = async () => {
+    start.disabled = true; copy.disabled = true; result.value = '';
+    log(`时间：${new Date().toLocaleString()}\n入口：${location.host}`);
+    log('请注明本次网络：家庭 Wi-Fi / 手机流量\n');
+    try {
+      for (let i = 1; i <= 3; i++) await measure(`小请求 ${i}`, '/api/network-check/ping');
+      const thumb = await measure('缩略图首次', '/api/chat-media/thumbnail?src=%2Fpublic%2FBackGround.png');
+      if (thumb && !thumb.response.headers.get('content-type')?.startsWith('image/')) log('缩略图返回异常，请检查服务是否已更新。');
+      await measure('缩略图再次', '/api/chat-media/thumbnail?src=%2Fpublic%2FBackGround.png');
+      await measure('原始背景图', '/public/BackGround.png');
+      const payload = new Uint8Array(256 * 1024);
+      for (let i = 0; i < payload.length; i += 65536) crypto.getRandomValues(payload.subarray(i, i + 65536));
+      const upload = await measure('上传 256KB', '/api/network-check/upload', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: payload });
+      if (upload) {
+        try {
+          const ack = JSON.parse(new TextDecoder().decode(upload.body));
+          log(ack.bytes === payload.length ? '上传字节数校验通过' : '上传返回异常');
+        } catch (_) { log('上传未返回有效确认，请重新登录后测试'); }
+      }
+      log('\n首包含连接与服务器等待；总计含文件接收。此页主动绕过浏览器缓存，用于比较链路。');
+      status.textContent = '测试完成，可以复制结果';
+    } catch (e) { log(`测试中断：${e.message}`); status.textContent = '测试中断，可以复制已有结果'; }
+    finally { start.disabled = false; copy.disabled = false; }
+  };
+  copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(result.value); status.textContent = '已复制'; }
+    catch (_) { result.focus(); result.select(); status.textContent = '请长按结果复制'; }
+  };
+</script>
+</html>

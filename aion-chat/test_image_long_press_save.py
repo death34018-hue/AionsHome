@@ -14,16 +14,16 @@ class ImageLongPressSaveTests(unittest.TestCase):
         js = read_static("chat.js")
 
         self.assertIn("function imageInteractionAttrs()", js)
-        self.assertIn('onpointerdown="startImageLongPress(event, this.src)"', js)
-        self.assertIn('oncontextmenu="showImageSaveMenu(this.src); return false;"', js)
+        self.assertIn('onpointerdown="startImageLongPress(event, ChatImagePreview.original(this))"', js)
+        self.assertIn('oncontextmenu="showImageSaveMenu(ChatImagePreview.original(this)); return false;"', js)
         self.assertGreaterEqual(js.count("imageInteractionAttrs()"), 3)
 
     def test_chatroom_images_have_long_press_save_actions(self):
         js = read_static("chatroom.js")
 
         self.assertIn("function imageInteractionAttrs()", js)
-        self.assertIn('onpointerdown="startImageLongPress(event, this.src)"', js)
-        self.assertIn('oncontextmenu="showImageSaveMenu(this.src); return false;"', js)
+        self.assertIn('onpointerdown="startImageLongPress(event, ChatImagePreview.original(this))"', js)
+        self.assertIn('oncontextmenu="showImageSaveMenu(ChatImagePreview.original(this)); return false;"', js)
         self.assertGreaterEqual(js.count("imageInteractionAttrs()"), 3)
 
     def test_both_pages_use_android_image_saver_bridge(self):

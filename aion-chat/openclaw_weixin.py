@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import secrets
@@ -9,6 +10,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlparse
 
 
 DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
@@ -17,6 +19,7 @@ DEFAULT_ILINK_APP_ID = "bot"
 DEFAULT_BOT_AGENT = "AionsHome/1.0"
 
 MESSAGE_ITEM_TEXT = 1
+MESSAGE_ITEM_IMAGE = 2
 MESSAGE_TYPE_BOT = 2
 MESSAGE_STATE_FINISH = 2
 
@@ -204,6 +207,62 @@ def extract_text_from_message(message: dict[str, Any]) -> str:
         if voice_text:
             parts.append(str(voice_text))
     return "\n".join(part.strip() for part in parts if part and part.strip())
+
+
+def decrypt_image_bytes(data: bytes, image_item: dict[str, Any]) -> bytes:
+    """Decode the AES-128-ECB envelope used by inbound Weixin CDN images."""
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+    media = image_item.get("media") or {}
+    hex_key = image_item.get("aeskey") or ""
+    if hex_key:
+        key = bytes.fromhex(hex_key)
+    elif media.get("aes_key"):
+        key = base64.b64decode(media["aes_key"], validate=True)
+        if len(key) == 32:
+            key = bytes.fromhex(key.decode("ascii"))
+    else:
+        return data
+    if len(key) != 16:
+        raise ValueError("Invalid Weixin image AES key")
+    decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
+    padded = decryptor.update(data) + decryptor.finalize()
+    unpadder = padding.PKCS7(128).unpadder()
+    return unpadder.update(padded) + unpadder.finalize()
+
+
+async def download_image_item(image_item: dict[str, Any]) -> str:
+    """Download a Weixin image into AionsHome uploads and return its attachment URL."""
+    import httpx
+    from PIL import Image
+    from config import UPLOADS_DIR
+
+    media = image_item.get("media") or image_item.get("thumb_media") or {}
+    url = str(media.get("full_url") or "").strip()
+    if not url and media.get("encrypt_query_param"):
+        url = "https://novac2c.cdn.weixin.qq.com/c2c/download?encrypted_query_param=" + quote(
+            str(media["encrypt_query_param"]), safe=""
+        )
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or not (host == "cdn.weixin.qq.com" or host.endswith(".cdn.weixin.qq.com")):
+        raise ValueError("Unsupported Weixin image CDN URL")
+    async with httpx.AsyncClient(timeout=20, follow_redirects=False) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        if len(response.content) > 20 * 1024 * 1024:
+            raise ValueError("Weixin image is too large")
+        content = decrypt_image_bytes(response.content, image_item)
+    with Image.open(io.BytesIO(content)) as image:
+        image.verify()
+        image_format = image.format
+    suffix = {"JPEG": ".jpg", "PNG": ".png", "GIF": ".gif", "WEBP": ".webp"}.get(image_format)
+    if not suffix:
+        raise ValueError("Unsupported Weixin image format")
+    name = f"wechat_{uuid.uuid4().hex}{suffix}"
+    (UPLOADS_DIR / name).write_bytes(content)
+    return f"/uploads/{name}"
 
 
 async def api_post(

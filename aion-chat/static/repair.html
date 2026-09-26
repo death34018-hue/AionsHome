@@ -10,14 +10,14 @@
   <script src="/static/theme.js"></script>
   <script defer src="/static/vendor/markdown-it-15.0.1.min.js"></script>
   <script defer src="/static/repair-scroll.js"></script>
-  <script defer src="/static/repair.js?v=20260912-active-only"></script>
+  <script defer src="/static/repair.js?v=20260923-model-select"></script>
 </head>
 <body class="repair-room" data-theme="dark">
 <div class="repair-app">
   <header class="repair-header">
     <a href="/" class="home-link" aria-label="返回首页">⌂</a>
     <div class="header-title"><h1 aria-labelledby="taskTitle"><button id="renameTask" class="rename-title" aria-label="修改任务名称" disabled><span id="taskTitle">维修室</span><span class="rename-mark" aria-hidden="true">✎</span></button></h1><p id="participants">一起商量，把小事做好。</p></div>
-    <span id="workModel" class="work-model" hidden></span>
+    <button id="workModel" class="work-model" type="button" aria-haspopup="dialog" hidden></button>
     <button id="tasksToggle" aria-label="打开任务列表" aria-haspopup="dialog">任务</button>
   </header>
   <section id="pairing" class="pairing" hidden>
@@ -77,6 +77,7 @@
 </aside></dialog>
 <dialog id="newDialog"><form id="newForm"><h2>新建维修任务</h2><label>这件事叫什么？<input id="newTitle" maxlength="100" required placeholder="例如：相册按钮点不动"></label><label>补充近期生活背景<select id="contextMinutes"><option value="30">最近 30 分钟</option><option value="120" selected>最近 2 小时</option><option value="360">最近 6 小时</option><option value="1440">最近一天</option><option value="0">本次不补充</option></select></label><p>每位伴侣读取各自的私聊和群聊，最多 30 条；维修对话独立连续保存。</p><div class="dialog-actions"><button id="cancelNew" type="button">取消</button><button class="primary">创建</button></div></form></dialog>
 <div id="notice" role="alert" hidden></div>
+<dialog id="modelDialog" aria-labelledby="modelHeading"><form id="modelForm"><h2 id="modelHeading">维修室工作模型</h2><label>选择模型<select id="modelSelect"><option value="gpt-6-sol">GPT 6 Sol</option><option value="gpt-6-astra">GPT 6 Astra</option></select></label><label id="customModelLabel" hidden>自定义模型名称<input id="modelName" maxlength="128" disabled autocomplete="off" spellcheck="false" placeholder="例如 gpt-6-sol"></label><p>选好模型后保存，下一轮开始使用。以后有新模型，也可选「自定义模型」填写。已有聊天记录保留；群聊模型不变。</p><div class="dialog-actions"><button id="cancelModel" type="button">取消</button><button id="saveModel" class="primary">保存</button></div></form></dialog>
 <dialog id="renameDialog" aria-labelledby="renameHeading"><form id="renameForm"><h2 id="renameHeading">修改任务名称</h2><label>任务名称<input id="renameTitle" maxlength="100" required autocomplete="off"></label><p>改名后继续保留这件事的聊天和工作记录。</p><div class="dialog-actions"><button id="cancelRename" type="button">取消</button><button id="saveRename" class="primary">保存</button></div></form></dialog>
 </body>
 </html>

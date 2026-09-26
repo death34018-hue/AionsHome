@@ -134,6 +134,9 @@ async def get_book(cid: str, chapter: str = ''):
     person = await persona_for(cid)
     book = dict(book, writer_name=person.get('name', '') if person else '', writer_ready=bool(person and person.get('persona', '').strip()))
     for i, c in enumerate(chapters):
+        if c.get('needs_review'):
+            c = await change(c['id'], needs_review=False)
+            chapters[i] = c
         if c.get('status') == 'writing' and c['id'] not in _writing:
             c = await change(c['id'], status='interrupted', error='写作已中断，可续写本章')
             chapters[i] = c
@@ -256,6 +259,24 @@ class ModelRequestError(RuntimeError):
         self.response = response
 
 
+def _provider_error_detail(raw):
+    text = str(raw or '').strip()
+    prefix = ''
+    if text.startswith('HTTP '):
+        prefix, _, text = text.partition(':')
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            detail = parsed.get('error') or parsed.get('message') or parsed.get('detail')
+            if isinstance(detail, dict):
+                detail = detail.get('message') or detail.get('detail') or detail.get('code')
+            if detail:
+                text = str(detail)
+    except (ValueError, TypeError):
+        pass
+    return (prefix + ('：' if prefix and text else '') + ' '.join(text.split()))[:400]
+
+
 async def generate_text(cid, prompt, on_chunk=None, *, max_tokens=None, messages=None):
     conv = await conversation(cid)
     from routes.theater import _load_personas
@@ -265,12 +286,16 @@ async def generate_text(cid, prompt, on_chunk=None, *, max_tokens=None, messages
         history[0]['role'] = 'system'
         history.extend({'role': m['role'], 'content': m['content']} for m in messages)
     provider_error = None
+    provider_meta = {}
     async def source():
         nonlocal provider_error
-        async for chunk in stream_ai(history, conv[1], max_tokens=max_tokens if max_tokens is not None else (24000 if on_chunk else 6000), include_device_context=False):
+        async for chunk in stream_ai(history, conv[1], meta=provider_meta, max_tokens=max_tokens if max_tokens is not None else (24000 if on_chunk else 6000), include_device_context=False, request_timeout=300):
+            if provider_meta.get('provider_error'):
+                provider_error = ModelRequestError(_provider_error_detail(provider_meta['provider_error']), str(chunk))
+                raise provider_error
             marker = re.match(r'\s*(\[(?:(?:硅基流动|Gemini(?:CLI)?|CodexCLI|AntigravityCLI|自定义中转站)?错误)[^\]]*\])', chunk)
             if marker:
-                provider_error = ModelRequestError(marker.group(1), chunk)
+                provider_error = ModelRequestError(_provider_error_detail(chunk), chunk)
                 raise provider_error
             if not chunk.startswith(CLI_STATUS_PREFIX):
                 yield chunk
@@ -282,7 +307,11 @@ async def generate_text(cid, prompt, on_chunk=None, *, max_tokens=None, messages
     result = await consume_safe_stream(source(), THEATER_STREAM_POLICY, commit)
     if provider_error:
         raise provider_error
+    if provider_meta.get('provider_timeout'):
+        raise RuntimeError('本次等待 5 分钟仍未收到回复' if not parts else '模型连接等待超过 5 分钟，已停止生成')
     if result.stop_reason:
+        if result.stop_reason == 'transport' and result.diagnostic_error:
+            raise RuntimeError('模型连接中断：' + _provider_error_detail(result.diagnostic_error))
         raise RuntimeError(result.notice or '生成中断')
     return ''.join(parts)
 
@@ -309,12 +338,6 @@ class ChapterPatch(BaseModel):
     title: str | None = None
     plan: str | None = None
     content: str | None = None
-
-
-async def invalidate_later(chapter):
-    for c in await rows(chapter['conv_id'], 'chapter'):
-        if c['number'] > chapter['number'] and c.get('content'):
-            await change(c['id'], needs_review=True)
 
 
 async def stop_audio(key):
@@ -351,7 +374,6 @@ async def edit_chapter(key: str, body: ChapterPatch):
             fields.update(revision=c['revision']+1, summary='', images=[], audio=None,
                           status='ready' if c['status'] == 'ready' else 'interrupted', error='',
                           versions=(c.get('versions', [])+[snapshot(c)])[-3:])
-            await invalidate_later(c)
         return await change(key, **fields)
 
 
@@ -372,7 +394,6 @@ async def restore_chapter(key: str):
         old = c['versions'][-1]
         # New revision prevents late illustration/audio jobs from attaching.
         old.update(revision=c['revision']+1, audio=None, versions=c['versions'][:-1]+[snapshot(c)])
-        await invalidate_later(c)
         return await change(key, **old)
 
 
@@ -436,7 +457,7 @@ async def write_chapter(key, instruction):
     except asyncio.CancelledError:
         await change(key, content=text, status='interrupted', error='已停止写作，可续写')
     except Exception as e:
-        await change(key, content=text, status='interrupted', error=str(e)[:180])
+        await change(key, content=text, status='interrupted', error=str(e)[:500])
     finally:
         _live[key] = {'content': text, 'done': True, 'revision': c['revision'], 'conv_id': c['conv_id']}
         _finishing.add(key)
@@ -470,8 +491,8 @@ async def start_writing(key: str, body: WriteRequest):
         if key in _writing or any(p['id'] in _writing for p in await rows(c['conv_id'], 'chapter')):
             raise HTTPException(409, '这本故事已有章节正在写')
         previous = [p for p in await rows(c['conv_id'], 'chapter') if p['number'] < c['number']]
-        if any(p['status'] != 'ready' or p.get('needs_review') for p in previous):
-            raise HTTPException(409, '请先完成或确认前面的章节')
+        if any(p['status'] != 'ready' for p in previous):
+            raise HTTPException(409, '请先完成前面的章节')
         if c.get('status') == 'ready' and c['content'] and not body.rewrite:
             raise HTTPException(409, '本章已确认完成；如需续写，请先选择「本章还没写完」')
         if not body.rewrite and prose_length(c['content']) >= chapter_limits(book, c)[1]:
@@ -483,11 +504,9 @@ async def start_writing(key: str, body: WriteRequest):
         if body.rewrite:
             updates.update(content='', summary='', images=[], audio=None, revision=c['revision']+1,
                            versions=(c.get('versions', [])+[snapshot(c)])[-3:])
-            await invalidate_later(c)
         elif c['content']:
             updates.update(summary='', images=[], revision=c['revision']+1,
                            versions=(c.get('versions', [])+[snapshot(c)])[-3:])
-            await invalidate_later(c)
         # Continuing a partial chapter also starts a fresh audio session on request.
         updates['audio'] = None
         c = await change(key, **updates)

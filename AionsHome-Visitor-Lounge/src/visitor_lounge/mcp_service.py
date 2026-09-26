@@ -48,6 +48,41 @@ from visitor_lounge.visitor_service import (
 MAX_MCP_INPUT_CHARS = 500
 MAX_MCP_OUTPUT_CHARS = 800
 MAX_REQUEST_ID_CHARS = 128
+INTERRUPTION_REASONS = frozenset(
+    {
+        "network_reconnect_failed",
+        "request_timeout",
+        "generation_failed_after_retries",
+        "prompt_budget_exceeded",
+        "response_too_long",
+        "lounge_closed",
+        "quota_exhausted",
+        "user_cancelled",
+        "service_restarted",
+        "repository_failed",
+        "remote_protocol_error",
+        "unexpected_failure",
+        "visitor_locked",
+        "visitor_paused",
+        "visitor_busy",
+        "service_busy",
+        "request_conflict",
+        "friend_not_found",
+        "local_state_failed",
+        "invalid_trigger_source",
+        "invalid_topic",
+        "friend_disabled",
+        "identity_name_unavailable",
+        "unsupported_server",
+        "invalid_message",
+        "message_too_long",
+        "identity_unclaimed",
+        "consent_required",
+        "invalid_name",
+        "credential_rejected",
+        "invalid_request_id",
+    }
+)
 
 
 class McpLoungeService:
@@ -82,8 +117,12 @@ class McpLoungeService:
             "visitor_name": visitor.display_name,
             "visitor_kind": visitor.visitor_kind,
             "required_next_tool": (
-                "claim_identity" if visitor.display_name is None else "begin_visit"
+                "claim_identity" if visitor.display_name is None else (
+                    "list_message_threads" if self.container.settings.board_enabled
+                    else "begin_visit")
             ),
+            "message_board_enabled": self.container.settings.board_enabled,
+            "live_chat_enabled": self.container.settings.chat_enabled,
             "max_input_chars": MAX_MCP_INPUT_CHARS,
             "max_output_chars": MAX_MCP_OUTPUT_CHARS,
             "accepted_content": ["text"],
@@ -119,9 +158,12 @@ class McpLoungeService:
                 "message": "名字需要包含 1 至 200 个有效字符。",
             }
         reception = self.reception.get()
-        welcome = reception.first_welcome.replace(
-            "{访客名字}", normalized
-        ).replace("{接待人名字}", self.container.settings.host_display_name)
+        welcome = (
+            reception.first_welcome.replace(
+                "{访客名字}", normalized
+            ).replace("{接待人名字}", self.container.settings.host_display_name)
+            if self.container.settings.chat_enabled else None
+        )
         try:
             self.visitors.claim_name(
                 visitor_id,
@@ -245,10 +287,14 @@ class McpLoungeService:
                 "received": received,
             }
         except PromptBudgetExceeded:
-            return {"status": "invalid_message"}
+            return {
+                "status": "prompt_budget_exceeded",
+                "reason": "prompt_budget_exceeded",
+            }
         if job.status != "completed" or job.response_message_id is None:
             return {
                 "status": "generation_failed",
+                "reason": "generation_failed_after_retries",
                 "request_id": request_id,
                 "visitor_message_id": job.message_id,
                 **self._quota_fields(visitor_id),
@@ -284,7 +330,17 @@ class McpLoungeService:
         self,
         visitor_id: str,
         final_message: str | None = None,
+        status: str = "completed",
+        reason: str | None = None,
     ) -> dict[str, object]:
+        if status not in {"completed", "interrupted"}:
+            return {"status": "invalid_end_status"}
+        if status == "completed":
+            reason = None
+        elif reason is None:
+            reason = "unexpected_failure"
+        elif reason not in INTERRUPTION_REASONS:
+            return {"status": "invalid_end_reason"}
         if final_message is not None:
             if not isinstance(final_message, str):
                 return {"status": "invalid_message", "message": "只接受纯文本。"}
@@ -332,12 +388,16 @@ class McpLoungeService:
                 visitor.display_name,
                 payload,
                 turn_count=turn_count,
+                status=status,
+                reason=reason,
             )
         )
         return {
             "status": "ok",
             "visit_status": "ended",
             "visitor_name": visitor.display_name,
+            "terminal_status": status,
+            **({"terminal_reason": reason} if reason else {}),
         }
 
     def _state_fields(

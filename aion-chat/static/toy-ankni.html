@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#fff7fa">
+  <title>ANKNI MX · 密语时刻</title>
+  <link rel="stylesheet" href="/static/toy-pages.css?v=20260924-modes">
+  <style>
+    .toy-ankni-page .toy-topbar {min-height:54px;padding:max(8px,env(safe-area-inset-top)) 12px 8px;gap:8px;grid-template-columns:34px minmax(0,1fr) auto}
+    .toy-ankni-page .toy-icon-button {width:32px;height:32px;font-size:25px;box-shadow:none}
+    .toy-ankni-page .toy-topbar h1 {font-size:18px}
+    .toy-ankni-page .toy-control-shell {max-width:620px;gap:8px;padding:10px 10px calc(68px + env(safe-area-inset-bottom))}
+    .toy-ankni-page .toy-connection-card {grid-template-columns:minmax(0,1fr) auto;gap:10px;padding:10px 12px;border-radius:14px}
+    .toy-ankni-page .toy-connection-copy h2 {margin:0 0 3px;font-size:16px}
+    .toy-ankni-page .toy-connection-copy > p:last-child {font-size:11px;overflow-wrap:anywhere}
+    .toy-ankni-page .toy-primary-button {min-width:60px;min-height:36px;padding:7px 12px;border-radius:10px;background:var(--toy-ink);color:var(--toy-bg);font-size:12px}
+    .toy-ankni-page .toy-connection-card .toy-primary-button {grid-column:auto;width:auto}
+    .toy-ankni-page .toy-panel {padding:10px 12px;border-radius:14px;box-shadow:none}
+    .toy-ankni-page .toy-panel-heading {align-items:center;gap:8px;margin-bottom:7px}
+    .toy-ankni-page .toy-panel-heading h2 {margin:0;font-family:inherit;font-size:15px;font-weight:650;line-height:1.4}
+    .toy-ankni-page .toy-control-note {margin:5px 0 0;font-size:11px;line-height:1.45;color:var(--toy-muted);opacity:1}
+    .ankni-ai-heading {display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px}
+    .ankni-ai-heading label {display:flex;align-items:center;gap:5px;font-size:12px}
+    .ankni-ai-heading input {margin:0;accent-color:var(--toy-rose)}
+    #ankniLive {color:var(--toy-muted);font-size:11px}
+    .ankni-sliders {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:8px 0}
+    .ankni-sliders label {display:grid;grid-template-columns:1fr auto;gap:3px;font-size:12px;min-width:0}
+    .ankni-sliders input {grid-column:1/-1;width:100%;min-width:0;min-height:28px;margin:0;accent-color:var(--toy-rose)}
+    .ankni-actions {display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+    .ankni-actions button {min-height:36px;padding:6px 9px;border:1px solid var(--toy-line);border-radius:9px;background:var(--toy-surface);color:var(--toy-ink);font-size:12px;cursor:pointer}
+    #ankniModes {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));margin-top:0}
+    #ankniModes button {min-width:0;padding:6px 2px;white-space:nowrap}
+    #ankniPhases {display:block;width:100%;height:82px;min-height:62px;margin-top:8px;padding:7px 9px;border:1px solid var(--toy-line);border-radius:9px;background:var(--toy-surface);color:var(--toy-ink);font:12px/1.7 monospace;resize:vertical}
+    .toy-ankni-page details > summary {font-size:12px;font-weight:600;cursor:pointer}
+    .ankni-settings {display:grid;gap:10px;margin-top:10px;font-size:12px}
+    .ankni-settings select {max-width:100%;padding:5px;font-size:12px}
+    .toy-ankni-page .toy-log {padding:8px 0 0}
+    .toy-ankni-page .toy-stop-dock {padding:8px 10px calc(8px + env(safe-area-inset-bottom))}
+    .toy-ankni-page .toy-stop-button {min-height:40px;max-width:600px;border-radius:12px;font-size:13px;box-shadow:0 4px 16px rgba(190,49,83,.18)}
+  </style>
+</head>
+<body class="toy-page toy-control-page toy-ankni-page">
+  <header class="toy-topbar">
+    <a class="toy-icon-button" href="/toys" data-toy-return aria-label="返回聊天">‹</a>
+    <div><h1>ANKNI MX</h1></div>
+    <button class="toy-switch-link" type="button" data-switch-profile="">更换玩具</button>
+  </header>
+  <main class="toy-shell toy-control-shell">
+    <section class="toy-connection-card">
+      <div class="toy-connection-copy"><h2 id="ankniStatus">未连接</h2><p id="ankniDetail">手机蓝牙 · ANKNI MX</p></div>
+      <button class="toy-primary-button" id="ankniConnect" type="button">连接</button>
+    </section>
+    <section class="toy-panel">
+      <div class="ankni-ai-heading"><strong>AI 编排</strong><label><input type="checkbox" id="ankniAi" disabled> 允许 AI 控制</label></div>
+      <p class="toy-control-note" id="ankniAiStatus">正在读取开关…</p>
+    </section>
+    <section class="toy-panel"><div class="toy-panel-heading"><h2>经典模式</h2></div><div class="ankni-actions" id="ankniModes"></div></section>
+    <section class="toy-panel">
+      <div class="toy-panel-heading"><h2>手动控制</h2><span id="ankniLive">已停止</span></div>
+      <div class="ankni-sliders">
+        <label>震动 <output id="ankniVValue">5</output><input aria-label="震动力度" id="ankniV" type="range" min="0" max="100" value="5"></label>
+        <label>吮吸 <output id="ankniSValue">0</output><input aria-label="吮吸力度" id="ankniS" type="range" min="0" max="100" value="0"></label>
+      </div>
+      <div class="ankni-actions"><button class="toy-primary-button" type="button" id="ankniApply" data-ankni-control>应用力度</button><button type="button" data-command="SET:5,0" data-ankni-control>试震动 · 5</button><button type="button" data-command="SET:0,5" data-ankni-control>试吮吸 · 5</button></div>
+    </section>
+    <details class="toy-panel" id="ankniTimeline">
+      <summary>自定义编排</summary>
+      <p class="toy-control-note">每行：持续毫秒,模式（0＝停止）；每段至少 200 毫秒。</p>
+      <textarea id="ankniPhases" aria-label="模式时间表" spellcheck="false">2000,5
+3000,0
+4000,6</textarea>
+      <div class="ankni-actions"><button id="ankniOnce" type="button" data-ankni-control>播放一次</button><button id="ankniLoop" type="button" data-ankni-control>循环播放</button></div>
+    </details>
+    <details class="toy-panel"><summary>连接参数</summary><div class="ankni-settings">
+      <label><input id="ankniSwap" type="checkbox"> 交换震动 / 吮吸通道</label>
+      <label>经典模式前缀 <select id="ankniPrefix"><option value="0F">0F · 双通道</option><option value="0A">0A</option></select></label>
+      <label>写入特征 <select id="ankniTarget" aria-label="写入特征"><option>连接后显示</option></select></label>
+      <p class="toy-control-note">默认沿用测试器设置；修改参数会先停止当前动作。</p>
+    </div></details>
+    <details class="toy-panel"><summary>连接与控制记录</summary><div class="toy-log" id="toyLog" aria-live="polite"></div></details>
+    <div class="toy-stop-dock"><button class="toy-stop-button" id="ankniStop" type="button">■ 全部停止</button></div>
+  </main>
+  <script src="/static/common.js"></script>
+  <script src="/static/toy-ankni-protocol.js?v=20260924-rest"></script>
+  <script src="/static/toy-ankni-controller.js?v=20260924-rest"></script>
+  <script src="/static/toy-ankni-ai.js?v=20260924-rest"></script>
+  <script src="/static/toy-ankni.js?v=20260924-rest"></script>
+  <script src="/static/toy-navigation.js?v=20260924-modes-selection"></script>
+</body>
+</html>

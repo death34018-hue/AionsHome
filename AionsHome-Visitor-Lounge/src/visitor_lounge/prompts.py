@@ -13,7 +13,7 @@ from visitor_lounge.models import Message, QuotaState, Summary
 
 MAX_INPUT_CHARACTERS = 500
 MAX_INPUT_TOKENS = 600
-MAX_PROMPT_TOKENS = 6000
+MAX_PROMPT_TOKENS = 20_000
 MAX_HISTORY_MESSAGES = 30
 MAX_SUMMARIES = 1
 MAX_VISITOR_NAME_CHARACTERS = 40
@@ -125,7 +125,7 @@ class PromptBuilder:
         summaries: Sequence[Summary],
         quota: QuotaState,
         *,
-        trusted_home_context: str = "",
+        trusted_home_context_blocks: Sequence[dict[str, str]] = (),
     ) -> str:
         """Build one bounded chat prompt without duplicating the current input."""
         validate_visitor_input(current_message, token_counter=self._token_counter)
@@ -137,20 +137,39 @@ class PromptBuilder:
         ):
             recent_history.pop()
 
-        mandatory_before = [SECURITY_RULES]
-        if trusted_home_context.strip():
-            mandatory_before.append(
-                self._wrap("trusted-home-context", trusted_home_context[:12000])
+        typed_home: dict[str, list[str]] = {
+            "persona": [],
+            "home_chat": [],
+            "dynamic_state": [],
+            "memory_summary": [],
+            "safety": [],
+        }
+        for block in trusted_home_context_blocks:
+            if not isinstance(block, dict):
+                continue
+            kind = block.get("kind")
+            content = block.get("content")
+            if kind not in typed_home or not isinstance(content, str) or not content:
+                continue
+            typed_home[kind].append(
+                self._wrap(f"trusted-home-{kind}", content[:12000])
             )
-        persona_index = len(mandatory_before)
-        mandatory_before.extend([
+
+        mandatory_before = [
+            SECURITY_RULES,
+            *typed_home["safety"],
+            *typed_home["persona"],
             self._wrap("trusted-persona", self.persona_text),
             self._wrap("trusted-host-display-name", self.host_display_name),
             self._quota_rules(quota),
-        ])
-        mandatory_before.extend(
+        ]
+        visitor_context = list(
             self._wrap("untrusted-summary", item.text)
             for item in summaries[-MAX_SUMMARIES:]
+        )
+        visitor_context.extend(
+            self._wrap(self._message_tag(item), item.content)
+            for item in recent_history
         )
         visitor_identity = [
             self._wrap(
@@ -158,18 +177,57 @@ class PromptBuilder:
                 self._sanitize_visitor_name(visitor_name),
             ),
         ]
-        optional = list(
-            self._wrap(self._message_tag(item), item.content)
-            for item in recent_history
-        )
         current = self._wrap("untrusted-visitor-message", current_message)
-        return self._trim_oldest_context(
+        return self._trim_chat_context(
             mandatory_before,
-            optional,
-            current,
-            discardable_before_shrink=visitor_identity,
-            shrinkable=(persona_index, "trusted-persona", self.persona_text),
+            memory_summary=typed_home["memory_summary"],
+            dynamic_state=typed_home["dynamic_state"],
+            home_chat=typed_home["home_chat"],
+            visitor_identity=visitor_identity,
+            visitor_context=visitor_context,
+            mandatory_tail=current,
         )
+
+    def _trim_chat_context(
+        self,
+        mandatory_before: list[str],
+        *,
+        memory_summary: list[str],
+        dynamic_state: list[str],
+        home_chat: list[str],
+        visitor_identity: list[str],
+        visitor_context: list[str],
+        mandatory_tail: str,
+    ) -> str:
+        memory = list(memory_summary)
+        dynamic = list(dynamic_state)
+        home = list(home_chat)
+        identity = list(visitor_identity)
+        visitor = list(visitor_context)
+
+        def render() -> str:
+            return self._join(
+                [
+                    *mandatory_before,
+                    *memory,
+                    *dynamic,
+                    *home,
+                    *identity,
+                    *visitor,
+                    mandatory_tail,
+                ]
+            )
+
+        prompt = render()
+        for removable in (memory, dynamic, home, identity, visitor):
+            while removable and self.count_tokens(prompt) > MAX_PROMPT_TOKENS:
+                removable.pop(0)
+                prompt = render()
+        if self.count_tokens(prompt) > MAX_PROMPT_TOKENS:
+            raise PromptBudgetExceeded(
+                "mandatory lounge context exceeds the prompt budget"
+            )
+        return prompt
 
     def summary(
         self,

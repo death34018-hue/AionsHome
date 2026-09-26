@@ -241,6 +241,20 @@
   </main>
   <div id="toast" class="toast hidden" role="status"></div>
 
+  <script id="supervision-navigation">
+    // The shell above is ready even when the script or phone state is slow.
+    (() => {
+      document.querySelector('.back-link').addEventListener('click', event => {
+        if (window.parent !== window && typeof window.parent.openSubPage === 'function') {
+          event.preventDefault();
+          window.parent.openSubPage('/');
+        }
+      });
+      if (window.parent !== window && window.frameElement) {
+        window.parent.AionSubPageNavigation?.ready(window.frameElement);
+      }
+    })();
+  </script>
   <script src="/static/app-supervision-ui.js?v=20260719-4"></script>
   <script>
     window.addEventListener('aion-client-update-ready', () => location.reload());

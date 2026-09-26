@@ -22,7 +22,7 @@ PROMPT = """【新玩具独立编排指南】
 主体动作 1～7 是模式编号，不是强度：1 慢速旋转伸缩；2 中速旋转伸缩；3 三短一长；4 混合变速；5 单次停顿脉冲；6 快速停顿脉冲；7 连续短脉冲。
 主体震动花样 1～10：1 高频连续波；2 轻柔细振波；3 渐强波；4 慢速起伏波；5 间歇脉冲；6 快速锯齿波；7 中速锯齿波；8 阶梯脉冲；9 高速方波脉冲；10 低速方波脉冲。震动力度另选 1～10，由弱到强。
 上述节奏名称来自参考描述，主体动作不提供速度滑杆参数。小部件是豆豆独立拍打，档位 1～7 由弱到强，不是主体震动。
-当前参考强度由控制器状态计算：拍打档位换算到 0～10 
+当前参考强度由控制器状态计算：拍打档位换算到 0～10
 唯一编排格式：[SVAKOM:LOOP:秒数,主体模式,震动花样,震动力度,拍打档位;下一段;...]
 每段必须写全五个整数。持续秒数为正整数，1～63 段，每轮总时长不超过 600 秒。无需计算起止时间。
 主体模式 0～7、震动花样 0～10、拍打档位 0～7；0 表示关闭该路。震动花样为 0 时力度必须为 0，否则力度为 1～10。
@@ -36,7 +36,9 @@ PROMPT = """【新玩具独立编排指南】
 
 def state():
     from capabilities import is_capability_enabled
-    return {'enabled': is_capability_enabled('svakom'), 'epoch': _epoch}
+    import toy_profiles
+    return {'enabled': toy_profiles.active() == 'svakom' and is_capability_enabled('svakom'),
+            'epoch': _epoch + ':' + toy_profiles.state()['epoch']}
 
 
 def invalidate_permission():
@@ -72,7 +74,7 @@ def reference_strength_prompt():
     return f'当前参考强度：{max(flap_level, vibration_level)}/10'
 
 
-async def _save_command_notice(msg_id, raw, command, status, *, conv_id=None, room_id=None):
+async def _save_command_notice(msg_id, raw, command, status, *, conv_id=None, room_id=None, profile='svakom'):
     if not conv_id and not room_id:
         return
     if command == 'STOP':
@@ -81,11 +83,15 @@ async def _save_command_notice(msg_id, raw, command, status, *, conv_id=None, ro
         summary = f'新玩具编排 · {command.count(";") + 1} 段循环'
     else:
         summary = '新玩具编排 · 未下发'
-    notice_id = f'svakom_notice_{msg_id}'
+    if profile == 'ankni':
+        summary = summary.replace('新玩具', 'ANKNI')
+    notice_id = f'{profile}_notice_{msg_id}'
     attachments = [
-        {'type': 'svakom_command_notice', 'raw': raw, 'status': status},
+        {'type': f'{profile}_command_notice', 'raw': raw, 'status': status},
         {'type': 'system_notice_order', 'after_msg_id': str(msg_id)},
     ]
+    if profile == 'ankni':
+        attachments[0]['format'] = 'duration_modes_v1'
     now = time.time()
     table, scope_key, role_key = ('messages', 'conv_id', 'role') if conv_id else ('chatroom_messages', 'room_id', 'sender')
     scope_id = conv_id or room_id

@@ -5,6 +5,12 @@ FastAPI app 创建、lifespan、静态文件挂载、路由注册
 
 import asyncio, json, logging
 from contextlib import asynccontextmanager
+from pathlib import Path
+import sys
+
+_visitor_lounge_src = Path(__file__).resolve().parents[1] / "AionsHome-Visitor-Lounge" / "src"
+if str(_visitor_lounge_src) not in sys.path:
+    sys.path.insert(0, str(_visitor_lounge_src))
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -20,7 +26,7 @@ logging.getLogger("uvicorn.access").addFilter(_QuietCamFilter())
 
 # 静默 Windows asyncio ProactorEventLoop 连接重置的噪音日志
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 from config import BASE_DIR, DATA_DIR, PUBLIC_DIR, UPLOADS_DIR, ALBUM_IMAGES_DIR, SONGS_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, load_cam_config
 from database import init_db, get_db
@@ -75,6 +81,7 @@ from routes import sync as sync_routes
 from routes import app_supervision as app_supervision_routes
 from routes import homecoming as homecoming_routes
 from routes import lounge_friends as lounge_friends_routes
+from visitor_lounge.home_board import create_home_board_router, live_chat_enabled
 from routes import lounge_context_bridge as lounge_context_bridge_routes
 from lounge_context_bridge import get_bridge_token
 from routes.security_access import create_security_access_router
@@ -87,6 +94,7 @@ from chatroom import _connor_1v1_auto_digest_loop
 from fund import fund_scheduler
 from music_station import init_music_station
 from autonomy import idle_autonomy_mgr
+from visitor_lounge.board_patrol import board_patrol_mgr
 from persona_evolution import main_ai_persona_evolution_loop, connor_persona_evolution_loop
 from asset_manifest import get_client_asset_manifest
 from home_assistant_events import ha_event_listener
@@ -191,6 +199,7 @@ async def lifespan(app: FastAPI):
     persona_evolution_task = asyncio.create_task(main_ai_persona_evolution_loop())
     connor_persona_evolution_task = asyncio.create_task(connor_persona_evolution_loop())
     idle_autonomy_mgr.start()
+    board_patrol_mgr.start()
     ha_event_listener.start()
     wechat_mode_dispatcher.start()
     openclaw_weixin_runtime.start()
@@ -201,6 +210,7 @@ async def lifespan(app: FastAPI):
     await wechat_mode_dispatcher.stop()
     await ha_event_listener.stop()
     idle_autonomy_mgr.stop()
+    await board_patrol_mgr.stop()
     connor_persona_evolution_task.cancel()
     persona_evolution_task.cancel()
     cr_digest_task.cancel()
@@ -240,7 +250,13 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
                 return Response("wallpaper only available on local network", status_code=403)
         response = await call_next(request)
         if request.url.path.startswith("/static/"):
-            response.headers["Cache-Control"] = "public, max-age=0, must-revalidate"
+            response.headers["Cache-Control"] = "public, max-age=0, must-revalidate, no-transform"
+        elif response.headers.get("content-type", "").split(";", 1)[0] == "text/html":
+            # Cloudflare's injected analytics changes the document hash and
+            # prevents Android from activating the entire verified asset bundle.
+            cache_control = response.headers.get("Cache-Control", "no-store")
+            if "no-transform" not in cache_control.lower():
+                response.headers["Cache-Control"] = cache_control + ", no-transform"
         return response
 
 app.add_middleware(NoCacheStaticMiddleware)
@@ -262,6 +278,16 @@ app.mount("/aion-pet", StaticFiles(directory=str(BASE_DIR.parent / "AionPet")), 
 app.include_router(chat.router)
 app.include_router(cam_routes.router)
 app.include_router(files.router)
+from network_check import router as network_check_router
+app.include_router(network_check_router)
+from chat_thumbnails import create_router as create_chat_thumbnail_router
+app.include_router(create_chat_thumbnail_router({
+    "/uploads/album/": ALBUM_IMAGES_DIR,
+    "/uploads/": UPLOADS_DIR,
+    "/cr-uploads/": CODEX_UPLOADS_DIR,
+    "/public/": PUBLIC_DIR,
+    "/screenshots/": SCREENSHOTS_DIR,
+}, DATA_DIR / "chat_thumbnails"))
 app.include_router(settings.router)
 app.include_router(memories.router)
 app.include_router(voice_routes.router)
@@ -307,6 +333,7 @@ app.include_router(sync_routes.router)
 app.include_router(app_supervision_routes.router)
 app.include_router(homecoming_routes.router)
 app.include_router(lounge_friends_routes.router)
+app.include_router(create_home_board_router())
 get_bridge_token()
 app.include_router(lounge_context_bridge_routes.router)
 app.include_router(create_security_access_router(security_access_service))
@@ -340,6 +367,11 @@ async def whisper_page():
 async def sosexy_toy_page():
     return FileResponse(BASE_DIR / "static" / "toy-sosexy.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
+@app.get("/toys/ankni")
+async def ankni_toy_page():
+    return FileResponse(BASE_DIR / "static" / "toy-ankni.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
 @app.get("/toys/svakom")
 @app.get("/whisper/svakom")
 async def svakom_toy_page():
@@ -370,6 +402,8 @@ async def tts_test_page():
 
 @app.get("/lounge-friends")
 async def lounge_friends_page():
+    if not live_chat_enabled():
+        return RedirectResponse("/lounge-board", status_code=307)
     return FileResponse(BASE_DIR / "static" / "lounge-friends.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/capabilities")

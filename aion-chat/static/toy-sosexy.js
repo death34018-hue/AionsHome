@@ -32,7 +32,7 @@
     logElement.scrollTop = logElement.scrollHeight;
   }
   function usingNative() { return Boolean(root.AionBle && /AionChatApp/i.test(root.navigator?.userAgent || '')); }
-  function nativeConnected() { try { return Boolean(root.AionBle?.isConnected()); } catch (error) { return false; } }
+  function nativeConnected() { try { return Boolean(root.AionBle?.isConnected() && root.AionBle?.getProfile?.() === 'sosexy'); } catch (error) { return false; } }
   function updateUI() {
     const ready = connected || nativeConnected();
     doc.body.classList.toggle('is-connected', ready);
@@ -67,7 +67,7 @@
   async function sleep(milliseconds) { return new Promise(resolve => setTimeout(resolve, milliseconds)); }
   async function sendCommand(command) {
     log(`→ ${command}`, 'send');
-    if (usingNative()) { root.AionBle.sendData(command); return; }
+    if (usingNative()) { if(root.AionBle.getProfile?.() !== 'sosexy') throw new Error('当前连接不属于 SOSEXY'); root.AionBle.sendData(command); return; }
     if (!writeCharacteristic) throw new Error('玩具尚未连接');
     const packets = protocol.frameCommand(command);
     for (let index = 0; index < packets.length; index += 1) {
@@ -109,6 +109,7 @@
     connected = true;
   }
   async function connect() {
+    if ((await root.ToyNavigation.readSelection()).active !== 'sosexy') {log('请先选用 SOSEXY', 'error');return;}
     if (connected || connecting || nativeConnected()) return;
     connecting = true; updateUI(); log('正在寻找 SOSEXY…');
     try {
@@ -122,7 +123,7 @@
   }
   async function disconnect() {
     try { if (connected || nativeConnected()) await stopAll(); } catch (error) {}
-    if (usingNative()) root.AionBle.disconnect();
+    if (usingNative()) {if(root.AionBle.getProfile?.() === 'sosexy') root.AionBle.disconnect();}
     else if (device?.gatt?.connected) device.gatt.disconnect();
     connected = false; writeCharacteristic = null; activePreset = -1; updateUI(); log('已断开');
   }
@@ -154,11 +155,30 @@
   stopButton.addEventListener('click', () => stopAll().catch(() => {}));
   editor.addEventListener('click', event => { if (event.target === editor) closeEditor(); });
   root.toyNativeBle = {
-    onConnected(profile, name) { connected = true; if (name) device = { name }; nativePending?.resolve(); nativePending = null; updateUI(); },
+    onConnected(profile, name) { if(profile && profile !== 'sosexy') return; connected = true; if (name) device = { name }; nativePending?.resolve(); nativePending = null; updateUI(); },
     onDisconnected() { connected = false; activePreset = -1; updateUI(); },
     onError(message) { nativePending?.reject(new Error(message)); nativePending = null; log(message, 'error'); },
     onLog(message) { log(message); },
   };
-  root.stopAndDisconnectToy = disconnect;
+  root.stopAndDisconnectToy = async () => {if(connected || nativeConnected() || connecting) await disconnect();};
+  // The dedicated controller receives only its own legacy commands, never another profile.
+  const seenAi = new Set();
+  function connectAiSocket() {
+    const socket = new root.WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+    socket.onmessage = async event => {
+      try {
+        const message=JSON.parse(event.data), data=message.data;
+        if(message.type !== 'toy_command' || !data || seenAi.has(data.msg_id)) return;
+        seenAi.add(data.msg_id); if(seenAi.size>512) seenAi.delete(seenAi.values().next().value);
+        if(!(connected || nativeConnected())) return;
+        const current=await root.ToyNavigation.readSelection();
+        if(current.active !== 'sosexy' || data.epoch !== current.epoch) return;
+        if(data.commands.some(c => /^(STOP|0)$/i.test(c))) await stopAll();
+        else for(const command of data.commands) if(/^[1-9]$/.test(command)) await activatePreset(Number(command)-1);
+      }catch(error){log(error.message,'error');}
+    };
+    socket.onclose=()=>root.setTimeout(connectAiSocket,2000);
+  }
+  if(root.WebSocket) connectAiSocket();
   renderGrid();
 })(window, window.SosexyProtocol, document);

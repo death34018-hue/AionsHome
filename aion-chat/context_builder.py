@@ -5,6 +5,8 @@
 
 import json, re, time, asyncio
 from datetime import datetime
+from pathlib import Path
+import sys
 
 import aiosqlite
 
@@ -44,6 +46,7 @@ DRAW_CMD_PATTERN = re.compile(r'\[DRAW:\s*([^\]]+)\]')
 POI_SEARCH_PATTERN = re.compile(r'\[POI_SEARCH:([^\]]+)\]')
 TOY_CMD_PATTERN = re.compile(r'\[TOY:(\d|STOP)\]')
 from svakom_ai import DISPLAY_PATTERN as SVAKOM_CMD_PATTERN
+from ankni_ai import DISPLAY_PATTERN as ANKNI_CMD_PATTERN
 PET_CMD_PATTERN = re.compile(r'\[PET:([a-z_\-]+)\]', re.IGNORECASE)
 HOME_CMD_PATTERN = re.compile(r'\[HOME:([^\]]+)\]', re.IGNORECASE)
 BAND_VIBRATE_CMD_PATTERN = re.compile(r'\[BAND_VIBRATE:(single|call)\]', re.IGNORECASE)
@@ -63,7 +66,7 @@ MEMORY_SEARCH_CMD_PATTERN = re.compile(
 _ALL_CMD_PATTERNS = [
     MUSIC_CMD_PATTERN, MOMENT_CMD_PATTERN, MEMORY_CMD_PATTERN, WISH_CMD_PATTERN,
     ACTIVITY_CHECK_PATTERN, SELFIE_CMD_PATTERN, DRAW_CMD_PATTERN, SONG_CMD_PATTERN,
-    POI_SEARCH_PATTERN, TOY_CMD_PATTERN, SVAKOM_CMD_PATTERN, PET_CMD_PATTERN,
+    POI_SEARCH_PATTERN, TOY_CMD_PATTERN, SVAKOM_CMD_PATTERN, ANKNI_CMD_PATTERN, PET_CMD_PATTERN,
     HOME_CMD_PATTERN, BAND_VIBRATE_CMD_PATTERN, BAND_NOTE_CMD_PATTERN,
     LUCKIN_CMD_PATTERN, TRANSFER_CMD_PATTERN, PRIVATE_WHISPER_CMD_PATTERN,
     WECHAT_MESSAGE_PATTERN, WEB_SEARCH_CMD_PATTERN, WEB_EXTRACT_CMD_PATTERN,
@@ -312,6 +315,18 @@ def _build_recall_query(
     return f"{base} {keyword_text}".strip()
 
 
+def board_memory_context(actor_id: str, query_text: str = "", *, include_recent: bool = True) -> str:
+    """Read this actor's own留言板经历 for any home chat surface."""
+    try:
+        lounge_src = Path(__file__).resolve().parents[1] / "AionsHome-Visitor-Lounge" / "src"
+        if str(lounge_src) not in sys.path:
+            sys.path.insert(0, str(lounge_src))
+        from visitor_lounge.home_board import memory_context
+        return memory_context(actor_id, query_text, include_recent=include_recent)
+    except Exception:
+        return ""
+
+
 async def build_memory_blocks(
     query_text: str,
     recent_messages: list[dict] = None,
@@ -347,6 +362,9 @@ async def build_memory_blocks(
     """
     now_str = datetime.now().strftime("%Y年%m月%d日  %H:%M:%S")
     time_block = f"系统当前的准确时间是 {now_str}"
+    board_memory = board_memory_context("aion" if use_main_memories else "connor", query_text)
+    if board_memory:
+        time_block += "\n\n" + board_memory
     # 健康数据摘要
     health_text = await build_health_summary()
     if health_text:
@@ -363,6 +381,11 @@ async def build_memory_blocks(
         digest_result = {"is_search_needed": False, "keywords": [], "topic": ""}
 
     recall_keywords = digest_result.get("keywords", [])
+    relevant_board_memory = board_memory_context(
+        "aion" if use_main_memories else "connor",
+        " ".join(str(word) for word in recall_keywords),
+        include_recent=False,
+    )
     topic = digest_result.get("topic", "")
     status = digest_result.get("status", "")
     is_search_needed = digest_result.get("is_search_needed", False)
@@ -481,6 +504,8 @@ async def build_memory_blocks(
         "debug_top6": [_memory_debug_item(m) for m in debug_candidates[:6]],
     })
 
+    if relevant_board_memory:
+        memory_block = (memory_block + "\n\n" if memory_block else "") + relevant_board_memory
     return {
         "time_block": time_block,
         "memory_block": memory_block,
@@ -551,7 +576,7 @@ def _is_model_visible_timeline_message(message: dict) -> bool:
     if message.get("sender") != "system":
         return True
     attachments = _parse_timeline_attachments(message.get("attachments", []))
-    if any(isinstance(a, dict) and a.get('type') == 'svakom_command_notice' for a in attachments):
+    if any(isinstance(a, dict) and a.get('type') in ('svakom_command_notice', 'ankni_command_notice') for a in attachments):
         return False
     if trip_card(attachments) is not None:
         return True

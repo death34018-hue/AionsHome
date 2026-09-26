@@ -648,7 +648,7 @@ def _openai_chat_completions_url(base_url: str) -> str:
 
 
 # ── 自定义 OpenAI 兼容中转站 ─────────────────────────
-async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None):
+async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, request_timeout: float = 120):
     model = (cfg.get("model") or "").strip()
     url = _openai_chat_completions_url(cfg.get("base_url", ""))
     if not url or not model:
@@ -672,47 +672,54 @@ async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None
         payload["reasoning_effort"] = cfg.get("reasoning_effort", "high")
     reasoning_status_sent = False
     content_started = False
-    async with httpx.AsyncClient(timeout=120) as client:
-        async with client.stream("POST", url, json=payload, headers=headers) as resp:
-            own_stream(resp)
-            if resp.status_code != 200:
-                body = await resp.aread()
-                if meta is not None:
-                    meta["provider_error"] = f"HTTP {resp.status_code}: {_decode_relay_body(body)}"
-                yield _decode_relay_body(body)
-                return
-            async for line in resp.aiter_lines():
-                data = _openai_sse_data(line)
-                if data is None:
-                    continue
-                if data == "[DONE]":
+    try:
+        async with httpx.AsyncClient(timeout=request_timeout) as client:
+            async with client.stream("POST", url, json=payload, headers=headers) as resp:
+                own_stream(resp)
+                if resp.status_code != 200:
+                    body = await resp.aread()
+                    if meta is not None:
+                        meta["provider_error"] = f"HTTP {resp.status_code}: {_decode_relay_body(body)}"
+                    yield _decode_relay_body(body)
                     return
-                try:
-                    chunk = json.loads(data)
-                    if isinstance(chunk, dict) and chunk.get("error"):
-                        yield data
+                async for line in resp.aiter_lines():
+                    data = _openai_sse_data(line)
+                    if data is None:
+                        continue
+                    if data == "[DONE]":
                         return
-                    if meta is not None and chunk.get("usage"):
-                        u = chunk["usage"]
-                        meta["prompt_tokens"] = u.get("prompt_tokens", 0)
-                        meta["completion_tokens"] = u.get("completion_tokens", 0)
-                        meta["total_tokens"] = u.get("total_tokens", 0)
-                        meta["raw"] = u
-                    delta = chunk["choices"][0].get("delta", {}) if chunk.get("choices") else {}
-                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
-                    if reasoning:
-                        if meta is not None:
-                            meta["reasoning_content"] = meta.get("reasoning_content", "") + str(reasoning)
-                        if not reasoning_status_sent and not content_started:
-                            yield f"{CLI_STATUS_PREFIX}正在思考..."
-                            reasoning_status_sent = True
-                        # Reasoning is real stream activity even before visible text.
-                        yield StreamActivity()
-                    if delta.get("content"):
-                        content_started = True
-                        yield delta["content"]
-                except Exception:
-                    pass
+                    try:
+                        chunk = json.loads(data)
+                        if isinstance(chunk, dict) and chunk.get("error"):
+                            if meta is not None:
+                                meta["provider_error"] = data
+                            yield data
+                            return
+                        if meta is not None and chunk.get("usage"):
+                            u = chunk["usage"]
+                            meta["prompt_tokens"] = u.get("prompt_tokens", 0)
+                            meta["completion_tokens"] = u.get("completion_tokens", 0)
+                            meta["total_tokens"] = u.get("total_tokens", 0)
+                            meta["raw"] = u
+                        delta = chunk["choices"][0].get("delta", {}) if chunk.get("choices") else {}
+                        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                        if reasoning:
+                            if meta is not None:
+                                meta["reasoning_content"] = meta.get("reasoning_content", "") + str(reasoning)
+                            if not reasoning_status_sent and not content_started:
+                                yield f"{CLI_STATUS_PREFIX}正在思考..."
+                                reasoning_status_sent = True
+                            # Reasoning is real stream activity even before visible text.
+                            yield StreamActivity()
+                        if delta.get("content"):
+                            content_started = True
+                            yield delta["content"]
+                    except Exception:
+                        pass
+    except httpx.TimeoutException:
+        if meta is not None:
+            meta["provider_timeout"] = request_timeout
+        raise
 
 # ── Gemini CLI ────────────────────────────────────
 def _find_gemini_script() -> str | None:
@@ -2265,7 +2272,7 @@ def with_current_device_context(
     return prepared
 
 
-async def stream_ai(messages: list, model_key: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, cancel_event=None, *, include_device_context: bool = True):
+async def stream_ai(messages: list, model_key: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, cancel_event=None, *, include_device_context: bool = True, request_timeout: float = 120):
     if include_device_context:
         messages = with_current_device_context(messages)
     model_key = resolve_model_key(model_key)
@@ -2309,7 +2316,7 @@ async def stream_ai(messages: list, model_key: str, meta: dict | None = None, te
             async for chunk in call_aipro(normalized, cfg["model"], meta, temperature, max_tokens):
                 yield chunk
         elif cfg["provider"] == "custom_openai":
-            async for chunk in call_custom_openai(normalized, cfg, meta, temperature, max_tokens):
+            async for chunk in call_custom_openai(normalized, cfg, meta, temperature, max_tokens, request_timeout=request_timeout):
                 yield chunk
         elif cfg["provider"] == "gemini_cli":
             async for chunk in call_gemini_cli(normalized, cfg["model"], meta, temperature, max_tokens):

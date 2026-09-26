@@ -10,7 +10,9 @@ function loadNavigation(options = {}) {
     querySelectorAll(selector) { return selector === '[data-toy-return]' ? [returnLink] : []; },
     addEventListener() {},
   };
-  const location = { href: '/toys' };
+  const location = { href: '/toys', search: options.search || '' };
+  let selected = options.selected || null;
+  if(options.chooser) document.body={classList:{contains:name=>['toy-page','toy-chooser-page'].includes(name)}};
   const window = {
     parent: options.parent,
     location,
@@ -18,18 +20,39 @@ function loadNavigation(options = {}) {
       getItem(key) { return values.get(key) || null; },
       setItem(key, value) { values.set(key, value); events.push(`stored:${value}`); },
     },
+    fetch: async (url, options) => {
+      if(options?.method === 'PUT') {selected=JSON.parse(options.body).profile;events.push('saved:'+selected);}
+      return {ok:true,json:async()=>({profile:selected,active:selected || 'sosexy',epoch:'test'})};
+    },
     console: { warn(message) { events.push(`warn:${message}`); } },
     stopAndDisconnectToy: options.stopAndDisconnectToy,
   };
-  const context = { window, document, console: window.console, Promise };
+  const context = { window, document, console: window.console, Promise, URLSearchParams };
   vm.createContext(context);
   const path = `${__dirname}/static/toy-navigation.js`;
   const source = fs.existsSync(path) ? fs.readFileSync(path, 'utf8') : '';
   vm.runInContext(source, context);
-  return { navigation: window.ToyNavigation, location, values, events, returnLink };
+  return { navigation: window.ToyNavigation, location, values, events, returnLink, ready:window.ToySelectionReady };
 }
 
 async function main() {
+  {
+    const source=fs.readFileSync(`${__dirname}/static/chat.js`,'utf8');
+    const handler=source.slice(source.indexOf('const legacyToyEvents ='),source.indexOf('window.stopAllToyControllers ='));
+    const actions=[];
+    let dedicated=false;
+    const context={toyConnected:true,window:{hasDedicatedToyController:()=>dedicated},
+      fetch:async()=>({ok:true,json:async()=>({active:'sosexy',epoch:'new'})}),toyExecCmd:c=>actions.push(c),console};
+    vm.createContext(context);vm.runInContext(handler,context);
+    await context.handleLegacyToyEvent({msg_id:'old',epoch:'old',commands:['9']});
+    assert.deepEqual(actions,[],'legacy chat also rejects commands from the previous selection');
+    const fresh={msg_id:'new',epoch:'new',commands:['1']};
+    await context.handleLegacyToyEvent(fresh);await context.handleLegacyToyEvent(fresh);
+    assert.deepEqual(actions,['1']);
+    dedicated=true;
+    await context.handleLegacyToyEvent({msg_id:'page',epoch:'new',commands:['2']});
+    assert.deepEqual(actions,['1'],'dedicated SOSEXY page owns delivery, avoiding duplicate native writes');
+  }
   {
     for (const page of ['chat', 'chatroom']) {
       const html = fs.readFileSync(`${__dirname}/static/${page}.html`, 'utf8');
@@ -122,11 +145,23 @@ async function main() {
     const { navigation, location, events } = loadNavigation({
       stopAndDisconnectToy: async () => { throw new Error('stop failed'); },
     });
-    await navigation.switchTo('svakom');
-    assert.equal(location.href, '/toys/svakom');
-    assert.ok(events.some(event => event.includes('stop failed')));
+    await assert.rejects(navigation.switchTo('svakom'), /stop failed/);
+    assert.equal(location.href, '/toys');
+    assert.ok(!events.some(event => event.startsWith('saved:')));
   }
 
+  {
+    const first=loadNavigation();
+    await first.navigation.select('ankni');
+    assert.equal(first.location.href,'/toys/ankni');
+    assert.ok(first.events.includes('saved:ankni'));
+    const reopened=loadNavigation({chooser:true,selected:'ankni'});
+    await reopened.ready;
+    assert.equal(reopened.location.href,'/toys/ankni','saved selection skips chooser');
+    const change=loadNavigation({chooser:true,selected:'ankni',search:'?choose=1'});
+    await change.ready;
+    assert.equal(change.location.href,'/toys','explicit change always shows chooser');
+  }
   console.log('toy navigation: allowlist, persistence and stop-before-switch passed');
 }
 

@@ -10,6 +10,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#ff8359">
+<link rel="stylesheet" href="/static/home-popups.css?v=20260923">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; overflow: hidden; }
@@ -320,6 +321,51 @@ body[data-theme="dark"] .global-search-trigger {
   color: #f4f6ff;
   box-shadow: 0 10px 28px rgba(0,0,0,0.18);
 }
+.home-quick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin: 14px 24px 0;
+  position: relative;
+  z-index: 2;
+}
+.home-quick-row .global-search-trigger { margin: 0; align-self: auto; flex-shrink: 0; }
+.home-board-notice[hidden] { display: none; }
+.home-board-notice {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 13px;
+  border: 1px solid rgba(255,255,255,0.55);
+  border-radius: 18px;
+  background: rgba(255,249,231,0.86);
+  color: #684330;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.10);
+  cursor: pointer;
+}
+.home-board-notice::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: #d96647;
+}
+body[data-theme="dark"] .home-board-notice {
+  border-color: rgba(221,202,156,0.42);
+  background: rgba(24,31,65,0.82);
+  color: #f8e9ca;
+}
+.home-board-notice:focus-visible { outline: 3px solid #ff8359; outline-offset: 2px; }
+@media (max-width: 360px) {
+  .home-quick-row { margin-left: 14px; margin-right: 14px; gap: 6px; }
+  .home-board-notice { padding: 8px 9px; font-size: 11px; }
+}
 .global-search-overlay {
   position: absolute;
   inset: 0;
@@ -495,7 +541,7 @@ body[data-theme="dark"] .gsi-title { color: rgba(244,246,255,0.70); }
 }
 </style>
 </head>
-<body>
+<body data-home-popups="enabled">
 
   <div class="phone-screen" id="screen">
 
@@ -506,7 +552,10 @@ body[data-theme="dark"] .gsi-title { color: rgba(244,246,255,0.70); }
     </div>
 
     <!-- 应用网格 -->
-    <button class="global-search-trigger" onclick="openGlobalSearch()">搜索聊天记录</button>
+    <div class="home-quick-row">
+      <button class="global-search-trigger" onclick="openGlobalSearch()">搜索聊天记录</button>
+      <button id="homeBoardNotice" class="home-board-notice" type="button" hidden>留言板有新消息</button>
+    </div>
 
     <div class="app-pages" id="appPages" aria-label="应用分页">
       <div class="app-pages-track" id="appPagesTrack"></div>
@@ -543,7 +592,8 @@ const APPS = [
   { id: 'music-station', name: '点歌台', icon: '/public/funIcon_0032_点歌台.png', url: '/music-station' },
   { id: 'album', name: '相册', icon: '/public/funIcon_0033_相册.png', url: '/album' },
   { id: 'taobao', name: '逛淘宝', icon: '/public/funIcon_0034_逛淘宝.png', url: '/taobao' },
-  { id: 'lounge-friends', name: '好友串门', icon: '/public/funIcon_0030_好友串门.png', url: '/lounge-friends' },
+  { id: 'lounge-friends', name: '好友串门', icon: '/public/funIcon_0030_好友串门.png', url: '/lounge-friends',
+    board: { name: '会客室', icon: '/public/funIcon_0036_留言板.png', url: '/lounge-board' } },
   { id: 'xhs-lite', name: '小红书',   icon: '/public/funIcon_0024_小红书.png',  url: '/xhs-lite' },
   { id: 'wishes',   name: '许愿池',   icon: '/public/funIcon_0023_许愿池.png',  url: '/wishes' },
   { id: 'worldbook',name: '世界书',   icon: '/public/funIcon_0007_世界书.png',  url: '/worldbook' },
@@ -1180,13 +1230,8 @@ function openApp(url) {
     }
     if (typeof window.parent.openSubPage === 'function') {
       const screen = document.getElementById('screen');
-      screen.classList.add('navigating');
-      setTimeout(() => {
-        window.parent.openSubPage(url);
-        // Home is kept alive in the parent now. Clear the one-shot fade state
-        // after hiding it, otherwise returning shows only the parent backdrop.
-        screen.classList.remove('navigating');
-      }, 200);
+      window.parent.openSubPage(url);
+      screen.classList.remove('navigating');
       return;
     }
   }
@@ -1310,6 +1355,13 @@ function updateClock() {
 /* ── 初始化 ── */
 loadLayout();
 renderApps();
+fetch('/api/lounge-board/features').then(response => response.json()).then(features => {
+  if (!features.board_enabled || features.chat_enabled) return;
+  const entry = APPS.find(app => app.id === 'lounge-friends');
+  if (!entry) return;
+  Object.assign(entry, entry.board);
+  renderApps();
+}).catch(() => {});
 syncLayoutFromServer();
 updateClock();
 setInterval(updateClock, 15000);
@@ -1355,5 +1407,7 @@ checkMomentsUnread();
 setInterval(checkMomentsUnread, 60000);
 </script>
 <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
+<script src="/static/home-popups.js?v=20260923"></script>
+<script src="/lounge-board/assets/home_board_notice.js?v=20260925"></script>
 </body>
 </html>

@@ -12,12 +12,12 @@
     <header class="brand-header compact-brand">
       <p class="brand-kicker">FIRST VISIT</p>
       <h1>AionsHome 会客室 <span aria-hidden="true">✦</span></h1>
-      <p>邀请已验证，再完成一步就可以开始聊天</p>
+      <p>邀请已验证，再完成一步就可以{% if board_enabled %}写留言{% else %}开始聊天{% endif %}</p>
     </header>
 
     <section class="welcome-host-card">
       <img src="{{ host_avatar }}" alt="{{ host_name }}的头像">
-      <div><span class="role-tag">由我接待你</span><h2>{{ host_name }}</h2><p>欢迎来到会客室，很高兴认识你。</p></div>
+      <div><span class="role-tag">家里的朋友</span><h2>{{ host_name }}</h2><p>欢迎来到会客室，很高兴认识你。</p></div>
     </section>
 
     <section class="auth-panel" aria-labelledby="page-title">
@@ -25,7 +25,7 @@
         <span class="step-mark">02</span>
         <div><p>访客身份</p><h2 id="page-title">留下你的称呼</h2></div>
       </div>
-      <p class="panel-copy">这个称呼只用于本次会客室身份，{{ host_name }}之后会这样称呼你。</p>
+      <p class="panel-copy">这个称呼用于你的访问身份；{% if board_enabled %}每次写留言时，你还可以自行填写署名，让共用 Key 的朋友各自表明身份。{% else %}{{ host_name }}之后会这样称呼你。{% endif %}</p>
       <form id="claim-form" class="visitor-form">
         <label for="visitor-name">访客名</label>
         <input id="visitor-name" name="name" maxlength="40" autocomplete="nickname" placeholder="希望我们怎样称呼你" required>
@@ -40,8 +40,8 @@
 
     <aside class="standby-strip" aria-label="未来接待者">
       <img src="{{ standby_avatar }}" alt="">
-      <div><strong>{{ standby_name }}</strong><span>未来或许也会来到会客室</span></div>
-      <small>筹备中</small>
+      <div><strong>{{ standby_name }}</strong><span>{% if board_enabled %}也会来看留言{% else %}未来或许也会来到会客室{% endif %}</span></div>
+      <small>{% if board_enabled %}家里人{% else %}筹备中{% endif %}</small>
     </aside>
 
     <footer class="visitor-note"><span aria-hidden="true">⌁</span> 你始终以受邀朋友身份进入会客室。</footer>

@@ -51,17 +51,14 @@ def command():
     raise RuntimeError("未找到 Codex CLI，请在电脑上检查安装和登录。")
 
 
-def model_name():
-    from config import MODELS
-    from chatroom import load_chatroom_config
-    requested = load_chatroom_config().get("connor_model")
-    cfg = MODELS.get(requested, {})
-    if cfg.get("provider") == "codex_cli":
-        return cfg["model"]
-    for cfg in MODELS.values():
-        if cfg.get("provider") == "codex_cli":
-            return cfg["model"]
-    raise RuntimeError("请先配置一个 Codex CLI 模型。")
+DEFAULT_WORK_MODEL = "gpt-6-sol"
+
+
+def model_name(store=None):
+    if store is None:
+        from repair_store import default_store
+        store = default_store()
+    return store.runtime("model_name") or DEFAULT_WORK_MODEL
 
 
 async def run_codex(store, job, instructions, context):
@@ -151,7 +148,7 @@ async def run_codex(store, job, instructions, context):
         await _write_json(process.stdin, {"method": "initialized", "params": {}})
         disabled_skills = await prepare_repair_skills(request, project)
         store.runtime('disabled_skills', json.dumps(disabled_skills, ensure_ascii=False))
-        params = {"cwd": project, "model": model_name(), "approvalPolicy": "never",
+        params = {"cwd": project, "model": model_name(store), "approvalPolicy": "never",
                   "sandbox": "danger-full-access", "developerInstructions": instructions}
         if task["thread_id"]:
             result = await request("thread/resume", {**params, "threadId": task["thread_id"], "excludeTurns": True})

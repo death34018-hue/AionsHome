@@ -41,18 +41,20 @@ for (const room of [false, true]) {
       API: '/api/chatroom',
       pendingAttachments: calls.attachments,
       renderPreview: () => {},
-      FormData,
+      FormData, File, URL, AbortController, setTimeout, clearTimeout,
       fetch: async (url, options) => {
-        if (url.startsWith('data:')) return { blob: async () => new Blob(['photo']) };
+        if (url.startsWith('data:')) return { blob: async () => new Blob(['photo'], { type: 'image/jpeg' }) };
         calls.uploads.push([url, options]);
-        return { json: async () => ({ url: '/uploads/photo.jpg', type: 'image/jpeg' }) };
+        return { ok: true, json: async () => ({ url: '/uploads/photo.jpg', type: 'image/jpeg' }) };
       },
     };
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'static/chat-image-upload.js'), 'utf8'), context);
+    context.ChatImageUpload = context.window.ChatImageUpload;
     vm.runInNewContext(source.slice(begin, end), context);
     return { context, calls };
   }
 
-  test(`${label}: browser photo requests more detail and uploads quality 90 JPEG`, async () => {
+  test(`${label}: browser photo captures quality 90 JPEG then uses the shared upload pipeline`, async () => {
     let constraints;
     const { context, calls } = setup(async value => {
       constraints = value;

@@ -26,6 +26,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <!-- 通知权限（Android 13+） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -119,7 +120,7 @@
         <service
             android:name=".AionPushService"
             android:exported="false"
-            android:foregroundServiceType="dataSync|location|connectedDevice|mediaProjection|camera" />
+            android:foregroundServiceType="dataSync|location|connectedDevice|mediaProjection|camera|mediaPlayback" />
 
         <service
             android:name=".AionNotificationListenerService"

@@ -530,6 +530,41 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(studio.HTTPException):
                 await planning.send_discussion('book',planning.Talk(content='脑洞'))
 
+    async def test_novel_provider_wait_and_errors_are_visible(self):
+        async def slow_reply(messages, model, **kwargs):
+            self.assertEqual(kwargs['request_timeout'], 300)
+            await asyncio.sleep(.02)
+            yield '小说正文'
+
+        with patch.object(studio, 'stream_ai', slow_reply):
+            self.assertEqual(await studio.generate_text('book', '写一章'), '小说正文')
+
+        async def provider_error(messages, model, **kwargs):
+            self.assertEqual(kwargs['request_timeout'], 300)
+            kwargs['meta']['provider_error'] = 'HTTP 429: {"error":{"message":"quota exceeded"}}'
+            yield '{"error":{"message":"quota exceeded"}}'
+
+        with patch.object(studio, 'stream_ai', provider_error):
+            with self.assertRaises(studio.ModelRequestError) as error:
+                await studio.generate_text('book', '写一章', lambda chunk: None)
+        self.assertIn('HTTP 429：quota exceeded', str(error.exception))
+        with patch.object(studio, 'stream_ai', provider_error):
+            await studio.start_writing('chapter', studio.WriteRequest())
+            await studio._writing['chapter']
+        saved = await studio.load('chapter')
+        self.assertEqual(saved['content'], '')
+        self.assertIn('HTTP 429：quota exceeded', saved['error'])
+
+        async def provider_timeout(messages, model, **kwargs):
+            self.assertEqual(kwargs['request_timeout'], 300)
+            kwargs['meta']['provider_timeout'] = 300
+            raise TimeoutError()
+            yield ''
+
+        with patch.object(studio, 'stream_ai', provider_timeout):
+            with self.assertRaisesRegex(RuntimeError, '本次等待 5 分钟仍未收到回复'):
+                await studio.generate_text('book', '写一章', lambda chunk: None)
+
     async def test_chapter_replay_prefers_complete_original_over_new_voice_partial(self):
         await studio.change('chapter', content='完整正文', status='ready')
         root = studio.THEATER_TTS_CACHE_DIR
@@ -738,7 +773,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await studio.load(a['id']))['segments'],[])
         self.assertFalse(studio._live['chapter']['done'])
 
-    async def test_edit_invalidates_live_source_audio_and_later_continuity(self):
+    async def test_edit_and_restore_preserve_later_completed_chapter(self):
         await studio.change('chapter',content='旧正文',status='ready')
         studio.begin_live('chapter','book');studio.append_live('chapter','旧正文');studio.finish_live('chapter')
         await studio.save(dict(id='later',kind='chapter',conv_id='book',number=2,content='后文',status='ready'))
@@ -746,10 +781,46 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(changed['revision'],2)
         self.assertEqual(changed['versions'][0]['content'],'旧正文')
         self.assertEqual((await studio.source_state('chapter'))['content'],'新正文')
-        self.assertTrue((await studio.load('later'))['needs_review'])
+        self.assertEqual((await studio.load('later'))['status'],'ready')
+        self.assertFalse((await studio.load('later')).get('needs_review'))
         restored=await studio.restore_chapter('chapter')
         self.assertEqual(restored['content'],'旧正文')
         self.assertEqual(restored['revision'],3)
+        self.assertEqual((await studio.load('later'))['content'],'后文')
+        self.assertFalse((await studio.load('later')).get('needs_review'))
+
+    async def test_rewriting_chapter_five_does_not_require_reviewing_later_chapters(self):
+        await studio.change('chapter', content='第一章正文', status='ready', summary='第一章摘要')
+        for number in range(2, 11):
+            await studio.save(dict(id=f'chapter-{number}',kind='chapter',conv_id='book',number=number,
+                                   title=f'第{number}章',plan=f'第{number}章计划',content=f'第{number}章原文',
+                                   summary=f'第{number}章摘要',status='ready',revision=1,images=[],versions=[]))
+        async def generate(cid, prompt, on_chunk=None):
+            if on_chunk:
+                await on_chunk('本章重写正文')
+            return '本章新摘要'
+        with patch.object(studio, 'generate_text', generate), patch.object(studio, 'illustrate', AsyncMock()):
+            await studio.start_writing('chapter-5', studio.WriteRequest(rewrite=True))
+            await studio._writing['chapter-5']
+        self.assertEqual((await studio.load('chapter-5'))['status'], 'draft')
+        await studio.set_chapter_completion('chapter-5', studio.ChapterCompletion(completed=True))
+        for number in range(6, 11):
+            later=await studio.load(f'chapter-{number}')
+            self.assertEqual((later['status'],later['content']),('ready',f'第{number}章原文'))
+            self.assertFalse(later.get('needs_review'))
+        # Older stories may already have review flags saved by the previous behavior.
+        await studio.change('chapter-6', needs_review=True)
+        with patch.object(studio, 'generate_text', generate), patch.object(studio, 'illustrate', AsyncMock()):
+            await studio.start_writing('chapter-10', studio.WriteRequest(rewrite=True))
+            await studio._writing['chapter-10']
+        self.assertEqual((await studio.load('chapter-10'))['status'], 'draft')
+
+    async def test_opening_an_existing_story_clears_obsolete_review_flags(self):
+        await studio.change('chapter', content='已完成正文', status='ready', needs_review=True)
+        data=await studio.get_book('book')
+        self.assertFalse(data['chapters'][0].get('needs_review'))
+        self.assertFalse((await studio.load('chapter')).get('needs_review'))
+        self.assertEqual(data['chapters'][0]['status'], 'ready')
 
     async def test_writing_stream_saves_draft_without_starting_audio(self):
         first=asyncio.Event(); proceed=asyncio.Event()

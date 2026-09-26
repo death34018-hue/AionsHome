@@ -350,6 +350,7 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
                 ),
             ),
             patch("routes.chat.build_health_summary", new=AsyncMock(return_value="")),
+            patch("routes.chat.board_memory_context", return_value="[留言板经历] 我刚和朋友聊了水母灯。", create=True),
             patch("routes.chat.build_surfacing_memories", new=AsyncMock(return_value=([], set()))),
             patch("routes.chat.recall_memories", new=AsyncMock(return_value=([_memory("mem1", "private memory")], [_memory("mem1", "private memory")]))),
             patch("routes.chat.stream_ai", new=fake_stream_ai),
@@ -372,6 +373,7 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
         prompt_text = "\n".join(str(m.get("content", "")) for m in captured["messages"])
         self.assertIn("private memory", prompt_text)
+        self.assertIn("[留言板经历] 我刚和朋友聊了水母灯。", prompt_text)
 
 
 class _FakeCursor:

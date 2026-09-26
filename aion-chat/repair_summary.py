@@ -3,7 +3,8 @@ import asyncio
 import json
 import re
 
-from ai_providers import simple_ai_call
+from ai_providers import simple_ai_call, call_codex_cli
+from generation_control import own_stream
 
 
 def summary_context(store, task):
@@ -26,8 +27,8 @@ def summary_context(store, task):
 async def summarize_repair(store, task):
     from config import MODELS
     from repair_codex import model_name
-    selected = model_name()
-    model_key = next(key for key, cfg in MODELS.items() if cfg.get('provider') == 'codex_cli' and cfg.get('model') == selected)
+    selected = model_name(store)
+    model_key = next((key for key, cfg in MODELS.items() if cfg.get('provider') == 'codex_cli' and cfg.get('model') == selected), None)
     messages = [
         {'role': 'system', 'content': (
             '把用户已验收的维修任务总结成发回日常群聊的小卡片正文。只输出一段中文纯文本，约100–200字，简单任务可以更短，最多200字。'
@@ -39,7 +40,12 @@ async def summarize_repair(store, task):
         {'role': 'user', 'content': summary_context(store, task)},
     ]
     async with asyncio.timeout(80):
-        text = await simple_ai_call(messages, model_key, trace_label='repair_result_summary', include_device_context=False)
+        if model_key:
+            text = await simple_ai_call(messages, model_key, trace_label='repair_result_summary', include_device_context=False)
+        else:
+            text = ''
+            async for chunk in own_stream(call_codex_cli(messages, selected)):
+                text += chunk
     text = re.sub(r'\s+', ' ', text).strip()
     if not text or text.startswith(('[错误]', '[CodexCLI错误]', '[API错误]')):
         raise RuntimeError('摘要模型未返回有效内容')

@@ -226,7 +226,7 @@ const Studio = (() => {
   }
   function renderDirectory() {
     $('studioDirectoryTitle').textContent=conversations.find(c=>c.id===currentConvId)?.title||'当前故事';
-    $('studioDirectory').innerHTML=chapters.map(c => `<button class="chapter-link ${c.id===selected?'active':''}" onclick="Studio.selectChapter('${c.id}')"><span class="chapter-number">${String(c.number).padStart(2,'0')}</span><span>${escHtml(c.title)}<small>${c.needs_review?'前情已变 · 待确认':statusNames[c.status] || c.status}${c.audio?' · 有声':''}</small></span><span class="chapter-word-count">${(c.word_count ?? [...(c.content||'').replace(/\s/g,'')].length).toLocaleString()} 字</span></button>`).join('')||'<p class="studio-notice">还没有章节，先一起讨论并生成大纲吧。</p>';
+    $('studioDirectory').innerHTML=chapters.map(c => `<button class="chapter-link ${c.id===selected?'active':''}" onclick="Studio.selectChapter('${c.id}')"><span class="chapter-number">${String(c.number).padStart(2,'0')}</span><span>${escHtml(c.title)}<small>${statusNames[c.status] || c.status}${c.audio?' · 有声':''}</small></span><span class="chapter-word-count">${(c.word_count ?? [...(c.content||'').replace(/\s/g,'')].length).toLocaleString()} 字</span></button>`).join('')||'<p class="studio-notice">还没有章节，先一起讨论并生成大纲吧。</p>';
   }
   function toolbar() {
     const c=chapter();
@@ -278,7 +278,7 @@ const Studio = (() => {
     $('novelTitle').title=c.title;
     const count=c.content.replace(/\s/g,'').length;
     $('novelMeta').textContent=`${count.toLocaleString()} 字 · ${statusNames[c.status]||c.status}`;
-    $('novelNotice').innerHTML=escHtml(c.error||'')+(c.needs_review?` 前情有变化，请检查本章衔接。 ${button('确认衔接无误','Studio.confirm()')}`:'')+(c.image_error?` ${escHtml(c.image_error)} ${button('重试配图','Studio.illustrate()')}`:'');
+    $('novelNotice').innerHTML=escHtml(c.error||'')+(c.image_error?` ${escHtml(c.image_error)} ${button('重试配图','Studio.illustrate()')}`:'');
     const completion=!c.writing && c.content && c.status!=='ready'?`<p>本轮生成已停止，你可以续写，或确认本章结束。</p><div>${button('续写本章','Studio.write(false)')}${button('本章已写完','Studio.completeChapter(true)','primary')}</div>`:'';
     if($('novelCompletion').innerHTML!==completion)$('novelCompletion').innerHTML=completion;
     const images=[...(c.images||[])].sort((a,b)=>a.after-b.after);
@@ -763,7 +763,6 @@ const Studio = (() => {
     editChapter:b=>action(()=>editChapter(b)),speak:key=>action(()=>speak(key)),
     stopWriting:()=>action(async()=>{await request('/chapters/'+selected+'/stop','POST');await refresh();}),
     restore:()=>action(async()=>{if(player?.source===selected)stopPlayer();await request('/chapters/'+selected+'/restore','POST');await refresh();}),
-    confirm:()=>action(async()=>{await request('/chapters/'+selected+'/confirm','POST');await refresh();}),
     illustrate:()=>action(async()=>{await request('/chapters/'+selected+'/illustrate','POST');await refresh();}),
     cancelAudio:()=>action(async()=>{if(player){await request('/speech/'+player.source+'/stop','POST');await pollAudio();}}),
     retryAudio:()=>action(async()=>{const p=player;if(p && await confirmAction('继续合成语音','是否继续合成尚未完成的语音？已有片段会保留。','继续合成') && player===p){await request('/speech/'+p.source,'POST',{voice:p.voice,prefer_cached:false,allow_generation:true});await pollAudio();}}),

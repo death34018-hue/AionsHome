@@ -10,7 +10,7 @@
   let timeline=[];
   let acceptingTask=null;
   let uploadBatch=null;
-  function showModel(model){const el=$('workModel');el.hidden=!model?.name;el.textContent=model?.name||'';el.title=model?.running?'本轮执行模型':'工作模型 · 跟随群聊配置，下轮使用';el.setAttribute('aria-label',el.title+'：'+el.textContent);}
+  function showModel(model){const el=$('workModel');el.hidden=!model?.name;el.textContent=model?.name||'';el.title=(model?.running?'本轮执行模型':'下轮工作模型')+' · 点击更换';el.setAttribute('aria-label',el.title+'：'+el.textContent);}
   let renameTarget=null;
   function renameDialog(task){renameTarget={id:task.id,title:task.title};$('taskDrawer').close();$('renameTitle').value=task.title;$('renameDialog').showModal();$('renameTitle').focus();$('renameTitle').select();}
   function notice(text) { $('notice').textContent=text; $('notice').hidden=false; clearTimeout(noticeTimer); noticeTimer=setTimeout(()=>{$('notice').hidden=true;},6500); }
@@ -273,6 +273,31 @@
     await poll();await refreshTasks();
   }
   function newDialog() {$('taskDrawer').close();$('newDialog').showModal();$('newTitle').focus();}
+  function modelSelection(){
+    const custom=$('modelSelect').value==='';
+    $('customModelLabel').hidden=!custom;$('modelName').disabled=!custom;$('modelName').required=custom;
+  }
+  $('modelSelect').onchange=modelSelection;
+  $('workModel').onclick=action(async()=>{
+    const data=await api('/model');
+    const labels={'gpt-6-sol':'GPT 6 Sol','gpt-6-astra':'GPT 6 Astra','':'自定义模型…'};
+    const names=[...new Set(['gpt-6-sol','gpt-6-astra',...data.options,data.name]),''];
+    $('modelSelect').replaceChildren(...names.map(name=>{const option=document.createElement('option');option.value=name;option.textContent=labels[name]||name;return option;}));
+    $('modelSelect').value=data.name;$('modelName').value='';modelSelection();
+    $('modelDialog').showModal();$('modelSelect').focus();
+  });
+  $('cancelModel').onclick=()=>$('modelDialog').close();
+  $('modelForm').onsubmit=action(async()=>{
+    const name=$('modelSelect').value||$('modelName').value.trim();
+    if(!name){notice('请填写模型名称。');return;}
+    $('saveModel').disabled=true;
+    try{
+      const data=await api('/model',{method:'PUT',body:{name}});
+      $('modelDialog').close();
+      if(state.task)await poll();else showModel({name:data.name,running:false});
+      notice('已保存：'+data.name+'，从下一轮开始使用。');
+    }finally{$('saveModel').disabled=false;}
+  });
   $('newTask').onclick=newDialog;$('welcomeNew').onclick=newDialog;$('cancelNew').onclick=()=>$('newDialog').close();
   $('renameTask').onclick=()=>{if(state.task?.title)renameDialog(state.task);};
   $('cancelRename').onclick=()=>$('renameDialog').close();
@@ -340,6 +365,3 @@
   window.visualViewport?.addEventListener('resize',fitViewport);window.addEventListener('resize',fitViewport);fitViewport();
   init().catch(err=>notice(err.message));
 })();
-
-
-

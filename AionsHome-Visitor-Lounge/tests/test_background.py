@@ -167,14 +167,18 @@ def test_only_each_visitors_own_idle_timer_can_suspend_them(
 ) -> None:
     visitor_repository, _ = repositories
     visitor_a, visitor_b = visitors
-    background.record_activity(visitor_a, NOW - timedelta(minutes=30))
-    background.record_activity(visitor_b, NOW - timedelta(minutes=29))
+    background.record_activity(visitor_a, NOW - timedelta(minutes=5))
+    background.record_activity(visitor_b, NOW - timedelta(minutes=4, seconds=59))
 
     result = background.tick(NOW)
 
     assert result.suspended == 1
     assert visitor_repository.visitor(visitor_a).status == "suspended"
     assert visitor_repository.visitor(visitor_b).status == "active"
+
+
+def test_default_background_scan_checks_idle_lease_within_one_minute(background) -> None:
+    assert background._interval_seconds == 60
 
 
 def test_activity_resumes_suspended_visit_but_never_unlocks_safety_lock(

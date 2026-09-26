@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import visitor_lounge.scheduler as scheduler_module
 from visitor_lounge.models import GenerationChunk, GenerationRequest
 from visitor_lounge.quota import QuotaService
 from visitor_lounge.repository import (
@@ -149,6 +150,20 @@ class FailingAdapter:
         raise RuntimeError("adapter failed")
 
 
+class RetryThenSuccessAdapter:
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.attempts = 0
+
+    async def generate(self, request: GenerationRequest):
+        del request
+        self.attempts += 1
+        if self.attempts <= self.failures:
+            raise RuntimeError("transient adapter failure")
+        yield GenerationChunk(kind="text", text="welcome")
+        yield GenerationChunk(kind="completed")
+
+
 class ReportedZeroUsageAdapter:
     async def generate(self, request: GenerationRequest):
         del request
@@ -226,6 +241,26 @@ def make_request(quota, visitor_id: str, number: int) -> GenerationRequest:
         visitor_id=visitor_id,
         message_id=f"message-{number}",
         prompt=f"prompt-{number}",
+    )
+
+
+def make_mcp_request(quota, database, visitor_id: str, number: int) -> GenerationRequest:
+    request_id = f"mcp-request-{number}"
+    reservation = quota.reserve_message(
+        visitor_id,
+        request_id,
+        "hello once",
+        NOW,
+        source="mcp",
+    )
+    job = VisitorRepository(database).job(request_id)
+    return GenerationRequest(
+        job_id=reservation.job_id,
+        request_id=request_id,
+        visitor_id=visitor_id,
+        message_id=job.message_id or "",
+        prompt=f"prompt-{number}",
+        source="mcp",
     )
 
 
@@ -790,6 +825,77 @@ async def test_failure_refunds_only_when_no_text_was_visible(
             if message.sender == "host"
         ]
         assert host_replies == ([visible_text] if visible_text else [])
+    finally:
+        await scheduler.shutdown()
+
+
+@pytest.mark.anyio
+async def test_mcp_generation_succeeds_on_third_attempt_without_duplicate_message(
+    database, quota, visitors, monkeypatch
+):
+    monkeypatch.setattr(scheduler_module, "_MCP_GENERATION_RETRY_DELAYS", (0, 0))
+    adapter = RetryThenSuccessAdapter(failures=2)
+    scheduler = GenerationScheduler(
+        database=database,
+        quota=quota,
+        adapter=adapter,
+        settings=SchedulerSettings(),
+    )
+    await scheduler.start()
+    try:
+        request = make_mcp_request(quota, database, visitors[0], 901)
+        ticket = await scheduler.submit(request)
+
+        result = await asyncio.wait_for(ticket.final(), timeout=1)
+
+        assert (result.state, result.visible_text) == ("completed", "welcome")
+        assert adapter.attempts == 3
+        assert quota.state(request.visitor_id).used == 1
+        visitor_messages = [
+            message
+            for message in MessageRepository(database).recent(request.visitor_id)
+            if message.sender == "visitor"
+        ]
+        assert [message.content for message in visitor_messages] == ["hello once"]
+        with database.connection() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM generation_jobs WHERE request_id = ?",
+                (request.request_id,),
+            ).fetchone() == (1,)
+    finally:
+        await scheduler.shutdown()
+
+
+@pytest.mark.anyio
+async def test_mcp_generation_fails_after_exactly_three_attempts(
+    database, quota, visitors, monkeypatch
+):
+    monkeypatch.setattr(scheduler_module, "_MCP_GENERATION_RETRY_DELAYS", (0, 0))
+    adapter = RetryThenSuccessAdapter(failures=3)
+    scheduler = GenerationScheduler(
+        database=database,
+        quota=quota,
+        adapter=adapter,
+        settings=SchedulerSettings(),
+    )
+    await scheduler.start()
+    try:
+        request = make_mcp_request(quota, database, visitors[0], 902)
+        ticket = await scheduler.submit(request)
+
+        result = await asyncio.wait_for(ticket.final(), timeout=1)
+
+        assert result.state == "failed"
+        assert adapter.attempts == 3
+        assert quota.state(request.visitor_id).used == 0
+        with database.connection() as conn:
+            assert conn.execute(
+                """
+                SELECT content, delivery_status FROM messages
+                WHERE visitor_id = ? AND sender = 'visitor'
+                """,
+                (request.visitor_id,),
+            ).fetchall() == [("hello once", "failed")]
     finally:
         await scheduler.shutdown()
 

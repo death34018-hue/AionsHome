@@ -97,11 +97,12 @@
         if (!disclosureResponse.ok) throw new Error("copy disclosure failed");
         const disclosure = await disclosureResponse.json();
         disclosedKey = disclosure.key;
+        showTemporaryKey(disclosure, revealVisitorId, "Key 已重新显示，可长按复制。");
         await navigator.clipboard.writeText(disclosedKey);
         status.textContent = "Key 已为复制而披露并写入剪贴板；系统剪贴板不受页面 30 秒计时器控制。";
       } catch (_error) {
         status.textContent = disclosedKey
-          ? "Key 已为复制而披露，但写入剪贴板失败。"
+          ? "手机浏览器无法自动复制，请长按上方显示的 Key 复制。"
           : "Key 复制披露失败。";
       } finally {
         disclosedKey = "";

@@ -87,7 +87,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, summary:focus-visibl
 .toy-hero-orbit { position: absolute; left: 50%; top: -42px; width: 72px; height: 72px; border: 1px solid color-mix(in srgb, var(--toy-rose) 30%, transparent); border-radius: 50%; transform: translateX(-50%); opacity: .55; }
 .toy-hero-orbit::after { content: ""; position: absolute; width: 7px; height: 7px; border-radius: 50%; background: var(--toy-rose); right: 5px; top: 10px; box-shadow: 0 0 18px var(--toy-rose); }
 
-.toy-choice-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.toy-choice-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 18px; }
 .toy-choice-card {
   position: relative; min-height: 260px; padding: 26px; display: grid; grid-template-columns: 1fr auto; align-items: end; overflow: hidden;
   border: 1px solid var(--toy-line); border-radius: 28px; color: var(--toy-ink); background: var(--toy-surface); box-shadow: var(--toy-shadow); text-align: left; cursor: pointer;

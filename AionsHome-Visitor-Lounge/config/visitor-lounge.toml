@@ -14,6 +14,10 @@ timezone = "Asia/Shanghai"
 max_generations = 1
 max_waiting = 3
 
+[features]
+chat_enabled = false
+board_enabled = true
+
 [identity]
 # These labels are local display configuration, not reusable personal names.
 host_display_name = "Connor"

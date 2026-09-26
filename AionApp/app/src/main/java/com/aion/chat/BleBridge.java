@@ -22,6 +22,10 @@ import android.webkit.WebView;
 
 import java.lang.ref.WeakReference;
 import java.util.Locale;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Comparator;
+import java.util.function.BooleanSupplier;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -41,7 +45,8 @@ public final class BleBridge {
 
     private enum ToyProfile {
         SOSEXY("sosexy", "SOSEXY", uuid(0xee01), uuid(0xee03), uuid(0xee02)),
-        SVAKOM("svakom", "SL278", uuid(0xffe0), uuid(0xffe1), uuid(0xffe2));
+        SVAKOM("svakom", "SL278", uuid(0xffe0), uuid(0xffe1), uuid(0xffe2)),
+        ANKNI("ankni", "ANKNI", uuid(0xdddd), uuid(0xddd1), uuid(0xddd2));
 
         final String key;
         final String namePrefix;
@@ -64,6 +69,7 @@ public final class BleBridge {
 
         static ToyProfile fromKey(String value) {
             if (value != null && value.trim().equalsIgnoreCase(SVAKOM.key)) return SVAKOM;
+            if (value != null && value.trim().equalsIgnoreCase(ANKNI.key)) return ANKNI;
             return SOSEXY;
         }
     }
@@ -75,6 +81,11 @@ public final class BleBridge {
             1, 1, 0L, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>());
     private final SvakomWriteQueue svakomWriteQueue = new SvakomWriteQueue(writeExecutor);
     private final SvakomCommandScheduler svakomScheduler;
+    private final AnkniScheduler ankniScheduler;
+    private final List<BluetoothGattCharacteristic> ankniTargets = new ArrayList<>();
+    private volatile int ankniWriteGeneration;
+    private final Object ankniWriteLock = new Object();
+    private volatile long ankniFrameSerial;
 
     private BluetoothAdapter adapter;
     private BluetoothLeScanner scanner;
@@ -107,6 +118,14 @@ public final class BleBridge {
                         callJs("toyNativeBle.onNativeAction('" + escapeJs(action) + "')");
                     }
                     @Override public void onError(String message) { reportError(message); }
+                });
+        ankniScheduler = new AnkniScheduler(this::enqueueAnkniRaw,
+                (runnable, delay) -> { mainHandler.postDelayed(runnable, delay); return () -> mainHandler.removeCallbacks(runnable); },
+                new AnkniScheduler.Listener() {
+                    @Override public void onAction(String action) {
+                        callJs("toyNativeBle.onNativeAction('" + escapeJs(action) + "')");
+                    }
+                    @Override public void onReplace() { invalidateAnkniWrites(); }
                 });
         activeBridge = new WeakReference<>(this);
     }
@@ -153,12 +172,108 @@ public final class BleBridge {
     @JavascriptInterface
     public void disconnect() {
         stopScan();
-        if (activeProfile == ToyProfile.SVAKOM && connected) {
-            emergencyStop();
-            writeExecutor.execute(() -> mainHandler.post(this::closeGatt));
-        } else {
-            closeGatt();
+        if (connected) {
+            final BluetoothGatt closing = gatt;
+            if (activeProfile == ToyProfile.SOSEXY) {
+                writeExecutor.getQueue().clear();
+                writeExecutor.execute(() -> sendSosexyInternal("03000111000003110000071100"));
+            } else emergencyStop();
+            writeExecutor.execute(() -> mainHandler.post(() -> { if (gatt == closing) closeGatt(); }));
+        } else closeGatt();
+    }
+
+    @JavascriptInterface public int getAnkniControlVersion() { return 3; }
+    @JavascriptInterface public synchronized boolean executeAnkniCommand(String command) {
+        if (!readyFor(ToyProfile.ANKNI)) return false;
+        try {
+            AnkniProtocol.parse(command);
+            ankniScheduler.execute(command);
+            return true;
+        } catch (RuntimeException error) { reportError(safeMessage(error)); return false; }
+    }
+    @JavascriptInterface public synchronized boolean configureAnkni(boolean swap, String prefix) {
+        try { AnkniProtocol.prefix(prefix); invalidateAnkniWrites(); ankniScheduler.configure(swap,prefix); return true; }
+        catch (RuntimeException error) { reportError(safeMessage(error)); return false; }
+    }
+    @JavascriptInterface public String getAnkniWriteTargets() {
+        org.json.JSONArray rows = new org.json.JSONArray();
+        synchronized (ankniTargets) {
+            for (BluetoothGattCharacteristic c : ankniTargets) rows.put(c.getService().getUuid() + " / " + c.getUuid());
         }
+        return rows.toString();
+    }
+    @JavascriptInterface public boolean selectAnkniWriteTarget(int index) {
+        synchronized (ankniTargets) {
+            if (!readyFor(ToyProfile.ANKNI) || index < 0 || index >= ankniTargets.size()) return false;
+            // Finish STOP on the old target before changing it.
+            emergencyStop();
+            BluetoothGattCharacteristic next = ankniTargets.get(index);
+            BluetoothGatt expected = gatt;
+            writeExecutor.execute(() -> { if (gatt == expected && readyFor(ToyProfile.ANKNI)) setAnkniTarget(next); });
+            return true;
+        }
+    }
+    private void setAnkniTarget(BluetoothGattCharacteristic c) {
+        c.setWriteType((c.getProperties() & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0
+                ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE : BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+        writeCharacteristic = c;
+    }
+    private int ankniRank(BluetoothGattCharacteristic c) {
+        int[] preferred = {0xddd1,0xffe1,0xfee1,0xae01,0xdd11};
+        for(int i=0;i<preferred.length;i++) if(c.getUuid().equals(uuid(preferred[i]))) return i;
+        return 999;
+    }
+    private void discoverAnkni(BluetoothGatt connection) {
+        synchronized (ankniTargets) {
+            ankniTargets.clear();
+            for(BluetoothGattService service:connection.getServices()) {
+                for(BluetoothGattCharacteristic c:service.getCharacteristics()) {
+                    if((c.getProperties() & (BluetoothGattCharacteristic.PROPERTY_WRITE | BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)) != 0) ankniTargets.add(c);
+                }
+            }
+            ankniTargets.sort(Comparator.comparingInt(this::ankniRank));
+            if(ankniTargets.isEmpty()) {reportError("ANKNI 没有可写特征");closeGatt();return;}
+            setAnkniTarget(ankniTargets.get(0));
+        }
+        connected = true;
+        callJs("toyNativeBle.onConnected('ankni','" + escapeJs(deviceName) + "')");
+    }
+    private void invalidateAnkniWrites() {
+        synchronized (ankniWriteLock) {
+            ankniWriteGeneration++;
+            CountDownLatch pending = writeLatch;
+            if (pending != null) pending.countDown();
+        }
+    }
+    private boolean enqueueAnkniRaw(String hex) {
+        if (!readyFor(ToyProfile.ANKNI)) return false;
+        final int token = ankniWriteGeneration;
+        final BluetoothGatt target = gatt;
+        final boolean motionFrame = (hex.startsWith("AA0803") && !hex.equals("AA0803000000B5"))
+                || ((hex.startsWith("AA0F02") || hex.startsWith("AA0A02")) && !hex.substring(6,10).equals("0000"));
+        final long frame = motionFrame ? ++ankniFrameSerial : ankniFrameSerial;
+        writeExecutor.execute(() -> {
+            if (motionFrame && frame != ankniFrameSerial) return;
+            if(token != ankniWriteGeneration || target != gatt || !readyFor(ToyProfile.ANKNI)) return;
+            try {
+                if(!writeAwait(hexToBytes(hex), () -> token == ankniWriteGeneration && target == gatt && readyFor(ToyProfile.ANKNI))) failAnkniWrite(token, target, hex, "ANKNI 写入失败");
+            } catch(Exception error) { failAnkniWrite(token, target, hex, "ANKNI 写入失败: " + safeMessage(error)); }
+        });
+        return true;
+    }
+
+    private synchronized void failAnkniWrite(int token, BluetoothGatt target, String hex, String message) {
+        // The timer can start a waiting plan; check and stop atomically with it.
+        synchronized (ankniScheduler) {
+            if (token != ankniWriteGeneration || target != gatt || !readyFor(ToyProfile.ANKNI)) return;
+            // A failed first STOP must not discard the second classic STOP.
+            boolean stopping = hex.equals("AA0803000000B5") || hex.equals("AA0F020000BB") || hex.equals("AA0A020000B6");
+            if (!stopping) {
+                invalidateAnkniWrites();
+                ankniScheduler.stop();
+            }
+        }
+        reportError(message);
     }
 
     @JavascriptInterface public boolean isConnected() { return connected; }
@@ -191,6 +306,7 @@ public final class BleBridge {
             reportError("玩具尚未连接");
             return;
         }
+        if (activeProfile == ToyProfile.ANKNI) { reportError("ANKNI 请使用独立指令接口"); return; }
         if (activeProfile == ToyProfile.SVAKOM) enqueueSvakomRaw(hex);
         else writeExecutor.execute(() -> sendSosexyInternal(hex));
     }
@@ -222,7 +338,8 @@ public final class BleBridge {
     }
 
     @JavascriptInterface
-    public void emergencyStop() {
+    public synchronized void emergencyStop() {
+        if (readyFor(ToyProfile.ANKNI)) { invalidateAnkniWrites(); ankniScheduler.stop(); return; }
         if (!readyFor(ToyProfile.SVAKOM)) return;
         writeExecutor.getQueue().clear();
         try {
@@ -286,6 +403,8 @@ public final class BleBridge {
                     connected = false;
                     writeCharacteristic = null;
                     svakomScheduler.cancelPending();
+        invalidateAnkniWrites();
+        ankniScheduler.cancel();
                     callJs("toyNativeBle.onDisconnected()");
                     try { callbackGatt.close(); } catch (Exception ignored) {}
                     gatt = null;
@@ -304,6 +423,7 @@ public final class BleBridge {
                 closeGatt();
                 return;
             }
+            if (profile == ToyProfile.ANKNI) { discoverAnkni(callbackGatt); return; }
             BluetoothGattService service = callbackGatt.getService(profile.serviceUuid);
             if (service == null) {
                 reportError(deviceName + " 未提供预期服务 " + profile.serviceUuid + "，协议尚未确认");
@@ -400,10 +520,16 @@ public final class BleBridge {
 
     @SuppressWarnings("deprecation")
     private boolean writeAwait(byte[] value) throws InterruptedException {
+        return writeAwait(value, () -> true);
+    }
+
+    @SuppressWarnings("deprecation")
+    private boolean writeAwait(byte[] value, BooleanSupplier valid) throws InterruptedException {
         BluetoothGatt currentGatt = gatt;
         BluetoothGattCharacteristic currentCharacteristic = writeCharacteristic;
         if (!connected || currentGatt == null || currentCharacteristic == null) return false;
         for (int attempt = 0; attempt < 3; attempt += 1) {
+            if (!valid.getAsBoolean() || currentGatt != gatt || currentCharacteristic != writeCharacteristic) return false;
             writeStatus = BluetoothGatt.GATT_FAILURE;
             boolean noResponse = currentCharacteristic.getWriteType()
                     == BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE;
@@ -435,6 +561,8 @@ public final class BleBridge {
         connected = false;
         writeCharacteristic = null;
         svakomScheduler.cancelPending();
+        invalidateAnkniWrites();
+        ankniScheduler.cancel();
         writeExecutor.getQueue().clear();
         BluetoothGatt current = gatt;
         gatt = null;

@@ -35,6 +35,40 @@ class RepairRoomTests(unittest.TestCase):
             self.store.finish(job)
             self.assertEqual(client.get(url).json()['work_model'], {'name': 'configured-model', 'running': False})
 
+    def test_repair_model_setting_persists_and_keeps_running_model(self):
+        from repair_codex import model_name
+        with patch('repair_worker.ensure_worker'), self.client(True) as client:
+            self.assertEqual(client.get('/api/repair/model').json()['name'], 'gpt-6-sol')
+            self.store.enqueue(self.task_id, 'discuss', {'text': '检查'})
+            job = self.store.claim()
+            self.store.runtime('active_model', json.dumps({'job': job['id'], 'name': 'gpt-5.6-sol'}))
+            response = client.put('/api/repair/model', json={'name': '  future-model  '})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(model_name(RepairStore(self.store.directory)), 'future-model')
+            url = '/api/repair/tasks/' + self.task_id
+            self.assertEqual(client.get(url).json()['work_model'], {'name': 'gpt-5.6-sol', 'running': True})
+            self.store.finish(job)
+            self.assertEqual(client.get(url).json()['work_model'], {'name': 'future-model', 'running': False})
+            self.assertEqual(client.put('/api/repair/model', json={'name': '   '}).status_code, 400)
+            self.assertEqual(model_name(self.store), 'future-model')
+
+    def test_repair_model_setting_requires_pairing_and_mutation_guard(self):
+        with patch.object(repair_routes, 'default_store', return_value=self.store), self.client() as client:
+            self.assertEqual(client.get('/api/repair/model').status_code, 401)
+            self.assertEqual(client.put('/api/repair/model', json={'name': 'other'}).status_code, 403)
+            self.assertEqual(client.put('/api/repair/model', json={'name': 'other'}, headers={'X-Repair-Request': '1'}).status_code, 401)
+
+    def test_summary_supports_model_not_in_home_model_list(self):
+        from repair_summary import summarize_repair
+        from stream_safety import StreamActivity
+        self.store.runtime('model_name', 'future-model')
+        async def reply(messages, model):
+            self.assertEqual(model, 'future-model')
+            yield StreamActivity()
+            yield '已完成维修并核对结果。'
+        with patch('repair_summary.call_codex_cli', side_effect=reply):
+            self.assertEqual(asyncio.run(summarize_repair(self.store, self.task)), '已完成维修并核对结果。')
+
     def test_repair_disables_discovered_skills_without_rewriting_already_disabled_ones(self):
         from repair_runtime import prepare_repair_skills, RUNTIME_FLAGS
         request = AsyncMock(side_effect=[{'data': [{'skills': [
@@ -427,4 +461,3 @@ class RepairRoomTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

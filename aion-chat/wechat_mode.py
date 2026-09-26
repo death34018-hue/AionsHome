@@ -11,7 +11,7 @@ WECHAT_MODE_SESSIONS_KEY = "wechat_mode_sessions"
 WECHAT_MODE_ENABLE_TEXT = "[微信模式开启]"
 WECHAT_MODE_DISABLE_TEXT = "[微信模式关闭]"
 _META_TAG_PATTERN = re.compile(r"\s*<meta\b[^>]*>.*?</meta\s*>", re.DOTALL | re.IGNORECASE)
-_INNER_MONOLOGUE_PATTERN = re.compile(r"[\[【]心里嘀咕[：:]\s*([^\]】]+?)[\]】]")
+_INNER_MONOLOGUE_PATTERN = re.compile(r"[\[【]心里嘀咕[：:]\s*[^\]】]*[\]】]")
 
 
 def parse_wechat_mode_command(text: str) -> str:
@@ -189,11 +189,7 @@ def _clean_final_text(text: str) -> str:
 
 
 def _render_visible_text(text: str) -> str:
-    def replace_inner_monologue(match: re.Match[str]) -> str:
-        monologue = (match.group(1) or "").strip()
-        return f"💭心里嘀咕：{monologue}" if monologue else ""
-
-    return _INNER_MONOLOGUE_PATTERN.sub(replace_inner_monologue, text or "").strip()
+    return _INNER_MONOLOGUE_PATTERN.sub("", text or "").strip()
 
 
 def _attachment_bubbles(attachments: list[dict[str, Any]]) -> list[str]:

@@ -36,6 +36,7 @@ async function runInit({ initialConversations, lastConversationId = null, apiOve
 
   const context = {
     models: [],
+    privateModelReady: Promise.resolve(),
     worldBook: {},
     chatroomConfig: {},
     conversations: [],
@@ -124,6 +125,21 @@ test('an empty installation creates and selects its first conversation', async (
   );
 });
 
+test('existing conversation displays without waiting for the model list', async () => {
+  let releaseModels;
+  let completed = false;
+  const pending = runInit({
+    initialConversations: [{ id: 'existing', title: 'Test', model: 'test-model' }],
+    lastConversationId: 'existing',
+    apiOverride(method, url) {
+      if (url === '/api/models') return new Promise(resolve => { releaseModels = resolve; });
+    },
+  }).then(result => { completed = true; return result; });
+  await new Promise(resolve => setImmediate(resolve));
+  try { assert.equal(completed, true, 'message display cannot depend on the model list'); }
+  finally { releaseModels([{ key: 'test-model' }]); await pending; }
+});
+
 test('an existing last conversation is selected without creating another one', async () => {
   const existing = {
     id: 'conv-existing',
@@ -174,11 +190,17 @@ function loadDesktopShell(search = '') {
     add: name => classes.add(name), remove: name => classes.delete(name),
     toggle: (name, enabled) => enabled ? classes.add(name) : classes.delete(name),
   } };
+  const makeFrame = () => ({
+    dataset: {}, style: {}, setAttribute() {},
+    removeAttribute(name) { delete this[name]; },
+    cloneNode() { const copy = makeFrame(); copy.dataset = { ...this.dataset }; return copy; },
+    replaceWith(frame) { frames[frames.indexOf(this)] = frame; },
+  });
   const context = {
-    window: {}, URL, URLSearchParams,
+    window: { AionSubPageNavigation: { show() {}, hide() {} } }, URL, URLSearchParams,
     location: { search, origin: 'https://test.invalid' },
     document: {
-      createElement: () => ({ dataset: {}, style: {}, setAttribute() {} }),
+      createElement: makeFrame,
       getElementById: id => id === 'subPageOverlay' ? overlay : { appendChild: frame => frames.push(frame) },
     },
   };
@@ -198,6 +220,21 @@ test('HTML desktop shell supports navigation and native back before chat scripts
   assert.equal(context.window.handleNativeBack(), 'handled');
   assert.equal(frames[0].src, 'https://test.invalid/');
   assert.equal(context.window.handleNativeBack(), 'dialog');
+});
+
+test('early shell lets a board close its paper before returning home', () => {
+  const { context, frames } = loadDesktopShell('?page=%2Flounge-board');
+  let paperOpen = true;
+  frames[0].contentWindow = { handleLoungeBoardBack() {
+    if (!paperOpen) return false;
+    paperOpen = false;
+    return true;
+  } };
+  assert.equal(context.window.handleNativeBack(), 'handled');
+  assert.equal(paperOpen, false);
+  assert.equal(frames[0].src, 'https://test.invalid/lounge-board');
+  assert.equal(context.window.handleNativeBack(), 'handled');
+  assert.equal(frames[0].src, 'https://test.invalid/');
 });
 
 test('native feature launch keeps all later navigation inside the shell', async () => {

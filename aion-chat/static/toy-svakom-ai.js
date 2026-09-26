@@ -100,6 +100,7 @@
       }).catch(() => onLog('手动接管已生效；权限同步失败，暂不接受 AI 指令，请刷新后重试', 'error'));
     }
     async function receive(message) {
+      if (message.type === 'toy_profile_changed') { revision++; return refresh(); }
       if (message.type === 'capability_config_changed' && message.data?.key === 'svakom') return refresh();
       if (message.type === 'svakom_revoked') {
         revision++;

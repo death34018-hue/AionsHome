@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 @pytest.fixture
 def isolated(monkeypatch):
+    monkeypatch.setitem(capabilities.SETTINGS, 'toy_profile', 'svakom')
     monkeypatch.setattr(svakom_ai, '_reports', {}, raising=False)
     monkeypatch.setitem(capabilities.SETTINGS, capabilities.CAPABILITY_SETTINGS_KEY,
                         {item.key: False for item in capabilities.CAPABILITY_DEFS})
@@ -99,6 +100,14 @@ def test_command_notices_persist_but_never_enter_model_history(isolated, tmp_pat
         assert [e['type'] for e in sent].count('svakom_command') == 2
         assert any(e['type'] == 'msg_created' for e in sent)
         assert any(e['type'] == 'chatroom_msg_created' for e in sent)
+        # Persist the ANKNI grammar so later display never reinterprets old end-time rows.
+        raw_ankni = '[ANKNI:LOOP:2000,5;3000,0;4000,6]'
+        await svakom_ai._save_command_notice('ankni-format', raw_ankni, 'LOOP:2000,5;3000,0;4000,6',
+                                             '已广播', conv_id='test-scope', profile='ankni')
+        async with test_db() as db:
+            saved = await (await db.execute("SELECT attachments FROM messages WHERE id='ankni_notice_ankni-format'")).fetchone()
+        assert json.loads(saved[0])[0]['format'] == 'duration_modes_v1'
+        assert json.loads(saved[0])[0]['raw'] == raw_ankni
         # Rejected commands are still inspectable, without a device command event.
         sent.clear()
         assert await svakom_ai.process_commands('正文[SVAKOM:LOOP:bad]', 'invalid', conv_id='test-scope') == '正文'

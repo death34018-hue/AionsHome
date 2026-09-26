@@ -64,6 +64,21 @@ def fake_client_factory(response):
 
 
 class RelayProviderErrorPassthroughTests(unittest.IsolatedAsyncioTestCase):
+    async def test_custom_openai_uses_requested_wait(self):
+        response = FakeStreamResponse(lines=['data: [DONE]'])
+        seen = []
+        def factory(*args, **kwargs):
+            seen.append(kwargs)
+            return FakeAsyncClient(response)
+        with patch('ai_providers.httpx.AsyncClient', new=factory):
+            chunks = [chunk async for chunk in call_custom_openai(
+                [{'role': 'user', 'content': 'hello'}],
+                {'base_url': 'https://relay.example/v1', 'model': 'unit-model'},
+                request_timeout=300,
+            )]
+        self.assertEqual(chunks, [])
+        self.assertEqual(seen[0]['timeout'], 300)
+
     async def test_reasoning_reports_progress_before_visible_reply(self):
         from ai_providers import CLI_STATUS_PREFIX
 
