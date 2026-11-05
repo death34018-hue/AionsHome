@@ -94,6 +94,7 @@ AionApp/local.properties
 !AionApp/app/src/main/assets/public/**/*.mp3
 # 台球内置音效是程序资源，需要随源码提交
 !aion-chat/billiards/static/assets/audio/*.mp3
+!/aion-chat/static/vendor/strudel-1.3.0/samples/**/*.mp3
 !public/card/
 !public/card/**
 *.log
@@ -170,3 +171,7 @@ surprises/
 # Local backup plans contain machine-specific drive and archive locations
 docs/superpowers/plans/2026-07-29-seven-day-data-backup.md
 docs/superpowers/specs/2026-07-29-seven-day-data-backup-design.md
+
+# Reproducible official ASR binaries (scripts/prepare-local-asr.py)
+AionApp/app/libs/sherpa-onnx-1.13.8.aar
+AionApp/app/src/main/assets/asr/zipformer-small-bilingual/
