@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from capabilities import capabilities_payload, set_capability_enabled
+from capabilities import capabilities_payload, set_capability_enabled, capability_state, get_capability_def
 from proactive_companionship import (
     proactive_status_payload,
     set_proactive_enabled,
@@ -56,7 +56,13 @@ async def get_capabilities():
 @router.put("/api/capabilities/{key}")
 async def update_capability(key: str, body: CapabilityToggle):
     try:
-        item = set_capability_enabled(key, body.enabled)
+        if key == 'kitchen':
+            import kitchen
+            await kitchen.set_enabled(body.enabled)
+            await kitchen.notify()
+            item = capability_state(get_capability_def(key))
+        else:
+            item = set_capability_enabled(key, body.enabled)
     except KeyError:
         raise HTTPException(status_code=404, detail="unknown capability")
     if key == "post_sentinel":

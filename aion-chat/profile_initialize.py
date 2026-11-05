@@ -104,9 +104,9 @@ async def run():
                 # Compact metadata; every original message body stays intact.
                 transcript = '\n'.join(f'[{m["_source_id"]}][{datetime.fromtimestamp(m["created_at"]).isoformat(timespec="minutes")}][{m["name"]}] {m["content"]}' for m in group)
                 prompt = (context['prompt'] + '\n本次只整理固定最近7天窗口，不输出memories，只输出profile_updates。'
-                          '先通读整批，从最后进展判断哪些事情现在仍有后续。最多留下约8至16项简短近期动态。'
+                          '先通读整批，只留本人明确定下、正在推进或明确持续且仍值得跟进的事项。允许整批为空。'
                           '已经完成且没有后续的事情、稳定身份关系、旧事件回忆、工具使用规则一律不新增。'
-                          '想法尚未着手必须用idea，不能升级成明确待办。不要擅自修改别的系统或定时任务。\n【原文】\n' + transcript)
+                          '随口想法直接跳过。不要擅自修改别的系统或定时任务。\n【原文】\n' + transcript)
                 usage = {}
                 raw = await simple_ai_call([{'role': 'user', 'content': prompt}], MODEL,
                                            trace_label='recent_life_week', usage=usage)

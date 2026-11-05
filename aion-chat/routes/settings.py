@@ -79,7 +79,8 @@ class SettingsUpdate(BaseModel):
     embedding_base_url: Optional[str] = None
     embedding_api_key: Optional[str] = None
     embedding_model: Optional[str] = None
-    image_gen_provider: Optional[Literal['existing', 'codex']] = None
+    image_gen_provider: Optional[Literal['existing', 'codex', 'flowai']] = None
+    flowai_image_model: Optional[Literal['gpt_image2_5_flare', 'seedream_5_0_flash', 'grok_imagine_image_2_0']] = None
     image_gen_base_url: Optional[str] = None
     image_gen_api_key: Optional[str] = None
     image_gen_model: Optional[str] = None
@@ -159,6 +160,7 @@ async def get_settings():
         "embedding_api_key": SETTINGS.get("embedding_api_key", ""),
         "embedding_model": SETTINGS.get("embedding_model", ""),
         "image_gen_provider": SETTINGS.get("image_gen_provider", "existing"),
+        "flowai_image_model": SETTINGS.get("flowai_image_model", "gpt_image2_5_flare"),
         "image_gen_base_url": SETTINGS.get("image_gen_base_url", ""),
         "image_gen_api_key": SETTINGS.get("image_gen_api_key", ""),
         "image_gen_model": SETTINGS.get("image_gen_model", ""),
@@ -219,6 +221,8 @@ async def update_settings(body: SettingsUpdate):
     SETTINGS.update(image_config)
     if body.image_gen_provider is not None:
         SETTINGS['image_gen_provider'] = body.image_gen_provider
+    if body.flowai_image_model is not None:
+        SETTINGS['flowai_image_model'] = body.flowai_image_model
     if body.minimax_tts_model is not None and body.minimax_tts_model not in MINIMAX_TTS_MODELS:
         raise HTTPException(status_code=400, detail="MiniMax 语音模型无效")
     minimax_voice_pattern = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{7,255}$")
@@ -574,6 +578,15 @@ async def tts_synthesize(body: TTSRequest):
         return Response(content=audio_data, media_type="audio/mpeg")
     except Exception as e:
         return Response(content=json.dumps({"error": str(e)}), status_code=500, media_type="application/json")
+
+@router.get("/api/tts/segments/{msg_id}")
+async def tts_segments(msg_id: str):
+    from theater_tts_cache import list_message_audio_segments
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", msg_id):
+        raise HTTPException(400, "Invalid message id")
+    return {"urls": [f"/api/tts/audio/{path.stem}"
+                     for _, path in list_message_audio_segments(msg_id, TTS_CACHE_DIR)]}
+
 
 @router.head("/api/tts/audio/{msg_id}")
 @router.get("/api/tts/audio/{msg_id}")

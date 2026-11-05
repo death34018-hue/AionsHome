@@ -563,7 +563,7 @@ body[data-theme="light"] .transport-mode-btn.is-active {
       <strong>免费语音试听 →</strong>
       <p class="hint">直接试听文字，把喜欢的声音加入聊天和小剧场候选。</p>
     </a>
-    <details class="settings-card" id="ttsLoudnessSection" open>
+    <details class="settings-card" id="ttsLoudnessSection">
       <summary>
         <div class="summary-title">
           <strong>🔊 手机语音响度</strong>
@@ -583,7 +583,7 @@ body[data-theme="light"] .transport-mode-btn.is-active {
       </div>
     </details>
 
-    <details class="settings-card" open>
+    <details class="settings-card">
       <summary>
         <div class="summary-title">
           <strong>🎙 MiniMax 克隆语音</strong>
@@ -619,7 +619,7 @@ body[data-theme="light"] .transport-mode-btn.is-active {
       </div>
     </details>
 
-    <details class="settings-card" open>
+    <details class="settings-card">
       <summary>
         <div class="summary-title">
           <strong>🎙 ElevenLabs 语音</strong>
@@ -633,11 +633,11 @@ body[data-theme="light"] .transport-mode-btn.is-active {
         <div class="field"><label class="form-label" id="elevenAionLabel" for="elevenAion">AI 的主动语音音色</label><input class="form-input" id="elevenAion" list="elevenVoiceOptions" placeholder="选择或粘贴 voice_id"></div>
         <div class="field"><label class="form-label" id="elevenConnorLabel" for="elevenConnor">第二 AI 的主动语音音色</label><input class="form-input" id="elevenConnor" list="elevenVoiceOptions" placeholder="选择或粘贴 voice_id"></div>
         <datalist id="elevenVoiceOptions"></datalist>
-        <div class="field full"><button class="action-btn primary" type="button" onclick="loadElevenVoices()">保存 ElevenLabs 配置并加载音色</button><p id="elevenStatus" class="hint" role="status">保存后，在聊天的音色列表中选择 ElevenLabs 即可全量朗读。主动语音不要求开启全量朗读，每次含标签最多 200 字符。</p></div>
+        <div class="field full"><button class="action-btn primary" type="button" onclick="loadElevenVoices()">保存 ElevenLabs 配置并加载音色</button><p id="elevenStatus" class="hint" role="status">保存后，在聊天的音色列表中选择 ElevenLabs 即可全量朗读。主动语音不要求开启全量朗读，表演指导和台词合计最多 500 字符。</p></div>
       </div>
     </details>
 
-    <details class="settings-card" open>
+    <details class="settings-card">
       <summary>
         <div class="summary-title">
           <strong>🔑 API 与基础账号</strong>
@@ -669,7 +669,7 @@ body[data-theme="light"] .transport-mode-btn.is-active {
       </div>
     </details>
 
-    <details class="settings-card" open>
+    <details class="settings-card">
       <summary>
         <div class="summary-title">
           <strong>🧭 自定义主模型线路</strong>
@@ -714,9 +714,21 @@ body[data-theme="light"] .transport-mode-btn.is-active {
           <select class="form-input" id="imageGenProviderInput" onchange="updateImageGenProviderUi()">
             <option value="existing">API 接口（原有配置）</option>
             <option value="codex">Codex 登录额度</option>
+            <option value="flowai">Flow AI 积分</option>
           </select>
         </div>
         <p class="hint" id="imageGenCodexHint" hidden>使用本机 Codex 已登录账号的额度，无需填写生图 Key。按出场人物附带锚点照片；生成失败时不会自动切换到 API 接口。</p>
+        <div id="imageGenFlowConfig" hidden>
+          <div class="field">
+            <label class="form-label" for="flowaiModelInput">Flow AI 生图模型</label>
+            <select class="form-input" id="flowaiModelInput">
+              <option value="gpt_image2_5_flare">Image 2.5 Flare</option>
+              <option value="seedream_5_0_flash">Seedream 5.0 Flash</option>
+              <option value="grok_imagine_image_2_0">Grok Imagine Image 2.0</option>
+            </select>
+          </div>
+          <p class="hint">使用本机已登录的 Flow AI 账号。人物锚点会上传到该账号的素材库。</p>
+        </div>
         <div class="field"><button type="button" class="action-btn" onclick="ImageAnchors.open()">管理人物锚点</button></div>
         <p class="hint">与小剧场共用同一份人物资料，单人照和合照自动带上出场人物的照片。人物修改在弹窗内单独保存。</p>
         <div id="imageGenApiConfig">
@@ -848,12 +860,12 @@ body[data-theme="light"] .transport-mode-btn.is-active {
       <summary>
         <div class="summary-title">
           <strong>💬 悬浮聊天</strong>
-          <span>刷别的 App 时接收消息，按住说话回复</span>
+          <span>阅读、小剧场或其他 App 中快捷聊天</span>
         </div>
         <span class="summary-chevron">›</span>
       </summary>
       <div class="card-body">
-        <p class="hint">跟随你最后发消息的窗口，只弹出 AI 的消息。平时保留淡淡的小头像，点按打开或收起，拖动移动。消息预览 5 秒无操作后收起；点正文向下展开，可上下滑动查看完整消息，点头像收起。右侧上方的屏幕图标点亮时，回复附当前截图；灰色时只发消息。下方小麦克风按住说话、松开发送，上滑取消。</p>
+        <p class="hint">跟随你最后发消息的窗口，只弹出 AI 的消息。在小家阅读、小剧场等页面也能快捷聊天；进入私聊或聊天室后保留头像，不自动弹出消息。平时保留淡淡的小头像，点按打开或收起，拖动移动。消息预览 5 秒无操作后收起；点正文向下展开，可上下滑动查看完整消息，点头像收起。右侧上方的屏幕图标点亮时，回复附当前截图；灰色时只发消息。下方小麦克风按住说话、松开发送，上滑取消。</p>
         <p id="floatingChatStatus" class="hint"></p>
         <div class="section-actions">
           <button class="btn-save" type="button" onclick="setFloatingChatEnabled(true)">开启悬浮聊天</button>
@@ -953,7 +965,7 @@ body[data-theme="light"] .transport-mode-btn.is-active {
 <script src="/static/theme.js?v=theme-20260606"></script>
 <script src="/static/common.js"></script>
 <script src="/static/local-voice.js?v=20261024"></script>
-<script src="/static/image-anchors.js?v=20261022"></script>
+<script src="/static/image-anchors.js?v=20261103"></script>
 <script src="/static/tts-loudness-settings.js"></script>
 <script>
 connectCommonWS();
@@ -1218,9 +1230,10 @@ function collectCustomRoutes() {
 }
 
 function updateImageGenProviderUi() {
-  var codex = $("imageGenProviderInput").value === "codex";
-  $("imageGenApiConfig").hidden = codex;
-  $("imageGenCodexHint").hidden = !codex;
+  var provider = $("imageGenProviderInput").value;
+  $("imageGenApiConfig").hidden = provider !== "existing";
+  $("imageGenCodexHint").hidden = provider !== "codex";
+  $("imageGenFlowConfig").hidden = provider !== "flowai";
 }
 
 function updateSentinelRouteUi() {
@@ -1261,7 +1274,8 @@ function updateAsrProviderUi(usePreset) {
   $("embeddingBaseUrlInput").value = s.embedding_base_url || "";
   $("embeddingApiKeyInput").value = s.embedding_api_key || "";
   $("embeddingModelInput").value = s.embedding_model || "";
-  $("imageGenProviderInput").value = s.image_gen_provider === "codex" ? "codex" : "existing";
+  $("imageGenProviderInput").value = ["codex", "flowai"].includes(s.image_gen_provider) ? s.image_gen_provider : "existing";
+  $("flowaiModelInput").value = s.flowai_image_model || "gpt_image2_5_flare";
   updateImageGenProviderUi();
   $("imageGenBaseUrlInput").value = s.image_gen_base_url || "";
   $("imageGenApiKeyInput").value = s.image_gen_api_key || "";
@@ -1347,11 +1361,11 @@ async function saveSettings() {
   };
   var imageValues = Object.values(imageConfig);
   var imageGenProvider = $("imageGenProviderInput").value;
-  if (imageGenProvider !== "codex" && imageValues.some(Boolean) && !imageValues.every(Boolean)) {
+  if (imageGenProvider === "existing" && imageValues.some(Boolean) && !imageValues.every(Boolean)) {
     showToast("请完整填写生图 API 地址、Key 和模型名，或全部清空以使用 Gemini");
     return;
   }
-  if (imageGenProvider !== "codex" && imageConfig.image_gen_base_url) {
+  if (imageGenProvider === "existing" && imageConfig.image_gen_base_url) {
     try {
       var imageUrl = new URL(imageConfig.image_gen_base_url);
       if (!["http:", "https:"].includes(imageUrl.protocol) || !imageUrl.hostname || imageUrl.search || imageUrl.hash || imageUrl.username || imageUrl.password) throw new Error("invalid URL");
@@ -1380,7 +1394,8 @@ async function saveSettings() {
     embedding_api_key: $("embeddingApiKeyInput").value.trim(),
     embedding_model: $("embeddingModelInput").value.trim(),
     image_gen_provider: imageGenProvider,
-    ...(imageGenProvider === "codex" ? {} : imageConfig),
+    ...(imageGenProvider === "existing" ? imageConfig : {}),
+    ...(imageGenProvider === "flowai" ? {flowai_image_model: $("flowaiModelInput").value} : {}),
     siliconflow_key: $("sfKeyInput").value.trim(),
     minimax_tts_key: $("minimaxTtsKeyInput").value.trim(),
     ...elevenSettings(),
@@ -1517,7 +1532,7 @@ function refreshFloatingChatStatus() {
   const bridge = getFloatingChatBridge();
   const el = document.getElementById('floatingChatStatus');
   if (!el) return;
-  el.textContent = bridge ? (bridge.getState() === 'ready' ? '已开启，离开小家后显示悬浮头像。' : '未开启。') : '需要在新版 Android App 内开启。';
+  el.textContent = bridge ? (bridge.getState() === 'ready' ? '已开启，小家内外均显示悬浮头像，聊天界面不自动弹消息。' : '未开启。') : '需要在新版 Android App 内开启。';
 }
 function setFloatingChatEnabled(enabled) {
   const bridge = getFloatingChatBridge();

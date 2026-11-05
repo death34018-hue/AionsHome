@@ -7,9 +7,9 @@ import uuid
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel, Field, ValidationError
 
 from config import THEATER_TTS_CACHE_DIR, UPLOADS_DIR
 from database import get_db
@@ -132,6 +132,9 @@ async def get_book(cid: str, chapter: str = ''):
         book = await save(dict(id=cid, kind='book', conv_id=cid, **BookPatch().model_dump()))
     from theater_planning import state, persona_for, discussion
     book, chapters = await state(cid)
+    from theater_reading import get_link
+    reading_link = await get_link(cid)
+    book = dict(book, reading_book_id=reading_link['book_id'] if reading_link else None)
     person = await persona_for(cid)
     book = dict(book, writer_name=person.get('name', '') if person else '', writer_ready=bool(person and person.get('persona', '').strip()))
     for i, c in enumerate(chapters):
@@ -253,15 +256,41 @@ async def get_anchor_identities():
 
 @router.put('/anchors/{aid}')
 async def put_anchor(aid: str, body: Anchor):
-    if body.image:
-        reference_path(body.image)
+    return await _save_anchor(aid, body)
+
+
+@router.put('/anchors/{aid}/photo')
+async def put_anchor_photo(aid: str, fields: str = Form(...), file: UploadFile = File(...)):
+    try:
+        body = Anchor.model_validate_json(fields)
+    except ValidationError as exc:
+        raise HTTPException(422, '请检查人物名字和身份') from exc
+    data = await file.read(100 * 1024 * 1024 + 1)
+    if len(data) > 100 * 1024 * 1024:
+        raise HTTPException(413, '锚点照片最大 100 MB')
+    return await _save_anchor(aid, body, data)
+
+
+async def _save_anchor(aid, body, photo=None):
+    from image_anchors import store_anchor_image
     if not re.fullmatch(r'[\w-]{1,80}', aid):
         raise HTTPException(400, '无效角色编号')
-    existing = await load('anchor_'+aid) or {}
-    values = body.model_dump(exclude_none=True)
-    if body.identity is None:
-        values['identity'] = existing.get('identity', '')
-    return await save(dict(id='anchor_'+aid, kind='anchor', conv_id='', **values))
+    key = 'anchor_' + aid
+    async with lock(key):
+        existing = await load(key) or {}
+        values = body.model_dump(exclude_none=True)
+        if body.identity is None:
+            values['identity'] = existing.get('identity', '')
+        if photo is None and body.image:
+            path = reference_path(body.image)
+            if body.image.startswith('/uploads/'):
+                photo = path.read_bytes()
+        if photo is not None:
+            try:
+                values['image'] = store_anchor_image(body.name, photo)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        return await save(dict(id=key, kind='anchor', conv_id='', **values))
 
 
 class ModelRequestError(RuntimeError):
@@ -383,7 +412,7 @@ async def edit_chapter(key: str, body: ChapterPatch):
             _live.pop(key, None)
             # Editing a partial draft must not silently mark the chapter finished.
             fields.update(revision=c['revision']+1, summary='', images=[], audio=None,
-                          status='ready' if c['status'] == 'ready' else 'interrupted', error='',
+                          status='draft' if c['status'] == 'ready' else 'interrupted', error='',
                           versions=(c.get('versions', [])+[snapshot(c)])[-3:])
         return await change(key, **fields)
 
@@ -549,6 +578,53 @@ class ChapterCompletion(BaseModel):
     completed: bool
 
 
+@router.post('/books/{cid}/reading')
+async def add_to_reading(cid: str):
+    from theater_reading import add_book
+    return await add_book(cid)
+
+
+@router.get('/books/{cid}/export')
+async def export_novel(cid: str, format: Literal['docx', 'txt'] = 'docx', include_drafts: bool = False):
+    from urllib.parse import quote
+    from config import ALBUM_IMAGES_DIR
+    from theater_export import build_export, filename, ExportError
+    async with lock('planning_'+cid):
+        title, _, _ = await conversation(cid)
+        book = await load(cid)
+        if not book or book.get('mode') != 'novel':
+            raise HTTPException(409, '请在小说模式中导出')
+        chapters = await rows(cid, 'chapter')
+        if include_drafts and any(c['id'] in _writing for c in chapters):
+            raise HTTPException(409, '请先停止正在进行的写作，再导出未完成正文')
+    try:
+        content = await asyncio.to_thread(build_export, title, chapters, format, include_drafts,
+            {'/uploads/album/': ALBUM_IMAGES_DIR, '/uploads/': UPLOADS_DIR})
+    except ExportError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    media = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' if format == 'docx' else 'text/plain'
+    return Response(content, media_type=media, headers={
+        'Content-Disposition': f"attachment; filename*=UTF-8''{quote(filename(title, format))}",
+        'Cache-Control': 'no-store',
+    })
+
+
+@router.get('/chapters/{key}/reading')
+async def get_chapter_reading(key: str):
+    from theater_reading import chapter_link
+    return await chapter_link(key)
+
+
+@router.post('/chapters/{key}/reading')
+async def start_chapter_reading(key: str):
+    from theater_reading import add_book, chapter_link
+    chapter = await load(key)
+    if not chapter or chapter.get('kind') != 'chapter':
+        raise HTTPException(404, '章节不存在')
+    await add_book(chapter['conv_id'], chapter_id=key)
+    return await chapter_link(key)
+
+
 @router.post('/chapters/{key}/completion')
 async def set_chapter_completion(key: str, body: ChapterCompletion):
     initial = await load(key)
@@ -562,13 +638,24 @@ async def set_chapter_completion(key: str, body: ChapterCompletion):
             raise HTTPException(404, '章节不存在')
         if not c.get('content', '').strip():
             raise HTTPException(409, '本章还没有正文')
-        return await change(key, status='ready' if body.completed else 'draft', error='')
+        from theater_reading import complete
+        return await complete(key, body.completed)
 
 
 async def illustrate(key, *, retry=False):
     # A rewritten chapter must wait for, rather than be skipped by, an old job.
     async with lock('pictures_'+key):
         await _illustrate(key, retry=retry)
+
+
+async def save_chapter_images(key, revision, **fields):
+    async with lock(key):
+        current = await load(key)
+        if not current or current['revision'] != revision:
+            return False
+        current.update(fields)
+        await save(current)
+        return True
 
 
 async def _illustrate(key, *, retry=False):
@@ -595,7 +682,8 @@ async def _illustrate(key, *, retry=False):
         current = await load(key)
         if not current or current['revision'] != c['revision']:
             return
-        await change(key, images=scenes, image_error='')
+        if not await save_chapter_images(key, c['revision'], images=scenes, image_error=''):
+            return
         for s in scenes:
             if s.get('status') == 'ready':
                 continue
@@ -612,13 +700,12 @@ async def _illustrate(key, *, retry=False):
                 s.update(status='failed', url='', error='生图等待超时，可稍后重试')
             except Exception as exc:
                 s.update(status='failed', url='', error=(str(exc) or type(exc).__name__)[:500])
-            current = await load(key)
-            if current and current['revision'] == c['revision']:
-                await change(key, images=scenes)
+            if await save_chapter_images(key, c['revision'], images=scenes):
+                from theater_reading import sync_images
+                await sync_images(key)
     except Exception:
-        current = await load(key)
-        if c and current and current['revision'] == c['revision']:
-            await change(key, image_error='配图未完成，可重试')
+        if c:
+            await save_chapter_images(key, c['revision'], image_error='配图未完成，可重试')
     finally:
         _pictures.pop(key, None)
 

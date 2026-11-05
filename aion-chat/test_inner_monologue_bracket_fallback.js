@@ -32,7 +32,7 @@ for (const text of mixedBracketTexts) {
 
 const chatroomScript = fs.readFileSync(path.join(root, 'static', 'chatroom.js'), 'utf8');
 const chatroomSource = chatroomScript.slice(
-  chatroomScript.indexOf('const CR_STRUCTURED_LINE_RE'),
+  chatroomScript.indexOf('function crBubbleParts'),
   chatroomScript.indexOf('let crProactiveCompanionshipStatus'),
 );
 const chatroomContext = {};

@@ -38,6 +38,25 @@ public final class TtsAudioBridge {
     @JavascriptInterface
     public boolean isForeground() { return foreground; }
 
+    @JavascriptInterface
+    public void prefetch(String playbackUrl) {
+        webView.post(() -> {
+            String url = TtsAudioUrlResolver.resolve(webView.getUrl(), playbackUrl);
+            if (url != null && java.net.URI.create(url).getPath().startsWith("/api/tts/audio/")) {
+                MediaCacheStore.shared(context).loadAudio(url, audioHeaders(url), true, file -> {});
+            }
+        });
+    }
+
+    private Map<String, String> audioHeaders(String url) {
+        Map<String, String> headers = new HashMap<>();
+        String cookie = CookieManager.getInstance().getCookie(url);
+        if (cookie != null && !cookie.isEmpty()) headers.put("Cookie", cookie);
+        String userAgent = webView.getSettings().getUserAgentString();
+        if (userAgent != null && !userAgent.isEmpty()) headers.put("User-Agent", userAgent);
+        return headers;
+    }
+
     /** Called on the activity thread, before the WebView can be suspended. */
     public void setForeground(boolean active) {
         foreground = active;
@@ -206,18 +225,28 @@ public final class TtsAudioBridge {
     }
 
     private void preparePlayer(String playerId, MediaPlayer player, String resolvedUrl, boolean autoPlay) {
+        Map<String, String> headers = audioHeaders(resolvedUrl);
+        if (java.net.URI.create(resolvedUrl).getPath().startsWith("/api/tts/audio/")) {
+            MediaCacheStore.shared(context).loadAudio(resolvedUrl, headers, false, file -> webView.post(() -> {
+                if (players.get(playerId) != player) return;
+                prepareSource(playerId, player, resolvedUrl, autoPlay, headers, file);
+            }));
+        } else prepareSource(playerId, player, resolvedUrl, autoPlay, headers, null);
+    }
+
+    private void prepareSource(String playerId, MediaPlayer player, String resolvedUrl, boolean autoPlay,
+                               Map<String, String> headers, java.io.File cached) {
         try {
             player.setAudioAttributes(new AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build());
 
-            Map<String, String> headers = new HashMap<>();
-            String cookie = CookieManager.getInstance().getCookie(resolvedUrl);
-            if (cookie != null && !cookie.isEmpty()) headers.put("Cookie", cookie);
-            String userAgent = webView.getSettings().getUserAgentString();
-            if (userAgent != null && !userAgent.isEmpty()) headers.put("User-Agent", userAgent);
-            player.setDataSource(context, Uri.parse(resolvedUrl), headers);
+            if (cached != null && cached.isFile()) {
+                try (java.io.FileInputStream input = new java.io.FileInputStream(cached)) {
+                    player.setDataSource(input.getFD());
+                }
+            } else player.setDataSource(context, Uri.parse(resolvedUrl), headers);
             player.setOnPreparedListener(prepared -> {
                 if (players.get(playerId) != prepared) {
                     prepared.release();

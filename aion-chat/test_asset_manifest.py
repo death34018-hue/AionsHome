@@ -46,3 +46,10 @@ def test_nested_markdown_vendor_is_in_the_verified_frontend_cache():
     assert entry["sha256"] == hashlib.sha256(
         (BASE_DIR / asset_path.lstrip("/")).read_bytes()
     ).hexdigest()
+
+
+def test_music_samples_are_verified_but_do_not_block_frontend_startup():
+    files = get_client_asset_manifest()['files']
+    path = '/static/vendor/strudel-1.3.0/samples/piano/C4v8.mp3'
+    assert files[path]['category'] == 'audio'
+    assert files[path]['sha256'] == hashlib.sha256((BASE_DIR / path.lstrip('/')).read_bytes()).hexdigest()

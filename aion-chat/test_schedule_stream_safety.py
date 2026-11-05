@@ -1,6 +1,8 @@
+import asyncio
 import unittest
+from unittest.mock import AsyncMock, patch
 
-from schedule import _consume_background_stream
+from schedule import _consume_background_stream, _process_background_reply_commands
 from web_search import WebCommandStreamFilter
 
 
@@ -31,6 +33,22 @@ class _TTSProbe:
 
 
 class ScheduleStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
+    async def test_monitor_selfie_is_dispatched_once_and_hidden_from_history_and_voice(self):
+        from routes import chatroom
+        raw = '一起遛狗。\n[SELFIE: characters=anchor_legacy,朋友 | On a walk.]'
+        with patch.dict('capabilities.SETTINGS', {'image_gen_enabled': True}), \
+                patch.object(chatroom, '_chatroom_image_gen', new=AsyncMock()) as draw:
+            visible = await _process_background_reply_commands(raw, target={'type':'chatroom', 'room_id':'room'},
+                conv_id=None, sender='connor', ai_msg_id='msg')
+            await asyncio.sleep(0)
+            self.assertEqual(visible, '一起遛狗。')
+            draw.assert_awaited_once_with('room', 'connor', 'characters=anchor_legacy,朋友 | On a walk.', True)
+        for sender, expected in [('connor', visible), ('user', raw)]:
+            row = chatroom._chatroom_message_dict({'sender':sender, 'content':raw, 'attachments':'[]'})
+            self.assertEqual(row['content'], expected)
+        command_filter = WebCommandStreamFilter()
+        self.assertEqual((''.join(command_filter.feed(c) for c in raw) + command_filter.flush()).strip(), visible)
+
     async def test_schedule_tts_stops_before_protocol_dump(self):
         source = _Chunks([
             "监督回复正文。" * 100,

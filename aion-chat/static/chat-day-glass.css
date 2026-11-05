@@ -1,0 +1,242 @@
+/* Shared daylight glass for chat and theater. */
+html[data-theme="light"] {
+  background: #f5e5e4;
+}
+
+body[data-theme="light"],
+body.theater-page[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5e5e4;
+  --surface: rgba(255, 252, 251, 0.48);
+  --surface2: rgba(255, 255, 255, 0.38);
+  --surface3: rgba(255, 255, 255, 0.56);
+  --border: rgba(255, 255, 255, 0.62);
+  --border-strong: rgba(153, 99, 123, 0.40);
+  --text: #473f46;
+  --text2: #6d6069;
+  --text3: #80717b;
+  --text-secondary: var(--text2);
+  --text-muted: var(--text3);
+  --accent: #a65370;
+  --accent2: #8f425f;
+  --accent3: #9c719b;
+  --connor-accent: #695d96;
+  --user-bg: rgba(255, 242, 247, 0.52);
+  --ai-bg: rgba(250, 255, 251, 0.48);
+  --aion-bg: var(--ai-bg);
+  --connor-bg: rgba(252, 249, 255, 0.50);
+  --glow: 0 0 18px rgba(175, 112, 139, 0.12);
+  --soft-shadow: 0 14px 42px rgba(94, 62, 75, 0.13);
+  --glass-panel: linear-gradient(160deg, rgba(255, 255, 255, 0.56), rgba(255, 252, 250, 0.30));
+  --glass-popup: rgba(255, 251, 250, 0.82);
+  --glass-shadow: 0 8px 28px rgba(94, 62, 75, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  background-color: var(--bg);
+}
+
+body[data-theme="light"]::after {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 248, 244, 0.10));
+  opacity: 1;
+  filter: none;
+}
+
+body[data-theme="light"] .chat-area {
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+body[data-theme="light"] .chat-area::before {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 250, 247, 0.10)),
+    url('/public/chat-bg-light.jpg') center/100% 100% no-repeat;
+  opacity: 1;
+}
+
+body[data-theme="light"] :is(.sidebar, .chat-header, .input-area, .composer, .voice-mode-row) {
+  background: var(--glass-panel);
+  border-color: var(--border);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(20px) saturate(1.12);
+  -webkit-backdrop-filter: blur(20px) saturate(1.12);
+}
+
+body[data-theme="light"] :is(
+  .modal, .config-popup, .plus-menu, .msg-menu, .msg-menu-dropdown,
+  .msg-reasoning-popover, .msg-feedback-popover, .chat-search-panel,
+  .settings-panel, .persona-page-panel, .persona-history-dialog, .memory-panel,
+  .toy-edit-sheet, .image-save-menu, .song-player-sheet,
+  .wallet-panel, .cr-wallet-panel, .transfer-dialog, .cr-transfer-dialog
+) {
+  background: var(--glass-popup);
+  border-color: var(--border);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(22px) saturate(1.12);
+  -webkit-backdrop-filter: blur(22px) saturate(1.12);
+}
+
+/* The settings sheet has its own ID-scoped background in chatroom.css. */
+body[data-theme="light"] #settingsOverlay .settings-panel {
+  background: var(--glass-popup);
+}
+
+body[data-theme="light"] :is(
+  .sidebar-header .settings-btn, .sidebar-header .home-btn,
+  .sidebar-footer button, .sidebar-mem-btn button,
+  .chat-header .home-btn, .chat-header .menu-btn,
+  .chat-header .header-actions button, .config-btn, .mobile-theme-btn,
+  .upload-btn, .plus-btn, .voice-kbd-btn, .voice-hold-btn,
+  .conv-count, .room-item .msg-count
+) {
+  background: var(--surface2);
+  color: var(--text);
+  border-color: var(--border);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.68);
+}
+
+body[data-theme="light"] .sidebar-header button:not(.home-btn):not(.settings-btn),
+body[data-theme="light"] .send-btn,
+body[data-theme="light"] .composer .send-btn {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.80), rgba(255, 242, 247, 0.48));
+  color: var(--accent2);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--glass-shadow);
+}
+
+body[data-theme="light"] :is(.conv-item.active, .room-item.active) {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.62), rgba(255, 240, 245, 0.36));
+  border-color: var(--border-strong);
+  color: var(--text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.70), 0 4px 14px rgba(94, 62, 75, 0.06);
+}
+
+body[data-theme="light"] .chat-header .header-actions .ai-chat-btn,
+body[data-theme="light"] .chat-header .header-actions .reply-once-btn.connor {
+  background: var(--surface2);
+  color: var(--connor-accent);
+}
+
+body[data-theme="light"] .chat-header .header-actions .reply-once-btn.aion {
+  background: var(--surface2);
+  color: #37725f;
+}
+
+body[data-theme="light"] :is(.room-item .type-badge.group, .room-item .type-badge.connor) {
+  background: var(--surface2);
+}
+
+body[data-theme="light"] :is(.input-row textarea, .composer textarea, .chat-search-form input),
+body[data-theme="light"] :is(.settings-panel, .memory-panel) .field :is(input, textarea, select),
+body[data-theme="light"] .edit-textarea {
+  background: rgba(255, 255, 255, 0.34);
+  border-color: rgba(153, 99, 123, 0.22);
+  color: var(--text);
+  box-shadow: inset 0 1px 4px rgba(94, 62, 75, 0.04);
+}
+
+body[data-theme="light"] :is(.input-row textarea, .composer textarea, .chat-search-form input):focus {
+  border-color: var(--border-strong);
+  box-shadow: 0 0 0 2px rgba(166, 83, 112, 0.12);
+}
+
+body[data-theme="light"] :is(.msg-avatar, .avatar) {
+  border-color: rgba(255, 255, 255, 0.80);
+  box-shadow: 0 3px 12px rgba(94, 62, 75, 0.14);
+}
+
+body[data-theme="light"] .msg-row.user .msg-role-name {
+  color: var(--accent) !important;
+}
+
+body[data-theme="light"] :is(.private-ai-message-content, .ai-message-content, .msg-bubble, .bubble) {
+  color: var(--text);
+  text-shadow: none;
+}
+
+body[data-theme="light"] .msg-row.user .msg-bubble,
+body[data-theme="light"] .message-row.user .msg-content .bubble,
+body[data-theme="light"] .msg-row.assistant .msg-bubble,
+body[data-theme="light"] .message-row.aion .msg-content .bubble,
+body[data-theme="light"] .message-row.connor .msg-content .bubble {
+  border-color: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78), 0 4px 16px rgba(94, 62, 75, 0.09);
+  backdrop-filter: blur(12px) saturate(1.1);
+  -webkit-backdrop-filter: blur(12px) saturate(1.1);
+}
+
+body[data-theme="light"] .msg-row.user .msg-bubble,
+body[data-theme="light"] .message-row.user .msg-content .bubble {
+  background: var(--user-bg);
+}
+
+body[data-theme="light"] .msg-row.assistant .msg-bubble,
+body[data-theme="light"] .message-row.aion .msg-content .bubble {
+  background: var(--aion-bg);
+}
+
+body[data-theme="light"] .message-row.connor .msg-content .bubble {
+  background: var(--connor-bg);
+}
+
+body[data-theme="light"] :is(.msg-row.user, .msg-row.assistant) .msg-bubble::after {
+  color: rgba(255, 255, 255, 0.84);
+  text-shadow: 0 1px 5px rgba(153, 99, 123, 0.18);
+}
+
+body[data-theme="light"] .markdown-body code { background: rgba(128, 91, 111, 0.10); }
+body[data-theme="light"] .markdown-body pre { background: rgba(255, 255, 255, 0.38); }
+body[data-theme="light"] .markdown-body pre code { background: transparent; }
+body[data-theme="light"] .markdown-body a { color: #875074; text-decoration-color: rgba(135, 80, 116, 0.42); }
+
+body[data-theme="light"] :is(.plus-menu-item, .empty-state) { text-shadow: none; }
+body[data-theme="light"] .plus-menu-item:hover { background: var(--surface3); }
+body[data-theme="light"] .theme-switch { background: var(--surface2); box-shadow: var(--glass-shadow); }
+body[data-theme="light"] .toggle-slider { background: rgba(128, 91, 111, 0.18); }
+body[data-theme="light"] input:checked + .toggle-slider { background: var(--accent); }
+
+body[data-theme="light"] :is(.date-summary-card, .link-preview-card, .chat-search-result, .preview-area.has-files) {
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: var(--glass-shadow);
+}
+
+body[data-theme="light"] :is(.link-preview-card, .chat-search-result):hover {
+  background: var(--surface3);
+}
+
+@media (hover: hover) {
+  body[data-theme="light"] :is(
+    .sidebar-header button, .sidebar-footer button, .sidebar-mem-btn button,
+    .chat-header .header-actions button, .config-btn, .upload-btn, .plus-btn
+  ):hover {
+    background: var(--surface3);
+    border-color: var(--border-strong);
+  }
+}
+
+body[data-theme="light"] .date-summary-text { color: var(--text2); }
+body[data-theme="light"] .toast { background: var(--glass-popup); color: var(--text); }
+
+body[data-theme="light"] :is(.modal-overlay, .settings-overlay, .memory-overlay, .overlay, .sidebar-backdrop) {
+  background: rgba(74, 46, 61, 0.20);
+}
+
+@media (max-width: 768px) {
+  body[data-theme="light"] .chat-area::after {
+    background: linear-gradient(to bottom, rgba(255, 250, 248, 0.42), rgba(255, 250, 248, 0.20) 44%, transparent);
+  }
+
+  body[data-theme="light"] .bottom-fade-overlay {
+    background: linear-gradient(to top, rgba(255, 250, 248, 0.48), rgba(255, 250, 248, 0.22) 44%, transparent);
+  }
+
+  body[data-theme="light"] .preview-area.has-files { background: var(--glass-popup); }
+}
+
+/* Keep the existing Android keyboard performance safeguard for this full-page editor. */
+@media (max-width: 760px) and (pointer: coarse) {
+  body[data-theme="light"] .persona-page-panel {
+    background: var(--bg);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}

@@ -17,11 +17,13 @@ from typing import Optional, List, Any
 from config import DEFAULT_MODEL, MODELS, load_worldbook, SETTINGS, UPLOADS_DIR, ALBUM_IMAGES_DIR, CODEX_UPLOADS_DIR, PUBLIC_DIR, resolve_model_key, resolve_model_transport_mode
 from database import get_db
 from ws import manager
+from system_logs import emit_chat_debug
 from reply_timing import model_started
 from generation_control import (current_generation, cancellable, cancel_generation, generation_status, GenerationQueue, spawn_generation_task)
 from cancelled_reply import save_cancelled_replies
 from active_window_state import record_aion_private_active
 from ai_providers import stream_ai, CLI_STATUS_PREFIX, with_current_device_context, model_chat_idle_timeout
+from kitchen_chat import chat_stream as kitchen_stream, finish_reply as finish_kitchen_reply
 from memory import recall_memories, instant_digest, fetch_source_details, build_surfacing_memories, get_embedding, _pack_embedding, format_recalled_memories_for_prompt
 from camera import cam, CAM_CHECK_CMD, perform_cam_check, build_monitor_alert_data
 from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prompt
@@ -50,6 +52,7 @@ from band_commands import process_band_vibration, with_band_vibration_attachment
 from hug_pillow_commands import process_hug_pillow_commands
 from capabilities import process_pat_commands
 from game_invites import process_game_invites
+from compositions import process_compositions
 from rps import process_rps_commands, notification_message, attach_to_message, validate_send, reply_round_id
 from app_supervision_ai import (
     queue_app_supervision_reply_command,
@@ -196,6 +199,7 @@ async def _insert_private_ability_block(
         whisper_mode=whisper_mode,
         model_key=model_key,
         profile_query=next((m.get('content', '') for m in reversed(history) if m.get('role') == 'user'), ''),
+        include_kitchen=True,
     )
     if ability_block:
         history.insert(cap_idx + inject_offset, {"role": "user", "content": ability_block})
@@ -1537,7 +1541,6 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
         history.insert(cap_idx + inject_offset, {"role": "user", "content": mem_block})
         history.insert(cap_idx + inject_offset + 1, {"role": "assistant", "content": "收到，我会自然地参考这些记忆。"})
 
-    debug_prompt = [{"role": m["role"], "content": m["content"]} for m in history]
 
     ai_msg_id = f"msg_{int(time.time()*1000)}"
     usage_meta: dict = {}
@@ -1565,10 +1568,13 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
         error_text = None
         try:
             await _q.put({"id": ai_msg_id, "type": "start"})
+            kitchen_state = {}
 
             async def content_stream():
                 _mark_first_text = model_started()
-                async for chunk in stream_ai(history, model_key, usage_meta, max_tokens=body.max_tokens, cancel_event=cancel_event):
+                async for chunk in kitchen_stream(history,
+                        lambda prompts: stream_ai(prompts, model_key, usage_meta, max_tokens=body.max_tokens, cancel_event=cancel_event),
+                        actor='aion', scope='private', parent_id=conv_id, query=body.content, queue=_q, state=kitchen_state):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         yield StreamActivity()
@@ -1628,6 +1634,10 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 sender="aion", source_msg_id=ai_msg_id,
             )
             full_text = await process_game_invites(
+                full_text, source_type="private", source_id=conv_id,
+                sender="aion", source_msg_id=ai_msg_id,
+            )
+            full_text = await process_compositions(
                 full_text, source_type="private", source_id=conv_id,
                 sender="aion", source_msg_id=ai_msg_id,
             )
@@ -1783,6 +1793,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 source_ref=conv_id,
             )
 
+            full_text, kitchen_atts = await finish_kitchen_reply(full_text, actor='aion', state=kitchen_state)
             full_text = await process_widget_control_commands(full_text, "aion")
             full_text = _visible_ai_text(full_text)
 
@@ -1809,7 +1820,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
 
             music_atts = [{"type": "music", "name": s["name"], "artist": s["artist"], "id": s["id"]} for s in music_cards] if music_cards else []
             full_text, image_atts = _extract_reply_image_attachments(full_text)
-            reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts)
+            reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts + kitchen_atts)
             reply_atts = await _with_link_previews(full_text, reply_atts)
             full_text = strip_urls_for_message(full_text)
             reply_atts = await with_band_vibration_attachment(ai_msg_id, reply_atts)
@@ -1903,14 +1914,11 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 "is_search_needed": is_search_needed,
                 "recalled_memories": debug_recalled,
                 "debug_top6": debug_top6_data,
-                "prompt_messages": debug_prompt,
-                "prompt_count": len(history),
                 "usage": usage_meta if usage_meta else None,
                 "has_error": has_error,
                 "error_text": error_text if has_error else None,
             }
-            await _q.put(debug_data)
-            await manager.broadcast({"type": "debug", "data": debug_data})
+            await emit_chat_debug(_q, debug_data, manager)
         except Exception:
             import traceback
             traceback.print_exc()
@@ -1955,6 +1963,8 @@ async def send_message(conv_id: str, body: MsgCreate):
         duplicate_msg = None
     else:
         user_atts = await _with_link_previews(body.content, body.attachments)
+        if body.theater_session_id:
+            user_atts.append({'type':'kitchen_excluded'})
         att_json = json.dumps(user_atts, ensure_ascii=False) if user_atts else "[]"
         dedupe_key = build_message_dedupe_key(
             target_type="private",
@@ -1999,6 +2009,7 @@ async def send_message(conv_id: str, body: MsgCreate):
 
     await record_aion_private_active()
     if duplicate_msg:
+        duplicate_msg['duplicate'] = True
         await manager.broadcast({"type": "msg_created", "data": duplicate_msg})
         return _done_streaming_response()
 
@@ -2217,7 +2228,6 @@ async def send_message(conv_id: str, body: MsgCreate):
             history.insert(cap_idx + inject_offset, {"role": "user", "content": mem_block})
             history.insert(cap_idx + inject_offset + 1, {"role": "assistant", "content": "收到，我会自然地参考这些记忆。"})
 
-    debug_prompt = [{"role": m["role"], "content": m["content"]} for m in history]
 
     ai_msg_id = f"msg_{int(time.time()*1000)}"
     usage_meta: dict = {}
@@ -2249,10 +2259,13 @@ async def send_message(conv_id: str, body: MsgCreate):
         error_text = None
         try:
             await _q.put({"id": ai_msg_id, "type": "start"})
+            kitchen_state = {}
 
             async def content_stream():
                 _mark_first_text = model_started()
-                async for chunk in stream_ai(history, model_key, usage_meta, max_tokens=body.max_tokens, cancel_event=cancel_event):
+                async for chunk in kitchen_stream(history,
+                        lambda prompts: stream_ai(prompts, model_key, usage_meta, max_tokens=body.max_tokens, cancel_event=cancel_event),
+                        actor='aion', scope='private', parent_id=conv_id, query=body.content, queue=_q, state=kitchen_state):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         yield StreamActivity()
@@ -2314,6 +2327,10 @@ async def send_message(conv_id: str, body: MsgCreate):
                 sender="aion", source_msg_id=ai_msg_id,
             )
             full_text = await process_game_invites(
+                full_text, source_type="private", source_id=conv_id,
+                sender="aion", source_msg_id=ai_msg_id,
+            )
+            full_text = await process_compositions(
                 full_text, source_type="private", source_id=conv_id,
                 sender="aion", source_msg_id=ai_msg_id,
             )
@@ -2540,13 +2557,14 @@ async def send_message(conv_id: str, body: MsgCreate):
                             print(f"[剧场] 道具赠送: {item_name}")
 
             # 清洗 AI 回复中模仿产生的 <meta> 标签
+            full_text, kitchen_atts = await finish_kitchen_reply(full_text, actor='aion', state=kitchen_state)
             full_text = await process_widget_control_commands(full_text, "aion")
             full_text = _visible_ai_text(full_text)
 
             # 将音乐点歌信息存入 attachments，刷新后可显示胶囊
             music_atts = [{"type": "music", "name": s["name"], "artist": s["artist"], "id": s["id"]} for s in music_cards] if music_cards else []
             full_text, image_atts = _extract_reply_image_attachments(full_text)
-            reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts)
+            reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts + kitchen_atts)
             reply_atts = await _with_link_previews(full_text, reply_atts)
             full_text = strip_urls_for_message(full_text)
             reply_atts = await with_band_vibration_attachment(ai_msg_id, reply_atts)
@@ -2647,8 +2665,6 @@ async def send_message(conv_id: str, body: MsgCreate):
                 "is_search_needed": is_search_needed,
                 "recalled_memories": debug_recalled,
                 "debug_top6": debug_top6_data,
-                "prompt_messages": debug_prompt,
-                "prompt_count": len(history),
                 "usage": usage_meta if usage_meta else None,
                 "has_error": has_error,
                 "error_text": error_text if has_error else None,
@@ -2659,8 +2675,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                 tu_data = {'type': 'theater_update', 'updates': theater_updates, 'session_id': body.theater_session_id, 'msg_id': ai_msg_id}
                 await _q.put(tu_data)
 
-            await _q.put(debug_data)
-            await manager.broadcast({"type": "debug", "data": debug_data})
+            await emit_chat_debug(_q, debug_data, manager)
         except Exception:
             import traceback
             traceback.print_exc()
@@ -3718,7 +3733,6 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             history.insert(cap_idx + inject_offset, {"role": "user", "content": mem_block})
             history.insert(cap_idx + inject_offset + 1, {"role": "assistant", "content": "收到，我会自然地参考这些记忆。"})
 
-    debug_prompt = [{"role": m["role"], "content": m["content"]} for m in history]
     ai_msg_id = f"msg_{int(time.time()*1000)}"
     usage_meta: dict = {}
 
@@ -3748,10 +3762,13 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
         error_text = None
         try:
             await _q.put({"id": ai_msg_id, "type": "start"})
+            kitchen_state = {}
 
             async def content_stream():
                 _mark_first_text = model_started()
-                async for chunk in stream_ai(history, model_key, usage_meta, temperature, max_tokens=max_tokens, cancel_event=cancel_event):
+                async for chunk in kitchen_stream(history,
+                        lambda prompts: stream_ai(prompts, model_key, usage_meta, temperature, max_tokens=max_tokens, cancel_event=cancel_event),
+                        actor='aion', scope='private', parent_id=conv_id, query=lounge_request_text, queue=_q, state=kitchen_state):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         yield StreamActivity()
@@ -3813,6 +3830,10 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 sender="aion", source_msg_id=ai_msg_id,
             )
             full_text = await process_game_invites(
+                full_text, source_type="private", source_id=conv_id,
+                sender="aion", source_msg_id=ai_msg_id,
+            )
+            full_text = await process_compositions(
                 full_text, source_type="private", source_id=conv_id,
                 sender="aion", source_msg_id=ai_msg_id,
             )
@@ -3992,13 +4013,14 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                     pass
 
             # 清洗 AI 回复中模仿产生的 <meta> 标签
+            full_text, kitchen_atts = await finish_kitchen_reply(full_text, actor='aion', state=kitchen_state)
             full_text = await process_widget_control_commands(full_text, "aion")
             full_text = _visible_ai_text(full_text)
 
             # 将音乐点歌信息存入 attachments，刷新后可显示胶囊
             music_atts = [{"type": "music", "name": s["name"], "artist": s["artist"], "id": s["id"]} for s in music_cards] if music_cards else []
             full_text, image_atts = _extract_reply_image_attachments(full_text)
-            reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts)
+            reply_atts = _dedupe_attachments(music_atts + luckin_payment_attachments(luckin_results) + image_atts + kitchen_atts)
             reply_atts = await _with_link_previews(full_text, reply_atts)
             full_text = strip_urls_for_message(full_text)
             reply_atts = await with_band_vibration_attachment(ai_msg_id, reply_atts)
@@ -4098,14 +4120,11 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 "is_search_needed": is_search_needed,
                 "recalled_memories": debug_recalled,
                 "debug_top6": debug_top6_data,
-                "prompt_messages": debug_prompt,
-                "prompt_count": len(history),
                 "usage": usage_meta if usage_meta else None,
                 "has_error": has_error,
                 "error_text": error_text if has_error else None,
             }
-            await _q.put(debug_data)
-            await manager.broadcast({"type": "debug", "data": debug_data})
+            await emit_chat_debug(_q, debug_data, manager)
         except Exception:
             import traceback
             traceback.print_exc()

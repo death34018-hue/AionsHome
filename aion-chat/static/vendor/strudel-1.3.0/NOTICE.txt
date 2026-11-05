@@ -1,0 +1,25 @@
+Strudel browser bundle
+Version 1.3.0, package @strudel/web from the npm registry.
+Source https://codeberg.org/uzu/strudel
+Package https://registry.npmjs.org/@strudel/web/1.3.0
+License AGPL-3.0-or-later. The complete license is in LICENSE.txt.
+The bundled file is distributed unmodified.
+
+Piano samples
+Salamander Grand Piano V3 by Alexander Holm, CC BY 3.0.
+https://archive.org/details/SalamanderGrandPianoV3
+https://creativecommons.org/licenses/by/3.0/
+Selected original MP3 files are copied from the default Strudel sample bank.
+https://github.com/felixroos/dough-samples
+
+Other pitched instruments
+Selected notes from the FluidR3_GM pre-rendered SoundFont instrument pack.
+https://github.com/gleitz/midi-js-soundfonts
+https://gleitz.github.io/midi-js-soundfonts/FluidR3_GM/
+The original compressed audio bytes are preserved, with a subset of notes
+extracted from the JavaScript data files for direct local playback.
+
+Drum samples
+Selected Roland TR-808 samples from the Tidal drum machines collection.
+https://github.com/ritchse/tidal-drum-machines
+The default Strudel sample catalog supplies these filenames.

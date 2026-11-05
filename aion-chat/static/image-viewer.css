@@ -1,4 +1,14 @@
 /* Shared photo gestures and chat attachment stacks. */
+:is(.message-row.aion, .message-row.connor, .msg-row.assistant) :is(.cr-inline-img, .msg-media > img[data-original-src]) {
+  display: block;
+  width: 160px;
+  height: auto;
+  max-height: 240px;
+  align-self: flex-start;
+  object-position: left center;
+  margin: 0;
+}
+:is(.message-row.aion, .message-row.connor, .msg-row.assistant) .msg-media:has(> img:only-child) { margin-top: 0; }
 .chat-image-group { display:grid; grid-template-columns:60px minmax(0,120px); gap:8px; width:min(100%,188px); max-width:100%; align-items:start; margin:4px 0 6px; }
 .chat-image-toggle { grid-column:1; grid-row:1; align-self:start; margin-top:35px; min-height:44px; padding:6px 8px; border:0; border-radius:22px; background:var(--bg3,#7773); color:var(--text2,inherit); font:inherit; font-size:12px; white-space:nowrap; cursor:pointer; }
 .chat-image-cards { grid-column:2; grid-row:1; position:relative; min-width:0; margin-right:8px; }

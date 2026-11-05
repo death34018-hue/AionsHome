@@ -2,9 +2,7 @@
 import asyncio
 import json
 import tempfile
-import sys
 import unittest
-from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -107,37 +105,52 @@ class ElevenLabsTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(tts, '_request_edge_tts_audio', new_callable=AsyncMock) as synth:
             await tts._request_tts_audio(raw, 'edge:fixture')
             synth.assert_awaited_once_with('正常正文。', 'fixture')
+        with patch.object(provider, 'request_audio', new_callable=AsyncMock) as synth:
+            block = '[语音]【barely a whisper】I missed you.【/语音】'
+            self.assertIsNone(await tts._request_tts_audio(block, 'elevenlabs:fixture'))
+            await tts._request_tts_audio('前。' + block + '后。', 'elevenlabs:fixture')
+            synth.assert_awaited_once_with('前。后。', 'fixture')
 
-    def test_director_keeps_words_allows_dense_tags_and_rejects_over_budget(self):
-        audit = {}
-        self.assertEqual(voice.validate_directed_text('[ Softly ][mischievously] 我在。', '我在。', audit=audit), '[softly] 我在。')
-        self.assertEqual(audit['removed_tags'], ['mischievously'])
-        self.assertEqual(voice.validate_directed_text('[unknown] 我在。', '我在。'), '我在。')
-        good = '[softly] 今天辛苦了。[sighs] 先歇一会儿。[chuckles] 我在。'
-        self.assertEqual(voice.validate_directed_text(good, '今天辛苦了。先歇一会儿。我在。'), good)
-        self.assertEqual(voice.validate_directed_text('[chuckles] 我在[short pause]这里。', '我在这里。'), '[chuckles] 我在……这里。')
-        self.assertEqual(voice.validate_directed_text('我在...这里。', '我在这里。'), '我在...这里。')
-        for bad in ['[unknown] 我走了。', '[softly] 我走了。', '[softly 我在。', '[softly]' * 30 + '我在。']:
-            with self.assertRaises(ValueError):
-                voice.validate_directed_text(bad, '我在。')
+    def test_direct_script_preserves_delivery_and_counts_the_whole_script(self):
+        cue = '[quiet at first,\na smile creeping into the last words]'
+        script = (cue + '\n').ljust(500, '好')
+        command = '【语音】' + script.replace('[', '【').replace(']', '】') + '[/语音]'
+        clean, clips = voice.extract('前' + command + '后')
+        self.assertEqual(clean, '前后')
+        self.assertNotIn('error', clips[0])
+        self.assertEqual(clips[0]['synthesis_text'], script)
+        self.assertEqual(clips[0]['text'], script.split(']\n')[1])
+        self.assertEqual(clips[0]['source_command'], command)
+        from routes.chatroom import _normalize_cli_bubble_breaks
+        with patch('routes.chatroom.resolve_model_key', return_value='fixture'), patch.dict('routes.chatroom.MODELS', {'fixture': {'provider': 'gemini_cli'}}):
+            self.assertEqual(_normalize_cli_bubble_breaks(command, 'fixture'), command)
+        for bad in (script + '呀', '[quiet', '[softly]'):
+            clean, clips = voice.extract('前[语音]' + bad + '【/语音】后')
+            self.assertEqual(clean, '前后')
+            self.assertTrue(clips[0]['error'])
 
-    def test_director_examples_follow_candidates_and_preserve_original_command(self):
-        with patch.object(voice, 'TAGS', {'whispers': '耳语'}):
-            prompt = voice.build_director_prompt('我在。', '自然')
-        self.assertNotIn('[softly]', prompt)
-        self.assertNotIn('[chuckles]', prompt)
-        command = '[语音|方向= 自然 |内容=我在。]'
-        self.assertEqual(voice.extract(command)[1][0]['source_command'], command)
-
-    async def test_director_preserves_raw_output_and_records_removed_tags(self):
-        raw = '[ Softly ][mischievously] 我在。'
-        sentinel = AsyncMock(return_value=raw)
-        audit = {}
-        with patch.dict(sys.modules, {'memory': SimpleNamespace(_call_sentinel_text=sentinel)}), patch.object(voice, 'get_sentinel_config', return_value={'model': 'fixture'}):
-            result = await voice.direct_text('我在。', '自然', audit=audit)
-        self.assertEqual(result, '[softly] 我在。')
-        self.assertEqual(audit, {'director_model': 'fixture', 'director_raw_text': raw, 'removed_tags': ['mischievously']})
-        sentinel.assert_awaited_once()
+    async def test_voice_block_stays_out_of_live_chat_and_normal_tts(self):
+        from safe_live_stream import KnownCommandStreamFilter
+        from web_search import WebCommandStreamFilter
+        block = '【语音】[quiet, then bright]\nOnly in the recording. 【whispers】Good night.[/语音]'
+        with tempfile.TemporaryDirectory() as tmp:
+            for ending, expected in [(block + '后。', '前。后。'), (block[:-5], '前。')]:
+                text = '前。' + ending
+                display = KnownCommandStreamFilter()
+                fallback = WebCommandStreamFilter()
+                streamer = tts.TTSStreamer('block-test', 'edge:test', min_chars=1, max_chars=8, cache_dir=Path(tmp))
+                with patch.object(streamer, '_enqueue_segment', new_callable=AsyncMock) as queue:
+                    visible = ''
+                    fallback_visible = ''
+                    for char in text:
+                        visible += display.feed(char)
+                        fallback_visible += fallback.feed(char)
+                        await streamer.feed_async(char)
+                    await streamer.flush()
+                self.assertEqual(visible + display.finish()[0], expected)
+                self.assertEqual(fallback_visible + fallback.flush(), expected)
+                self.assertEqual(''.join(c.args[0] for c in queue.await_args_list), expected)
+                self.assertEqual(''.join(tts.split_text_for_tts(text, min_chars=1, max_chars=3)), expected)
 
     async def test_expressive_audio_can_route_when_full_tts_is_off(self):
         manager = ConnectionManager()
@@ -176,7 +189,7 @@ class MessageTests(unittest.IsolatedAsyncioTestCase):
         self.cache_patch.stop(); self.db_patch.stop(); self.tmp.cleanup()
 
     async def message(self):
-        data = {'id':'fixture', 'role':'assistant','content':'正文。[语音|方向=温柔安慰|内容=先歇一会儿。]', 'attachments':[]}
+        data = {'id':'fixture', 'role':'assistant','content':'正文。【语音】【softly, with a smile】先歇一会儿。[/语音]', 'attachments':[]}
         async with self.connect() as db:
             await db.execute('INSERT INTO messages VALUES (?,?,?)', (data['id'], data['content'], '[]'))
             await db.commit()
@@ -193,20 +206,41 @@ class MessageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_passive_has_replay_attachment_no_autoplay_and_no_duplicate_charge(self):
         event = await self.message(); manager = AsyncMock()
-        with patch.object(voice, 'enabled', return_value=True), patch.object(voice, 'get_key', return_value='fixture'), patch.object(provider, 'voice_for', return_value='fixture'), patch.object(voice, 'direct_text', new_callable=AsyncMock, return_value='[softly] 先歇一会儿。'), patch.object(provider, 'request_audio', new_callable=AsyncMock, return_value=b'mp3') as synth:
+        with patch.object(voice, 'enabled', return_value=True), patch.object(voice, 'get_key', return_value='fixture'), patch.object(provider, 'voice_for', return_value='fixture'), patch.object(provider, 'request_audio', new_callable=AsyncMock, return_value=b'mp3') as synth:
             await voice.prepare_message(event)
             await voice._produce(('messages','aion'), event['data'], manager, False)
             await voice._produce(('messages','aion'), event['data'], manager, False)
-        synth.assert_awaited_once()
+        synth.assert_awaited_once_with('[softly, with a smile]先歇一会儿。', 'fixture')
         self.assertEqual(event['data']['attachments'][0]['synthesis_text'], synth.await_args.args[0])
         manager.send_tts_event.assert_not_awaited()
         self.assertEqual(event['data']['attachments'][0]['status'], 'ready')
         self.assertEqual((self.keepsakes / 'fixture_expressive.mp3').read_bytes(), b'mp3')
         self.assertFalse((Path(self.tmp.name) / 'fixture_expressive.mp3').exists())
 
+    async def test_group_voice_uses_the_speaker_and_never_bills_an_overlong_script(self):
+        async with self.connect() as db:
+            await db.execute('CREATE TABLE chatroom_messages (id TEXT PRIMARY KEY, content TEXT, attachments TEXT)')
+            await db.commit()
+        for sender, script in [('connor', 'Come here. 【breathy】I missed you. [soft moan] Mm…'), ('aion', 'a' * 501)]:
+            event = {'type': 'chatroom_msg_created', 'data': {'sender': sender, 'id': sender,
+                     'content': f'【语音】{script}【/语音】'}}
+            async with self.connect() as db:
+                await db.execute('INSERT INTO chatroom_messages VALUES (?,?,?)', (sender, event['data']['content'], '[]'))
+                await db.commit()
+            with patch.object(voice, 'enabled', return_value=True), patch.object(voice, 'get_key', return_value='key'), patch.object(provider, 'voice_for', side_effect=lambda actor: actor + '-voice'), patch.object(provider, 'request_audio', new_callable=AsyncMock, return_value=b'mp3') as synth:
+                await voice.prepare_message(event)
+                await voice._produce(('chatroom_messages', sender), event['data'], AsyncMock(), False)
+            self.assertEqual(event['data']['content'], '')
+            if sender == 'connor':
+                synth.assert_awaited_once_with('Come here. [breathy]I missed you. [soft moan] Mm…', 'connor-voice')
+                self.assertEqual(event['data']['attachments'][0]['text'].split(), 'Come here. I missed you. Mm…'.split())
+            else:
+                synth.assert_not_awaited()
+                self.assertEqual(event['data']['attachments'][0]['status'], 'failed')
+
     async def test_scheduled_wakeup_opts_into_autoplay_without_chat_generation(self):
         event = await self.message(); manager = AsyncMock()
-        with patch.object(voice, 'enabled', return_value=True), patch.object(voice, 'get_key', return_value='fixture'), patch.object(provider, 'voice_for', return_value='fixture'), patch.object(voice, 'direct_text', new_callable=AsyncMock, return_value='先歇一会儿。'), patch.object(provider, 'request_audio', new_callable=AsyncMock, return_value=b'mp3'):
+        with patch.object(voice, 'enabled', return_value=True), patch.object(voice, 'get_key', return_value='fixture'), patch.object(provider, 'voice_for', return_value='fixture'), patch.object(provider, 'request_audio', new_callable=AsyncMock, return_value=b'mp3'):
             await voice.prepare_message(event)
             voice.start_message(event, manager, autoplay=True)
             await voice._tasks[event['data']['id']]
@@ -217,7 +251,7 @@ class MessageTests(unittest.IsolatedAsyncioTestCase):
     async def test_autoplay_waits_for_ordinary_tts_and_preserves_queue_protocol(self):
         event = await self.message(); manager = AsyncMock()
         streamer = tts.TTSStreamer('fixture', 'edge:fixture', cache_dir=Path(self.tmp.name))
-        with patch.object(voice, 'enabled', return_value=True), patch.object(voice, 'get_key', return_value='fixture'), patch.object(provider, 'voice_for', return_value='fixture'), patch.object(voice, 'direct_text', new_callable=AsyncMock, return_value='[softly] 先歇一会儿。'), patch.object(provider, 'request_audio', new_callable=AsyncMock, return_value=b'mp3'):
+        with patch.object(voice, 'enabled', return_value=True), patch.object(voice, 'get_key', return_value='fixture'), patch.object(provider, 'voice_for', return_value='fixture'), patch.object(provider, 'request_audio', new_callable=AsyncMock, return_value=b'mp3'):
             await voice.prepare_message(event)
             task = asyncio.create_task(voice._produce(('messages','aion'), event['data'], manager, True))
             for _ in range(100):
@@ -233,7 +267,7 @@ class MessageTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancel_after_audio_is_saved_preserves_replay(self):
         event = await self.message(); manager = AsyncMock()
         streamer = tts.TTSStreamer('fixture', 'edge:fixture', cache_dir=Path(self.tmp.name))
-        with patch.object(voice, 'enabled', return_value=True), patch.object(voice, 'get_key', return_value='fixture'), patch.object(provider, 'voice_for', return_value='fixture'), patch.object(voice, 'direct_text', new_callable=AsyncMock, return_value='[softly] 先歇一会儿。'), patch.object(provider, 'request_audio', new_callable=AsyncMock, return_value=b'mp3'):
+        with patch.object(voice, 'enabled', return_value=True), patch.object(voice, 'get_key', return_value='fixture'), patch.object(provider, 'voice_for', return_value='fixture'), patch.object(provider, 'request_audio', new_callable=AsyncMock, return_value=b'mp3'):
             await voice.prepare_message(event)
             task = asyncio.create_task(voice._produce(('messages','aion'), event['data'], manager, True))
             for _ in range(100):

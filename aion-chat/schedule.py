@@ -17,6 +17,7 @@ from band_commands import process_band_vibration, with_band_vibration_attachment
 from hug_pillow_commands import process_hug_pillow_commands
 from capabilities import process_pat_commands
 from game_invites import process_game_invites
+from compositions import process_compositions
 from rps import process_rps_commands
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
 from memory import recall_memories, format_recalled_memories_for_prompt
@@ -1408,6 +1409,9 @@ async def _process_background_reply_commands(
     ai_msg_id: str,
 ) -> str:
     """Run lightweight shared post-processing for background AI replies."""
+    from capabilities import is_capability_enabled
+    from context_builder import extract_image_command
+    from generation_control import spawn_generation_task
     from routes.chat import _hug_pillow_sys_msg, _process_home_commands
     from svakom_ai import process_commands as process_svakom_commands
 
@@ -1415,6 +1419,7 @@ async def _process_background_reply_commands(
     target_type = "chatroom" if (target or {}).get("type") == "chatroom" else "private"
     source_id = (target or {}).get("room_id") if target_type == "chatroom" else conv_id
     scope = {"room_id": source_id} if target_type == "chatroom" else {"conv_id": conv_id}
+    full_text, image_prompt, is_selfie = extract_image_command(full_text)
     cleaned = await process_svakom_commands(full_text, ai_msg_id, **scope)
     cleaned = await _process_home_commands(cleaned)
     cleaned = await _process_background_wechat_commands(
@@ -1433,6 +1438,10 @@ async def _process_background_reply_commands(
         sender=sender, source_msg_id=ai_msg_id,
     )
     cleaned = await process_game_invites(
+        cleaned, source_type=target_type, source_id=source_id or "",
+        sender=sender, source_msg_id=ai_msg_id,
+    )
+    cleaned = await process_compositions(
         cleaned, source_type=target_type, source_id=source_id or "",
         sender=sender, source_msg_id=ai_msg_id,
     )
@@ -1482,6 +1491,13 @@ async def _process_background_reply_commands(
     cleaned = await process_widget_control_commands(
         cleaned, "connor" if sender == "connor" else "aion"
     )
+    if image_prompt and source_id and is_capability_enabled("image_gen"):
+        if target_type == "chatroom":
+            from routes.chatroom import _chatroom_image_gen
+            spawn_generation_task(_chatroom_image_gen(source_id, sender, image_prompt, is_selfie))
+        else:
+            from routes.chat import _do_image_gen
+            spawn_generation_task(_do_image_gen(source_id, ai_msg_id, image_prompt, is_selfie))
     return cleaned
 
 

@@ -61,7 +61,7 @@ class CompanionshipTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(shown['messages'][1], game['messages'][1])
         self.assertIn('心里嘀咕', game['messages'][0]['text'])
 
-    async def test_next_invitation_reuses_series_but_waits_while_user_plays(self):
+    async def test_next_invitation_starts_new_game_but_resumes_paused_game(self):
         import sys
         from types import ModuleType
         from billiards.service import BilliardsService
@@ -82,14 +82,16 @@ class CompanionshipTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn('billiards_id', first)
                 game = service.get(first['billiards_id'])
                 sid = game['id']
-                game.update(status='finished', score=[1, 0])
+                game.update(status='finished', score=[1, 0], match_status='completed')
                 game['state'].update(phase='over', result={'winner': 0, 'reason': '合法黑八'})
                 service.save(game)
                 next_invite = await invite('connor')
-                self.assertEqual(next_invite['billiards_id'], sid)
+                self.assertNotEqual(next_invite['billiards_id'], sid)
+                self.assertEqual(service.get(sid)['score'], [1, 0])
+                sid = next_invite['billiards_id']
                 second = service.get(sid)
-                self.assertEqual((second['rack'], second['score'], second['players']), (2, [1, 0], ['aion', 'connor']))
-                self.assertEqual(len(second['messages']), 2)
+                self.assertEqual((second['rack'], second['score'], second['players']), (1, [0, 0], ['connor', 'aion']))
+                self.assertEqual(len(second['messages']), 1)
                 await service.resume(user['id'], 'w')
                 calls = autonomy._ask_actor_json.await_count
                 self.assertNotIn('billiards_id', await invite('connor'))
@@ -97,7 +99,7 @@ class CompanionshipTests(unittest.IsolatedAsyncioTestCase):
                 await service.pause(user['id'], 'w')
                 continued = await invite('aion')
                 self.assertEqual(continued['billiards_id'], sid)
-                self.assertEqual(service.get(sid)['rack'], 2)
+                self.assertEqual(service.get(sid)['rack'], 1)
                 self.assertEqual(service.get(sid)['state'], second['state'])
                 self.assertEqual(service.get(user['id'])['state'], user['state'])
             await service.stop()

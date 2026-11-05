@@ -3,8 +3,13 @@ package com.aion.chat;
 final class ForegroundResumeSyncScript {
     private ForegroundResumeSyncScript() {}
 
+    static String nativeMessages() {
+        return "(function(){function sync(w){try{w?.onAionNativeMessages?.();}catch(e){}}"
+                + "sync(window);document.querySelectorAll('iframe').forEach(f=>sync(f.contentWindow));})();";
+    }
+
     static String build() {
-        return "(function(){"
+        return nativeMessages() + "(function(){"
                 + "try{"
                 + "var needsReconnect=(typeof ws==='undefined'||!ws||ws.readyState!==1);"
                 + "if(needsReconnect&&typeof connectWS==='function'){"

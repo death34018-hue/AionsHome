@@ -58,6 +58,10 @@ public final class FloatingChatBridge {
         return FloatingChatService.isRunning() ? "ready" : "off";
     }
 
+    @JavascriptInterface public void setVisiblePage(String path) {
+        activity.runOnUiThread(() -> FloatingChatService.setVisiblePage(path));
+    }
+
     @JavascriptInterface public void rememberOptions(String type, String id, String raw) {
         if ((!"private".equals(type) && !"chatroom".equals(type)) || id == null || id.isEmpty()) return;
         try {

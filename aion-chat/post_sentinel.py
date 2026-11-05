@@ -26,6 +26,7 @@ KEY_RE = re.compile(r'^[a-zA-Z0-9_.-]{1,100}$')
 BUDGET_ERROR = '近期清单超过约2000 tokens或24项，请先合并同一事项、精简正文；未完成待办不能省略'
 _worker: asyncio.Task | None = None
 _enqueue_tasks: set[asyncio.Task] = set()
+_processing = asyncio.Lock()
 _wake: asyncio.Event | None = None
 
 
@@ -129,7 +130,9 @@ async def snapshot(*, query=''):
     if not enabled():
         context, included = '', set()
     entries = [{**normalize(v), 'view_status': lifecycle(v, now), 'included': v['key'] in included,
-                'omission_reason': '' if v['key'] in included else '总开关已关闭' if not enabled() else '已结束或已淡出'}
+                'omission_reason': '' if v['key'] in included else '总开关已关闭' if not enabled()
+                                   else '已结束或已淡出' if lifecycle(v, now) in ('done','cancelled','retired')
+                                   else '未列入近期跟进'}
                for v in document['entries'].values() if not v.get('deleted')]
     return {
         'version': 5, 'revision': row['revision'], 'entries': entries,
@@ -161,8 +164,7 @@ def _entry(value):
 
 
 def _check_budget(document):
-    entries = [v for v in document['entries'].values() if lifecycle(v, time.time()) not in ('done', 'cancelled', 'retired')]
-    context, _ = render_context(document, _profile_user_name())
+    context, entries = render_context(document, _profile_user_name())
     if len(entries) > MAX_ENTRIES or estimate_tokens(context) > PROMPT_LIMIT:
         raise ValueError(BUDGET_ERROR)
 
@@ -257,7 +259,12 @@ async def invalidate_pending():
     await stop_initialization()
 
 
-async def enqueue_event(event: dict):
+def wake():
+    if _wake:
+        _wake.set()
+
+
+async def enqueue_event(event: dict, *, wake=True):
     if not enabled() or event.get('type') not in ('msg_created', 'chatroom_msg_created'):
         return
     value = event.get('data') or {}
@@ -279,7 +286,7 @@ async def enqueue_event(event: dict):
                          '(source_id,scope,parent_id,message_id,source_ts,content,epoch) VALUES (?,?,?,?,?,?,?)',
                          (f'{scope}:{msg_id}', scope, parent, msg_id, ts, text, row['epoch']))
         await db.commit()
-    if _wake:
+    if wake and _wake:
         _wake.set()
 
 
@@ -502,10 +509,17 @@ def _apply_analysis(document, parsed, sources, job):
             content = personalize_text(content, user_name)
             if len(content) > 160:
                 raise ValueError('使用配置姓名后的正文最多160字，请简写或省略主语')
-            kind = item.get('kind', old.get('kind', 'context'))
+            group = item.get('subcategory') or old.get('subcategory')
+            kind = item.get('kind') or old.get('kind') or {'plans': 'task', 'projects': 'project'}.get(group, 'context')
             status = item.get('status', 'active' if item.get('sources') else old.get('status', 'active'))
             if kind not in KINDS or status not in STATUSES:
                 raise ValueError('近期类型或状态无效')
+            if any(e['key'] != key and unfinished_task(e) for e in merge_entries):
+                raise ValueError('未完成待办不能在合并中消失，请分别维护')
+            if status not in ended and (not old or item.get('sources')) and 'manual' not in old.get('sources', []):
+                if (kind == 'idea' or group in ('ideas', 'preferences') or
+                        (kind == 'context' and item.get('sustained', old.get('sustained')) is not True)):
+                    continue
             if cat != 'recent':
                 kind = 'context'
                 if old.get('category') == 'recent' and 'status' not in item:
@@ -529,8 +543,6 @@ def _apply_analysis(document, parsed, sources, job):
                     raise ValueError('未完成待办必须依据用户确认收尾，不能在压缩时退役或改为普通近况')
                 if kind != 'task' and status not in ('done', 'cancelled') and not (item.get('continues') is True and item.get('sources')):
                     raise ValueError('未完成待办不能改为普通近况')
-            if any(e['key'] != key and unfinished_task(e) for e in merge_entries):
-                raise ValueError('未完成待办不能在合并中消失，请分别维护')
             value = {**old, 'key': key, 'category': cat, 'topic': topic, 'content': content,
                      'kind': kind, 'status': status, 'sustained': bool(item.get('sustained', old.get('sustained', False))),
                      'locked': False, 'deleted': False, 'updated_at': now, 'source_ts': confirmed,
@@ -641,9 +653,15 @@ def _apply_analysis(document, parsed, sources, job):
 
 
 async def run_pending_once():
+    async with _processing:
+        return await _run_pending_once()
+
+
+async def _run_pending_once():
     if not enabled():
         return False
-    async with get_db() as db:
+    from sentinel_dispatch import queue_lock
+    async with queue_lock, get_db() as db:
         await db.execute('BEGIN IMMEDIATE')
         row, document = await _read(db)
         raw = await (await db.execute(
@@ -673,13 +691,37 @@ async def run_pending_once():
                 prompt = _analysis_prompt(document, messages, sources, job['source_id'])
                 if job['error']:
                     prompt += f'\n上次未处理完整：{job["error"]}。正确部分已经保存；核对现有资料，修复问题，勿重复新增。'
-                parsed = await _call_model(prompt)
-                output = getattr(parsed, 'raw', '') or json.dumps(parsed, ensure_ascii=False)[:12000]
-                changed = _apply_analysis(document, parsed, sources, job)
-                errors = document.pop('_analysis_errors', [])
-                if errors:
-                    error = '；'.join(errors)[:1000]
-                    status = 'failed' if job['attempts'] >= 3 else 'pending'
+                import kitchen_sentinel
+                prepared = None
+                try:
+                    prepared = await kitchen_sentinel.prepare_joint_analysis(job,get_db)
+                except Exception:
+                    log.warning('Kitchen analysis will use its own worker',exc_info=True)
+                # Preparing inventory can yield while either feature is switched off.
+                async with get_db() as db:
+                    dispatch, _ = await _read(db)
+                if not enabled() or dispatch['epoch'] != row['epoch']:
+                    status = 'skipped'
+                else:
+                    if prepared and (not kitchen_sentinel.kitchen.enabled() or
+                                     kitchen_sentinel.kitchen.generation() != prepared['generation']):
+                        prepared = None
+                    if prepared:
+                        from profile_prompts import joint_sentinel_prompt
+                        prompt = joint_sentinel_prompt(prompt,prepared['prompt'])
+                    parsed = await _call_model(prompt)
+                    output = getattr(parsed, 'raw', '') or json.dumps(parsed, ensure_ascii=False)[:12000]
+                    if prepared:
+                        try:
+                            await kitchen_sentinel.save_joint_analysis(prepared,parsed.get('kitchen'))
+                        except Exception:
+                            log.warning('Kitchen analysis could not be saved',exc_info=True)
+                        parsed = parsed.get('life',parsed)
+                    changed = _apply_analysis(document, parsed, sources, job)
+                    errors = document.pop('_analysis_errors', [])
+                    if errors:
+                        error = '；'.join(errors)[:1000]
+                        status = 'failed' if job['attempts'] >= 3 else 'pending'
                 # Earlier user statements may also supply facts or resolve pronouns.
                 after_messages, after_sources = await _context_for_job(job)
                 if after_messages != messages or after_sources != sources:
@@ -709,6 +751,8 @@ async def run_pending_once():
                          (status, error, job['attempts'], time.time()+delay, output if error else '', job['source_id']))
         await db.commit()
     await _notify_changed()
+    from kitchen_sentinel import wake as wake_kitchen
+    wake_kitchen()
     return True
 
 

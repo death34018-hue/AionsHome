@@ -20,7 +20,7 @@ const TheaterFollow = (() => {
     let html = '', pos = 0;
     for (const part of text.split(/(\n\s*\n)/)) {
       if (part && !/^\n\s*\n$/.test(part)) {
-        html += `<p data-source-start="${base + pos}" data-source-end="${base + pos + part.length}">${escape(part)}</p>`;
+        html += `<p data-source-start="${base + pos}" data-source-end="${base + pos + part.length}">${escape(part).replace(/\n/g, '\n<span class="line-indent" aria-hidden="true"></span>')}</p>`;
       }
       pos += part.length;
     }

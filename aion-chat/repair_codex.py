@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -117,6 +118,7 @@ async def run_codex(store, job, instructions, context):
     process = await asyncio.create_subprocess_exec(
         *args, cwd=project, env=work_environment(work_home),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         limit=8 * 1024 * 1024)
     stderr = asyncio.create_task(_capture_stderr(process.stderr))
     request_id = 0

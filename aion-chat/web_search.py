@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 from config import SETTINGS
+from expressive_voice_markup import LEGACY_OPEN, OPEN, VOICE_SPAN
 
 
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
@@ -14,7 +15,8 @@ TAVILY_EXTRACT_URL = "https://api.tavily.com/extract"
 WEB_SEARCH_CMD_PATTERN = re.compile(r"\[WEB_SEARCH\s*[：:]\s*([^\]]+)\]", re.IGNORECASE)
 WEB_EXTRACT_CMD_PATTERN = re.compile(r"\[WEB_EXTRACT\s*[：:]\s*([^\]]+)\]", re.IGNORECASE)
 _WEB_CMD_START_RE = re.compile(
-    r"(?:\[|［|【)\s*(?:(?:WEB_SEARCH|WEB_EXTRACT|MEMORY_SEARCH)\s*[：:]|BAND_VIBRATE\s*:"
+    rf"(?P<voice>{OPEN}|{LEGACY_OPEN})|"
+    r"(?:\[|［|【)\s*(?:(?:WEB_SEARCH|WEB_EXTRACT|MEMORY_SEARCH|SELFIE|DRAW)\s*[：:]|BAND_VIBRATE\s*:"
     r"|BAND_NOTE_(?:SINGLE|CALL)\s*[：:]|APP_(?:LOCK|TEMP_UNLOCK|UNLOCK)\s*:"
     r"|DEVICE_(?:LOCK|TEMP_UNLOCK)\s*:|DEVICE_UNLOCK"
     r"|(?:COME_HOME|LOOK_AT_ME)\s*:"
@@ -183,6 +185,13 @@ class WebCommandStreamFilter:
             match = _WEB_CMD_START_RE.search(buf)
             if match:
                 out.append(buf[:match.start()])
+                if match['voice']:
+                    voice = VOICE_SPAN.match(buf, match.start())
+                    if not (voice['close'] or voice['legacy_close']):
+                        self._pending = buf[match.start():]
+                        return "".join(out)
+                    buf = buf[voice.end():]
+                    continue
                 buf = buf[match.end():]
                 self._in_command = True
                 continue
@@ -200,6 +209,8 @@ class WebCommandStreamFilter:
     def flush(self) -> str:
         pending = self._pending
         self._pending = ""
+        if VOICE_SPAN.match(pending):
+            return ""
         if self._in_command:
             self._in_command = False
             return ""
@@ -237,6 +248,9 @@ def _truncate(text: str, max_chars: int) -> str:
 
 
 def _possible_command_prefix_len(text: str) -> int:
+    voice_prefix = re.search(r'[\[【［]语(?:音\s*)?$', text)
+    if voice_prefix:
+        return len(voice_prefix[0])
     # Keep an incomplete memory tag even when whitespace arrives in its own chunk.
     memory_prefix = re.search(r"[\[［【]\s*([A-Za-z_]*)\s*$", text)
     if memory_prefix and "MEMORY_SEARCH".startswith(memory_prefix.group(1).upper()):
@@ -249,7 +263,7 @@ def _possible_command_prefix_len(text: str) -> int:
     )
     probes = (
         "[WEB_SEARCH:", "[WEB_SEARCH：", "[WEB_EXTRACT:", "[WEB_EXTRACT：",
-        "[BAND_VIBRATE:",
+        "[BAND_VIBRATE:", "[SELFIE:", "[DRAW:",
         "[BAND_NOTE_SINGLE:", "[BAND_NOTE_SINGLE：",
         "[BAND_NOTE_CALL:", "[BAND_NOTE_CALL：",
         "[APP_LOCK:", "[APP_TEMP_UNLOCK:", "[APP_UNLOCK:",

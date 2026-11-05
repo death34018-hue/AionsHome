@@ -234,7 +234,7 @@ class ConnectionManager:
         log.debug("TTS event dropped because no playable client is active: %s", data.get("type"))
 
     async def broadcast(self, data: dict, exclude: WebSocket = None, *, expressive_autoplay: bool = False):
-        if data.get("type") == "debug":
+        if data.get("type") == "debug" and not data["data"].get("provider"):
             try:
                 from system_logs import enrich_debug
                 data = {**data, "data": enrich_debug(data["data"])}
@@ -291,10 +291,10 @@ class ConnectionManager:
                  msg_type, sent, failed, len(self.active))
         start_message(data, self, autoplay=expressive_autoplay)
         try:
-            from post_sentinel import observe_message_event
+            from sentinel_dispatch import observe_message_event
             observe_message_event(data)
         except Exception as exc:
-            log.warning("Post-sentinel side hook failed: %s", type(exc).__name__)
+            log.warning("Sentinel side hook failed: %s", type(exc).__name__)
         if proactive_changed:
             try:
                 from proactive_companionship import proactive_status_event

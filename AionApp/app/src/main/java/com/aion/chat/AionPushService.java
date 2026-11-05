@@ -2558,6 +2558,10 @@ public class AionPushService extends Service {
 
             JSONObject data = json.optJSONObject("data");
 
+            if (NativeMessageInbox.receive(this, serverUrl, json)) {
+                WebViewActivity.notifyNativeMessages();
+            }
+
             switch (type) {
                 case "generation_stopped": {
                     mainHandler.post(() -> backgroundTtsPlayer.cancelGeneration(data));

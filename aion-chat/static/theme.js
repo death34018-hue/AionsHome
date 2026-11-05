@@ -18,7 +18,8 @@
 
   function updateThemeChrome(theme) {
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', theme === 'dark' ? '#050923' : '#eef3ff');
+    const lightColor = document.body?.classList.contains('theater-page') ? '#f5e5e4' : '#eef3ff';
+    if (meta) meta.setAttribute('content', theme === 'dark' ? '#050923' : lightColor);
     if (window.AionStatusBar) window.AionStatusBar.setBarStyle(theme);
   }
 

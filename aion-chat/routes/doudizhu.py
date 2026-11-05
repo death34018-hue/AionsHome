@@ -728,6 +728,7 @@ def _settlement_result_card(state: dict) -> dict:
     names = _player_names()
     landlord_won = settle["winner"] == settle["landlord"]
     winners = [settle["landlord"]] if landlord_won else [p for p in PLAYERS if p != settle["landlord"]]
+    deltas = (state.get("wallet_settlement") or {}).get("deltas", {})
     return {
         "type": "doudizhu_result",
         "game_id": state["id"],
@@ -736,6 +737,11 @@ def _settlement_result_card(state: dict) -> dict:
         "landlordName": settle["landlordName"],
         "remaining": " · ".join(f"{names[p]} {settle['remainingCounts'][p]} 张" for p in PLAYERS if p != settle["winner"]),
         "walletLines": (state.get("wallet_settlement") or {}).get("lines") or [],
+        "rows": [dict(actor=p, name=names[p], won=p in winners, delta=deltas.get(p),
+                      net=f"{deltas[p]:+.2f} 元" if p in deltas else '—',
+                      balance=f"{settle['remainingCounts'][p]} 张") for p in PLAYERS],
+        "balanceLabel": "剩余手牌",
+        "note": f"炸弹 {settle['bombCount']} 次 · 本局 {settle['multiplier']} 倍 · 用户金额仅记本桌",
     }
 
 

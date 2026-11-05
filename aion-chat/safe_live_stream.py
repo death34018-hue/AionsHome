@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import AsyncIterable, Awaitable, Callable
 
 from stream_safety import StreamActivity, StreamSafetyResult
+from expressive_voice_markup import BRACKETS, LEGACY_OPEN
 
 
 SAFE_LIVE_QUARANTINE_CHARS = 16
@@ -63,7 +64,7 @@ def _is_paragraph_loop(text: str) -> bool:
 _BRACKET_COMMAND_PREFIXES = tuple(value.upper() for value in (
     "[语音", "[猜拳", "[小游戏",
     "[WEB_SEARCH", "[WEB_EXTRACT", "[LOUNGE_VISIT", "[MUSIC", "[MOMENT",
-    "[MEMORY", "[许愿", "[查看动态", "[SELFIE", "[DRAW", "[SONG",
+    "[MEMORY", "[许愿", "[查看动态", "[SELFIE", "[DRAW", "[SONG", "[COMPOSE",
     "[POI_SEARCH", "[TOY", "[SVAKOM", "[ANKNI", "[PET", "[HOME", "[BAND_VIBRATE", "[BAND_NOTE",
     "[LUCKIN", "[转账", "[悄悄话", "[WECHAT", "[ALARM", "[REMINDER",
     "[MONITOR", "[SCHEDULE_DEL", "[SCHEDULE_LIST", "[NEXT_CHAT", "[HEART",
@@ -87,7 +88,13 @@ def has_provider_error_marker(text: str) -> bool:
     return bool(_PROVIDER_ERROR_MARKER.search(text or ""))
 
 
-def _looks_unsafe_protocol(text: str) -> bool:
+def _mask_composition_angles(text: str) -> str:
+    # Mini-notation uses <c4 g4>; these characters belong to a hidden score.
+    return re.sub(r'\[COMPOSE\][\s\S]*?(?:\[/COMPOSE\]|$)',
+                  lambda match: ' ' * len(match[0]), text, flags=re.I)
+
+
+def _looks_unsafe_protocol(text: str, *, angle_text: str | None = None) -> bool:
     if not text:
         return False
     if (
@@ -100,7 +107,7 @@ def _looks_unsafe_protocol(text: str) -> bool:
         or _RAW_OPENAI_ENVELOPE.search(text)
     ):
         return True
-    for match in _UNKNOWN_ANGLE_TAG.finditer(text):
+    for match in _UNKNOWN_ANGLE_TAG.finditer(text if angle_text is None else angle_text):
         if match.group(1).lower() not in _ALLOWED_CONTROL_TAGS:
             return True
     for match in _BASE64_TOKEN.finditer(text):
@@ -116,6 +123,7 @@ class SafeLiveStreamGuard:
     def __init__(self):
         self._buffer = ""
         self._committed_chars = 0
+        self._committed_raw = ""
         self._stop_reason: str | None = None
 
     @property
@@ -136,7 +144,8 @@ class SafeLiveStreamGuard:
         remaining = SAFE_LIVE_MAX_CHARS - self._committed_chars
         over_limit = len(candidate) > remaining
         candidate = candidate[:remaining]
-        if _looks_unsafe_protocol(candidate):
+        angle_candidate = _mask_composition_angles(self._committed_raw + candidate)[self._committed_chars:]
+        if _looks_unsafe_protocol(candidate, angle_text=angle_candidate):
             self._stop("quality")
             return ""
         if over_limit:
@@ -145,8 +154,8 @@ class SafeLiveStreamGuard:
             return candidate
         self._buffer = candidate
         release_chars = len(candidate) - SAFE_LIVE_QUARANTINE_CHARS
-        last_angle_open = candidate.rfind("<")
-        last_angle_close = candidate.rfind(">")
+        last_angle_open = angle_candidate.rfind("<")
+        last_angle_close = angle_candidate.rfind(">")
         if last_angle_open > last_angle_close:
             if len(candidate) - last_angle_open > SAFE_LIVE_MAX_PENDING_COMMAND_CHARS:
                 self._stop("quality")
@@ -157,6 +166,7 @@ class SafeLiveStreamGuard:
         released = candidate[:release_chars]
         self._buffer = candidate[release_chars:]
         self._committed_chars += len(released)
+        self._committed_raw += released
         return released
 
     def finish(self) -> StreamSafetyResult:
@@ -168,7 +178,8 @@ class SafeLiveStreamGuard:
             )
         tail = self._buffer
         self._buffer = ""
-        if _looks_unsafe_protocol(tail):
+        angle_tail = _mask_composition_angles(self._committed_raw + tail)[self._committed_chars:]
+        if _looks_unsafe_protocol(tail, angle_text=angle_tail):
             self._stop_reason = "quality"
             return StreamSafetyResult(
                 committed_text="",
@@ -187,7 +198,7 @@ class KnownCommandStreamFilter:
         self._close_token = ""
         self._preserve_private_whispers = preserve_private_whispers
         self._preserved_command: str | None = None
-        self._memory_search = False
+        self._any_close_bracket = False
         self._active_chars = 0
         self._active_tail = ""
         self._active_limit = SAFE_LIVE_MAX_PENDING_COMMAND_CHARS
@@ -209,10 +220,24 @@ class KnownCommandStreamFilter:
         return min(positions) if positions else -1
 
     def _start_if_known_or_partial(self, candidate: str) -> tuple[bool, bool]:
+        # Wait for the character after 语音 to distinguish a block from the legacy
+        # one-bracket command, even when the model emits one character at a time.
+        voice_prefix = candidate[:4].translate(BRACKETS)
+        if '[语音'.startswith(voice_prefix) or re.fullmatch(r'[\[【［]语音\s*', candidate):
+            return False, True
+        if voice_prefix == '[语音]':
+            self._close_token = '[/语音]'
+            self._active_limit = SAFE_LIVE_MAX_LONG_COMMAND_CHARS
+            return True, False
+        if re.match(LEGACY_OPEN, candidate):
+            self._any_close_bracket = True
+            self._close_token = ']'
+            self._active_limit = SAFE_LIVE_MAX_LONG_COMMAND_CHARS
+            return True, False
         # Match the memory parser's bracket/colon variants before the generic
         # [MEMORY prefix can claim the tag and require an ASCII closing bracket.
         if re.match(r"^[\[［【]\s*MEMORY_SEARCH\s*[:：]", candidate, re.I):
-            self._memory_search = True
+            self._any_close_bracket = True
             self._close_token = "]"
             self._active_limit = SAFE_LIVE_MAX_LONG_COMMAND_CHARS
             return True, False
@@ -229,13 +254,15 @@ class KnownCommandStreamFilter:
                 self._preserved_command = ""
             if upper.startswith("[SONG"):
                 self._close_token = "[/SONG]"
+            elif upper.startswith("[COMPOSE"):
+                self._close_token = "[/COMPOSE]"
             elif candidate[0] == "【":
                 self._close_token = "】"
             elif candidate[0] == "<":
                 self._close_token = "</META>" if upper.startswith("<META") else "</AUTONOMY_STATE>"
             else:
                 self._close_token = "]"
-            if matched_prefix == "[SONG":
+            if matched_prefix in ("[SONG", "[COMPOSE"):
                 self._active_limit = SAFE_LIVE_MAX_CHARS
             elif (
                 matched_prefix in _LONG_FORM_BRACKET_PREFIXES
@@ -258,9 +285,11 @@ class KnownCommandStreamFilter:
             if self._close_token:
                 active_buf = self._active_tail + buf
                 upper = active_buf.upper()
-                if self._memory_search:
+                if self._any_close_bracket:
                     closing = re.search(r"[\]］】]", active_buf)
                     end = closing.start() if closing else -1
+                elif self._close_token == '[/语音]':
+                    end = active_buf.translate(BRACKETS).find(self._close_token)
                 else:
                     end = upper.find(self._close_token)
                 if end < 0:
@@ -282,7 +311,7 @@ class KnownCommandStreamFilter:
                     self._preserved_command = None
                 buf = active_buf[consumed:]
                 self._close_token = ""
-                self._memory_search = False
+                self._any_close_bracket = False
                 self._active_chars = 0
                 self._active_tail = ""
                 self._active_limit = SAFE_LIVE_MAX_PENDING_COMMAND_CHARS

@@ -46,17 +46,76 @@ final class MediaCacheStore {
     private final SharedPreferences preferences;
     private final OkHttpClient client;
     private final ExecutorService maintenance = Executors.newSingleThreadExecutor();
+    private final ExecutorService audioDownloads = Executors.newFixedThreadPool(2);
+    private final Map<String, List<java.util.function.Consumer<File>>> pendingAudio = new HashMap<>();
+    private final Object[] downloadLocks = new Object[16];
+    private static MediaCacheStore shared;
+
+    static synchronized MediaCacheStore shared(Context context) {
+        if (shared == null) shared = new MediaCacheStore(context);
+        return shared;
+    }
 
     MediaCacheStore(Context context) {
-        Context appContext = context.getApplicationContext();
-        cacheDir = new File(appContext.getCacheDir(), "media-v1");
+        this(new File(context.getApplicationContext().getCacheDir(), "media-v1"),
+                context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE),
+                new OkHttpClient.Builder().connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+                    .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+                    .callTimeout(25, java.util.concurrent.TimeUnit.SECONDS).build());
+    }
+
+    MediaCacheStore(File directory, SharedPreferences prefs, OkHttpClient httpClient) {
+        cacheDir = directory;
         if (!cacheDir.exists()) cacheDir.mkdirs();
-        preferences = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        client = new OkHttpClient.Builder()
-                .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
-                .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-                .build();
+        preferences = prefs;
+        client = httpClient;
+        for (int i = 0; i < downloadLocks.length; i++) downloadLocks[i] = new Object();
         maintenance.execute(this::enforceLimit);
+    }
+
+    /** Native MediaPlayer bypasses WebView interception, so give it the same local files. */
+    void loadAudio(String url, Map<String, String> headers, boolean prefetch,
+                   java.util.function.Consumer<File> completion) {
+        final String key;
+        try {
+            java.net.URI uri = java.net.URI.create(url);
+            if (!isCacheablePath(uri.getPath())) { completion.accept(null); return; }
+            key = sha256(uri.getPath() + (uri.getRawQuery() == null ? "" : "?" + uri.getRawQuery()));
+        } catch (Exception ignored) { completion.accept(null); return; }
+        // A cached replay must never queue behind unrelated slow prefetches.
+        File cachedData = new File(cacheDir, key + ".data"), cachedMeta = new File(cacheDir, key + ".json");
+        String cachedType = readContentType(cachedMeta);
+        if (cachedData.isFile() && cachedType != null && cachedType.startsWith("audio/")) {
+            touch(cachedData, cachedMeta);
+            completion.accept(cachedData);
+            return;
+        }
+        synchronized (pendingAudio) {
+            List<java.util.function.Consumer<File>> waiting = pendingAudio.get(key);
+            if (waiting != null) { if (!prefetch) waiting.add(completion); return; }
+            // Only a few upcoming clips may compete with messages and the clip being played.
+            if (prefetch && pendingAudio.size() >= 3) return;
+            waiting = new ArrayList<>();
+            waiting.add(completion);
+            pendingAudio.put(key, waiting);
+        }
+        audioDownloads.execute(() -> {
+            File result = null;
+            synchronized (downloadLocks[(key.hashCode() & Integer.MAX_VALUE) % downloadLocks.length]) {
+                File data = new File(cacheDir, key + ".data"), meta = new File(cacheDir, key + ".json");
+                String type = readContentType(meta);
+                if (data.isFile() && type != null && type.startsWith("audio/")) {
+                    touch(data, meta); result = data;
+                } else if (download(url, headers, data, meta)) {
+                    type = readContentType(meta);
+                    if (type != null && type.startsWith("audio/")) result = data;
+                    maintenance.execute(this::enforceLimit);
+                }
+            }
+            List<java.util.function.Consumer<File>> waiting;
+            synchronized (pendingAudio) { waiting = pendingAudio.remove(key); }
+            if (waiting != null) for (java.util.function.Consumer<File> callback : waiting) callback.accept(result);
+        });
     }
 
     WebResourceResponse intercept(WebResourceRequest webRequest) {
@@ -69,6 +128,7 @@ final class MediaCacheStore {
                 + (uri.getEncodedQuery() == null ? "" : "?" + uri.getEncodedQuery()));
         File data = new File(cacheDir, key + ".data");
         File meta = new File(cacheDir, key + ".json");
+        synchronized (downloadLocks[(key.hashCode() & Integer.MAX_VALUE) % downloadLocks.length]) {
         try {
             String contentType = readContentType(meta);
             if (data.isFile() && contentType != null) {
@@ -84,6 +144,7 @@ final class MediaCacheStore {
             data.delete();
             meta.delete();
             return null;
+        }
         }
     }
 
@@ -112,21 +173,29 @@ final class MediaCacheStore {
     }
 
     void shutdown() {
+        if (this == shared) return; // App-level cache is also owned by the push service.
         maintenance.shutdown();
+        audioDownloads.shutdown();
     }
 
     private boolean download(WebResourceRequest webRequest, File data, File meta) {
-        Request.Builder builder = new Request.Builder().url(webRequest.getUrl().toString());
-        copyHeader(webRequest.getRequestHeaders(), builder, "User-Agent");
-        copyHeader(webRequest.getRequestHeaders(), builder, "Accept");
+        Map<String, String> headers = new HashMap<>(webRequest.getRequestHeaders());
         String cookie = CookieManager.getInstance().getCookie(webRequest.getUrl().toString());
-        if (cookie != null && !cookie.trim().isEmpty()) builder.header("Cookie", cookie);
+        if (cookie != null && !cookie.trim().isEmpty()) headers.put("Cookie", cookie);
+        return download(webRequest.getUrl().toString(), headers, data, meta);
+    }
+
+    private boolean download(String url, Map<String, String> headers, File data, File meta) {
+        Request.Builder builder = new Request.Builder().url(url);
+        copyHeader(headers, builder, "User-Agent");
+        copyHeader(headers, builder, "Accept");
+        copyHeader(headers, builder, "Cookie");
 
         File tempData = new File(cacheDir, data.getName() + ".part");
         File tempMeta = new File(cacheDir, meta.getName() + ".part");
         try (Response response = client.newCall(builder.build()).execute()) {
             ResponseBody body = response.body();
-            if (!response.isSuccessful() || body == null) return false;
+            if (response.code() != 200 || body == null) return false;
             long announcedLength = body.contentLength();
             if (announcedLength > MAX_SINGLE_FILE) return false;
             String contentType = response.header("Content-Type", "application/octet-stream");
@@ -145,9 +214,12 @@ final class MediaCacheStore {
                     output.write(buffer, 0, count);
                 }
             }
+            if (written == 0 || (announcedLength >= 0 && written != announcedLength)) {
+                throw new java.io.IOException("incomplete media");
+            }
             JSONObject metadata = new JSONObject();
             metadata.put("contentType", contentType);
-            metadata.put("sourcePath", webRequest.getUrl().getPath());
+            metadata.put("sourcePath", java.net.URI.create(url).getPath());
             try (OutputStream output = new FileOutputStream(tempMeta)) {
                 output.write(metadata.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
             }
@@ -193,7 +265,8 @@ final class MediaCacheStore {
         if (files == null) return result;
         for (File file : files) {
             if (file.isFile() && file.getName().endsWith(".data")) result.add(file);
-            else if (file.getName().endsWith(".part")) file.delete();
+            else if (file.getName().endsWith(".part")
+                    && file.lastModified() < System.currentTimeMillis() - 24L * 60 * 60 * 1000) file.delete();
         }
         return result;
     }
@@ -206,7 +279,7 @@ final class MediaCacheStore {
 
     private int getLimitMb() {
         return Math.max(MIN_LIMIT_MB, Math.min(MAX_LIMIT_MB,
-                preferences.getInt(KEY_LIMIT_MB, DEFAULT_LIMIT_MB)));
+                preferences == null ? DEFAULT_LIMIT_MB : preferences.getInt(KEY_LIMIT_MB, DEFAULT_LIMIT_MB)));
     }
 
     static boolean isCacheablePath(String path) {

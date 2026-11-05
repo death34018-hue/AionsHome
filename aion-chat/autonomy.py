@@ -742,6 +742,11 @@ async def _save_aion_private_message(
         content, source_type="private", source_id=conv_id,
         sender="aion", source_msg_id=msg_id,
     )
+    from compositions import process_compositions
+    content = await process_compositions(
+        content, source_type="private", source_id=conv_id,
+        sender="aion", source_msg_id=msg_id,
+    )
     async with get_db() as db:
         await db.execute(
             "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
@@ -876,13 +881,20 @@ async def _run_web_journey(actor: str, session_id: str):
 
 
 async def _save_autonomy_chatroom_message(room_id, sender, content, **kwargs):
-    """Parse pats in autonomous messages that bypass the normal reply pipeline."""
+    """Parse chat cards in autonomous messages that bypass the normal reply pipeline."""
     from capabilities import PAT_COMMAND_PATTERN, process_pat_commands
+    from compositions import COMPOSE_CMD_PATTERN, process_compositions
     from routes.chatroom import _save_msg
 
     if PAT_COMMAND_PATTERN.search(content or ""):
         msg_id = kwargs.setdefault("msg_id", f"cm_{time.time_ns()}_{sender[:1]}")
         content = await process_pat_commands(
+            content, source_type="chatroom", source_id=room_id,
+            sender=sender, source_msg_id=msg_id,
+        )
+    if COMPOSE_CMD_PATTERN.search(content or ""):
+        msg_id = kwargs.setdefault("msg_id", f"cm_{time.time_ns()}_{sender[:1]}")
+        content = await process_compositions(
             content, source_type="chatroom", source_id=room_id,
             sender=sender, source_msg_id=msg_id,
         )

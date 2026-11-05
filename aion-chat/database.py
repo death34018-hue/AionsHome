@@ -661,6 +661,8 @@ async def init_db():
             except:
                 pass
         await db.execute("CREATE INDEX IF NOT EXISTS idx_chatroom_msg_room ON chatroom_messages(room_id, created_at)")
+        from chatroom_image_retry import init_storage as init_image_retries
+        await init_image_retries(db)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_chatroom_msg_created ON chatroom_messages(created_at DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_chatroom_ai_feedback ON chatroom_messages(ai_feedback_updated_at)")
         await db.execute("""

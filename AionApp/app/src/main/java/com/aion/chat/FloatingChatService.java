@@ -29,7 +29,8 @@ import java.util.concurrent.Executors;
 public final class FloatingChatService extends Service {
     private static final String STOP = "floating_chat_stop";
     private static volatile FloatingChatService instance;
-    private static boolean appForeground = true;
+    private static volatile boolean appForeground = true;
+    private static volatile String visiblePage = "/chat";
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService events = Executors.newSingleThreadExecutor();
     private final FloatingChatSession session = new FloatingChatSession();
@@ -60,7 +61,12 @@ public final class FloatingChatService extends Service {
     private static final class PendingMessage {
         final String type;
         final JSONObject data;
-        PendingMessage(String type, JSONObject data) { this.type = type; this.data = data; }
+        final boolean allowPreview;
+        PendingMessage(String type, JSONObject data) {
+            this.type = type;
+            this.data = data;
+            this.allowPreview = !suppressesMessagePreview();
+        }
     }
 
     public static boolean isRunning() { return instance != null; }
@@ -71,10 +77,30 @@ public final class FloatingChatService extends Service {
     }
 
     public static void setAppForeground(boolean foreground) {
+        boolean wasSuppressed = suppressesMessagePreview();
         appForeground = foreground;
+        updatePageVisibility(wasSuppressed);
+    }
+
+    public static void setVisiblePage(String path) {
+        boolean wasSuppressed = suppressesMessagePreview();
+        visiblePage = path == null ? "" : path;
+        updatePageVisibility(wasSuppressed);
+    }
+
+    static boolean suppressesMessagePreview() {
+        return appForeground && ("/chat".equals(visiblePage) || "/chat/".equals(visiblePage)
+                || "/chatroom".equals(visiblePage) || "/chatroom/".equals(visiblePage));
+    }
+
+    private static void updatePageVisibility(boolean wasSuppressed) {
         FloatingChatService active = instance;
         if (active != null) active.main.post(() -> {
-            if (foreground) { active.cancelRecording(); active.dismissCard(); }
+            if (!active.alive) return;
+            if (!wasSuppressed && suppressesMessagePreview()) {
+                active.cancelRecording();
+                active.dismissCard();
+            }
             active.updateVisibility();
         });
     }
@@ -82,8 +108,11 @@ public final class FloatingChatService extends Service {
     public static void deliver(String type, JSONObject data) {
         FloatingChatService active = instance;
         if (active == null || data == null || !active.alive) return;
+        // Remember arrival-time visibility too: a slow context/avatar request must
+        // not pop up a message already seen in chat after the user leaves it.
+        PendingMessage message = new PendingMessage(type, data);
         try { active.events.execute(() -> {
-            active.pending.addLast(new PendingMessage(type, data));
+            active.pending.addLast(message);
             active.drainPending();
         }); }
         catch (java.util.concurrent.RejectedExecutionException ignored) {}
@@ -591,12 +620,16 @@ public final class FloatingChatService extends Service {
         if (!alive || root == null) return;
         PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
         KeyguardManager keyguard = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
-        boolean visible = !appForeground && !snapshotHidden && power.isInteractive()
+        boolean visible = !snapshotHidden && power.isInteractive()
                 && !keyguard.isKeyguardLocked() && Settings.canDrawOverlays(this);
         try {
             if (visible && !root.isAttachedToWindow()) windows.addView(root, position);
             else if (!visible && root.isAttachedToWindow()) windows.removeView(root);
-        } catch (RuntimeException error) { toast("悬浮窗不可用，请重新开启权限"); }
+        } catch (RuntimeException error) {
+            // Window lifecycle failures do not necessarily mean permission was lost.
+            // Keep automatic visibility updates quiet; enable() handles permission guidance.
+            android.util.Log.w("FloatingChat", "Unable to update overlay visibility", error);
+        }
     }
 
     private void refreshContext() {
@@ -678,12 +711,12 @@ public final class FloatingChatService extends Service {
         main.removeCallbacks(retryPending);
         while (alive && !pending.isEmpty()) {
             PendingMessage message = pending.peekFirst();
-            receive(latest, message.type, message.data);
+            receive(latest, message.type, message.data, message.allowPreview);
             pending.removeFirst();
         }
     }
 
-    private void receive(JSONObject latest, String type, JSONObject data) throws Exception {
+    private void receive(JSONObject latest, String type, JSONObject data, boolean allowPreview) throws Exception {
         if (!alive || !session.offer(latest, type, data)) return;
         final String body = FloatingChatSession.displayBody(data.optString("content", ""));
         String actor = "msg_created".equals(type) ? data.optString("role") : data.optString("sender");
@@ -696,7 +729,7 @@ public final class FloatingChatService extends Service {
         }
         final Bitmap picture = avatar;
         main.post(() -> {
-            if (!alive || appForeground) return;
+            if (!alive) return;
             PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
             KeyguardManager keyguard = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
             if (!power.isInteractive() || keyguard.isKeyguardLocked()) return;
@@ -713,7 +746,7 @@ public final class FloatingChatService extends Service {
             bubble.setForeground(drawable);
             bubble.setContentDescription(name + "，点按打开或收起，拖动移动");
             // Preview the latest reply; expanded mode retains older AI bodies above it.
-            if (!recorder.isRecording() && !touching) showCard();
+            if (allowPreview && !suppressesMessagePreview() && !recorder.isRecording() && !touching) showCard();
         });
     }
 

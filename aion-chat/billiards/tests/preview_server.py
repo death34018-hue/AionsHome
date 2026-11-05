@@ -64,7 +64,7 @@ async def seed_history():
         players = ['user', 'aion' if index % 2 else 'connor']
         game = await service._service.create(players, seed=17 + index)
         winner = index % 2
-        game['score'] = [2, 1] if winner == 0 else [0, 2]
+        game['score'] = [1, 0] if winner == 0 else [0, 1]
         game['rack'] = sum(game['score'])
         game['status'] = 'finished'
         game['match_status'] = 'completed'

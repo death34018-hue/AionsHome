@@ -34,7 +34,7 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
     def connect(self):
         return aiosqlite.connect(self.db_path)
 
-    async def message(self, msg_id='one', *, text='我喜欢温柔的提醒', scope='private', ts=None):
+    async def message(self, msg_id='one', *, text='明天要取药', scope='private', ts=None):
         ts = ts or time.time()
         private = scope == 'private'
         async with self.connect() as db:
@@ -46,8 +46,8 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
             'role' if private else 'sender': 'user', 'content': text, 'created_at': ts,
         }}
 
-    def analysis(self, content='喜欢温柔的提醒', source='U1'):
-        return {'updates': [{'key': 'communication.reminders', 'category': 'recent', 'reason': '近期变化有后续价值',
+    def analysis(self, content='明天要取药', source='U1'):
+        return {'updates': [{'key': 'communication.reminders', 'category': 'recent', 'kind':'task', 'reason': '近期变化有后续价值',
                              'content': content, 'sources': [source]}], 'state': None}
 
     async def test_resolved_budget_warning_disappears_without_erasing_failed_job(self):
@@ -88,13 +88,13 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
                 prompt = self.service._analysis_prompt({'entries': {}, 'current_state': None}, [], {}, '')
                 self.assertIn(f'本人姓名为“{name}”', prompt)
                 document = {'entries': {}, 'current_state': None}
-                response = {'updates': [{'category': 'recent', 'reason': '近期变化有后续价值', 'content': '用户喜欢自然聊天',
-                                         'topic': '用户的交流偏好', 'sources': ['U1']}],
+                response = {'updates': [{'category': 'recent', 'kind':'task', 'reason': '近期变化有后续价值', 'content': '用户明天去取药',
+                                         'topic': '用户的取药安排', 'sources': ['U1']}],
                             'state': {'text': '用户正在洗菜', 'phase': 'ongoing', 'sources': ['U1']}}
                 self.service._apply_analysis(document, response, {'U1': 'private:one'}, {'source_ts': time.time()})
                 entry = next(iter(document['entries'].values()))
-                self.assertEqual(entry['content'], name + '喜欢自然聊天')
-                self.assertEqual(entry['topic'], name + '的交流偏好')
+                self.assertEqual(entry['content'], name + '明天去取药')
+                self.assertEqual(entry['topic'], name + '的取药安排')
                 self.assertEqual(document['current_state']['text'], name + '正在洗菜')
 
     async def test_subject_rename_preserves_technical_terms_and_other_people(self):
@@ -125,7 +125,7 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
         ], 'state': None}
         self.service._apply_analysis(document, parsed, {'U1': 'private:one'}, {'source_ts': time.time()})
         values = list(document['entries'].values())
-        self.assertEqual(len(values), 2)
+        self.assertEqual([e['topic'] for e in values], ['取药'])
         self.assertEqual({e['category'] for e in values}, {'recent'})
         self.assertTrue(document['_analysis_errors'])
 
@@ -209,7 +209,7 @@ class PostSentinelTests(unittest.IsolatedAsyncioTestCase):
         model.assert_awaited_once()
         data = await self.service.snapshot()
         self.assertEqual(data['entries'][0]['sources'], ['private:one'])
-        self.assertIn('喜欢温柔', await self.service.build_context())
+        self.assertIn('明天要取药', await self.service.build_context())
 
     async def test_shared_chatroom_uses_same_profile_and_short_user_sources(self):
         await self.service.enqueue_event(await self.message(scope='chatroom'))

@@ -4,6 +4,7 @@ import json
 import re
 import time
 import uuid
+from expressive_voice_markup import strip_voice_blocks
 from .matches import match_info, is_active, reserves_players
 
 
@@ -16,6 +17,7 @@ def spoken_text(text):
         content = re.search(r'(?:^|[|｜])\s*(?:内容|台词)\s*[=：:]\s*(.*)', payload, flags=re.S)
         return content.group(1).strip() if content else ('' if '方向=' in payload else payload.strip())
     text = re.sub(r'[\[【]语音\s*[|｜:：]\s*([^\]】]*)(?:[\]】]|$)', voice, text)
+    text = strip_voice_blocks(text)
     text = re.sub(r'\[PAT\s*[：:]\s*[^\]]*(?:\]|$)', '', text, flags=re.I)
     return text.strip()
 
@@ -58,9 +60,9 @@ def reaction_reason(game, reason, *, now=None):
         return ''
     if game['state']['phase'] == 'over':
         if match_info(game)['status'] == 'completed':
-            return '三局两胜的整场比赛已经结束，聊聊最终赢家和比分，不要再称下一局为决胜局'
+            return '本场比赛已经结束，聊聊真实赢家和结果；一局就是一场，再玩需要重新约球，不要催着续赛'
         if 'user' not in game['players']:
-            return '本局分出胜负，今天先收杆；比分保留，下次重新约球再继续这一场，不要说马上开下一局'
+            return '本局分出胜负，今天先收杆；这一场已经结束，下次约球是新的独立比赛，不要说马上开下一局'
         return '本局分出胜负，聊聊真实结果和要不要再来一局'
     if now - game.get('last_speech_at', 0) < 30:
         return ''
@@ -94,7 +96,7 @@ async def model_text(actor, game, instruction):
         '你和他们一起轻松打球，保持原本人设和关系。算法替你计算、击球，以下为真实已结算球况。'
         '只需自然聊天，不要计算角度力度、输出操作指令、调用工具或编造进球。'
         '剩球数是本局进度，score 是双方已赢局数。可以聊天、夸赞、调侃，不必每句讲球。说话简短自然，酒桌上的闲聊。\n'
-        'match.format 为 best_of_3 时是三局两胜、先赢两局结束整场；deciding 表示决胜局，match_point 表示赛点。\n'
+        '现在采用单局制，一局分出胜负就结束本场；想再玩就重新开一局。历史聊天里的旧赛制描述不适用于当前比赛。\n'
         + json.dumps(facts(game, labels), ensure_ascii=False) + '\n'
         '最近桌边对话：\n' + '\n'.join(f"{labels.get(m['sender'], m['sender'])}：{table_context_text(m['text'])}" for m in game['messages'][-12:])
         + '\n\n' + instruction
@@ -209,7 +211,7 @@ async def publish_result(service, sid):
             winner = game['players'][result['winner']]
             detail = f"第{result['rack']}局，{labels[winner]}获胜；{result['reason']}。局数 {result['score'][0]}:{result['score'][1]}，共{result['shots']}杆。"
             if result.get('match_complete'):
-                detail += f"三局两胜整场结束，{labels[winner]}赢得本场比赛。"
+                detail += f"本场结束，{labels[winner]}赢得本场比赛。"
             await append_idle_event(actor, 'billiards_result', ' & '.join(labels[p] for p in game['players']) + '打完了一局台球', detail, target_type='billiards', target_id=sid, metadata={'billiards_id': sid, 'rack': result['rack']})
             await mark(result['rack'], published=True)
 
@@ -249,8 +251,8 @@ async def _invite(actor, service):
     labels = names()
     other = 'connor' if actor == 'aion' else 'aion'
     saved = next((g for g in service.store.all() if is_active(g) and 'user' not in g['players']), None)
-    continuation = '' if saved is None else f'双方已有一场未完成的比赛，比分 {saved["score"][0]}:{saved["score"][1]}（按 {labels[saved["players"][0]]}、{labels[saved["players"][1]]} 的顺序）；这次从存档继续。'
-    decision = await _ask_actor_json(other, f'{labels[actor]}想邀请你在家里打一局休闲八球，算法负责击球。{continuation}每次邀请只打一局，整场比分保留到下次再约。你可以答应或婉拒。只返回 JSON：{{"accept":true或false,"message":"自然的回应"}}')
+    continuation = '' if saved is None else '双方已有一局未打完的球，这次从存档的球位继续。'
+    decision = await _ask_actor_json(other, f'{labels[actor]}想邀请你在家里打一局休闲八球，算法负责击球。{continuation}一局就是一场，分出胜负后收杆，下次约球另开新局。你可以答应或婉拒。只返回 JSON：{{"accept":true或false,"message":"自然的回应"}}')
     accepted = decision.get('accept') is True
     if accepted and not await available_for_autonomy(actor):
         return {'message': '参与者已有别的比赛，这次先不打，之前的球局会保留', 'accepted': False}

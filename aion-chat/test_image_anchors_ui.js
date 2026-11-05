@@ -24,10 +24,19 @@ const {chromium} = require(process.env.PLAYWRIGHT_PATH || 'playwright');
       if (url.pathname.endsWith('/anchors')) return route.fulfill({json: records});
       if (route.request().method() === 'PUT') {
         if (failSave) return route.fulfill({status: 500, json: {detail: '暂时无法保存，请重试'}});
-        writes.push(route.request().postDataJSON());
+        if (url.pathname.endsWith('/photo')) {
+          const form = await new Response(route.request().postDataBuffer(), {headers: {
+            'Content-Type': route.request().headers()['content-type']
+          }}).formData();
+          assert.equal(form.get('file').name, 'portrait.png');
+          writes.push({...JSON.parse(form.get('fields')), image: '/image-anchors/new.png'});
+          records[0].image = writes.at(-1).image;
+        } else {
+          writes.push(route.request().postDataJSON());
+        }
         return route.fulfill({json: writes.at(-1)});
       }
-      if (url.pathname === '/api/upload') return route.fulfill({json: {url: '/uploads/new.png'}});
+      assert.notEqual(url.pathname, '/api/upload', 'portraits must bypass chat uploads');
       return route.fulfill({contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a9uoAAAAASUVORK5CYII=', 'base64')});
     });
     await page.goto('http://anchors.test/');
@@ -48,13 +57,14 @@ const {chromium} = require(process.env.PLAYWRIGHT_PATH || 'playwright');
     await dialog.getByRole('button', {name: '保存人物', exact: true}).click();
     await dialog.waitFor({state: 'detached'});
     assert.equal(writes.length, 3);
-    assert.equal(writes[0].image, '/uploads/new.png');
+    assert.equal(writes[0].image, '/image-anchors/new.png');
     assert.equal(writes[0].identity, 'user');
     assert.equal(writes[0].name, '月亮的新名字');
     assert.ok(await page.evaluate(() => window.lastToast.includes('共用')));
     await page.setViewportSize({width: 1100, height: 850});
     await page.getByRole('button', {name: '管理人物锚点'}).click();
     await dialog.waitFor();
+    assert.equal(await dialog.locator('.image-anchor-card img').first().getAttribute('src'), '/image-anchors/new.png');
     if (process.env.ANCHOR_SCREENSHOT_DIR) await page.screenshot({path: path.join(process.env.ANCHOR_SCREENSHOT_DIR, 'image-anchors-desktop.png')});
     await dialog.getByRole('button', {name: '取消', exact: true}).click();
     assert.deepEqual(errors, []);

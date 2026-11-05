@@ -59,10 +59,13 @@ def _path(kind):
 
 def _load(kind):
     stored = wallet.load(DB_PATH, kind)
-    if stored:
-        return stored
-    path = _path(kind)
-    return json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
+    if not stored:
+        path = _path(kind)
+        stored = json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
+    if stored and kind == 'texas-holdem' and stored['phase'] in ('playing', 'round_over') and not stored.get('closed'):
+        # Existing tables adopt the shorter limit without discarding an accepted hand.
+        stored['round_limit'] = tabletop.POKER_ROUND_LIMIT
+    return stored
 
 
 def _save(state):
@@ -177,7 +180,7 @@ def _prompt(state, player):
         rules += (f'金额字段及 amount 均以整数分计，100分=1元；盲注{state.get("blind", 100) // 2}/{state.get("blind", 100)}分。wallet.initial是实际带入金额，'
                   '只能下注桌上剩余金额，不能赊账或从钱包自动追加。用户入桌额度以两位伴侣中较高的钱包为上限。'
                   if state.get('wallet') else '免费练习，每人500筹码，盲注5/10。')
-        rules += '每次发底牌算一手，翻牌/转牌/河牌仍属于同一手；最多5手后自动收桌结算。'
+        rules += '每次发底牌算一手，翻牌/转牌/河牌仍属于同一手；最多3手后自动收桌结算。'
         schema = {'action': 'fold / check / call / raise / all_in', 'amount': 'raise 时填整数总额',
                   'speech': '一句符合人设的桌边发言，建议40字以内'}
     return (f'【{tabletop.KINDS[state["kind"]]}回合】你是{names[player]}（座位 {player}）。'

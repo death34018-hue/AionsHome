@@ -27,13 +27,35 @@ def _config_overrides(command):
 
 
 class CodexCliMinimalModeTests(unittest.TestCase):
+    def test_many_skills_stay_disabled_without_exceeding_windows_command_limit(self):
+        skill_files = tuple(
+            str(Path(f"C:/profiles/plugins/cache/example-plugin-{index}/skills/example/SKILL.md").resolve())
+            for index in range(600)
+        )
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(ai_providers, "_CODEX_HOME", str(Path(tmpdir) / "desktop")),
+            patch.object(ai_providers, "_CODEX_CHAT_HOME", tmpdir),
+            patch.object(ai_providers, "_discover_codex_skill_files", return_value=skill_files),
+            patch.object(ai_providers, "prepare_chat_model_catalog"),
+        ):
+            env = ai_providers._build_codex_chat_environment()
+            commands = [
+                ai_providers._build_codex_chat_command("node", "codex.js", "workspace", "gpt-6.1-sol"),
+                ai_providers._build_codex_sentinel_command("node", "codex.js"),
+            ]
+            for command in commands:
+                self.assertLess(len(subprocess.list2cmdline(command)), 32767)
+            config = tomllib.loads((Path(env["CODEX_HOME"]) / "config.toml").read_text(encoding="utf-8"))
+            self.assertEqual({item["path"] for item in config["skills"]["config"]}, set(skill_files))
+            self.assertTrue(all(not item["enabled"] for item in config["skills"]["config"]))
+
     def test_chat_command_uses_a_minimal_read_only_profile(self):
         command = ai_providers._build_codex_chat_command(
             "node",
             "codex.js",
             "workspace",
             "gpt-5.6-terra",
-            skill_files=(),
         )
 
         self.assertEqual(command[:2], ["node", "codex.js"])
@@ -55,7 +77,6 @@ class CodexCliMinimalModeTests(unittest.TestCase):
             "codex.js",
             "workspace",
             "gpt-5.6-sol",
-            skill_files=(),
         )
 
         app_server_index = command.index("app-server")
@@ -79,16 +100,11 @@ class CodexCliMinimalModeTests(unittest.TestCase):
         self.assertIn("原样输出", instructions)
 
     def test_chat_command_replaces_development_context_and_disables_dev_features(self):
-        skill_files = [
-            Path(r"C:\profiles\alpha\SKILL.md"),
-            Path(r"C:\profiles\quote'and space\SKILL.md"),
-        ]
         command = ai_providers._build_codex_chat_command(
             "node",
             "codex.js",
             "workspace",
             "gpt-5.6-terra",
-            skill_files=skill_files,
         )
 
         app_server_index = command.index("app-server")
@@ -111,13 +127,6 @@ class CodexCliMinimalModeTests(unittest.TestCase):
         self.assertFalse(parsed["include_permissions_instructions"])
         self.assertFalse(parsed["include_collaboration_mode_instructions"])
         self.assertFalse(parsed["include_environment_context"])
-        self.assertEqual(
-            {Path(item["path"]) for item in parsed["skills"]["config"]},
-            {path.resolve() for path in skill_files},
-        )
-        self.assertTrue(
-            all(not item["enabled"] for item in parsed["skills"]["config"])
-        )
         self.assertTrue(all(command.index(value) < app_server_index for value in overrides))
         self.assertEqual(parsed["web_search"], "disabled")
         self.assertTrue(parsed["features"]["view_image"])
@@ -162,6 +171,7 @@ class CodexCliMinimalModeTests(unittest.TestCase):
                 command = ai_providers._build_codex_chat_command(
                     "node", script, ai_providers._CODEX_WORKSPACE, "",
                 )
+                ai_providers._build_codex_chat_environment()
             command = command[:-2] + ["debug", "prompt-input", "hello"]
             env = {
                 **os.environ,
@@ -219,30 +229,6 @@ class CodexCliMinimalModeTests(unittest.TestCase):
 
         self.assertEqual(actual, expected)
 
-    def test_chat_command_uses_discovered_skills_when_not_injected(self):
-        skill_file = Path(r"C:\profiles\discovered\SKILL.md").resolve()
-        with patch.object(
-            ai_providers,
-            "_discover_codex_skill_files",
-            return_value=(str(skill_file),),
-            create=True,
-        ):
-            command = ai_providers._build_codex_chat_command(
-                "node", "codex.js", "workspace", "gpt-5.6-terra"
-            )
-
-        skill_overrides = [
-            value
-            for value in _config_overrides(command)
-            if value.startswith("skills.config=")
-        ]
-        self.assertEqual(len(skill_overrides), 1)
-        parsed = tomllib.loads(skill_overrides[0])
-        self.assertEqual(
-            parsed["skills"]["config"],
-            [{"path": str(skill_file), "enabled": False}],
-        )
-
     def test_chat_environment_syncs_auth_to_an_isolated_home(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             desktop_home = Path(tmpdir) / "desktop-codex"
@@ -256,6 +242,7 @@ class CodexCliMinimalModeTests(unittest.TestCase):
                 patch.object(ai_providers, "_CODEX_HOME", str(desktop_home)),
                 patch.object(ai_providers, "_CODEX_CHAT_HOME", str(chat_home)),
                 patch.object(ai_providers, "prepare_chat_model_catalog", create=True),
+                patch.object(ai_providers, "_discover_codex_skill_files", return_value=()),
             ):
                 env = ai_providers._build_codex_chat_environment({
                     "PATH": "test", "CODEX_APP_TOOLS_PIPE_PATH": "desktop-pipe",
@@ -275,7 +262,10 @@ class CodexCliMinimalModeTests(unittest.TestCase):
                 desktop_config.read_text(encoding="utf-8"),
                 'model = "desktop-model"',
             )
-            self.assertFalse((chat_home / "config.toml").exists())
+            self.assertEqual(
+                tomllib.loads((chat_home / "config.toml").read_text(encoding="utf-8")),
+                {"skills": {"config": []}},
+            )
             self.assertFalse((chat_home / "models_cache.json").exists())
             self.assertFalse((chat_home / "skills").exists())
 

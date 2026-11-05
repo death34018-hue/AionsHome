@@ -8,12 +8,13 @@ const studio = fs.readFileSync(path.join(__dirname, 'static/theater-studio.js'),
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const pending = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
-function initHarness(api) {
+function initHarness(api, storage = new Map()) {
   const elements = new Map();
   const calls = [];
   const context = vm.createContext({
     api, models: [], personas: [], conversations: [], currentConvId: null,
-    ttsEnabled: false, ttsVoice: '', localStorage: { getItem: () => null },
+    ttsEnabled: false, ttsVoice: '',
+    localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     $: id => { if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '' }); return elements.get(id); },
     loadTTSVoices: () => api('GET', '/api/tts/voices'),
     renderPersonaList() {}, renderConvList() {}, updateTheaterSelectionSummary() {},
@@ -24,6 +25,31 @@ function initHarness(api) {
   vm.runInContext(html.slice(html.indexOf('async function init()'), html.indexOf('/* ── TTS 音色加载')), context);
   return { context, elements, calls };
 }
+
+test('opening the second novel moves it first and restores it on the next visit', async () => {
+  const storage = new Map();
+  let ids = ['old', 'reading'];
+  const api = async (_, url) => url === '/api/theater/conversations' ? ids.map(id => ({ id })) : [];
+  const openPage = async () => {
+    const { context } = initHarness(api, storage);
+    Object.assign(context, {
+      selectionToken: 0, performance, modes: new Map(), novel: () => true,
+      request: async () => ({ book: { mode: 'novel' }, chapters: [] }),
+      closeSidebar() {}, modeUI() {}, renderNovel() {}, showToast(message) { throw Error(message); },
+    });
+    vm.runInContext(studio.slice(studio.indexOf('  selectConv = async'), studio.indexOf('  renderMessages = function')), context);
+    await context.init();
+    return context;
+  };
+  const first = await openPage();
+  await first.selectConv('reading');
+  assert.equal(first.conversations[0].id, 'reading');
+  const reopened = await openPage();
+  assert.equal(reopened.currentConvId, 'reading');
+  assert.equal(reopened.conversations[0].id, 'reading');
+  ids = ['old'];
+  assert.equal((await openPage()).currentConvId, 'old', 'a deleted story falls back to the first available one');
+});
 
 test('stories open while model, voice and persona requests are delayed', async () => {
   for (const slowModels of [true, false]) {

@@ -2294,6 +2294,8 @@ body[data-theme="light"] .lounge-report-card { background: var(--surface); }
 .markdown-body p { margin: 0 0 .35em; }
 .private-ai-message-content.markdown-body > p,
 .msg-row:not(.user) .inner-monologue-content.markdown-body > p { text-indent: 1.5em; }
+.private-ai-message-content.markdown-body > p .line-indent,
+.msg-row:not(.user) .inner-monologue-content.markdown-body > p .line-indent { display: inline-block; width: 1.5em; }
 .markdown-body h1,
 .markdown-body h2,
 .markdown-body h3,

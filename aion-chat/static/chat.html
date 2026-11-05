@@ -10,7 +10,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#ff8359">
-<link rel="stylesheet" href="/static/chat.css?v=20261018-ai-paragraph-indent-1_5em">
+<link rel="stylesheet" href="/static/chat.css?v=20261025-line-indent">
 <link rel="stylesheet" href="/static/ai-message-editor.css?v=20260920">
 <link rel="stylesheet" href="/static/pat.css?v=inline-order-20260910">
 <link rel="stylesheet" href="/static/rps.css?v=20261019-rps-summary">
@@ -18,9 +18,10 @@
 <link rel="stylesheet" href="/static/taobao-card.css?v=20260831-bubble-aligned">
 <link rel="stylesheet" href="/static/voice-call.css?v=voice-call-polish-20260704g">
 <link rel="stylesheet" href="/static/chat-font-size.css?v=20260912">
-<link rel="stylesheet" href="/static/image-viewer.css?v=20261024-compact">
+<link rel="stylesheet" href="/static/image-viewer.css?v=20261104-ai-photo">
 <script src="/static/image-viewer.js?v=20261024"></script>
 <link rel="stylesheet" href="/static/local-voice.css?v=20261024">
+<link rel="stylesheet" href="/static/chat-day-glass.css?v=20261102-1">
 </head>
 <body data-theme="dark">
 
@@ -415,6 +416,7 @@ window.AionSubPageNavigation = (() => {
   document.getElementById('subPageFrames').appendChild(frame);
   window.openSubPage = url => {
     const target = new URL(url, location.origin);
+    try { window.AionFloatingChat?.setVisiblePage?.(target.pathname); } catch(e) {}
     window.__aionStartupPage = url;
     frame.dataset.startupPath = target.pathname;
     if (frame.src !== target.href || frame.dataset.navigationFailed === '1') {
@@ -433,6 +435,7 @@ window.AionSubPageNavigation = (() => {
   };
   window.closeSubPage = () => {
     window.__aionStartupPage = '/chat';
+    try { window.AionFloatingChat?.setVisiblePage?.('/chat'); } catch(e) {}
     overlay.classList.remove('show');
     window.AionSubPageNavigation.hide();
   };
@@ -451,17 +454,20 @@ window.AionSubPageNavigation = (() => {
 <script src="/static/hug_pillow_ai.js?v=hug-pillow-ai-20260726"></script>
 <script src="/static/monitor-camera-snapshot.js?v=20260902-compact"></script>
 <script src="/static/toy-ankni-protocol.js?v=20260924-duration"></script>
+<link rel="stylesheet" href="/static/composition-cards.css?v=20261103">
+<script src="/static/composition-cache.js?v=20261103"></script>
+  <script src="/static/composition-cards.js?v=20261103"></script>
 <script src="/static/system-notice-ui.js?v=20261021-game-invites"></script>
 <link rel="stylesheet" href="/static/game-invites.css?v=20261019-compact">
-<link rel="stylesheet" href="/billiards-assets/result-card.css">
-<script src="/billiards-assets/result-card.js"></script>
+<link rel="stylesheet" href="/billiards-assets/result-card.css?v=20261031-crown-top">
+<script src="/billiards-assets/result-card.js?v=20261030-neon"></script>
 <script src="/static/lounge-visit-ui.js?v=20260815"></script>
 <script src="/static/proactive-orbit.js?v=20260816"></script>
 <script src="/static/chat-image-album.js?v=20260830"></script>
 <script src="/static/taobao-card.js?v=20260831-compact"></script>
-<script src="/static/native-tts-audio.js?v=20261018-message-order"></script>
+<script src="/static/native-tts-audio.js?v=20261030-weak-network"></script>
 <script src="/static/vendor/markdown-it-15.0.1.min.js?v=15.0.1"></script>
-<script src="/static/chatroom-markdown.js?v=literal-tilde-20261023"></script>
+<script src="/static/chatroom-markdown.js?v=20261025-line-indent"></script>
 <script src="/static/message-row-focus.js?v=20260904-editor-focus"></script>
 <script src="/static/pat.js?v=inline-order-20260910"></script>
 <script src="/static/rps.js?v=20261017-rps-reveal"></script>
@@ -474,7 +480,10 @@ window.AionSubPageNavigation = (() => {
 <link rel="stylesheet" href="/static/expressive-voice.css?v=20261003-3">
 <script src="/static/expressive-voice.js?v=20261003-3"></script>
 <script src="/static/local-voice.js?v=20261024"></script>
-<script src="/static/chat.js?v=20261024-images"></script>
+<script src="/static/native-message-sync.js?v=20261030-weak-network"></script>
+<link rel="stylesheet" href="/static/kitchen-cards.css?v=20261103-lookup2">
+<script src="/static/kitchen-cards.js?v=20261103-lookup3"></script>
+<script src="/static/chat.js?v=20261103-lookup"></script>
 <script src="/static/voice-call-policy.js?v=voice-latency-20260902a"></script>
 <script src="/static/voice-call.js?v=voice-latency-20260902a"></script>
 

@@ -45,17 +45,19 @@ async def restart_home(store, task_id):
     store.event(task_id, "status", {"text": "正在重启小家，页面会暂时断开；维修记录会保留。"})
     process.terminate()
     await asyncio.to_thread(process.wait, 15)
-    flags = (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
-    from repair_codex import work_environment
-    with (store.directory / "home-restart.log").open("ab") as log:
-        launched = subprocess.Popen([sys.executable, "-u", str(base / "main.py")], cwd=base,
-                                    stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                    creationflags=flags, start_new_session=os.name != "nt", close_fds=True,
-                                    env=work_environment())
-    store.runtime("home_process", json.dumps({"pid": launched.pid, "created": psutil.Process(launched.pid).create_time()}))
+    launched = None
+    if "--scheduled" not in args:
+        flags = (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP) if os.name == "nt" else 0
+        from repair_codex import work_environment
+        with (store.directory / "home-restart.log").open("ab") as log:
+            launched = subprocess.Popen([sys.executable, "-u", str(base / "main.py")], cwd=base,
+                                        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                        creationflags=flags, start_new_session=os.name != "nt", close_fds=True,
+                                        env=work_environment())
+        store.runtime("home_process", json.dumps({"pid": launched.pid, "created": psutil.Process(launched.pid).create_time()}))
     async with httpx.AsyncClient(timeout=3) as client:
         for _ in range(45):
-            if launched.poll() is not None:
+            if launched is not None and launched.poll() is not None:
                 raise RuntimeError("小家启动失败，详见维修目录 home-restart.log；需要电脑端检查。")
             await asyncio.sleep(2)
             try:

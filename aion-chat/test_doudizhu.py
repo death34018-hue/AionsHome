@@ -199,6 +199,10 @@ class DoudizhuTurnTests(unittest.IsolatedAsyncioTestCase):
         message = result["message"]
         self.assertEqual(message["sender"], "system")
         self.assertEqual(message["attachments"][0]["type"], "doudizhu_result")
+        card = message['attachments'][0]
+        self.assertEqual(card['balanceLabel'], '剩余手牌')
+        self.assertEqual({row['actor'] for row in card['rows'] if row['won']}, {'aion', 'connor'})
+        self.assertEqual({row['actor']: row['name'] for row in card['rows']}, labels)
         self.assertIn({"type": "system_model_context"}, message["attachments"])
         self.assertIn("农民方获胜", message["content"])
         self.assertIn("测试伙伴", message["content"])

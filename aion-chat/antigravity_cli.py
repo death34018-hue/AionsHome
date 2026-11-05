@@ -246,6 +246,8 @@ async def _stream_chat(binary, prompt, model, workspace, timeout, *, agent=AGENT
         try:
             if attachment_paths:
                 image_manifest.write_text(json.dumps(attachment_paths, ensure_ascii=False), encoding='utf-8')
+            from system_logs import record_cli_prompt
+            await record_cli_prompt(prompt, instructions_file=Path(workspace) / '.agents' / 'agents' / f'{agent}.md')
             process = own_process(await asyncio.create_subprocess_exec(
                 *build_chat_command(binary, model, timeout, agent=agent), cwd=str(workspace),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,

@@ -7,6 +7,7 @@ from generation_control import terminate_process_tree
 import asyncio
 import contextlib
 import json
+import subprocess
 import time
 from dataclasses import dataclass
 from typing import AsyncIterator, Awaitable, Callable
@@ -160,6 +161,7 @@ async def stream_codex_app_server(
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
         env=env,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         limit=(64 if image_results else 8) * 1024 * 1024,
     )
     stderr_task = asyncio.create_task(_capture_stderr(process.stderr))
@@ -283,6 +285,9 @@ async def stream_codex_app_server(
                 final_text = completed_text
 
             if method == "error":
+                if image_results and params.get("willRetry") is True:
+                    yield CodexAppServerEvent("activity")
+                    continue
                 error = params.get("error") or params
                 detail = error.get("message") if isinstance(error, dict) else str(error)
                 raise CodexAppServerError(detail or "Codex App Server error")

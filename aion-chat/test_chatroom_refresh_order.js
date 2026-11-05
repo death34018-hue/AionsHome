@@ -40,6 +40,18 @@ test('foreground refreshes share one request while it is in flight', async () =>
   await Promise.all([one, two]);
 });
 
+test('foreground refresh merges delivered messages even while an old reply is waiting', async () => {
+  const { ctx, pending, renders } = harness();
+  ctx.isSending = true;
+  ctx.crApplyReceivedMessage = msg => { ctx.crMessagesById[msg.id] = msg; };
+  const refresh = ctx.refreshCurrentChatroomFromServer();
+  await tick();
+  pending[0].resolve([{ id: 'm2', content: 'already delivered', created_at: 2 }]);
+  assert.equal(await refresh, true);
+  assert.equal(ctx.crMessagesById.m2.content, 'already delivered');
+  assert.equal(renders.length, 0, 'must preserve the live composer and streaming rows');
+});
+
 test('manual room selection supersedes a late foreground response and its cache write', async () => {
   const { ctx, pending, stored } = harness();
   const older = ctx.refreshCurrentChatroomFromServer();

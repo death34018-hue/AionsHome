@@ -34,7 +34,7 @@ class RoleDeviceContextInjectionTest(unittest.IsolatedAsyncioTestCase):
     async def test_main_ai_request_receives_current_device_context(self):
         captured = []
 
-        async def fake_provider(messages, config, meta, temperature, max_tokens):
+        async def fake_provider(messages, config, meta, temperature, max_tokens, *, request_timeout):
             captured.extend(messages)
             yield "ok"
 
@@ -70,7 +70,7 @@ class RoleDeviceContextInjectionTest(unittest.IsolatedAsyncioTestCase):
     async def test_existing_device_context_is_not_duplicated(self):
         captured = []
 
-        async def fake_provider(messages, config, meta, temperature, max_tokens):
+        async def fake_provider(messages, config, meta, temperature, max_tokens, *, request_timeout):
             captured.extend(messages)
             yield "ok"
 
@@ -136,7 +136,7 @@ class RoleDeviceContextInjectionTest(unittest.IsolatedAsyncioTestCase):
     async def test_second_ai_non_codex_request_receives_current_device_context(self):
         captured = []
 
-        async def fake_provider(messages, config, meta, temperature, max_tokens):
+        async def fake_provider(messages, config, meta, temperature, max_tokens, *, request_timeout):
             captured.extend(messages)
             yield "ok"
 

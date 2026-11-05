@@ -72,15 +72,19 @@
     el('list').scrollTop = 0;
     loadList();
   }
-  async function loadList({keepDetail = false, quiet = false} = {}) {
+  async function loadList({keepDetail = false, quiet = false, keepPosition = false} = {}) {
     if (quiet && refreshBlocked()) { refreshPending = true; return; }
+    refreshPending = false;
     clearTimeout(searchTimer);
     const serial = ++listRequest;
+    const previousPage = state.page;
     renderControls();
     el('list').setAttribute('aria-busy', 'true');
-    const cached = !quiet && restoreSnapshot();
+    // A one-line loading placeholder collapses the scroller during an in-place refresh.
+    const inPlace = quiet || keepPosition;
+    const cached = !inPlace && restoreSnapshot();
     if (cached) status('正在更新本地缓存…');
-    else if (!quiet) el('list').innerHTML = '<div class="empty">正在读取记忆…</div>';
+    else if (!inPlace) el('list').innerHTML = '<div class="empty">正在读取记忆…</div>';
     el('prev').disabled = el('next').disabled = true;
     el('pageInput').disabled = el('jump').disabled = true;
     const q = new URLSearchParams({view:state.view,page:state.page,limit:state.limit,q:el('search').value.trim()});
@@ -95,6 +99,7 @@
       saveSnapshot(result);
       if (cached) status('');
       renderList();
+      if (inPlace && result.page < previousPage) el('list').scrollTop = el('list').scrollHeight;
       if (!keepDetail) {
         closeDetail();
         state.selected = null; state.detail = null;
@@ -104,14 +109,18 @@
       }
     } catch (e) {
       if (serial !== listRequest) return;
-      if (cached || quiet) { status(`暂未更新：${e.message}。当前显示上次读取的记忆。`); renderList(); return; }
+      if (cached || inPlace) {
+        status(`暂未更新：${e.message}。当前显示上次读取的记忆。`);
+        el('status').insertAdjacentHTML('beforeend',' <button class="secondary" id="refreshLibrary">刷新列表</button>');
+        return;
+      }
       el('count').textContent = '读取失败';
       el('list').innerHTML = `<div class="empty">${esc(e.message)}<br><button class="secondary" data-retry>重新加载</button></div>`;
     } finally {
       if (serial === listRequest) {
         el('list').setAttribute('aria-busy', 'false');
         el('pageInput').disabled = el('jump').disabled = false;
-        if (quiet || cached) { el('prev').disabled = state.page <= 1; el('next').disabled = state.page >= Math.ceil(state.total/state.limit); }
+        if (inPlace || cached) { el('prev').disabled = state.page <= 1; el('next').disabled = state.page >= Math.ceil(state.total/state.limit); }
       }
     }
   }
@@ -120,7 +129,7 @@
     state.detailReading = false;
     el('detail').classList.remove('open'); el('scrim').classList.remove('show');
     el('detail').removeAttribute('role'); el('detail').removeAttribute('aria-modal');
-    if (refreshPending && !el('dialog').open) { refreshPending = false; queueMicrotask(() => loadList({quiet:true})); }
+    if (refreshPending && !el('dialog').open) queueMicrotask(() => { if (refreshPending) loadList({quiet:true}); });
   }
   async function openDetail(id, {passive = false} = {}) {
     const serial = ++detailRequest;
@@ -251,7 +260,7 @@
         const saved = await request(id ? 'PUT' : 'POST', id ? endpoint(id,store) : base(store), body);
         el('dialog').close();
         notify(saved.embedding_ready === false ? '记忆已保存；向量暂未生成，可稍后重建索引' : '记忆已保存');
-        if (store === state.store) { await loadList(); if (id && state.items.some(m => m.id === id)) openDetail(id); }
+        if (store === state.store) { await loadList({keepPosition:true}); if (id && state.items.some(m => m.id === id)) openDetail(id); }
       });
       el('editText').focus();
     } catch (e) { if (el('dialog').open && ticket === dialogRequest) el('dialogError').textContent = e.message; }
@@ -267,7 +276,7 @@
       el('confirmDelete').onclick = () => submitDialog(el('confirmDelete'), async () => {
         await request('DELETE', `${endpoint(id,store)}?confirm_related=${related.length > 0}`);
         el('dialog').close(); notify('记忆已删除，聊天原文已保留');
-        if (store === state.store) { closeDetail(); await loadList(); }
+        if (store === state.store) { closeDetail(); await loadList({keepPosition:true}); }
       });
     } catch (e) { if (el('dialog').open && ticket === dialogRequest) el('dialogError').textContent = e.message; }
   }
@@ -304,7 +313,7 @@
         const result = await request('POST', `${base(store)}/maintenance/${tool}`, undefined, 30*60*1000);
         if (result.ok === false) throw new Error(result.message || '操作未完成');
         const message = isDigest ? (result.message || '总结完成') : `索引重建完成：${result.success}/${result.total} 条成功`;
-        el('dialog').close(); status(message); notify(message); loadList();
+        el('dialog').close(); status(message); notify(message); loadList({keepPosition:true});
       });
     });
   }
@@ -361,7 +370,7 @@
   };
   el('closeDialog').onclick = dismissDialog;
   el('dialog').addEventListener('cancel', e => { e.preventDefault(); dismissDialog(); });
-  el('dialog').addEventListener('close', () => { if (refreshPending) { refreshPending = false; loadList(); } });
+  el('dialog').addEventListener('close', () => { if (refreshPending) loadList({keepPosition:true}); });
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape' && !el('dialog').open) closeDetail();
     if (e.key === 'Tab' && innerWidth < 750 && el('detail').classList.contains('open') && !el('dialog').open) {
@@ -382,7 +391,7 @@
     if (refreshBlocked() && !el('dialog').open) el('status').innerHTML = '有记忆更新 <button class="secondary" id="refreshLibrary">刷新列表</button>';
     return loadList({quiet:true});
   };
-  el('status').onclick = e => { if (e.target.id === 'refreshLibrary') { refreshPending = false; status(''); loadList(); } };
+  el('status').onclick = e => { if (e.target.id === 'refreshLibrary') { status(''); loadList({keepPosition:true}); } };
   connectRetainedPageWS(message => {
     if (['memory_added','memory_updated','memory_deleted','memory_collection_changed','sync_reset_required'].includes(message.type)) onRefresh();
   }, {reconcile:onRefresh});

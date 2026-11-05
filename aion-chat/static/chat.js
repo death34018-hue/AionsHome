@@ -1,12 +1,14 @@
 let conversations = [];
 let currentConvId = null;
 let currentMessages = [];
+let privateMessageRevision = 0;
 let serverMessageIds = new Set();
 let models = [];
 let privateModelReady = Promise.resolve();
 const DEPRECATED_MODEL_PROVIDERS = new Set(["gemini_cli"]);
 let sending = false;
 let streamingAiId = null;
+let privateTypingStatus = null;
 let _abortController = null;  // 用于中止 AI 生成
 let camCheckMsgId = null;
 let poiSearchMsgId = null;
@@ -108,7 +110,7 @@ function applyAionTheme(theme) {
   document.body.dataset.theme = next;
   localStorage.setItem('aion_chat_theme', next);
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', next === 'dark' ? '#050923' : '#eef3ff');
+  if (meta) meta.setAttribute('content', next === 'dark' ? '#050923' : '#f5e5e4');
   // 通知原生 App 切换状态栏图标颜色
   if (window.AionStatusBar) window.AionStatusBar.setBarStyle(next);
 }
@@ -1250,6 +1252,7 @@ function enqueueTTSChunk(msgId, seq, url, createdAt, targetClientId, text = "", 
   }
   ttsChunkQueues[msgId].chunks[seq] = { url, text: text || "" };
   ttsChunkQueues[msgId].expressive = expressive;
+  ttsAudio.prefetchQueued?.(ttsChunkQueues, ttsPlayOrder);
   // 通话中时通知语音模块 AI 开始说话
   if ((voiceInCall || (typeof videoCall !== 'undefined' && videoCall.active)) && !ttsPlaying) {
     notifyVoiceAiSpeaking(true);
@@ -1258,6 +1261,7 @@ function enqueueTTSChunk(msgId, seq, url, createdAt, targetClientId, text = "", 
 }
 
 async function playNextTTSChunk() {
+  ttsAudio.prefetchQueued?.(ttsChunkQueues, ttsPlayOrder);
   const hasChatroomTTS = ttsPlayOrder.some(id => id.startsWith('cm_'));
   const voiceCallActive = !!(window.VoiceCall && window.VoiceCall.isActive && window.VoiceCall.isActive());
   if (!hasChatroomTTS && !ttsEnabled && !Object.values(ttsChunkQueues).some(q => q.expressive) && !voiceCallActive && !(typeof videoCall !== 'undefined' && videoCall.active)) { ttsAudio.endSpeech?.(); ttsPlaying = false; return; }
@@ -1359,6 +1363,8 @@ function finishTTSForMsg(msgId, createdAt, targetClientId) {
   // 标记某条消息的 TTS 分段全部到达，如果已经播完所有分段则清理
   const q = ttsChunkQueues[msgId];
   if (!q) return;
+  window.AionTtsReplayPlaylist?.remember(msgId, Object.keys(q.chunks).map(Number).sort((a, b) => a - b)
+    .map(seq => typeof q.chunks[seq] === 'object' ? q.chunks[seq].url : q.chunks[seq]));
   q.finished = true;
   _cleanupFinishedTTS();
 }
@@ -1420,7 +1426,10 @@ async function replayTTS(msgId) {
     _playReplayChunk(btn, token);
 
     replayDiscoverPromise = discoverReplayChunks(msgId).then(chunks => {
-      if (token === replayToken && chunks.length) replayChunks = chunks;
+      if (token === replayToken && chunks.length) {
+        replayChunks = chunks;
+        replayAudio.prefetch?.(chunks.slice(replayIdx, replayIdx + 3));
+      }
       return chunks;
     });
   } catch(e) {
@@ -1429,6 +1438,11 @@ async function replayTTS(msgId) {
 }
 
 async function discoverReplayChunks(msgId) {
+  if (window.AionTtsReplayPlaylist) return window.AionTtsReplayPlaylist.load(msgId, () => discoverLegacyReplayChunks(msgId));
+  return discoverLegacyReplayChunks(msgId);
+}
+
+async function discoverLegacyReplayChunks(msgId) {
   const chunks = [];
   for (let i = 0; i < 50; i++) {
     const resp = await fetch(`/api/tts/audio/${msgId}_s${i}`, { method: 'HEAD' });
@@ -1460,6 +1474,7 @@ function _playReplayChunk(btn, token = replayToken) {
     return;
   }
   replayAudio.src = replayChunks[replayIdx];
+  replayAudio.prefetch?.(replayChunks.slice(replayIdx, replayIdx + 3));
   replayAudio.onended = () => { replayIdx++; _playReplayChunk(btn, token); };
   replayAudio.onerror = () => { replayIdx++; _playReplayChunk(btn, token); };
   replayAudio.play().catch((err) => {
@@ -1614,6 +1629,8 @@ function connectWS() {
 }
 
 function handleSync(msg) {
+  if (window.aionPrivateNativeSync?.observe(msg) === false) return;
+  if (['msg_created', 'msg_updated', 'msg_deleted'].includes(msg.type)) privateMessageRevision++;
   if (msg.type === 'system_log') { addSystemLog(msg.data); return; }
   if (msg.type === 'rps_updated') { window.AionRps?.onUpdate(msg.data); return; }
   if (msg.type === 'generation_stopped') { _chatControl.remoteStop(msg.data); return; }
@@ -1684,6 +1701,8 @@ function handleSync(msg) {
       const mi = currentMessages.findIndex(m => m.id === data.id);
       if (mi >= 0) { currentMessages[mi] = data; renderMessages(); }
     }
+  } else if (type === 'kitchen_changed') {
+    window.KitchenCards?.refresh();
   } else if (type === "wish_updated") {
     document.querySelectorAll('.wish-fulfill-card').forEach(card => {
       if (card.dataset.wishId === data.id) applyWishCardStatus(card, data.status || 'active');
@@ -1978,17 +1997,12 @@ function privateSystemMessageHTML(m, nextMessage = null) {
 
 const PRIVATE_MESSAGE_SPECIAL_TOKEN_RE = /(\[\[image:\S+?\]\]|\[转账(?:给[^：:]+?)?[：:]\s*-?\d+(?:\.\d+)?\s*元\])/g;
 
-function normalizePrivateMarkdownParagraphs(value, isUser) {
-  const text = String(value || '').trim();
-  if (!text || isUser) return text;
-  return text.replace(/\n(?!(?:\n|\s*(?:#{1,6}\s|[-*+]\s|\d+\.\s|>|```)))/g, '\n\n');
-}
-
 function privateMarkdownMessageHtml(value, isUser) {
+  if (!isUser && window.CompositionCards) value = window.CompositionCards.stripCommands(value);
   if (!isUser && window.AionRps) value = window.AionRps.stripCommands(value);
-  const source = normalizePrivateMarkdownParagraphs(value, isUser);
+  const source = String(value || '').trim();
   const renderMarkdown = window.ChatroomMarkdown && window.ChatroomMarkdown.render
-    ? window.ChatroomMarkdown.render
+    ? input => window.ChatroomMarkdown.render(input, { indentLineBreaks: !isUser })
     : input => `<p>${formatMsg(input)}</p>`;
   let cursor = 0;
   let html = '';
@@ -2029,13 +2043,16 @@ function privateMessageContentItems(value, isUser = false) {
   return items;
 }
 
-function privateMessageContentItemsWithInlinePats(value, isUser, notices) {
-  if (isUser || !notices?.length || !window.AionPat?.interleaveContent) {
+function privateMessageContentItemsWithInlinePats(value, isUser, notices, attachments) {
+  if (isUser) {
     return privateMessageContentItems(value, isUser);
   }
   const items = [];
-  for (const part of window.AionPat.interleaveContent(value, notices)) {
-    if (part.type === 'notice') items.push({type: 'pat_notice', message: part.message});
+  const parts = window.KitchenCards?.contentParts(value,notices,attachments)
+    || window.AionPat?.interleaveContent(value,notices) || [{type:'text',text:value}];
+  for (const part of parts) {
+    if (part.type === 'kitchen_lookup') items.push(part);
+    else if (part.type === 'notice') items.push({type: 'pat_notice', message: part.message});
     else items.push(...privateMessageContentItems(part.text, isUser));
   }
   return items;
@@ -2065,8 +2082,10 @@ function renderPrivateMessageHTML(m) {
   const hasWishFulfillmentAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'wish_fulfillment');
   const hasStandaloneCard = messageAttachments.some(a => typeof a === 'object' && (a.type === 'date_summary' || a.type === 'lounge_visit_report'));
   const isEmptyMessage = !displayContent && messageAttachments.length === 0;
-  const items = privateMessageContentItemsWithInlinePats(displayContent, isUser, m._inlinePatNotices);
-  const textHtml = items.map(item => item.type === 'pat_notice'
+  const items = privateMessageContentItemsWithInlinePats(displayContent, isUser, m._inlinePatNotices, messageAttachments);
+  const textHtml = items.map(item => item.type === 'kitchen_lookup'
+    ? window.KitchenCards.lookupHTML(item.lookup,roleLabel)
+    : item.type === 'pat_notice'
     ? privateSystemMessageHTML(item.message)
     : item.type === 'monologue'
       ? `<div class="inner-monologue-line"><div class="inner-monologue-content markdown-body">${privateMarkdownMessageHtml(item.text, isUser)}</div></div>`
@@ -2101,8 +2120,11 @@ function renderPrivateMessageHTML(m) {
 function updatePrivateStreamingMessage(messageId, display) {
   const flow = document.querySelector(`#m_${messageId} .private-message-flow`);
   if (!flow) return;
-  const items = privateMessageContentItems(display);
-  flow.innerHTML = items.map(item => item.type === 'monologue'
+  const message = currentMessages.find(m => m.id === messageId);
+  const items = privateMessageContentItemsWithInlinePats(display,false,[],message?.attachments);
+  flow.innerHTML = items.map(item => item.type === 'kitchen_lookup'
+    ? window.KitchenCards.lookupHTML(item.lookup,worldBook.ai_name)
+    : item.type === 'monologue'
     ? `<div class="inner-monologue-line"><div class="inner-monologue-content markdown-body">${privateMarkdownMessageHtml(item.text, false)}</div></div>`
     : `<div class="private-ai-message-content markdown-body">${privateMarkdownMessageHtml(item.text, false)}</div>`
   ).join('');
@@ -2141,6 +2163,9 @@ function renderMessages() {
     return renderPrivateMessageHTML(m);
   }).join("");
   // 恢复音乐卡片
+  if (privateTypingStatus && privateTypingStatus.id === streamingAiId) {
+    _updateTypingStatus(privateTypingStatus.id, privateTypingStatus.text);
+  }
   for (const mid of Object.keys(msgMusicCards)) {
     renderMusicCards(mid);
   }
@@ -2348,7 +2373,11 @@ function handleRealtimeStreamError(msgId, errorText, modelKey, savedMessage) {
     if (savedMessage) upsertCurrentMessage(savedMessage);
     else {
       const partial = currentMessages.find(message => message.id === msgId);
-      if (partial) partial.content = (partial.content === '...' ? '' : partial.content) + '\n\n[' + (errorText || '回复已停止') + ']';
+      if (partial) {
+        partial.content = (partial.content === '...' ? '' : partial.content) + '\n\n[' + (errorText || '回复已停止') + ']';
+        partial.attachments = (partial.attachments || []).map(a => a?.type === 'kitchen_lookup' && a.status === 'pending'
+          ? {...a,status:'stopped'} : a);
+      }
     }
     renderMessages();
   }
@@ -2929,6 +2958,9 @@ async function selectConv(id) {
   document.getElementById('privateReplyPreparation')?.remove();
   const loadId = ++privateConversationLoadId;
   currentConvId = id;
+  currentMessages = currentMessages.filter(m => m.conv_id === id);
+  window.aionPrivateNativeSync?.reset();
+  window.onAionNativeMessages?.();
   applyPrivateIntimacyState({
     enabled: privateIntimacyEnabled(id),
     state: privateIntimacyEnabled(id) ? 'armed' : 'off',
@@ -2952,8 +2984,10 @@ async function selectConv(id) {
     api("GET", `/api/heart-whispers/by-conv/${id}`).catch(() => []),
     api("GET", `/api/memories/by-conv/${id}`).catch(() => []),
   ]);
+  const revision = privateMessageRevision;
   const msgs = await api("GET", `/api/conversations/${id}/messages?limit=${MSG_PAGE_SIZE}`);
   if (loadId !== privateConversationLoadId || currentConvId !== id) return;
+  if (revision !== privateMessageRevision) { refreshCurrentConversationFromServer(); return; }
   setCurrentMessages(msgs);
   hasMoreMessages = currentMessages.length >= MSG_PAGE_SIZE;
   renderConvList();
@@ -2984,23 +3018,36 @@ async function selectConv(id) {
 
 async function refreshCurrentConversationFromServer(options = {}) {
   if (!currentConvId) return false;
+  window.onAionNativeMessages?.();
   window.AionRps?.refresh({live:true});
   const convId = currentConvId;
   try {
-    conversations = await api("GET", "/api/conversations");
+    api("GET", "/api/conversations").then(result => {
+    conversations = result;
     renderConvList();
     const conv = conversations.find(c => c.id === convId);
     if (conv && currentConvId === convId) {
       $("chatTitle").textContent = conv.title;
       if ($("modelSelect")) $("modelSelect").value = conv.model;
     }
+    }).catch(e => console.warn('[chat] refresh conversations failed:', e));
   } catch (e) {
     console.warn('[chat] refresh conversations failed:', e);
   }
 
   try {
+    const revision = privateMessageRevision;
     const msgs = await api("GET", `/api/conversations/${convId}/messages?limit=${MSG_PAGE_SIZE}`);
     if (currentConvId !== convId) return false;
+    if (revision !== privateMessageRevision) {
+      setTimeout(() => { if (currentConvId === convId) refreshCurrentConversationFromServer(); }, 500);
+      return false;
+    }
+    if (sending) {
+      msgs.forEach(msg => { upsertCurrentMessage(msg, { replaceTempUser: true }); serverMessageIds.add(msg.id); });
+      renderMessages();
+      return true;
+    }
     setCurrentMessages(msgs);
     hasMoreMessages = msgs.length >= MSG_PAGE_SIZE;
     renderMessages();
@@ -3012,6 +3059,23 @@ async function refreshCurrentConversationFromServer(options = {}) {
   }
 }
 window.refreshCurrentConversationFromServer = refreshCurrentConversationFromServer;
+
+const privateNativeMessages = window.NativeMessageSync?.create({
+  read: () => window.NativeMessageSync.read(), target: () => currentConvId, field: 'conv_id',
+  apply(event) {
+    privateMessageRevision++;
+    const msg = event.data;
+    if (event.type === 'msg_deleted') currentMessages = currentMessages.filter(m => m.id !== msg.id);
+    else {
+      upsertCurrentMessage(msg, { replaceTempUser: true });
+      serverMessageIds.add(msg.id);
+      if (streamingAiId === msg.id) { streamingAiId = null; _stopTypingAnim(); }
+    }
+    renderMessages();
+  },
+});
+window.onAionNativeMessages = () => privateNativeMessages?.drain();
+window.aionPrivateNativeSync = privateNativeMessages;
 
 async function loadOlderMessages() {
   if (!currentConvId || !hasMoreMessages || loadingMore) return;
@@ -3112,6 +3176,10 @@ const _chatControl = new ChatGenerationControl({
     sending = false;
     _abortController = null;
     _stopTypingAnim();
+    currentMessages.filter(m => generation.messageIds.has(m.id)).forEach(m => {
+      m.attachments = (m.attachments || []).map(a => a?.type === 'kitchen_lookup' && a.status === 'pending'
+        ? {...a,status:'stopped'} : a);
+    });
     streamingAiId = null;
     currentMessages = currentMessages.filter(m => !((generation.messageIds.has(m.id) || m.id === 'temp_edit_thinking') && m.content === '...'));
     renderMessages();
@@ -3208,6 +3276,11 @@ async function send() {
   }
 }
 
+function privateStreamAlreadyFinal(event, messageId) {
+  return serverMessageIds.has(messageId) &&
+    ['start', 'cli_status', 'stream_reset', 'chunk', 'replace', 'stream_error'].includes(event.type);
+}
+
 async function _processSSEStream(res) {
     const generation = res.chatGeneration;
     const reader = res.body.getReader();
@@ -3228,6 +3301,8 @@ async function _processSSEStream(res) {
         try {
           const data = JSON.parse(line.slice(6));
           if (!_chatControl.accepts(data, generation)) continue;
+          if (data.type === 'start') aiMsgId = data.id;
+          if (privateStreamAlreadyFinal(data, aiMsgId)) { aiFinalAlreadyReceived = true; continue; }
           if (data.type === "tts_cancel") { cancelTTSMessage(data.data?.msg_id); continue; }
           if (data.type === "start") {
             aiMsgId = data.id;
@@ -3242,7 +3317,7 @@ async function _processSSEStream(res) {
             renderMessages();
             _startTypingAnim(aiMsgId);
           } else if (data.type === "cli_status") {
-            _updateTypingStatus(aiMsgId, data.text);
+            _updateTypingStatus(aiMsgId, data.text, data.kitchen_lookup);
           } else if (data.type === "stream_reset") {
             aiContent = "";
             const mi = currentMessages.findIndex(m => m.id === aiMsgId);
@@ -3250,7 +3325,7 @@ async function _processSSEStream(res) {
             renderMessages();
             _startTypingAnim(aiMsgId);
           } else if (data.type === "chunk" || data.type === "replace") {
-            if (aiFinalAlreadyReceived) continue;
+            if (aiFinalAlreadyReceived || serverMessageIds.has(aiMsgId)) continue;
             _stopTypingAnim();
             aiContent = data.type === "replace" ? data.content : aiContent + data.content;
             const display = aiContent.replace(/\[(?:SVAKOM|ANKNI):[^\]]*(?:\]|$)/gi, '').replace(/\[CAM_CHECK\]/g, '').replace(/\[POI_SEARCH:[^\]]*\]/g, '').replace(/\[MUSIC:[^\]]*\]/g, '').replace(/\[ALARM:[^\]]*\]/g, '').replace(/\[REMINDER:[^\]]*\]/g, '').replace(/\[Monitor:[^\]]*\]/g, '').replace(/\[SCHEDULE_DEL:[^\]]*\]/g, '').replace(/\[SCHEDULE_LIST\]/g, '').replace(/\[NEXT_CHAT:[^\]]*\]/gi, '').replace(/\[TOY:[^\]]*\]/g, '').replace(/\[HEART:[^\]]*\]/g, '').replace(/\[MEMORY:[^\]]*\]/g, '').replace(/\[查看动态:\d+\]/g, '').replace(/\[视频电话\]/g, '').replace(/\[SELFIE:\s*[^\]]*\]/g, '').replace(/\[DRAW:\s*[^\]]*\]/g, '').replace(/\[SONG\][\s\S]*?\[\/SONG\]/gi, '').replace(/<meta>[\s\S]*?<\/meta>/g, '').replace(/\s*<autonomy_state>[\s\S]*$/gi, '').trim();
@@ -3421,6 +3496,11 @@ async function saveEdit(id) {
           if (!_chatControl.accepts(data, generation)) continue;
           if (data.type === "tts_cancel") { cancelTTSMessage(data.data?.msg_id); continue; }
           if (data.type === 'start') {
+            aiMsgId = data.id;
+            currentMessages = currentMessages.filter(m => m.id !== tempAiId);
+          }
+          if (privateStreamAlreadyFinal(data, aiMsgId)) continue;
+          if (data.type === 'start') {
             _stopTypingAnim();
             // 替换临时思考占位为真正的 AI 消息
             const tempIdx = currentMessages.findIndex(m => m.id === tempAiId);
@@ -3431,7 +3511,7 @@ async function saveEdit(id) {
             renderMessages();
             _startTypingAnim(aiMsgId);
           } else if (data.type === 'cli_status') {
-            _updateTypingStatus(aiMsgId, data.text);
+            _updateTypingStatus(aiMsgId, data.text, data.kitchen_lookup);
           } else if (data.type === 'stream_reset') {
             aiContent = '';
             const mi = currentMessages.findIndex(m => m.id === aiMsgId);
@@ -3556,6 +3636,8 @@ async function regenerateMsg(aiMsgId) {
         try {
           const d = JSON.parse(line.slice(6));
           if (!_chatControl.accepts(d, generation)) continue;
+          if (d.type === 'start') newId = d.id;
+          if (privateStreamAlreadyFinal(d, newId)) continue;
           if (d.type === "tts_cancel") { cancelTTSMessage(d.data?.msg_id); continue; }
           if (d.type === "start") {
             newId = d.id;
@@ -3563,6 +3645,8 @@ async function regenerateMsg(aiMsgId) {
             upsertCurrentMessage({ id: newId, conv_id: currentConvId, role: "assistant", content: "...", created_at: Date.now()/1000 });
             renderMessages();
             _startTypingAnim(newId);
+          } else if (d.type === "cli_status") {
+            _updateTypingStatus(newId, d.text, d.kitchen_lookup);
           } else if (d.type === "stream_reset") {
             aiContent = "";
             const mi = currentMessages.findIndex(m => m.id === newId);
@@ -3656,9 +3740,21 @@ function _startTypingAnim(msgId) {
   }, 2500);
 }
 function _stopTypingAnim() {
+  privateTypingStatus = null;
   if (_typingTimer) { clearInterval(_typingTimer); _typingTimer = null; }
 }
-function _updateTypingStatus(msgId, statusText) {
+function _updateTypingStatus(msgId, statusText, lookup) {
+  const message = currentMessages.find(m => m.id === msgId);
+  if (lookup && message) {
+    _stopTypingAnim();
+    message.attachments = [...(message.attachments || []).filter(a => a?.type !== 'kitchen_lookup'),lookup];
+    if (message.content === '...') message.content = '';
+    updatePrivateStreamingMessage(msgId,message.content);
+    scrollBottom();
+    return;
+  }
+  if (message?.attachments?.some(a => a?.type === 'kitchen_lookup' && a.status === 'pending')) return;
+  privateTypingStatus = {id:msgId, text:statusText};
   // CLI 状态更新：替换 typing bubble 中的文本，保留弹跳动画
   const container = document.getElementById(`m_${msgId}`);
   if (!container) return;
@@ -3668,7 +3764,8 @@ function _updateTypingStatus(msgId, statusText) {
     // 如果 typing 动画已停止，重新启动
     bubble.classList.add('typing-bubble');
   }
-  bubble.innerHTML = `<span class="typing-text">${statusText}</span><span class="typing-dots"><span></span><span></span><span></span></span>`;
+  bubble.innerHTML = '<span class="typing-text"></span><span class="typing-dots"><span></span><span></span><span></span></span>';
+  bubble.querySelector('.typing-text').textContent = statusText;
   // 停掉旧的循环切换定时器（不需要在"思考中"和"正在输入"之间轮换了）
   if (_typingTimer) { clearInterval(_typingTimer); _typingTimer = null; }
 }
@@ -4546,6 +4643,7 @@ function renderAttachments(atts) {
   if (images.length) mediaHtml = mediaHtml.replace('<!--chat-images-->', ChatImagePreview.group(images));
   if (mediaHtml) html += '<div class="msg-media">' + mediaHtml + '</div>';
   if (capsuleHtml) html += capsuleHtml;
+  html += window.KitchenCards?.render(atts) || '';
   return html;
 }
 
@@ -5685,6 +5783,7 @@ function syncSubPageMode(url) {
   const path = (() => {
     try { return new URL(url, location.origin).pathname; } catch(e) { return url || ''; }
   })();
+  try { window.AionFloatingChat?.setVisiblePage?.(path); } catch(e) {}
   const isHome = path === '/';
   const isImmersive = ['/wishes', '/texas-holdem', '/liars-dice'].includes(path);
   const ov = $('subPageOverlay');
@@ -5938,6 +6037,7 @@ function closeSubPage(skipReload = false) {
   if (activeSubPageFrame) activeSubPageFrame.style.display = 'none';
   activeSubPageFrame = null;
   currentSubPage = null;
+  try { window.AionFloatingChat?.setVisiblePage?.('/chat'); } catch(e) {}
   syncHealthRingPageVisibility();
   applyAionTheme(localStorage.getItem('aion_chat_theme') || document.body.dataset.theme || 'dark');
   // 回到聊天页后重新加载消息列表（拿到后台生成完成的新消息）

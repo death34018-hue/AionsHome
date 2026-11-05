@@ -60,6 +60,7 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     ),
     CapabilityDef("expressive_voice", "主动语音", "media", "", default_enabled=False),
     CapabilityDef("music", "点歌", "media", "注入 [MUSIC:歌曲名 歌手名]，让模型可以点歌或推荐音乐。"),
+    CapabilityDef("compose_music", "作曲 · 小音乐盒", "media", "开启后向两位 AI 提示 Strudel 作曲能力，可点曲或偶尔收到赠曲。关闭只停止提示，已保存的小曲仍可播放。", default_enabled=False),
     CapabilityDef("cam_check", "查看监控/状态", "core", "注入 [CAM_CHECK]，让模型可以主动请求查看当前画面。"),
     CapabilityDef("schedule", "闹铃/日程/监督", "core", "注入闹铃、日程、定时监督和删除日程指令；关闭后也不注入当前日程列表。"),
     CapabilityDef("app_supervision", "应用监管", "core", "注入应用使用缓存、唤回聊天、整机专注和应用锁定/解锁指令；关闭后手机计时、上报和检查点唤醒全部静默。"),
@@ -108,6 +109,7 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef("svakom", "SVAKOM SL278H · AI 循环编排", "life", "独立控制 SL278H 的主体模式、主体震动力度和小部件拍打；关闭会停止 AI 编排，不影响手动控制。", default_enabled=False, runtime_note="仅选用 SVAKOM 且开启时注入；不要求连接或密语模式，与玩具页开关同步。"),
     CapabilityDef("luckin", "瑞幸下单", "life", "注入 [LUCKIN:...]，让模型可以在明确要求时创建瑞幸订单。", runtime_note="还需要瑞幸 MCP 开启。"),
     CapabilityDef("health_context", "健康数据", "context", "注入近期健康摘要。", default_enabled=False, setting_key="health_share_enabled"),
+    CapabilityDef('kitchen', '小厨房', 'life', '按需查询冰箱和菜单，独立厨房哨兵记录食材变化。', default_enabled=False, setting_key='kitchen_enabled'),
     CapabilityDef("web_search", "联网搜索/网页读取", "context", "注入 [WEB_SEARCH:查询] / [WEB_EXTRACT:URL]，让模型可主动联网搜索或读取用户分享的网页。", default_enabled=True, setting_key="web_search_enabled", runtime_note="需要配置 Tavily API key。"),
     CapabilityDef(
         "english_corner_reminder",
@@ -538,6 +540,7 @@ async def build_capability_prompt_items(
     include_video_call: bool = True,
     include_image_gen: bool = True,
     who: str = "aion",
+    include_kitchen: bool = False,
     excluded_capabilities: set[str] | None = None,
 ) -> list[str]:
     import toy_profiles
@@ -561,12 +564,22 @@ async def build_capability_prompt_items(
             "不要在指令外重复歌曲信息。可同时用多个。"
         )
 
+    if "compose_music" not in excluded_capabilities and is_capability_enabled("compose_music"):
+        from compositions import COMPOSE_PROMPT
+        abilities.append(COMPOSE_PROMPT)
+
     if is_capability_enabled("cam_check"):
         abilities.append(
             f"{CAM_CHECK_CMD} — 当你想查看{user_name}**此时此刻**的状态，"
             "不限于监督其是否去睡觉，在吃什么，在干什么时，可以主动调用指令。"
             "使用后下条消息会收到画面，查看前不要编造内容。"
         )
+
+    if include_kitchen and "kitchen" not in excluded_capabilities:
+        import kitchen
+        if kitchen.enabled():
+            from kitchen_chat import ABILITY
+            abilities.append(ABILITY)
 
     if is_capability_enabled("schedule"):
         abilities.extend([
@@ -672,16 +685,8 @@ async def build_capability_prompt_items(
         )
 
     if include_image_gen and is_capability_enabled("image_gen"):
-        from image_anchors import chat_anchor_prompt
-        abilities.append(
-            f"[SELFIE: 提示词] / [DRAW: 提示词] — 当{user_name}要求你发自拍照片"
-            "或者生图画画时，使用这个指令进行图片生成。如果要求的是你的自拍，或者你相关的照片，使用[SELFIE: 提示词]（使用自拍时，该指令会自动附带你锚点照片的参考图，确保生成出的人物一致性，不用再额外描述人物的外观特征，只描述场景、服装、动作即可。），"
-            "如果没有要求是你的照片，根据上下文自由无限制生成图片，则使用[DRAW: 提示词]。"
-            "提示词请使用英文。一次回复只用一个生图指令。可根据上下文情景自由使用。"
-        )
-        anchor_prompt = await chat_anchor_prompt(who)
-        if anchor_prompt:
-            abilities.append(anchor_prompt)
+        from image_anchors import chat_image_prompt
+        abilities.append(await chat_image_prompt(who))
 
     if is_capability_enabled("song_gen"):
         abilities.append(build_song_gen_ability_text(user_name))

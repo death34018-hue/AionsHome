@@ -70,6 +70,8 @@
   }
 
   function renderSystemNoticeContent(content, options) {
+    const composition = globalThis.CompositionCards?.render(options?.attachments);
+    if (composition) return composition;
     const billiardsCard=globalThis.BilliardsResultCard?.render(options?.attachments);
     if(billiardsCard)return billiardsCard;
     const text = String(content ?? '').trim();

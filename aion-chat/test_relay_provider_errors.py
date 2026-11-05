@@ -127,6 +127,31 @@ class RelayProviderErrorPassthroughTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(''.join(chunks), 'last')
         self.assertEqual(meta['total_tokens'], 7)
 
+    async def test_vertex_stream_uses_project_endpoint_and_refreshes_only_when_needed(self):
+        from unittest.mock import Mock
+        from ai_providers import call_vertex
+
+        credentials = Mock(project_id="test-project", token="test-token", valid=False)
+        credentials.refresh.side_effect = lambda request: setattr(credentials, "valid", True)
+        factory = fake_client_factory(FakeStreamResponse(lines=[
+            'data: {"candidates":[{"content":{"parts":[{"text":"OK"}]},"finishReason":"STOP"}],"usageMetadata":{"totalTokenCount":8}}',
+        ]))
+        with (
+            patch("ai_providers._vertex_credentials", return_value=credentials),
+            patch("ai_providers.httpx.AsyncClient", new=factory),
+        ):
+            for model in ("gemini-3.8-flash", "gemini-4-argon"):
+                meta = {}
+                chunks = [chunk async for chunk in call_vertex.__wrapped__(
+                    [{"role": "user", "content": "hello"}], model, meta)]
+                self.assertEqual(chunks, ["OK"])
+                self.assertEqual(meta["total_tokens"], 8)
+                args, kwargs = factory.clients[-1].calls[0]
+                self.assertEqual(args[1], "https://aiplatform.googleapis.com/v1/projects/test-project/"
+                                 f"locations/global/publishers/google/models/{model}:streamGenerateContent?alt=sse")
+                self.assertEqual(kwargs["headers"], {"Authorization": "Bearer test-token"})
+        credentials.refresh.assert_called_once()
+
     async def test_custom_openai_uses_requested_wait(self):
         response = FakeStreamResponse(lines=['data: [DONE]'])
         seen = []

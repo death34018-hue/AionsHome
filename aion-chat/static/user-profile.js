@@ -201,7 +201,7 @@ profileEl('addEntry').addEventListener('click', () => {
   if (!profileData) return;
   if (draftEntries.filter(e => !['done','cancelled','retired'].includes(e.status)).length >= (profileData.max_entries || 24)) return showToast('请先合并或移除旧资料');
   const id = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}`;
-  const entry = {key:`manual.${id}`, category:'recent', subcategory:'ideas', kind:'idea', status:'active', content:'', next_step:'', locked:false};
+  const entry = {key:`manual.${id}`, category:'recent', subcategory:'plans', kind:'task', status:'active', content:'', next_step:'', locked:false};
   draftEntries.push(entry);
   editingEntry = entry.key;
   entryBeforeEdit = {...entry};

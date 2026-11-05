@@ -36,6 +36,10 @@ class _Chunks:
 
 
 class ChatroomStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Transport tests must not depend on the user's live kitchen switch or database.
+        self.enterContext(patch('kitchen.enabled', return_value=False))
+
     async def test_group_whispers_are_spoken_in_place_with_tts_switch(self):
         for sender, mode, enabled, reply, spoken in (
             ("aion", "safe_live", True, "前文。[悄悄话：只对你说。]后文。", "前文。只对你说。后文。"),

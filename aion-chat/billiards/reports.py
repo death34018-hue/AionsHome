@@ -51,7 +51,7 @@ def result_card(game, result, labels):
                f"累计胜局：{players[0]['name']} {score[0]} : {score[1]} {players[1]['name']}。\n"
                f"本局共 {result['shots']} 杆；{result['reason']}。")
     if result.get('match_complete'):
-        content += f"\n三局两胜 · 整场结束：{winner}以 {score[result['winner']]}:{score[1-result['winner']]} 赢得本场比赛。"
+        content += f"\n本场结束：{winner}以 {score[result['winner']]}:{score[1-result['winner']]} 赢得本场比赛。"
     card = {'type': 'billiards_result', 'game_id': game['id'], 'rack': result['rack'],
             'players': players, 'winner': result['winner'], 'score': score,
             'shots': result['shots'], 'reason': result['reason'], 'finished_at': result.get('finished_at'),

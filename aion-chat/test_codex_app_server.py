@@ -1,5 +1,6 @@
 import asyncio
 import json
+import subprocess
 import unittest
 
 from codex_app_server import (
@@ -136,7 +137,8 @@ class CodexAppServerStreamTests(unittest.IsolatedAsyncioTestCase):
     async def test_streams_text_reasoning_usage_and_sends_safe_params(self):
         process = _FakeProcess(_happy_messages())
 
-        async def spawn(*_args, **_kwargs):
+        async def spawn(*_args, **kwargs):
+            self.assertEqual(kwargs.get("creationflags", 0), getattr(subprocess, "CREATE_NO_WINDOW", 0))
             return process
 
         events = [

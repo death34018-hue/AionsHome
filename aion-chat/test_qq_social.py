@@ -986,6 +986,7 @@ function Invoke-RestMethod {
     return @{ settings = @{ bring_home = $true } }
 }
 function Stop-Process { param($Id) Write-Output 'STOPPED_PROCESS' }
+function Get-ScheduledTask { return $null }
 function Start-Process { $script:started = $true; Write-Output 'STARTED_HOME' }
 function Start-Sleep {}
 function Get-Content { param($LiteralPath, [switch]$Raw) return 'test-management' }

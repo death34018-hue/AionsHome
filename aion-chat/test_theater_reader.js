@@ -22,8 +22,8 @@ test('paragraph anchors retain blank lines, Unicode and image-slice source offse
   const html=follow.paragraphs(text,42,s=>s);
   const matches=[...html.matchAll(/data-source-start="(\d+)" data-source-end="(\d+)">([\s\S]*?)<\/p>/g)];
   assert.equal(matches.length,2);
-  for(const [,start,end,body] of matches)assert.equal(text.slice(Number(start)-42,Number(end)-42),body);
-  assert.equal(matches[1][3],'第二段\n继续');
+  for(const [,start,end,body] of matches)assert.equal(text.slice(Number(start)-42,Number(end)-42),body.replace(/<span[^>]*><\/span>/g,''));
+  assert.equal(matches[1][3],'第二段\n<span class="line-indent" aria-hidden="true"></span>继续');
 });
 
 test('one audio segment scrolls proportionally through its text and keeps the reading position centered', () => {
@@ -210,7 +210,7 @@ test('next chapter remains navigation while the story has unconfirmed discussion
 test('chapter completion controls preserve drafts and allow reopening finished chapters',async()=>{
   const elements=new Map();let current={id:'chapter',status:'draft',content:'故事正文',writing:false};
   const calls=[];
-  const c=vm.createContext({book:{id:'story'},currentConvId:'story',planningView:false,outlineBusy:false,
+  const c=vm.createContext({book:{id:'story'},chapters:[],currentConvId:'story',planningView:false,outlineBusy:false,
     chapter:()=>current,novel:()=>true,request:async(...args)=>calls.push(args),refresh:async()=>calls.push('refresh'),
     $:id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);},
     button:(label,handler)=>`<button onclick="${handler}">${label}</button>`});
@@ -224,6 +224,46 @@ test('chapter completion controls preserve drafts and allow reopening finished c
   current.writing=true;c.toolbar();
   assert.doesNotMatch(elements.get('studioToolbar').innerHTML,/本章还没写完|本章已写完/);
   await c.completeChapter(false);assert.equal(calls.length,2);
+});
+
+test('reading menu imports once, shows the full chapter count and opens the linked book',async()=>{
+  const calls=[],elements=new Map();
+  const c=vm.createContext({book:{id:'story'},chapters:[],currentConvId:'story',planningView:false,outlineBusy:false,
+    chapter:()=>null,novel:()=>true,showToast:message=>calls.push(message),
+    request:async(path)=>{calls.push(path);return {book_id:'reading-book',chapters:Object.fromEntries(Array.from({length:8},(_,i)=>[i,{}]))};},
+    refresh:async()=>{c.book.reading_book_id='reading-book';},
+    window:{parent:{openSubPage:url=>calls.push(url)}},
+    $:id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);},
+    button:(label,handler)=>`<button onclick="${handler}">${label}</button>`});
+  vm.runInContext(section('  function toolbar()', '  function renderPlanning()'),c);
+  vm.runInContext(section('  async function readTogether()', '  async function editChapter('),c);
+  c.toolbar();assert.match(elements.get('studioToolbar').innerHTML,/disabled title="完成第一章后可加入"/);
+  c.chapters=[{status:'ready'}];c.toolbar();
+  assert.doesNotMatch(elements.get('studioToolbar').innerHTML,/disabled title=/);
+  await c.readTogether();assert.equal(calls[0],'/books/story/reading');assert.match(calls[1],/共 8 章/);
+  c.toolbar();assert.match(elements.get('studioToolbar').innerHTML,/前往陪伴阅读/);
+  await c.readTogether();assert.equal(calls[2],'/reading?book=reading-book');
+});
+
+test('reading refresh adds late images without resetting notes and follows a moved chapter',async()=>{
+  const reading=fs.readFileSync(require('node:path').join(__dirname,'static/reading.html'),'utf8');
+  const calls=[],elements=new Map([['readerContent',{scrollTop:120}]]);
+  const detail={book:{total_chapters:3},chapters:[{id:10,chapter_index:1}]};
+  const latest={chapter:{id:10,html_content:'with picture'},highlights:[{id:7}],annotations:{0:{text:'保留点评'}}};
+  const c=vm.createContext({publishedRefreshBusy:false,document:{hidden:false},window:{},isAnnotating:false,replySending:false,
+    currentBook:{book_id:'theater_book'},currentChIdx:1,currentChapters:[],
+    chapterData:{chapter:{id:10,html_content:'text'},highlights:[{id:7}],annotations:{0:{text:'保留点评'}}},
+    api:async(_,url)=>JSON.parse(JSON.stringify(url.includes('/chapters/')?latest:detail)),
+    $:id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);},
+    ReadingCompanion:{busy:false,setChapter(book,index,data){calls.push(data.annotations[0].text,data.highlights[0].id);}},
+    clearTimeout(){},saveProgressTimer:null,saveProgress:()=>calls.push('save'),loadChapter:async index=>calls.push(index)});
+  vm.runInContext(reading.slice(reading.indexOf('async function refreshPublishedBook()'),reading.indexOf('window.onAionSubPageVisibilityChanged=')),c);
+  await c.refreshPublishedBook();
+  assert.equal(c.chapterData.chapter.html_content,'with picture');
+  assert.deepEqual(calls,['保留点评',7]);assert.equal(elements.get('readerContent').scrollTop,120);
+  detail.chapters[0].chapter_index=2;latest.chapter.id=11;
+  await c.refreshPublishedBook();
+  assert.deepEqual(calls.slice(2),[2,'save']);assert.equal(elements.get('readerContent').scrollTop,120);
 });
 
 test('deleting a playing message or novel stops the shared player without affecting other stories',()=>{
@@ -274,7 +314,7 @@ test('native chapter playback failure falls back to the same cached segment and 
 test('a completed chapter with an old review flag still reads as completed', () => {
   const elements=new Map([['messages',{querySelector:()=>({})}]]);
   const current={id:'chapter-six',number:6,title:'第六章',content:'读完的正文',status:'ready',needs_review:true,images:[]};
-  const c=vm.createContext({planningView:false,book:{},chapter:()=>current,chapters:[current],
+  const c=vm.createContext({window:{},planningView:false,book:{},chapter:()=>current,chapters:[current],
     conversations:[{id:'book',title:'故事'}],currentConvId:'book',selected:current.id,statusNames:{ready:'已完成'},
     readingFollow:null,TheaterFollow:{paragraphs:text=>`<p>${text}</p>`},escHtml:text=>text,
     button:(label,handler)=>`<button onclick="${handler}">${label}</button>`,

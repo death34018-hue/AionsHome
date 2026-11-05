@@ -1,5 +1,5 @@
 /* One quiet reading room for both conversations and novels. */
-/* Shared theme.css owns the day/night starfields and blue palette. */
+/* Shared theme.css owns the starfields; chat-day-glass.css supplies daylight glass. */
 body.theater-page.studio-shell {
   --studio-panel:rgba(10,15,48,.76);
   --studio-popup:rgba(12,18,52,.97);
@@ -71,6 +71,11 @@ body.studio-shell .input-row textarea::placeholder { white-space:nowrap; }
 .novel-body { font-family:inherit; font-size:var(--reader-size,16px); line-height:1.5; overflow-wrap:anywhere; letter-spacing:.015em; }
 .novel-body p { white-space:pre-wrap; margin:0 0 .35em; }
 .novel-body > p[data-source-start] { text-indent:1.5em; }
+.msg-row.assistant .msg-body-bubble,
+.studio-talk.assistant .studio-talk-content { text-indent:1.5em; }
+.novel-body > p[data-source-start] .line-indent,
+.msg-row.assistant .msg-body-bubble .line-indent,
+.studio-talk.assistant .studio-talk-content .line-indent { display:inline-block; width:1.5em; }
 .studio-reader-area { position:relative; display:flex; flex:1; min-height:0; min-width:0; }
 .studio-reader-area>.messages { min-width:0; min-height:0; }
 .studio-follow-toggle { position:absolute; top:6px; right:14px; z-index:8; display:grid; place-items:center; width:36px; height:36px; padding:0; border:1px solid var(--border); border-radius:50%; background:var(--studio-panel); color:var(--text2); opacity:.5; cursor:pointer; transition:opacity .15s; }
@@ -273,4 +278,106 @@ body.studio-shell .novel-reader { margin-top:0; }
   .studio-reading-header { gap:6px; padding:0 0 1px; }
   .studio-reading-header h1 { font-size:12px; }
   .studio-reading-header #novelNumber,.studio-reading-header #novelMeta { font-size:10px; }
+}
+
+/* Daylight surfaces reuse the chat palette while retaining the reading layout. */
+body.theater-page.studio-shell[data-theme="light"] {
+  --studio-panel: var(--glass-panel);
+  --studio-popup: var(--glass-popup);
+  --studio-selected: var(--surface3);
+}
+
+body.theater-page.studio-shell[data-theme="light"]::after {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 248, 244, 0.10));
+  opacity: 1;
+}
+
+body.theater-page.studio-shell[data-theme="light"] :is(.sidebar, .chat-header, .input-box) {
+  border-color: var(--border);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(20px) saturate(1.12);
+  -webkit-backdrop-filter: blur(20px) saturate(1.12);
+}
+
+body.theater-page.studio-shell[data-theme="light"] :is(
+  .studio-dialog, .studio-menu-panel, .persona-modal, .config-popup, .image-anchors-dialog,
+  .tts-top-player, .sel-toolbar, .reader-reply,
+  .anno-popup-card, .hl-popup-card, .ask-popup-card
+) {
+  background: var(--studio-popup);
+  border-color: var(--border);
+  box-shadow: var(--glass-shadow);
+  backdrop-filter: blur(22px) saturate(1.12);
+  -webkit-backdrop-filter: blur(22px) saturate(1.12);
+}
+
+body.theater-page.studio-shell[data-theme="light"] .input-row textarea {
+  background: rgba(255, 255, 255, 0.34);
+  border-color: rgba(153, 99, 123, 0.22);
+  color: var(--text);
+}
+
+/* The menu sits inside the header's blur layer, so give it a denser frost. */
+body.theater-page.studio-shell[data-theme="light"] .studio-menu-panel {
+  background: rgba(255, 251, 250, 0.94);
+}
+
+body.theater-page.studio-shell[data-theme="light"] #modelSettingsOverlay .config-popup {
+  box-shadow: var(--glass-shadow);
+}
+
+body.theater-page.studio-shell[data-theme="light"] .input-row textarea:focus {
+  border-color: var(--border-strong);
+}
+
+body.theater-page.studio-shell[data-theme="light"] :is(.studio-btn.primary, .message-nav button, .studio-follow-toggle) {
+  background: var(--glass-panel);
+  border-color: var(--border-strong);
+  color: var(--accent2);
+  box-shadow: var(--glass-shadow);
+}
+
+body.theater-page.studio-shell[data-theme="light"] :is(.novel-reader, .msg-row .msg-bubble) {
+  color: var(--text);
+  text-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+body.theater-page.studio-shell[data-theme="light"] .messages {
+  --reader-scroll-thumb: rgba(128, 91, 111, 0.42);
+  --reader-scroll-hover: rgba(128, 91, 111, 0.64);
+}
+
+body.theater-page.studio-shell[data-theme="light"] :is(.persona-modal-overlay, .sidebar-overlay),
+body.theater-page.studio-shell[data-theme="light"] :is(.studio-dialog, .image-anchors-dialog)::backdrop {
+  background: rgba(74, 46, 61, 0.20);
+}
+
+body.theater-page.studio-shell[data-theme="light"] .toast-msg {
+  background: var(--studio-popup);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+body.theater-page.studio-shell[data-theme="light"] :is(.sel-toolbar button.connor-btn, .rc-row.connor .rc-name) {
+  color: var(--connor-accent);
+}
+
+body.theater-page.studio-shell[data-theme="light"] :is(.anno-popup-card, .hl-popup-card, .ask-popup-card, .reader-reply) {
+  background: rgba(255, 251, 250, 0.94);
+}
+
+body.theater-page.studio-shell[data-theme="light"] .rc-bubble {
+  color: var(--text);
+  border-color: var(--border);
+  box-shadow: var(--glass-shadow);
+}
+
+body.theater-page.studio-shell[data-theme="light"] .rc-row.user .rc-bubble { background: var(--user-bg); }
+body.theater-page.studio-shell[data-theme="light"] .rc-row.assistant .rc-bubble { background: var(--aion-bg); }
+body.theater-page.studio-shell[data-theme="light"] .rc-row.connor .rc-bubble { background: var(--connor-bg); }
+
+body.theater-page.studio-shell[data-theme="light"]::highlight(studio-reading) {
+  background-color: rgba(166, 83, 112, 0.12);
 }

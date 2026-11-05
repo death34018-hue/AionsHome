@@ -3,6 +3,33 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {renderSystemNoticeContent, openMiniGame} = require('./static/system-notice-ui.js');
+const {render: renderGameCard} = require('./billiards/static/result-card.js');
+
+test('game scoreboard preserves multiple winners, amounts and escaped names', () => {
+  const html = renderGameCard([{type:'doudizhu_result', outcome:'农民方获胜', balanceLabel:'剩余手牌', rows:[
+    {name:'<地主>', delta:-6, net:'-6 元', balance:'6 张', won:false},
+    {name:'农民甲', delta:3, net:'+3 元', balance:'0 张', won:true},
+    {name:'农民乙', delta:3, net:'+3 元', balance:'2 张', won:true},
+  ]}]);
+  assert.match(html, /&lt;地主&gt;/);
+  assert.doesNotMatch(html, /<地主>/);
+  assert.equal((html.match(/data-winner="true"/g)||[]).length, 2);
+  assert.match(html, /-6 元/);
+  assert.match(html, /剩余手牌/);
+});
+
+test('historical table reports keep recorded balances without inventing missing values', () => {
+  const html = renderGameCard([{type:'table_game_result', title:'德州扑克', outcome:'本场结束', lines:[
+    '玩家甲：本场 +20.00 元 · 收桌余额 120.00 元',
+    '玩家乙：本场 -20.00 元 · 收桌余额 80.00 元',
+    '旧局：剩余 350 筹码（旧局未记录起始筹码）',
+  ], note:'原结算说明'}]);
+  assert.match(html, /120.00 元/);
+  assert.match(html, /80.00 元/);
+  assert.match(html, /旧局未记录起始筹码/);
+  assert.match(html, /原结算说明/);
+  assert.equal((html.match(/data-winner="true"/g)||[]).length, 1);
+});
 
 function escapeHtml(value) {
   return String(value)

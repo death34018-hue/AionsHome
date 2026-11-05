@@ -27,9 +27,9 @@
     if(statusKey===key)return;statusKey=key;
     $('seriesScore').textContent=`${game.score[0]} : ${game.score[1]}`;
     $('seriesScore').setAttribute('aria-label',`${label(0)} ${game.score[0]} 比 ${game.score[1]} ${label(1)}`);
-    const match=game.match||{format:'legacy',status:'legacy'},series=match.format==='best_of_3',completed=match.status==='completed',ended=match.status!=='active';
-    $('rackBadge').textContent=series?`三局两胜 · 第 ${game.rack} / 3 局`:`旧版自由对局 · 第 ${game.rack} 局`;
-    $('seriesStage').textContent=completed?'本场冠军已决出':match.deciding?'决胜局':match.match_point?'赛点':series?'先赢两局夺冠':'';
+    const match=game.match||{format:'legacy',status:'legacy'},single=match.format==='single',series=match.format==='best_of_3',completed=match.status==='completed',ended=match.status!=='active';
+    $('rackBadge').textContent=single?'单局制 · 一局定胜负':series?`历史三局赛 · 第 ${game.rack} / 3 局`:`旧版自由对局 · 第 ${game.rack} 局`;
+    $('seriesStage').textContent=completed?'本场胜负已定':single?'打完一局即可收杆':match.deciding?'决胜局':match.match_point?'赛点':'';
     $('winMarks').textContent=series?game.score.map(n=>'●'.repeat(n)+'○'.repeat(Math.max(0,2-n))).join(' : '):'';
     $('winMarks').setAttribute('aria-label',`${label(0)}已赢${game.score[0]}局，${label(1)}已赢${game.score[1]}局`);
     const watching=!game.players.includes('user')||!game.controlled_here;
@@ -55,7 +55,7 @@
     $('endDialog').dataset.series=match.status;
     $('seriesFinal').hidden=!completed;
     $('endDialog').querySelector('.dialog-close').hidden=ended;
-    $('endKicker').textContent=completed?'MATCH COMPLETE · 三局两胜':'THE FINAL POCKET';
+    $('endKicker').textContent=completed?(single?'MATCH COMPLETE · 单局结束':'MATCH COMPLETE · 比赛结束'):'THE FINAL POCKET';
     $('endLobbyBtn').className=ended?'primary':'quiet';
     if(game.state.result){
       $('endTitle').textContent=completed?(game.players[match.winner]==='user'?'这一轮，你是冠军！':'本场冠军揭晓'):`${label(game.state.result.winner)}赢了这局`;
@@ -64,12 +64,12 @@
         $('championName').textContent=label(match.winner);
         $('finalLeftName').textContent=label(0);$('finalRightName').textContent=label(1);
         $('finalScore').textContent=game.score.join(' : ');
-        $('endReason').textContent=game.score[1-match.winner]===0?'直落两局，拿下整轮胜利。':'决胜局落定，这一轮分出胜负。';
+        $('endReason').textContent=single?game.state.result.reason:game.score[1-match.winner]===0?'直落两局，拿下整轮胜利。':'决胜局落定，这一轮分出胜负。';
         const reports=game.result_reports||[];
         $('finalRacks').replaceChildren();
         for(const report of reports){const row=element('li');row.append(element('span','',`第 ${report.rack} 局`),element('strong','',`${label(report.winner)}胜`));$('finalRacks').append(row);}
         $('endStats').textContent=`本场 ${game.rack} 局 · 共 ${reports.reduce((total,r)=>total+r.shots,0)} 杆 · 战绩已保存`;
-      }else $('endStats').textContent=`${series?'三局两胜':'旧版对局'} · ${label(0)} ${game.score[0]} : ${game.score[1]} ${label(1)} · 本局 ${game.state.shotCount} 杆`;
+      }else $('endStats').textContent=`${single?'单局制':series?'历史三局赛':'旧版对局'} · ${label(0)} ${game.score[0]} : ${game.score[1]} ${label(1)} · 本局 ${game.state.shotCount} 杆`;
     }
     $('playAgainBtn').textContent=aiOnly?'让他们打下一局':'进入下一局';
     $('playAgainBtn').hidden=ended;

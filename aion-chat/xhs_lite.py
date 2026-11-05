@@ -162,6 +162,21 @@ async def _run_worker(endpoint: str, body: dict | None = None, *, cookie: str | 
         raise RuntimeError(f"小红书 worker HTTP {result.get('status')}")
     if isinstance(data, dict) and data.get("error"):
         raise RuntimeError(str(data["error"]))
+    if isinstance(data, dict) and (data.get("success") is False or data.get("logged_in") is False):
+        failure = data.get("raw_error") or data.get("raw") or data
+        code = failure.get("code")
+        if str(code) == "-100":
+            raise RuntimeError("小红书登录已过期，请在基础配置中更新 Cookie 后重新测试登录")
+        if data.get("logged_in") is False and failure.get("success") is not False:
+            raise RuntimeError("小红书尚未登录，请在基础配置中更新 Cookie 后重新测试登录")
+        message = failure.get("msg") or failure.get("message") or data.get("msg") or "请求未成功"
+        diagnostics = []
+        if failure.get("http_status"):
+            diagnostics.append(f"HTTP {failure['http_status']}")
+        if code is not None:
+            diagnostics.append(f"错误码 {code}")
+        suffix = f"（{'，'.join(diagnostics)}）" if diagnostics else ""
+        raise RuntimeError(f"小红书 {endpoint} 失败{suffix}：{message}")
     return data
 
 
@@ -428,17 +443,23 @@ async def run_actor_roam(actor: str, *, manual: bool = False) -> dict:
         raise RuntimeError("未配置小红书 cookie")
 
     started = time.time()
+    await _run_worker("check-login", {}, cookie=cookie, timeout=60)
     actor_name = actor_label(actor)
     target = await _resolve_target(cfg, cookie)
     if not target.get("user_id"):
         raise RuntimeError("无法解析目标账号 user_id")
 
-    profile = await _run_worker(
-        "user-profile",
-        {"user_id": target["user_id"], "xsec_token": target.get("xsec_token") or cfg.get("target_xsec_token") or ""},
-        cookie=cookie,
-        timeout=90,
-    )
+    profile_error = None
+    try:
+        profile = await _run_worker(
+            "user-profile",
+            {"user_id": target["user_id"], "xsec_token": target.get("xsec_token") or cfg.get("target_xsec_token") or ""},
+            cookie=cookie,
+            timeout=90,
+        )
+    except RuntimeError as exc:
+        profile_error = exc
+        profile = {}
     notes = _extract_notes(profile)
     if not notes:
         search_keyword = (cfg.get("target_user_id") or cfg.get("target_nickname") or target.get("nickname") or target.get("user_id") or "").strip()
@@ -459,6 +480,8 @@ async def run_actor_roam(actor: str, *, manual: bool = False) -> dict:
                 if first_author:
                     target["nickname"] = first_author
     if not notes:
+        if profile_error:
+            raise RuntimeError(f"小红书主页读取失败，搜索也没有找到帖子：{profile_error}") from profile_error
         raise RuntimeError(f"目标账号没有可读取的帖子：{target.get('nickname') or target['user_id']}")
     latest = notes[0]
     detail = await _run_worker(

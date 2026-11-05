@@ -26,7 +26,7 @@ window.ImageAnchors = (() => {
         <header><h2 id="imageAnchorsTitle">熟悉的人 · 人物锚点</h2><button type="button" data-close aria-label="关闭人物锚点">×</button></header>
         <div class="image-anchors-body"><p class="image-anchors-hint">私聊、群聊与小剧场共用这些照片。只给实际出场的人带参考照；长相跟随照片，服饰、动作和场景由本次创作决定。</p>
         <div class="image-anchors-grid">${anchors.map((a, i) => `<section class="image-anchor-card" data-id="${escape(a.id)}" data-image="${escape(a.image)}">
-          <div class="image-anchor-preview"><img ${a.image?.startsWith('/uploads/') ? `src="${escape(a.image)}"` : 'hidden'} alt="人物 ${i + 1} 的锚点照片"><span ${a.image ? 'hidden' : ''}>人物 ${i + 1} · 添加照片</span></div>
+          <div class="image-anchor-preview"><img ${a.image?.startsWith('/image-anchors/') || a.image?.startsWith('/uploads/') ? `src="${escape(a.image)}"` : 'hidden'} alt="人物 ${i + 1} 的锚点照片"><span ${a.image ? 'hidden' : ''}>人物 ${i + 1} · 添加照片</span></div>
           <label>名字<input data-field="name" maxlength="80" value="${escape(a.name)}" placeholder="人物名字"></label>
           <label>别名<input data-field="aliases" value="${escape(a.aliases)}" placeholder="用逗号分隔"></label>
           <label>对应聊天身份<select data-field="identity"><option value="">按名字或别名识别</option>${Object.entries(names).map(([id, name]) => `<option value="${escape(id)}" ${a.identity === id ? 'selected' : ''}>${escape(name)}${id === 'user' ? '（我）' : ''}</option>`).join('')}</select></label>
@@ -82,18 +82,19 @@ window.ImageAnchors = (() => {
             const name = value(card, 'name');
             if (!name) continue;
             const photo = card.querySelector('[data-field="photo"]');
+            const path = '/anchors/' + encodeURIComponent(card.dataset.id.replace(/^anchor_/, ''));
+            const fields = JSON.stringify({name, aliases: value(card, 'aliases'), appearance: value(card, 'appearance'), identity: value(card, 'identity'), image: card.dataset.image || ''});
+            let saved;
             if (photo.files[0]) {
-              const body = new FormData(); body.append('file', photo.files[0]);
-              const response = await fetch('/api/upload', {method: 'POST', body});
-              const data = await response.json();
-              if (!response.ok || !data.url) throw Error(data.error || '照片上传失败');
-              card.dataset.image = data.url;
+              const body = new FormData();
+              body.append('fields', fields);
+              body.append('file', photo.files[0]);
+              saved = await request(path + '/photo', {method: 'PUT', body});
               photo.value = '';
+            } else {
+              saved = await request(path, {method: 'PUT', headers: {'Content-Type': 'application/json'}, body: fields});
             }
-            await request('/anchors/' + encodeURIComponent(card.dataset.id.replace(/^anchor_/, '')), {
-              method: 'PUT', headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({name, aliases: value(card, 'aliases'), appearance: value(card, 'appearance'), identity: value(card, 'identity'), image: card.dataset.image || ''})
-            });
+            card.dataset.image = saved.image || '';
           }
           node.close();
           window.showToast?.('人物锚点已保存，聊天与小剧场共用');

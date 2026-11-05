@@ -56,17 +56,20 @@ class ChatStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
                 if not isinstance(fn, ast.AsyncFunctionDef) or fn.name != 'content_stream':
                     continue
                 queue = asyncio.Queue()
-                env = {'stream_ai': source, '_stream_connor_model': source, 'model_started': lambda: lambda c: None,
+                env = {'stream_ai': source, '_stream_connor_model': source, 'kitchen_stream': chat_routes.kitchen_stream,
+                       'model_started': lambda: lambda c: None, 'kitchen_state': {}, 'conv_id': 'conv', 'room_id': 'room',
+                       'query_text': '', 'lounge_request_text': '',
                        'CLI_STATUS_PREFIX': CLI_STATUS_PREFIX, 'StreamActivity': StreamActivity,
                        '_q': queue, 'history': [], 'model_key': 'test', 'usage_meta': {},
-                       'body': SimpleNamespace(max_tokens=None), 'cancel_event': None,
+                       'body': SimpleNamespace(max_tokens=None, content=''), 'cancel_event': None,
                        'temperature': None, 'max_tokens': None, 'connor_messages': [],
                        'connor_history': [], 'aion_history': [], 'connor_model_key': 'test'}
                 factory = ast.parse('def factory():\n    has_reply = False\n    pass\n    return content_stream\n')
                 factory.body[0].body[1] = fn
                 ast.fix_missing_locations(factory)
                 exec(compile(factory, filename, 'exec'), env)
-                chunks = [c async for c in env['factory']()()]
+                with patch('kitchen_chat.kitchen.enabled', return_value=False):
+                    chunks = [c async for c in env['factory']()()]
                 with self.subTest(filename=filename, line=fn.lineno):
                     self.assertEqual(sum(isinstance(c, StreamActivity) for c in chunks), 2)
                     self.assertEqual(''.join(chunks), 'reply')

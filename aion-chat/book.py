@@ -19,7 +19,7 @@ BOOKS_DIR = DATA_DIR / "books"
 BOOKS_DIR.mkdir(exist_ok=True)
 
 # 单段最大用于 AI 批注的字数
-SEGMENT_MAX_CHARS = 5000
+SEGMENT_MAX_CHARS = 6500  # 软上限；按全章均分，保留自然段
 
 
 # ── 工具函数 ──────────────────────────────────────
@@ -299,42 +299,29 @@ def _html_escape(s: str) -> str:
     return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
-# ── 分段计算（5000 字/段）──────────────────────────
+# ── 按全章长度均衡分段 ──────────────────────────
 
 def _compute_segments(paragraphs: List[str]) -> list:
-    """
-    按 ≤5000 字切分段落为多个 segment，保证在段落边界切分。
-    返回: [{"start_p": 0, "end_p": 12, "char_count": 4800, "status": "not_sent"}, ...]
-    """
-    segments = []
-    total = len(paragraphs)
-    if total == 0:
-        return segments
-
-    start_p = 0
-    current_chars = 0
-
-    for i, p in enumerate(paragraphs):
-        current_chars += len(p)
-
-        # 到达最后一段 或 累计超过阈值
-        is_last = (i == total - 1)
-        if current_chars >= SEGMENT_MAX_CHARS or is_last:
-            segments.append({
-                "start_p": start_p,
-                "end_p": i,
-                "char_count": current_chars,
-                "status": "not_sent"
-            })
-            start_p = i + 1
-            current_chars = 0
-
-    # 如果最后一段太短（< 500 字），合并到前一段
-    if len(segments) >= 2 and segments[-1]["char_count"] < 500:
-        last = segments.pop()
-        segments[-1]["end_p"] = last["end_p"]
-        segments[-1]["char_count"] += last["char_count"]
-
+    """先确定批次数，再取最接近均分位置的自然段边界；不产生零碎尾批。"""
+    from bisect import bisect_left
+    if not paragraphs:
+        return []
+    offsets = [0]
+    for paragraph in paragraphs:
+        offsets.append(offsets[-1] + len(paragraph))
+    count = min(len(paragraphs), max(1, (offsets[-1] + SEGMENT_MAX_CHARS - 1) // SEGMENT_MAX_CHARS))
+    segments, start = [], 0
+    for part in range(1, count + 1):
+        if part == count:
+            end = len(paragraphs)
+        else:
+            target = offsets[-1] * part / count
+            low, high = start + 1, len(paragraphs) - (count - part)
+            right = min(high, bisect_left(offsets, target, low, high + 1))
+            end = min((max(low, right - 1), right), key=lambda i: abs(offsets[i] - target))
+        segments.append(dict(start_p=start, end_p=end - 1,
+                             char_count=offsets[end] - offsets[start], status='not_sent'))
+        start = end
     return segments
 
 

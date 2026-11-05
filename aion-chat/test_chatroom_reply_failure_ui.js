@@ -24,7 +24,7 @@ function harness() {
   rows.push(partial);
   const context = {
     rows, suppressed, textarea, window: {}, crStartupModelsReady: true,
-    streamingBubble: { closest: () => partial }, streamingText: '已收到的正文',
+    streamingBubble: { closest: () => partial }, streamingText: '已收到的正文', streamingLookup: null,
     pendingStreamId: 'partial', pendingStreamSender: 'aion', crMessageRevision: 0,
     crMessagesById: { user: { id: 'user', sender: 'user', content: '上一条消息' } },
     _crControl: { active: {} }, isSending: true, isAiChatting: false,
@@ -84,6 +84,30 @@ test('a whisper-only completion appears without public streaming chunks and is n
   assert.equal(ctx.rows.length, 1);
   assert.equal(ctx.rows[0], message);
   ctx.endStreamingBubble(message);
+  assert.equal(ctx.rows.length, 1);
+});
+
+test('native final reply replaces a stalled streaming row and ignores late stream chunks', () => {
+  const ctx = harness();
+  ctx.currentRoom = { id: 'r' };
+  ctx.crFinalMessageIds = new Set();
+  ctx.crSseMessageIds = { aion: 'partial' };
+  ctx.reconcileLocalUserEcho = () => false;
+  ctx.document.getElementById = id => ctx.rows.find(row => row.id === id);
+  ctx.document.createElement = () => ({ set innerHTML(html) {
+    this.firstElementChild = { ...JSON.parse(html), classList: { contains: () => false } };
+  } });
+  vm.runInContext(extract('crApplyReceivedMessage', 'const crNativeMessages'), ctx);
+  const handler = source.indexOf('function handleSSE(');
+  vm.runInContext(source.slice(handler, source.indexOf('\n}', handler) + 2), ctx);
+  const final = { room_id: 'r', id: 'partial', sender: 'aion', content: '完整回复', attachments: [] };
+  ctx.crApplyReceivedMessage(final);
+  assert.equal(ctx.rows.length, 1);
+  assert.equal(ctx.rows[0].content, '完整回复');
+  assert.equal(ctx.streamingBubble, null);
+  ctx.handleSSE({ type: 'aion_chunk', content: '迟到的半句话' });
+  assert.equal(ctx.rows[0].content, '完整回复');
+  ctx.crApplyReceivedMessage(final);
   assert.equal(ctx.rows.length, 1);
 });
 

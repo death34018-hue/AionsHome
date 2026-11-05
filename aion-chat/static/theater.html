@@ -262,7 +262,9 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
   .message-nav { right:6px; }
 }
 </style>
-<link rel="stylesheet" href="/static/theater-studio.css?v=paragraph-indent-1_5em-20261018">
+<link id="aion-theme-css" rel="stylesheet" href="/static/theme.css?v=20260905-theater-v2">
+<link rel="stylesheet" href="/static/chat-day-glass.css?v=20261102-2">
+<link rel="stylesheet" href="/static/theater-studio.css?v=20261102-dayglass1">
 <link rel="stylesheet" href="/static/image-viewer.css?v=20261024">
 <script src="/static/image-viewer.js?v=20261024"></script>
 </head>
@@ -380,7 +382,7 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
 <!-- Toast -->
 <div class="toast-msg" id="toast"></div>
 
-<script src="/static/theme.js?v=theme-20260905-theater-v2"></script>
+<script src="/static/theme.js?v=20261102-theater-dayglass1"></script>
 <script src="/static/theater_tts_queue.js?v=theater-tts-20260713"></script>
 <script src="/static/native-tts-audio.js?v=20260915-reading-loudness"></script>
 <script src="/static/tts-voices.js?v=elevenlabs-20261003"></script>
@@ -474,6 +476,7 @@ async function init() {
 
   // 加载对话列表
   conversations = await api('GET', '/api/theater/conversations');
+  moveConversationToFront(localStorage.getItem('theater_last_conv'));
   renderConvList();
 
   // WebSocket
@@ -481,6 +484,14 @@ async function init() {
 
   // 等待正文选择完成，避免小说加载中被误当作空剧场。
   if (conversations.length) await selectConv(conversations[0].id);
+}
+
+function moveConversationToFront(id) {
+  const index = conversations.findIndex(c => c.id === id);
+  if (index > 0) {
+    const [conversation] = conversations.splice(index, 1);
+    conversations.unshift(conversation);
+  }
 }
 
 /* ── 模型下拉 ── */
@@ -765,7 +776,11 @@ function reasoningDetailsHtml(m) {
 
 function messageBubblesHtml(m) {
   const raw = (m.content || '').replace(/<meta>[\s\S]*?<\/meta>/g, '').trim();
-  return `${reasoningDetailsHtml(m)}<div class="msg-bubble msg-body-bubble">${escHtml(raw).replace(/\n/g, '<br>')}</div>`;
+  const body = escHtml(raw).replace(/\n/g, '<br>');
+  const indented = m.role === 'assistant'
+    ? body.replace(/<br>(?!\s*(?:<br>|$))/g, '<br><span class="line-indent" aria-hidden="true"></span>')
+    : body;
+  return `${reasoningDetailsHtml(m)}<div class="msg-bubble msg-body-bubble">${indented}</div>`;
 }
 
 function updateStreamingReasoning(msgId, delta) {
@@ -2010,8 +2025,12 @@ document.addEventListener('DOMContentLoaded', () => {
   try { if (window.frameElement) window.parent.AionSubPageNavigation?.ready(window.frameElement); } catch (_) {}
 }, { once: true });
 </script>
-<script src="/static/theater-follow.js?v=20260917-reading-progress"></script>
-<script src="/static/image-anchors.js?v=20261022"></script>
-<script src="/static/theater-studio.js?v=20261024-images"></script>
+<script src="/static/theater-follow.js?v=20261025-line-indent"></script>
+<script src="/static/image-anchors.js?v=20261103"></script>
+<link rel="stylesheet" href="/static/reading-companion.css?v=20261028-opaque-notes">
+<script src="/static/reading-companion.js?v=20261028"></script>
+<script src="/static/theater-reading.js?v=20261028"></script>
+<script src="/static/theater-export.js?v=20261028"></script>
+<script src="/static/theater-studio.js?v=20261105-last-window"></script>
 </body>
 </html>

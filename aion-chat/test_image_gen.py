@@ -167,7 +167,8 @@ class ChatroomImageGenerationTests(unittest.IsolatedAsyncioTestCase):
             })
             return None
 
-        with patch("image_gen.generate_image", new=fake_generate_image), \
+        with patch.dict(image_gen.SETTINGS, {'image_gen_provider': 'existing'}), \
+                patch("image_gen.generate_image", new=fake_generate_image), \
                 patch.object(chatroom_routes, '_save_msg', new=AsyncMock()):
             await chatroom_routes._chatroom_image_gen(
                 "room-1",

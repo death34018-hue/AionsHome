@@ -6,9 +6,10 @@ import json, base64, mimetypes, asyncio, shutil, subprocess, os, re, time, uuid
 from functools import lru_cache
 from contextlib import nullcontext
 from pathlib import Path
+from threading import Lock
 
 from generation_control import own_stream, own_process
-from system_logs import logged_ai_call
+from system_logs import logged_ai_call, record_cli_prompt, record_sent_messages
 
 import httpx
 import tempfile
@@ -22,6 +23,7 @@ from codex_app_server import (
 from codex_chat_profile import prepare_chat_model_catalog
 import antigravity_cli
 from config import antigravity_model_supports_audio
+from config import VERTEX_CREDENTIALS_PATH
 from stream_safety import StreamActivity
 
 # CLI 状态前缀：yield 此前缀的 chunk 会被 _bg_generate 拦截为状态事件，不送入 TTS 和正文
@@ -539,6 +541,7 @@ async def call_siliconflow(messages: list, model: str, meta: dict | None = None,
     url = "https://api.siliconflow.cn/v1/chat/completions"
     headers = {"Authorization": f"Bearer {get_key('siliconflow')}", "Content-Type": "application/json"}
     api_messages = build_multimodal_messages(messages)
+    await record_sent_messages(api_messages)
     payload = {"model": model, "messages": api_messages, "stream": True,
                "stream_options": {"include_usage": True}}
     if temperature is not None:
@@ -596,8 +599,51 @@ GEMINI_SAFETY_SETTINGS = [
 # ── Gemini ────────────────────────────────────────
 @logged_ai_call("gemini")
 async def call_gemini(messages: list, model: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, include_audio: bool = False):
-    normal_stop_seen = False
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={get_key('gemini')}"
+    async for chunk in _stream_gemini(messages, url, {}, meta, temperature, max_tokens, include_audio):
+        yield chunk
+
+
+_vertex_refresh_lock = Lock()
+
+
+@lru_cache(maxsize=1)
+def _vertex_credentials():
+    from google.oauth2.service_account import Credentials
+
+    return Credentials.from_service_account_file(
+        str(VERTEX_CREDENTIALS_PATH),
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+
+
+def _vertex_endpoint(model: str):
+    from google.auth.transport.requests import Request
+
+    with _vertex_refresh_lock:
+        credentials = _vertex_credentials()
+        if not credentials.valid:
+            credentials.refresh(Request())
+        url = (
+            f"https://aiplatform.googleapis.com/v1/projects/{credentials.project_id}/locations/global/"
+            f"publishers/google/models/{model}:streamGenerateContent?alt=sse"
+        )
+        return url, {"Authorization": f"Bearer {credentials.token}"}
+
+
+@logged_ai_call("vertex")
+async def call_vertex(messages: list, model: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, include_audio: bool = False):
+    try:
+        url, headers = await asyncio.to_thread(_vertex_endpoint, model)
+    except Exception as error:
+        yield f"[Gemini错误] Vertex 认证失败（{type(error).__name__}），请检查本机凭证和到 Google 的网络连接。"
+        return
+    async for chunk in _stream_gemini(messages, url, headers, meta, temperature, max_tokens, include_audio):
+        yield chunk
+
+
+async def _stream_gemini(messages, url, headers, meta, temperature, max_tokens, include_audio):
+    normal_stop_seen = False
     contents = build_gemini_contents(messages, include_audio=include_audio)
     payload = {"contents": contents, "safetySettings": GEMINI_SAFETY_SETTINGS}
     system_parts = [
@@ -606,6 +652,7 @@ async def call_gemini(messages: list, model: str, meta: dict | None = None, temp
     ]
     if system_parts:
         payload["systemInstruction"] = {"parts": system_parts}
+    await record_sent_messages(([{"role":"system","parts":system_parts}] if system_parts else []) + contents)
     gen_config = {}
     if temperature is not None:
         gen_config["temperature"] = temperature
@@ -614,7 +661,7 @@ async def call_gemini(messages: list, model: str, meta: dict | None = None, temp
     if gen_config:
         payload["generationConfig"] = gen_config
     async with httpx.AsyncClient(timeout=120) as client:
-        async with client.stream("POST", url, json=payload) as resp:
+        async with client.stream("POST", url, headers=headers, json=payload) as resp:
             own_stream(resp)
             if resp.status_code != 200:
                 body = await resp.aread()
@@ -659,6 +706,7 @@ async def call_aipro(messages: list, model: str, meta: dict | None = None, tempe
     url = "https://shufulei.net/v1/chat/completions"	
     headers = {"Authorization": f"Bearer {get_key('aipro')}", "Content-Type": "application/json"}
     api_messages = build_multimodal_messages(messages)
+    await record_sent_messages(api_messages)
     payload = {"model": model, "messages": api_messages, "stream": True}
     if temperature is not None:
         payload["temperature"] = temperature
@@ -740,6 +788,7 @@ async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         yield f"[自定义中转站错误] 附件处理失败：{error}"
         return
+    await record_sent_messages(api_messages)
     payload = {"model": model, "messages": api_messages, "stream": True}
     if temperature is not None:
         payload["temperature"] = temperature
@@ -809,8 +858,10 @@ def _find_gemini_script() -> str | None:
     """定位全局安装的 gemini CLI 脚本路径"""
     # 方式1: npm root -g
     try:
-        npm_root = subprocess.check_output(["npm", "root", "-g"],
-                                           encoding="utf-8", stderr=subprocess.DEVNULL).strip()
+        npm_root = subprocess.check_output(
+            ["npm", "root", "-g"], encoding="utf-8", stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).strip()
         script = Path(npm_root) / "@google" / "gemini-cli" / "bundle" / "gemini.js"
         if script.exists():
             return str(script)
@@ -1034,6 +1085,7 @@ async def _spawn_cli_process(cmd: list[str], prompt: str, env: dict | None = Non
         stderr=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.PIPE,
         env=env,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         limit=8 * 1024 * 1024,
     )
     own_process(proc)
@@ -1090,6 +1142,7 @@ async def call_gemini_cli(messages: list, model: str, meta: dict | None = None,
     cmd.extend(["--skip-trust", "--approval-mode", approval, "-o", "stream-json", "-p", " "])
 
     try:
+        await record_cli_prompt(prompt)
         proc = await _spawn_cli_process(cmd, prompt)
 
         # 调试日志
@@ -1271,8 +1324,10 @@ def _find_codex_script() -> str | None:
         return str(local)
     # 全局安装
     try:
-        npm_root = subprocess.check_output(["npm", "root", "-g"],
-                                           encoding="utf-8", stderr=subprocess.DEVNULL).strip()
+        npm_root = subprocess.check_output(
+            ["npm", "root", "-g"], encoding="utf-8", stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).strip()
         script = Path(npm_root) / "@openai" / "codex" / "bin" / "codex.js"
         if script.exists():
             return str(script)
@@ -1365,11 +1420,11 @@ def _discover_codex_skill_files() -> tuple[str, ...]:
 def _build_codex_chat_environment(base_env: dict | None = None) -> dict:
     """Create a minimal Codex home for the companion-chat subprocess."""
     chat_home = Path(_CODEX_CHAT_HOME)
+    chat_home.mkdir(parents=True, exist_ok=True)
     desktop_auth = Path(_CODEX_HOME) / "auth.json"
     chat_auth = chat_home / "auth.json"
 
     if desktop_auth.is_file():
-        chat_home.mkdir(parents=True, exist_ok=True)
         if not chat_auth.exists() or desktop_auth.stat().st_mtime_ns > chat_auth.stat().st_mtime_ns:
             shutil.copy2(desktop_auth, chat_auth)
 
@@ -1388,6 +1443,13 @@ def _build_codex_chat_environment(base_env: dict | None = None) -> dict:
             chat_home, shutil.which("node") or "node", _CODEX_SCRIPT,
             source_cache=Path(_CODEX_HOME) / "models_cache.json",
         )
+    # Keep the growing skill list off argv: Windows limits command lines to 32K.
+    config_path = chat_home / "config.toml"
+    config_text = _build_disabled_skills_override(_discover_codex_skill_files()) + "\n"
+    if not config_path.is_file() or config_path.read_text(encoding="utf-8") != config_text:
+        temporary = chat_home / f"config-{uuid.uuid4().hex}.tmp"
+        temporary.write_text(config_text, encoding="utf-8")
+        temporary.replace(config_path)
     chat_profile_root = str(chat_home.parent)
     return {
         **environment,
@@ -1403,11 +1465,11 @@ def _build_codex_chat_command(
     script: str,
     workspace: str,
     model: str,
-    skill_files=None,
     image_paths=None,
 ) -> list[str]:
     overrides = [
         'model_verbosity="high"',
+        'model_reasoning_effort="high"',
         f"model_instructions_file={json.dumps(str(_CODEX_COMPANION_INSTRUCTIONS_FILE), ensure_ascii=False)}",
         f"model_catalog_json={json.dumps(str(Path(_CODEX_CHAT_HOME) / 'companion-models.json'), ensure_ascii=False)}",
         f"developer_instructions={json.dumps(_CODEX_CHAT_DEVELOPER_INSTRUCTIONS, ensure_ascii=False)}",
@@ -1433,25 +1495,21 @@ def _build_codex_chat_command(
         "include_collaboration_mode_instructions=false",
         "include_environment_context=false",
     ]
-    disabled_skills = (
-        tuple(skill_files) if skill_files is not None else _discover_codex_skill_files()
-    )
-    if disabled_skills:
-        overrides.append(_build_disabled_skills_override(disabled_skills))
-
     return build_codex_app_server_command(node, script, overrides)
+
+
+_CODEX_SENTINEL_INSTRUCTIONS = "You are the AionsHome sentinel classifier. Follow the user prompt exactly and return only the requested result. Do not use tools."
 
 
 def _build_codex_sentinel_command(
     node: str,
     script: str,
-    skill_files=None,
 ) -> list[str]:
     """Build a small, tool-free Codex profile for latency-sensitive patrols."""
     overrides = [
         'model_reasoning_effort="none"',
         'model_verbosity="low"',
-        'developer_instructions="You are the AionsHome sentinel classifier. Follow the user prompt exactly and return only the requested result. Do not use tools."',
+        f"developer_instructions={json.dumps(_CODEX_SENTINEL_INSTRUCTIONS)}",
         "features.shell_tool=false",
         "features.multi_agent=false",
         'features.multi_agent_v2={ root_agent_usage_hint_text = "", multi_agent_mode_hint_text = "" }',
@@ -1461,11 +1519,6 @@ def _build_codex_sentinel_command(
         "include_collaboration_mode_instructions=false",
         "include_environment_context=false",
     ]
-    disabled_skills = (
-        tuple(skill_files) if skill_files is not None else _discover_codex_skill_files()
-    )
-    if disabled_skills:
-        overrides.append(_build_disabled_skills_override(disabled_skills))
     return build_codex_app_server_command(node, script, overrides)
 
 
@@ -1589,6 +1642,8 @@ async def call_codex_cli(messages: list, model: str, meta: dict | None = None,
     try:
         env = _build_codex_chat_environment()
         async with _codex_semaphore():
+            await record_cli_prompt(prompt, instructions_file=_CODEX_COMPANION_INSTRUCTIONS_FILE,
+                                    developer=_CODEX_CHAT_DEVELOPER_INSTRUCTIONS, images=image_paths)
             async for event in own_stream(stream_codex_app_server(
                 cmd,
                 env=env,
@@ -1613,8 +1668,8 @@ async def call_codex_cli(messages: list, model: str, meta: dict | None = None,
                     yield StreamActivity()
                 elif event.kind == "activity":
                     yield StreamActivity()
-    except FileNotFoundError:
-        yield "[CodexCLI错误] 无法启动 Codex CLI 进程"
+    except FileNotFoundError as error:
+        yield f"[CodexCLI错误] 无法启动 Codex CLI 进程：{error}"
     except Exception as e:
         yield f"[CodexCLI错误] {e}"
 
@@ -1642,6 +1697,7 @@ async def call_codex_sentinel(
         # The post-sentinel has its own serial worker and must not reserve a
         # foreground chat slot. Existing callers retain their original limit.
         async with (_codex_semaphore() if use_chat_slot else nullcontext()):
+            await record_cli_prompt(prompt, developer=_CODEX_SENTINEL_INSTRUCTIONS, images=image_paths)
             async for event in stream_codex_app_server(
                 command,
                 env=env,
@@ -1934,8 +1990,9 @@ async def stream_ai(messages: list, model_key: str, meta: dict | None = None, te
         if cfg["provider"] == "siliconflow":
             async for chunk in call_siliconflow(normalized, cfg["model"], meta, temperature, max_tokens):
                 yield chunk
-        elif cfg["provider"] == "gemini":
-            async for chunk in call_gemini(
+        elif cfg["provider"] in ("gemini", "vertex"):
+            gemini_call = call_vertex if cfg["provider"] == "vertex" else call_gemini
+            async for chunk in gemini_call(
                 normalized, cfg["model"], meta, temperature, max_tokens,
                 include_audio=bool(cfg.get("audio", False)),
             ):

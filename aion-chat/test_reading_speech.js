@@ -55,7 +55,7 @@ async function test() {
   player.update(clips,'error');
   audio.at(-1).onended();
   assert.equal(player.state,'blocked','Synthesis failure must never be shown as complete');
-  const html = require('node:fs').readFileSync(require('node:path').join(__dirname,'static/reading.html'),'utf8');
+  const html = require('node:fs').readFileSync(require('node:path').join(__dirname,'static/reading-companion.js'),'utf8');
   const invitation = html.slice(html.indexOf('function inviteRead()'),html.indexOf('async function startAnnotateAll'));
   let requests=0, confirmations=0, approved=false;
   const ctx={currentBook:{},chapterData:{chapter:{segments_meta:[{status:'not_sent'}]}},isAnnotating:false,

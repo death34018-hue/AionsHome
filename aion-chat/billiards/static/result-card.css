@@ -1,3 +1,87 @@
 .billiards-result-card{flex:0 1 340px;min-width:0;max-width:100%;box-sizing:border-box;padding:11px 13px;border:1px solid var(--border,#b8bdb4);border-radius:11px;background:var(--surface,#f5f3ec);color:var(--text,#29372e);font-size:12px;line-height:1.6;text-align:left;overflow-wrap:anywhere;user-select:text;-webkit-user-select:text}
 .billiards-result-heading{display:flex;align-items:center;gap:7px;margin-bottom:6px}.billiards-result-heading strong{font-size:12px}.billiards-result-heading>span:last-child{margin-left:auto;color:var(--text3,#758173);font-size:10px}.billiards-result-badge{display:grid;place-items:center;width:19px;height:19px;flex:none;border-radius:50%;background:#263c30;color:#efe4c4;font:bold 13px Georgia,serif}
 .billiards-result-card p{margin:3px 0}.billiards-result-outcome{font-weight:600}.billiards-result-score,.billiards-result-detail{font-size:11px;color:var(--text2,#687365)}
+
+/* Game reports share this card in private chats and group chats. */
+.msg-row.system:has(.billiards-result-card),
+.system-event-msg:has(.billiards-result-card){
+  align-self:center;align-items:center;width:100%;max-width:100%;margin:8px 0;padding:0;
+}
+.msg-row.system:has(.billiards-result-card) .system-notice,
+.system-event-msg:has(.billiards-result-card) .system-event-line{
+  justify-content:center;width:100%;max-width:100%;box-sizing:border-box;padding:0 20px;
+}
+:is(.system-notice,.system-event-line):has(>.billiards-result-card)>.system-notice-marker{display:none}
+.msg-row.system:has(.billiards-result-card) .system-dots{
+  position:absolute;right:0;top:50%;transform:translateY(-50%);
+}
+
+/* Reference-inspired neon scorecards; the palette is intentionally fixed in both chat themes. */
+.billiards-result-card.game-report{
+  --report-ink:#f4f5ff;--report-muted:#a9b4f3;--report-line:#424caa;
+  --report-win:#69f4d4;--report-loss:#ff91b7;
+  position:relative;isolation:isolate;container-type:inline-size;flex:0 1 420px;width:420px;max-width:100%;
+  padding:12px 13px 11px;border:1.5px solid transparent;border-radius:15px;
+  background:linear-gradient(125deg,#111638,#080d23 55%,#0d183b) padding-box,linear-gradient(110deg,#a46aff,#626fff 35%,#27dffa) border-box;
+  box-shadow:0 0 18px #6d51ff21,inset 0 0 24px #3857dc12;
+  color:var(--report-ink);font-family:inherit;line-height:1.5;text-align:left;-webkit-text-size-adjust:100%;text-size-adjust:100%;
+}
+.game-report::before,.game-report::after{content:'';position:absolute;width:10px;height:10px;pointer-events:none}
+.game-report::before{top:5px;left:5px;clip-path:polygon(0 0,100% 0,0 100%);background:linear-gradient(135deg,#b386ff,#6234f3)}
+.game-report::after{bottom:5px;right:5px;clip-path:polygon(100% 0,100% 100%,0 100%);background:linear-gradient(135deg,#4a68ff,#25dcff)}
+.game-report-header{display:flex;align-items:center;gap:8px;padding:0 1px 8px;border-bottom:1px solid var(--report-line)}
+.game-report-emblem{position:relative;display:grid;place-items:center;flex:none;width:28px;height:28px;border:2px solid #5055b6;border-radius:50%;box-sizing:border-box;background:radial-gradient(circle at 30% 22%,#385754 0,#0c2b28 32%,#030c14 72%);box-shadow:0 0 0 2px #151c59,inset -3px -4px 5px #000b;color:#f8ffff;font-size:21px;line-height:1}
+.game-report-emblem::after{content:'';position:absolute;top:5px;left:7px;width:12px;height:7px;border-radius:50%;transform:rotate(-38deg);background:linear-gradient(#fff9,#fff0)}
+.game-report-emblem.is-ball{background:radial-gradient(circle at 28% 24%,#6d7178,#13151a 40%,#020306 75%)}
+.game-report-emblem.is-ball span{display:grid;place-items:center;width:18px;height:18px;border-radius:50%;background:#f4f4ff;color:#090b10;font:bold 17px/1 Arial,sans-serif}
+.game-report-title{min-width:0;padding-left:8px;border-left:1px solid var(--report-line);font-size:clamp(15px,4.7cqi,19px);font-weight:800;letter-spacing:.05em;line-height:1.3}
+.game-report-status{flex:none;margin-left:auto;padding:2px 8px;border:1px solid #5865c8;border-radius:30px;color:var(--report-muted);font-size:10px;font-weight:600;white-space:nowrap;background:#15214f44}
+.game-report-duel{display:grid;grid-template-columns:minmax(0,1fr) 38px minmax(0,1fr);align-items:center;gap:7px;padding:9px 0 10px}
+.game-report-contender{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:17px auto auto;align-items:center;justify-items:center;min-width:0;gap:4px;text-align:center}
+.game-report-contender.is-winner{background:radial-gradient(ellipse,#1ff3bb25,transparent 70%)}
+.game-report-contender.is-loser{background:radial-gradient(ellipse,#f93eac14,transparent 70%)}
+.game-report-crown,.game-report-crown-spacer{display:block;flex:none;width:17px;height:17px;color:#ffd45b;filter:drop-shadow(0 1px 4px #ffd95635)}
+.game-report-name{min-width:0;max-width:100%;font-size:clamp(19px,6.7cqi,27px);font-weight:800;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.game-report-contender.is-loser .game-report-name{color:#ffebf7}
+.game-report-result{grid-column:1/-1;min-width:52px;max-width:100%;box-sizing:border-box;margin-top:0;padding:1px 12px;border-radius:40px;border:1px solid #d7669f;background:#9c47704a;color:var(--report-loss);font-size:12px;font-weight:800;line-height:1.45}
+.game-report-contender.is-winner .game-report-result{color:#052821;background:linear-gradient(#72efd3,#36b99f);border-color:#7df9dc;box-shadow:0 0 13px #25d5b52b}
+.game-report-versus{position:relative;padding:5px 3px;border-inline:1px solid #3b4783;white-space:nowrap;overflow-wrap:normal;word-break:keep-all;letter-spacing:0;text-align:center;color:#8a95d6;font-size:15px;font-style:italic;font-weight:800}
+.game-report-versus::before,.game-report-versus::after{content:'';position:absolute;top:50%;width:4px;height:4px;border:1px solid #8091eb;background:#0e1533;transform:translateY(-50%) rotate(45deg)}
+.game-report-versus::before{left:-3px}.game-report-versus::after{right:-3px}
+.game-report-finish{display:flex;align-items:center;gap:9px;padding:6px 9px;border:1px solid #424c9e;border-radius:10px;background:linear-gradient(110deg,#19255644,#08122c44)}
+.game-report-shots{display:flex;align-items:baseline;justify-content:center;gap:4px;flex:none;padding-right:9px;border-right:1px solid var(--report-line)}
+.game-report-shots strong{font-size:26px;font-weight:800;line-height:1.1}.game-report-shots span{font-size:12px}
+.game-report-reason{display:flex;align-items:center;gap:6px;min-width:0;font-size:11px;line-height:1.5}
+.game-report-reason-icon{display:flex;flex:none;width:20px;color:var(--report-win)}.game-report-reason svg{width:100%;height:auto}
+.game-report .game-report-summary{margin:8px 1px;font-size:clamp(12px,3.3cqi,16px);font-weight:650;line-height:1.6}
+.game-report-table-wrap{overflow:hidden;border:1px solid #38458e;border-radius:13px;background:#121b3c44}
+.game-report-table{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:0;color:var(--report-ink);font-size:clamp(12px,3.2cqi,16px);line-height:1.5}
+.game-report-player-col{width:40%}
+.game-report-table th,.game-report-table td{box-sizing:border-box;padding:9px 8px;vertical-align:middle;border-bottom:1px solid #2a366c;overflow-wrap:anywhere}
+.game-report-table thead th{padding-block:7px;color:var(--report-muted);font-size:clamp(11px,3cqi,14px);font-weight:600;text-align:right}
+.game-report-table thead th:first-child{text-align:left;padding-left:16px}
+.game-report-table tbody tr:last-child>*{border-bottom:0}
+.game-report-table td{border-left:1px solid #28386a66;text-align:right}
+.game-report-table .is-winner>*{border-block:1px solid #28d6d288;background:#0b7c7b4d}
+.game-report-table .is-winner>th{border-left:1px solid #28d6d288;border-radius:11px 0 0 11px}
+.game-report-table .is-winner>td{border-left-color:transparent}
+.game-report-table .is-winner>td:last-child{border-right:1px solid #28d6d288;border-radius:0 11px 11px 0}
+.game-report-table tbody .is-winner:last-child>*{border-bottom:1px solid #28d6d288}
+.game-report-player{display:flex;align-items:center;gap:5px;flex-wrap:wrap;text-align:left}
+.game-report-player-name{min-width:0;overflow-wrap:anywhere;font-weight:750}
+.game-report-player .game-report-crown{width:18px;height:18px}
+.game-report-win-tag{padding:0 6px;border:1px solid #42eacb;border-radius:20px;color:var(--report-win);font-size:10px;font-weight:600;white-space:nowrap}
+.game-report-number{font-variant-numeric:tabular-nums;font-weight:750;color:#c4ccff}
+.game-report-number.positive{color:var(--report-win)}.game-report-number.negative{color:var(--report-loss)}
+.game-report-footer{display:flex;align-items:center;gap:8px;margin-top:9px;padding:7px 1px 0;border-top:1px solid var(--report-line);font-size:clamp(11px,2.9cqi,13px);line-height:1.6;color:var(--report-muted)}
+.game-report-footer svg{flex:none;width:20px;height:20px;color:#7ec2ff}
+.game-report-footer span{border-left:1px solid #3f4b93;padding-left:11px}
+.game-report .game-report-legacy-line{margin:7px 0;color:var(--report-muted);font-size:12px}
+/* Keep the duel compact even when the chat font or Android text scaling is large. */
+.billiards-result-card.game-report-billiards{flex-basis:380px;width:380px}
+@container (max-width:350px){
+  .game-report-header{gap:6px}.game-report-title{letter-spacing:.02em}.game-report-status{padding:2px 6px}
+  .game-report-duel{gap:5px;padding:8px 0}
+  .game-report-table th,.game-report-table td{padding:8px 6px}.game-report-table thead th:first-child{padding-left:7px}.game-report-player{gap:3px}.game-report-player .game-report-crown{width:13px;height:13px}.game-report-win-tag{font-size:9px;padding-inline:5px}
+}
+@media(max-width:420px){.billiards-result-card.game-report{padding:10px;border-radius:14px}.msg-row.system:has(.game-report) .system-notice,.system-event-msg:has(.game-report) .system-event-line{padding-inline:12px}}

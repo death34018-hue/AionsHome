@@ -39,6 +39,13 @@
     : null;
 
   if (parser) {
+    // Empty layout spans indent explicit breaks without changing copied text.
+    for (const type of ['softbreak', 'hardbreak']) {
+      const defaultBreak = parser.renderer.rules[type];
+      parser.renderer.rules[type] = (tokens, index, options, env, renderer) =>
+        defaultBreak(tokens, index, options, env, renderer)
+        + (env.indentLineBreaks ? '<span class="line-indent" aria-hidden="true"></span>' : '');
+    }
     // CommonMark rejects 。**汉字 and 汉字**“ as emphasis boundaries.
     // Relax only these Han/punctuation boundaries for double stars, leaving
     // pairing, nested formatting, code and escapes to markdown-it.
@@ -76,10 +83,10 @@
     };
   }
 
-  function render(value) {
+  function render(value, options = {}) {
     const safeMarkdown = stripUnsafeLinks(stripMarkdownImages(String(value ?? '')));
     if (!parser) return `<p>${escapeHtml(safeMarkdown).replace(/\n/g, '<br>')}</p>`;
-    return parser.render(safeMarkdown);
+    return parser.render(safeMarkdown, options);
   }
 
   function splitUserBubbleParts(value) {

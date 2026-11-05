@@ -16,6 +16,14 @@ async def edge_chunks():
 
 
 class TTSProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_replay_lists_segments_with_one_request_in_numeric_order(self):
+        with tempfile.TemporaryDirectory() as td, patch.object(settings, "TTS_CACHE_DIR", Path(td)):
+            for name in ("m_s0.mp3", "m_s10.mp3", "m_s2.mp3", "other_s1.mp3"):
+                (Path(td) / name).write_bytes(b"audio")
+            self.assertTrue(hasattr(settings, "tts_segments"))
+            result = await settings.tts_segments("m")
+            self.assertEqual(result["urls"], ["/api/tts/audio/m_s0", "/api/tts/audio/m_s2", "/api/tts/audio/m_s10"])
+
     async def test_free_voice_needs_no_key_and_uses_existing_stream_cache(self):
         with tempfile.TemporaryDirectory() as td, \
              patch("tts.get_key", side_effect=AssertionError("Free TTS must not read paid credentials")), \

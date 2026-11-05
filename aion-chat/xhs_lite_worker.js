@@ -363,7 +363,11 @@ const XHSLite = (() => {
     const sig = signHeaders('GET', uri, ck, { params: params || {} });
     const resp = await fetch(base + uri + (query ? '?' + query : ''), { method: 'GET', headers: { ...baseHeaders(cookieStr), ...sig, ...extraHeaders } });
     const text = await resp.text();
-    try { return JSON.parse(text); } catch (e) {
+    try {
+      const data = JSON.parse(text);
+      if (!resp.ok && data && typeof data === 'object') data.http_status = resp.status;
+      return data;
+    } catch (e) {
       return { success: false, msg: 'HTTP ' + resp.status + ': ' + text.slice(0, 240), raw_text: text.slice(0, 500) };
     }
   }
@@ -371,7 +375,11 @@ const XHSLite = (() => {
     const sig = signHeaders('POST', uri, ck, { payload });
     const resp = await fetch(base + uri, { method: 'POST', headers: { ...baseHeaders(cookieStr), ...sig, ...extraHeaders }, body: JSON.stringify(payload) });
     const text = await resp.text();
-    try { return JSON.parse(text); } catch (e) {
+    try {
+      const data = JSON.parse(text);
+      if (!resp.ok && data && typeof data === 'object') data.http_status = resp.status;
+      return data;
+    } catch (e) {
       return { success: false, msg: 'HTTP ' + resp.status + ': ' + text.slice(0, 240), raw_text: text.slice(0, 500) };
     }
   }
@@ -469,12 +477,9 @@ const XHSLite = (() => {
       } catch (e) { /* best effort */ }
     }
     const resolvedUserId = basic.user_id || basic.userId || userId;
-    let notes = [];
-    try {
-      const posted = await signedGet(EDITH, '/api/sns/web/v1/user_posted', { num: 30, cursor: '', user_id: resolvedUserId, image_formats: 'jpg,webp,avif', xsec_token: xsecToken || '', xsec_source: 'pc_note' }, cookieStr, ck);
-      notes = (posted?.data?.notes || []).map(normItem);
-    } catch (e) { /* best effort */ }
-    return { basic_info: basic || {}, notes, feeds: notes, success: !!info?.success, resolved_user_id: resolvedUserId };
+    const posted = await signedGet(EDITH, '/api/sns/web/v1/user_posted', { num: 30, cursor: '', user_id: resolvedUserId, image_formats: 'jpg,webp,avif', xsec_token: xsecToken || '', xsec_source: 'pc_note' }, cookieStr, ck);
+    const notes = (posted?.data?.notes || []).map(normItem);
+    return { basic_info: basic || {}, notes, feeds: notes, success: !!posted?.success, msg: posted?.msg, raw_error: posted?.success ? undefined : posted, resolved_user_id: resolvedUserId };
   }
   function normUser(u) {
     const info = u?.user_info || u?.userInfo || u?.user || u?.basic_info || u || {};

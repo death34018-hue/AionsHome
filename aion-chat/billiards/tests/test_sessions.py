@@ -7,7 +7,25 @@ from unittest.mock import AsyncMock, patch
 
 
 class SessionsTests(unittest.IsolatedAsyncioTestCase):
-    async def test_history_includes_settled_rack_while_series_can_continue(self):
+    async def test_single_rack_completes_match_and_allows_fresh_game(self):
+        from billiards.matches import match_info, standings
+        for winner in (0, 1):
+            game = await self.service.create(['user', 'aion'], seed=17)
+            final = await self.settle_rack(game['id'], winner)
+            self.assertEqual(final['match_format'], 'single')
+            self.assertEqual(final['match_status'], 'completed')
+            self.assertEqual(match_info(final)['winner'], winner)
+            self.assertEqual(match_info(final)['max_racks'], 1)
+            self.assertTrue(final['result_reports'][0]['match_complete'])
+            for operation in (self.service.next_rack, self.service.restart_rack):
+                with self.assertRaises(ValueError):
+                    await operation(game['id'], 'w')
+        stats = {s['actor']: s for s in standings(self.service.store.all())}
+        self.assertEqual((stats['user']['wins'], stats['user']['match_wins']), (1, 1))
+        fresh = await self.service.create(['user', 'aion'], seed=18)
+        self.assertEqual((fresh['rack'], fresh['score']), (1, [0, 0]))
+
+    async def test_completed_single_game_moves_from_lobby_to_history(self):
         from billiards.routes import history, lobby
         game = await self.service.create(['aion', 'connor'], seed=17)
         sid = game['id']
@@ -17,17 +35,13 @@ class SessionsTests(unittest.IsolatedAsyncioTestCase):
             saved_before = self.service.store.path(sid).read_bytes()
             page = await history(offset=0, limit=1)
             self.assertEqual([g['id'] for g in page['games']], [sid])
-            self.assertEqual(page['games'][0]['match']['status'], 'active')
+            self.assertEqual(page['games'][0]['match']['status'], 'completed')
             self.assertFalse(page['has_more'])
             self.assertEqual((await history(offset=1, limit=1))['games'], [])
             home = await lobby()
             self.assertEqual(home['history_count'], 1)
-            self.assertIn(sid, [g['id'] for g in home['games']])
+            self.assertNotIn(sid, [g['id'] for g in home['games']])
             self.assertEqual(self.service.store.path(sid).read_bytes(), saved_before)
-            await self.service.next_rack(sid, '')
-            self.assertEqual((await history(offset=0, limit=10))['total'], 1)
-            await self.settle_rack(sid, 0)
-            self.assertEqual((await history(offset=0, limit=10))['total'], 1)
             self.assertEqual((await lobby())['games'], [])
 
     async def test_watch_creates_one_ai_table_and_resumes_without_reset(self):
@@ -42,19 +56,16 @@ class SessionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resumed['difficulty'], 'low')
         self.assertEqual(resumed['status'], 'running')
 
-    async def test_watch_continues_saved_score_and_chat_then_starts_new_after_champion(self):
+    async def test_watch_starts_fresh_after_one_game_and_preserves_history(self):
         game = await self.service.create(['connor', 'aion'], seed=17)
         game['messages'] = [{'sender': 'connor', 'text': '下一局继续', 'rack': 1}]
         self.service.store.save(game)
         await self.settle_rack(game['id'], 0)
-        continued = await self.service.watch()
-        self.assertEqual((continued['id'], continued['rack'], continued['score']), (game['id'], 2, [1, 0]))
-        self.assertEqual(continued['messages'], game['messages'])
-        self.assertEqual(continued['state']['turn'], 1)
-        await self.settle_rack(game['id'], 0)
         new = await self.service.watch()
         self.assertNotEqual(new['id'], game['id'])
         self.assertEqual((new['rack'], new['score']), (1, [0, 0]))
+        self.assertEqual(self.service.get(game['id'])['messages'], game['messages'])
+        self.assertEqual(self.service.get(game['id'])['score'], [1, 0])
 
     async def test_watch_waits_for_running_user_table(self):
         game = await self.service.create(['user', 'aion'], seed=17)
@@ -126,12 +137,13 @@ class SessionsTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             await self.service.next_rack(game['id'], '')
         await self.service.pause(user_game['id'], 'w')
-        second = await self.service.next_rack(game['id'], '')
-        self.assertEqual((second['rack'], second['score']), (2, [1, 0]))
+        second = await self.service.watch()
+        self.assertEqual((second['rack'], second['score']), (1, [0, 0]))
         await self.settle_rack(user_game['id'], 0)
-        continued = await self.service.next_rack(user_game['id'], 'w')
-        self.assertEqual((continued['rack'], continued['score'], continued['status']), (2, [1, 0], 'running'))
-        self.assertEqual(self.service.get(game['id'])['status'], 'paused')
+        fresh = await self.service.create(['user', 'aion'], seed=20)
+        continued = await self.service.resume(fresh['id'], 'w')
+        self.assertEqual((continued['rack'], continued['score'], continued['status']), (1, [0, 0], 'running'))
+        self.assertEqual(self.service.get(second['id'])['status'], 'paused')
 
     async def settle_rack(self, sid, winner):
         game = self.service.get(sid)
@@ -141,8 +153,10 @@ class SessionsTests(unittest.IsolatedAsyncioTestCase):
             await self.service.commit_pending(game)
         return self.service.get(sid)
 
-    async def test_two_zero_finishes_series_and_blocks_third_rack(self):
+    async def test_historical_two_zero_series_keeps_original_rules(self):
         game = await self.service.create(['user', 'aion'], seed=17)
+        game['match_format'] = 'best_of_3'
+        self.service.store.save(game)
         sid = game['id']
         first = await self.settle_rack(sid, 0)
         self.assertEqual(first.get('match_status'), 'active')
@@ -157,8 +171,10 @@ class SessionsTests(unittest.IsolatedAsyncioTestCase):
             await self.service.next_rack(sid, 'w')
         self.assertEqual(self.service.get(sid)['rack'], 2)
 
-    async def test_tied_series_reaches_third_rack_and_persists_winner(self):
+    async def test_historical_tied_series_keeps_original_winner(self):
         game = await self.service.create(['user', 'connor'], seed=17)
+        game['match_format'] = 'best_of_3'
+        self.service.store.save(game)
         sid = game['id']
         await self.settle_rack(sid, 0)
         await self.service.next_rack(sid, 'w')
@@ -175,14 +191,11 @@ class SessionsTests(unittest.IsolatedAsyncioTestCase):
     async def test_restart_keeps_rack_score_and_chat_and_abandon_has_no_winner(self):
         game = await self.service.create(['user', 'aion'], seed=17)
         sid = game['id']
-        await self.settle_rack(sid, 1)
-        await self.service.next_rack(sid, 'w')
-        game = self.service.get(sid)
         game['messages'] = [{'sender': 'user', 'text': '继续', 'rack': 1}]
         self.service.store.save(game)
         self.assertTrue(hasattr(self.service, 'restart_rack'), '缺少本局重摆，旧版会多算局号')
         restarted = await self.service.restart_rack(sid, 'w')
-        self.assertEqual((restarted['rack'], restarted['score']), (2, [0, 1]))
+        self.assertEqual((restarted['rack'], restarted['score']), (1, [0, 0]))
         self.assertEqual(len(restarted['messages']), 1)
         ended = await self.service.finish(sid, 'w')
         self.assertEqual(ended.get('match_status'), 'abandoned')

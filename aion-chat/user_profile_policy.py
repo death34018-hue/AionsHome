@@ -169,7 +169,9 @@ def maintain(document, now=None):
 
 
 def ranked(entries, now):
-    return sorted((e for e in entries if lifecycle(e, now) not in ('done', 'cancelled', 'retired')),
+    return sorted((e for e in entries if lifecycle(e, now) not in ('done', 'cancelled', 'retired')
+                   and ('manual' in e.get('sources', []) or
+                        (e.get('kind') != 'idea' and subcategory(e) not in ('ideas', 'preferences')))),
                   key=lambda e: (e.get('kind') != 'task', -e.get('source_ts', 0)))
 
 

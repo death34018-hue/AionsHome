@@ -33,6 +33,10 @@ def test_frontend_transport_keeps_cache_policy_and_disallows_proxy_rewrites():
     def value():
         return {"ok": True}
 
+    @app.get('/static/vendor/strudel-1.3.0/samples/piano/C4v8.mp3')
+    def sample():
+        return Response(b'fixed-sample', media_type='audio/mpeg')
+
     with TestClient(app) as client:
         home = client.get("/")
         assert home.text == "<html>exact frontend bytes</html>"
@@ -41,3 +45,5 @@ def test_frontend_transport_keeps_cache_policy_and_disallows_proxy_rewrites():
         assert script.text == "window.ready = true;"
         assert script.headers["cache-control"] == "public, max-age=0, must-revalidate, no-transform"
         assert "cache-control" not in client.get("/api/value").headers
+        sample = client.get('/static/vendor/strudel-1.3.0/samples/piano/C4v8.mp3')
+        assert sample.headers['cache-control'] == 'public, max-age=31536000, immutable, no-transform'

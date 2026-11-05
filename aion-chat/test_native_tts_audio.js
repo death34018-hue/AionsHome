@@ -192,6 +192,32 @@ async function testTheaterPauseDuringLoadingAndFallback() {
   assert.equal(oldApp.createTtsAudio('/chapter.mp3').kind, 'html');
 }
 
+async function testReplayPlaylistSurvivesReloadAndOfflinePlayback() {
+  const saved = new Map();
+  const storage = { getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value) };
+  const root = createRoot();
+  root.localStorage = storage;
+  root.fetch = async () => ({ ok: true, json: async () => ({ urls: ['/api/tts/audio/m_s0', '/api/tts/audio/m_s1'] }) });
+  installAionTtsAudio(root);
+  const first = await root.AionTtsReplayPlaylist.load('m');
+  const reopened = createRoot();
+  reopened.localStorage = storage;
+  reopened.fetch = async () => { throw new Error('offline'); };
+  installAionTtsAudio(reopened);
+  assert.deepStrictEqual(await reopened.AionTtsReplayPlaylist.load('m'), first);
+  assert.equal(first.length, 2, 'cached replay includes later clips, not only s0');
+}
+
+async function testPrefetchOnlyIncludesUpcomingClips() {
+  const urls = [];
+  const root = createRoot({ play() { return true; }, stop() {}, prefetch: url => urls.push(url) });
+  installAionTtsAudio(root);
+  root.createAionTtsAudio().prefetchQueued({ m: { nextPlay: 1, chunks: {
+    0: { url: 'played' }, 1: { url: 'current' }, 2: { url: 'next' }, 3: { url: 'later' }, 4: { url: 'too-far' },
+  } } }, ['m']);
+  assert.deepStrictEqual(urls, ['current', 'next', 'later']);
+}
+
 Promise.resolve()
   .then(testNativePlaybackAndEvents)
   .then(testNativeStopIsScopedToPlayer)
@@ -200,6 +226,8 @@ Promise.resolve()
   .then(testNativeEventsReachEmbeddedChatroom)
   .then(testTheaterPlaybackControls)
   .then(testTheaterPauseDuringLoadingAndFallback)
+  .then(testReplayPlaylistSurvivesReloadAndOfflinePlayback)
+  .then(testPrefetchOnlyIncludesUpcomingClips)
   .then(() => console.log('native TTS audio adapter tests passed'))
   .catch(error => {
     console.error(error);

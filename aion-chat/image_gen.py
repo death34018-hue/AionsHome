@@ -4,6 +4,7 @@ AI 生图模块：Codex 登录额度或 OpenAI 兼容接口，未配置时沿用
 """
 
 import base64, re, mimetypes, time
+from contextvars import ContextVar
 from pathlib import Path
 
 import httpx
@@ -19,8 +20,13 @@ IMAGE_GEN_MODEL = "gemini-3.1-flash-lite-image"
 IMAGE_GEN_TIMEOUT = 120  # 生图超时秒数
 
 
+_retry_selfie_reference = ContextVar('retry_selfie_reference', default=None)
+
+
 def _selfie_reference_path(source_identity: str = "") -> Path:
     """Return the SELFIE anchor by stable internal actor identity, not display name."""
+    if (frozen := _retry_selfie_reference.get()) is not None:
+        return frozen
     if str(source_identity or "").strip().lower() == "connor":
         return SECONDARY_REFERENCE_IMAGE_PATH
     return REFERENCE_IMAGE_PATH
@@ -120,13 +126,34 @@ async def _generate_codex_image(prompt, is_selfie, source_identity, *, reference
         return None
 
 
-@logged_ai_call("image", model=lambda: 'codex/image-generation' if SETTINGS.get('image_gen_provider') == 'codex' else SETTINGS.get("image_gen_model") or IMAGE_GEN_MODEL)
-async def generate_image(prompt: str, is_selfie: bool = False, source_identity: str = "", *, references=None, raise_errors=False) -> str | None:
+def image_model_label():
+    provider = SETTINGS.get('image_gen_provider')
+    if provider == 'codex':
+        return 'codex/image-generation'
+    if provider == 'flowai':
+        return 'flowai/' + SETTINGS.get('flowai_image_model', 'gpt_image2_5_flare')
+    return SETTINGS.get('image_gen_model') or IMAGE_GEN_MODEL
+
+
+@logged_ai_call("image", model=image_model_label)
+async def generate_image(prompt: str, is_selfie: bool = False, source_identity: str = "", *, references=None,
+                         raise_errors=False, flow_job_id=None, on_flow_job=None, flow_model=None) -> str | None:
     """
     调用设置中的生图来源，未配置时使用 Gemini；保存到相册并返回 uploads 相对路径。
     is_selfie=True 时自动附带参考图。
     失败返回 None；调用方可请求保留 Codex 异常以展示失败原因。
     """
+    if flow_model or SETTINGS.get('image_gen_provider') == 'flowai':
+        from flowai_image_gen import generate_flowai_image, FLARE
+        try:
+            return await generate_flowai_image(prompt, is_selfie, source_identity, references=references,
+                                               model=flow_model or SETTINGS.get('flowai_image_model', FLARE),
+                                               flow_job_id=flow_job_id, on_flow_job=on_flow_job)
+        except Exception as exc:
+            print(f'[image_gen] Flow AI 生图失败（{type(exc).__name__}）')
+            if raise_errors:
+                raise
+            return None
     if SETTINGS.get('image_gen_provider') == 'codex':
         if raise_errors:
             return await _generate_codex_image(prompt, is_selfie, source_identity, references=references, raise_errors=True)
@@ -226,10 +253,17 @@ async def generate_image(prompt: str, is_selfie: bool = False, source_identity: 
         return None
 
 
-async def generate_chat_image(prompt: str, is_selfie: bool = False, source_identity: str = ''):
+async def generate_chat_image(prompt: str, is_selfie: bool = False, source_identity: str = '', *, on_prepared=None):
     """Resolve the chat command's cast before dispatching to any image provider."""
     from image_anchors import resolve_chat_references
     prompt, references = await resolve_chat_references(prompt, is_selfie, source_identity)
+    if on_prepared is not None:
+        import chatroom_image_retry as retry
+        payload = await retry.snapshot(prompt, references, is_selfie, source_identity)
+        on_prepared(payload)
+        async def remember(updated):
+            on_prepared(updated)
+        return await retry.generate(payload, on_snapshot=remember)
     kwargs = {'is_selfie': is_selfie, 'source_identity': source_identity, 'raise_errors': True}
     if references:
         kwargs['references'] = references

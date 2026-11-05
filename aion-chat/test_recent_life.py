@@ -9,6 +9,21 @@ import user_profile_policy as policy
 
 
 class RecentLifePolicyTests(unittest.TestCase):
+    def test_only_committed_plans_and_ongoing_matters_enter_the_shared_list(self):
+        doc = {'entries': {}}
+        changes = [('ideas', 'idea', '有空想做表情包'), ('preferences', 'context', '最近爱吃奶茶冻'),
+                   ('state', 'context', '午饭吃了虾'), ('plans', 'task', '周六一起挑图做表情包')]
+        updates = [dict(category='recent', subcategory=sub, kind=kind, content=content,
+                        reason='下次聊天可提起', sources=['U1']) for sub, kind, content in changes]
+        profile._apply_analysis(doc, {'updates': updates}, {'U1': 'private:one'}, {'source_ts': time.time()})
+        self.assertEqual([e['content'] for e in doc['entries'].values()], ['周六一起挑图做表情包'])
+        self.assertEqual(doc['_analysis_errors'], [])
+        legacy = self.entry(source_ts=time.time())
+        doc['entries']['care'] = legacy
+        self.assertNotIn('水培', policy.render_context(doc)[0])
+        legacy['sources'] = ['manual']
+        self.assertIn('水培', policy.render_context(doc)[0])
+
     def entry(self, **extra):
         return {'key': 'care', 'category': 'recent', 'subcategory': 'ideas', 'kind': 'idea',
                 'status': 'active', 'topic': '试试水培', 'content': '想试试水培，还没开始。',
@@ -54,7 +69,8 @@ class RecentLifePolicyTests(unittest.TestCase):
         self.assertTrue(doc['_analysis_errors'])
 
     def test_entire_active_document_is_bounded_not_silently_truncated(self):
-        entries = {str(i): self.entry(key=str(i), source_ts=time.time(), content='近期事项正在处理。'*12) for i in range(20)}
+        entries = {str(i): self.entry(key=str(i), source_ts=time.time(), kind='project', subcategory='projects',
+                                     content='近期事项正在处理。'*12) for i in range(20)}
         with self.assertRaisesRegex(ValueError, '2000'):
             profile._check_budget({'entries': entries})
 
@@ -71,14 +87,17 @@ class RecentLifePolicyTests(unittest.TestCase):
                                 {'source_ts': time.time(), 'consolidation': True})
         self.assertEqual(doc['entries']['care']['source_ts'], original)
 
-    def test_rementioned_temporary_idea_revives_after_old_expiry(self):
+    def test_rementioned_temporary_idea_needs_commitment_to_revive(self):
         now = time.time()
         old = self.entry(source_ts=now-3*86400, expires_at=now-86400, status='retired')
         doc = {'entries': {'care': old}}
         profile._apply_analysis(doc, {'updates': [{'ref':'P1', 'content':'今天又想试试水培。','sources':['U1']}]},
                                 {'U1':'private:two'}, {'source_ts':now})
-        self.assertEqual(policy.lifecycle(doc['entries']['care'],now), 'active')
-        self.assertEqual(policy.lifecycle(doc['entries']['care'],now+7*86400), 'retired')
+        self.assertEqual(policy.lifecycle(doc['entries']['care'],now), 'retired')
+        profile._apply_analysis(doc, {'updates': [{'ref':'P1', 'kind':'task', 'subcategory':'plans',
+                                'content':'定了周六开始水培。','sources':['U1']}]},
+                                {'U1':'private:two'}, {'source_ts':now})
+        self.assertIn('定了周六', policy.render_context(doc, now=now)[0])
 
     def test_complete_final_json_survives_repeated_streamed_draft(self):
         from profile_initialize import parse_week_result
@@ -121,8 +140,9 @@ class RecentLifePolicyTests(unittest.TestCase):
 
     def test_sentinel_can_still_merge_and_end_with_current_evidence(self):
         now = time.time()
-        doc = {'entries': {'care': self.entry(source_ts=now-100),
-                          'other': self.entry(key='other', source_ts=now-50, sources=['private:other'])}}
+        doc = {'entries': {'care': self.entry(kind='project', subcategory='projects', source_ts=now-100),
+                          'other': self.entry(key='other', kind='project', subcategory='projects',
+                                              source_ts=now-50, sources=['private:other'])}}
         job = {'source_id': 'private:latest', 'source_ts': now}
         sources = {'U1': 'private:latest'}
         profile._apply_analysis(doc, {'updates': [{'ref': 'P1', 'merge_from': ['P2'],

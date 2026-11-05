@@ -1,14 +1,19 @@
 """Named portrait references shared by everyday chat and the theater."""
+import io
 import json
+import logging
 import re
+from collections import Counter
 from pathlib import Path
 
-from config import UPLOADS_DIR
+from PIL import Image
+
+from config import IMAGE_ANCHORS_DIR, UPLOADS_DIR
 from database import get_db
 
 
 async def load_anchors(*, db_factory=None):
-    # Keep the existing theater records and IDs; no migration or second copy.
+    # Chats and theater books refer to the same character IDs.
     async with (db_factory or get_db)() as db:
         cursor = await db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='theater_studio'")
         if not await cursor.fetchone():
@@ -18,13 +23,64 @@ async def load_anchors(*, db_factory=None):
 
 
 def reference_path(url, root=None):
-    root = Path(root if root is not None else UPLOADS_DIR).resolve()
-    if not str(url).startswith('/uploads/'):
+    if str(url).startswith('/image-anchors/'):
+        root, relative = IMAGE_ANCHORS_DIR, url.removeprefix('/image-anchors/')
+    elif str(url).startswith('/uploads/'):
+        root, relative = root if root is not None else UPLOADS_DIR, url.removeprefix('/uploads/')
+    else:
         raise ValueError('请先上传人物锚点照片')
-    path = (root / url.removeprefix('/uploads/')).resolve()
+    root = Path(root).resolve()
+    path = (root / relative).resolve()
     if not path.is_relative_to(root) or not path.is_file() or path.suffix.lower() not in ('.jpg', '.jpeg', '.png', '.webp'):
         raise ValueError('人物锚点照片失效，请重新上传')
     return path
+
+
+def store_anchor_image(name, data):
+    """Keep original bytes; an edited or same-named portrait never overwrites another."""
+    try:
+        with Image.open(io.BytesIO(data)) as photo:
+            extension = {'JPEG': '.jpg', 'PNG': '.png', 'WEBP': '.webp'}.get(photo.format)
+            if not extension:
+                raise ValueError('人物锚点照片仅支持 JPG、PNG 或 WebP')
+            photo.verify()
+    except (OSError, SyntaxError, Image.DecompressionBombError) as exc:
+        raise ValueError('人物锚点照片无法读取，请重新选择图片') from exc
+    stem = re.sub(r'[^\w-]+', '_', name).strip('_')[:80] or 'portrait'
+    if re.fullmatch(r'CON|PRN|AUX|NUL|COM[0-9¹²³]|LPT[0-9¹²³]', stem, re.I):
+        stem = '_' + stem
+    IMAGE_ANCHORS_DIR.mkdir(parents=True, exist_ok=True)
+    index = 1
+    while True:
+        filename = (stem if index == 1 else f'{stem}-{index}') + extension
+        path = IMAGE_ANCHORS_DIR / filename
+        try:
+            with path.open('xb') as target:
+                target.write(data)
+        except FileExistsError:
+            if path.is_symlink() or not path.is_file() or path.read_bytes() != data:
+                index += 1
+                continue
+        return '/image-anchors/' + filename
+
+
+async def migrate_anchor_images():
+    async with get_db() as db:
+        if not await (await db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='theater_studio'")).fetchone():
+            return
+        rows = await (await db.execute(
+            "SELECT id,data FROM theater_studio WHERE kind='anchor' AND json_extract(data,'$.image') LIKE '/uploads/%'"
+        )).fetchall()
+        for aid, raw in rows:
+            anchor = json.loads(raw)
+            try:
+                url = store_anchor_image(anchor['name'], reference_path(anchor['image']).read_bytes())
+            except (OSError, ValueError) as error:
+                logging.getLogger(__name__).warning('未能迁移人物锚点 %s：%s', aid, error)
+                continue
+            await db.execute("UPDATE theater_studio SET data=json_set(data,'$.image',?) WHERE id=? AND data=?",
+                             (url, aid, raw))
+        await db.commit()
 
 
 def identity_names():
@@ -41,25 +97,41 @@ def anchor_identity(anchor, names):
     return matches[0] if len(matches) == 1 else ''
 
 
-async def chat_anchor_prompt(who='aion'):
+def _character_keys(anchors):
+    names = Counter(a['name'].strip().casefold() for a in anchors)
+    reserved = {a['id'].casefold() for a in anchors} | {'none'}
+    keys = {}
+    for anchor in anchors:
+        name = anchor['name'].strip()
+        simple = (name and names[name.casefold()] == 1 and name.casefold() not in reserved
+                  and not re.search(r'[,，|\[\]\r\n]', name))
+        keys[anchor['id']] = name if simple else anchor['id']
+    return keys
+
+
+async def chat_image_prompt(who='aion'):
+    intro = (
+        '【聊天生图】应请求或聊天情境发图时，每次回复最多用一个生图指令，场景提示词用英文。'
+        '对方只说“发张自拍”时，默认只拍你自己，用 [SELFIE: English scene prompt]，系统按当前发言者选参考照。'
+    )
     anchors = await load_anchors()
     if not anchors:
-        return ''
+        return intro + '与你合拍的自拍也用 SELFIE，其他照片或绘画用 [DRAW: English scene prompt]。'
     names = identity_names()
+    keys = _character_keys(anchors)
     roster = []
     for anchor in anchors:
         identity = anchor_identity(anchor, names)
         relation = '当前发言者（你）' if identity == who else ('聊天用户' if identity == 'user' else '另一位聊天伙伴' if identity else '已保存的人物')
-        roster.append(f"{anchor['id']} = {anchor['name']}（别名：{anchor.get('aliases') or '无'}；{relation}）")
+        key = keys[anchor['id']]
+        label = key if key == anchor['name'] else f"{key} = {anchor['name']}"
+        roster.append(f"{label}（别名：{anchor.get('aliases') or '无'}；{relation}）")
     return (
-        '【聊天生图人物锚点】\n' + '\n'.join(roster) + '\n'
-        '生图时根据当前对话明确实际出场人物，把“我、你、我们”等称呼转换成上面的人物。'
-        '在原生图指令内写出人物编号，格式为 [DRAW: characters=人物编号1,人物编号2 | English scene prompt]；'
-        '自拍也可使用 [SELFIE: characters=人物编号 | English scene prompt]。'
-        '只列实际出场的人物，不要把未出场的人加入。没有上述人物时使用 [DRAW: characters=none | English scene prompt]。'
-        '场景描述中用对应人物的名字明确动作与位置，不用编号或含糊代词代替名字；不要翻译人物姓名。'
-        '系统会按编号带上各自照片；照片只固定外貌，服饰、动作、画风与场景服从本次要求。'
-        '若当前发言者还没有对应人物锚点，单人自拍仍可用原来的 [SELFIE: English scene prompt]。'
+        intro + '\n人物锚点：\n' + '\n'.join(roster) + '\n'
+        '按说话人和上下文判断“我、你、我们”指谁，只列实际入镜者，使用名单上的名字（标了编号的用等号左边的编号）。\n'
+        '合拍用 [SELFIE: characters=名字1,名字2 | English scene prompt]，其他照片或绘画用 [DRAW: characters=名字 | English scene prompt]。'
+        '没有名单中的人入镜时用 [DRAW: characters=none | English scene prompt]。\n'
+        '系统会附对应参考照，只固定外貌。英文场景中用人物原名写清各自的动作和位置，服饰、画风和环境按本次要求。'
     )
 
 
@@ -78,11 +150,14 @@ async def resolve_chat_references(prompt, is_selfie=False, source_identity=''):
             tokens = []
         elif not tokens:
             raise ValueError('请明确生图的出场人物')
+        by_id = {a['id']: a for a in anchors}
+        by_name = {key.casefold(): by_id[aid] for aid, key in _character_keys(anchors).items() if key != aid}
         for token in tokens:
-            candidates = [a for a in anchors if a['id'] == token]
-            if len(candidates) != 1:
-                raise ValueError('生图人物锚点不存在，请重新选择人物')
-            selected.append(candidates[0])
+            anchor = by_id.get(token) or by_name.get(token.casefold())
+            if anchor is None:
+                raise ValueError('生图人物锚点不存在或名字有歧义，请按名单选择人物')
+            if anchor not in selected:
+                selected.append(anchor)
     elif re.match(r'^\s*characters\s*=', prompt, re.I):
         raise ValueError('生图人物格式不完整，请重试')
     elif is_selfie:

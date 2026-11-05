@@ -73,7 +73,7 @@ class SentinelLunaDispatchTests(unittest.TestCase):
     def test_image_status_is_replaced_before_waiting_for_chat_model(self):
         prepared = [{"role": "user", "content": "[图片内容：午饭]"}]
 
-        async def provider(*args):
+        async def provider(*args, request_timeout=120):
             yield "回复正文"
 
         async def collect():
@@ -129,7 +129,6 @@ class SentinelLunaDispatchTests(unittest.TestCase):
         command = ai_providers._build_codex_sentinel_command(
             "node",
             "codex.js",
-            skill_files=(),
         )
 
         parsed = tomllib.loads("\n".join(_config_overrides(command)))

@@ -15,6 +15,7 @@ from taobao_context import trip_card, load_trip_products, render_trip_context
 from schedule import get_active_schedules, build_schedule_prompt
 from luckin import LUCKIN_CMD_PATTERN
 from song_gen import SONG_CMD_PATTERN
+from compositions import COMPOSE_CMD_PATTERN
 from wechat_bridge import WECHAT_MESSAGE_PATTERN
 from web_search import WEB_EXTRACT_CMD_PATTERN, WEB_SEARCH_CMD_PATTERN
 from capabilities import (
@@ -62,17 +63,29 @@ META_TAG_PATTERN = re.compile(r'\s*<meta\b[^>]*>.*?</meta\s*>', re.DOTALL | re.I
 MEMORY_SEARCH_CMD_PATTERN = re.compile(
     r'[\[［【]\s*MEMORY_SEARCH\s*[：:]\s*[^\]］】]*[\]］】]', re.IGNORECASE
 )
+KITCHEN_MENU_CMD_PATTERN = re.compile(r'\[KITCHEN_MENU\].*?(?:\[/KITCHEN_MENU\]|$)', re.I | re.S)
+KITCHEN_CMD_PATTERN = re.compile(r'\[KITCHEN(?:_CARD)?\s*[:：][^\]]*\]', re.I)
 
 # 所有需要从 AI 回复中剥离的工具指令正则列表（TTS、保存时统一清理）
 _ALL_CMD_PATTERNS = [
     MUSIC_CMD_PATTERN, MOMENT_CMD_PATTERN, MEMORY_CMD_PATTERN, WISH_CMD_PATTERN,
-    ACTIVITY_CHECK_PATTERN, SELFIE_CMD_PATTERN, DRAW_CMD_PATTERN, SONG_CMD_PATTERN,
+    ACTIVITY_CHECK_PATTERN, SELFIE_CMD_PATTERN, DRAW_CMD_PATTERN, SONG_CMD_PATTERN, COMPOSE_CMD_PATTERN,
     POI_SEARCH_PATTERN, TOY_CMD_PATTERN, SVAKOM_CMD_PATTERN, ANKNI_CMD_PATTERN, PET_CMD_PATTERN,
     HOME_CMD_PATTERN, BAND_VIBRATE_CMD_PATTERN, BAND_NOTE_CMD_PATTERN,
     LUCKIN_CMD_PATTERN, TRANSFER_CMD_PATTERN, PRIVATE_WHISPER_CMD_PATTERN,
     WECHAT_MESSAGE_PATTERN, WEB_SEARCH_CMD_PATTERN, WEB_EXTRACT_CMD_PATTERN,
     APP_COMMAND_PATTERN, MEMORY_SEARCH_CMD_PATTERN, PAT_COMMAND_PATTERN, RPS_COMMAND_PATTERN, GAME_COMMAND_PATTERN,
+    KITCHEN_MENU_CMD_PATTERN, KITCHEN_CMD_PATTERN,
 ]
+
+def extract_image_command(text: str) -> tuple[str, str, bool]:
+    selfie = SELFIE_CMD_PATTERN.search(text)
+    match = selfie or DRAW_CMD_PATTERN.search(text)
+    if not match:
+        return text, "", False
+    visible = DRAW_CMD_PATTERN.sub("", SELFIE_CMD_PATTERN.sub("", text)).strip()
+    return visible, match.group(1).strip(), bool(selfie)
+
 
 def strip_tool_commands(text: str) -> str:
     """从文本中移除所有工具指令标记，返回干净文本（用于 TTS 和保存）"""
@@ -220,6 +233,7 @@ async def build_ability_block(
     include_video_call: bool = True,
     include_image_gen: bool = True,
     who: str = "aion",
+    include_kitchen: bool = False,
     model_key: str | None = None,
     excluded_capabilities: set[str] | None = None,
     profile_query: str = '',
@@ -233,6 +247,7 @@ async def build_ability_block(
         include_video_call=include_video_call,
         include_image_gen=include_image_gen,
         who=who,
+        include_kitchen=include_kitchen,
         excluded_capabilities=excluded_capabilities,
     )
     if abilities:

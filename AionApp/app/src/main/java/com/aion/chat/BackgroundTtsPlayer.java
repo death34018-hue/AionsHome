@@ -72,6 +72,9 @@ final class BackgroundTtsPlayer {
     }
 
     private void playNext() {
+        for (String upcoming : queue.upcoming(3)) {
+            MediaCacheStore.shared(context).loadAudio(upcoming, audioHeaders(upcoming), true, file -> {});
+        }
         if (player != null) return;
         String url = queue.next();
         String messageId = queue.currentMessageId();
@@ -87,15 +90,31 @@ final class BackgroundTtsPlayer {
     }
 
     private void prepare(MediaPlayer current, String url) {
+        Map<String, String> headers = audioHeaders(url);
+        MediaCacheStore.shared(context).loadAudio(url, headers, false, cached -> handler.post(() -> {
+            if (player != current) return;
+            prepareSource(current, url, headers, cached);
+        }));
+    }
+
+    private Map<String, String> audioHeaders(String url) {
+        Map<String, String> headers = new HashMap<>();
+        String cookie = CookieManager.getInstance().getCookie(url);
+        if (cookie != null && !cookie.isEmpty()) headers.put("Cookie", cookie);
+        return headers;
+    }
+
+    private void prepareSource(MediaPlayer current, String url, Map<String, String> headers, java.io.File cached) {
         try {
             current.setAudioAttributes(new AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
             current.setWakeMode(context, PowerManager.PARTIAL_WAKE_LOCK);
-            Map<String, String> headers = new HashMap<>();
-            String cookie = CookieManager.getInstance().getCookie(url);
-            if (cookie != null && !cookie.isEmpty()) headers.put("Cookie", cookie);
-            current.setDataSource(context, Uri.parse(url), headers);
+            if (cached != null && cached.isFile()) {
+                try (java.io.FileInputStream input = new java.io.FileInputStream(cached)) {
+                    current.setDataSource(input.getFD());
+                }
+            } else current.setDataSource(context, Uri.parse(url), headers);
             current.setOnPreparedListener(prepared -> {
                 if (player != prepared) return;
                 cancelPrepareTimeout();

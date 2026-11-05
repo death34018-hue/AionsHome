@@ -110,7 +110,7 @@ class BilliardsService:
             game = {'id': uuid.uuid4().hex, 'players': list(players), 'state': state,
                     'difficulty': difficulty, 'accuracy': accuracy, 'mode': mode,
                     'status': 'paused', 'revision': 0, 'rack': 1, 'score': [0, 0],
-                    'match_format': 'best_of_3', 'match_status': 'active',
+                    'match_format': 'single', 'match_status': 'active',
                     'losses': [0, 0], 'streaks': [{'pots': 0, 'misses': 0}, {'pots': 0, 'misses': 0}],
                     'messages': [], 'potted_balls': [[], []], 'actions': [], 'pending': None, 'last_event': None,
                     'ai_preview': None,
@@ -256,7 +256,7 @@ class BilliardsService:
             game['losses'][winner] = 0
             game['losses'][1-winner] += 1
             game['status'] = 'finished'
-            if game.get('match_format') == 'best_of_3' and game['score'][winner] >= 2:
+            if game.get('match_format') == 'single' or (game.get('match_format') == 'best_of_3' and game['score'][winner] >= 2):
                 game['match_status'] = 'completed'
             game['lease'] = None
             game.setdefault('result_reports', []).append({'rack': game['rack'], 'winner': winner,
@@ -316,7 +316,7 @@ class BilliardsService:
             if 'user' in game['players'] and game['status'] == 'running':
                 self.check_lease(game, client)
             game['status'] = 'finished'
-            if game.get('match_format') == 'best_of_3' and game.get('match_status') != 'completed':
+            if game.get('match_format') in ('single', 'best_of_3') and game.get('match_status') != 'completed':
                 game['match_status'] = 'abandoned'
             game['ai_preview'] = None
             game['lease'] = None

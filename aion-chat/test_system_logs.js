@@ -66,3 +66,32 @@ test('network errors survive a page refresh even though they cannot reach the se
   await cleared.loadSystemLogs();
   assert.equal(cleared.systemLogs.length, 0);
 });
+
+test('group log copies separate calls for one reply and ignores unrelated rooms', async () => {
+  const roomSource = fs.readFileSync(`${__dirname}/static/chatroom.js`, 'utf8');
+  const list = {innerHTML:'',querySelectorAll:()=>[]}, count = {}, modal = {classList:{add(){},contains:()=>true}};
+  const calls = [
+    {log_id:'one',msg_id:'reply',room_id:'group',actor:'aion',call_number:1,started_at:1,model:'test',
+      prompt_messages:[{role:'system',content:'厨房工具 [KITCHEN:查看]'}]},
+    {log_id:'two',msg_id:'reply',room_id:'group',actor:'aion',call_number:2,started_at:2,model:'test',
+      prompt_messages:[{role:'system',content:'[小厨房本次查询] 样例库存'}]},
+  ];
+  const p = {crSystemLogs:[],crMsgDebugData:{},crLogLoadVersion:0,crSysLogHasUnreadError:false,
+    currentRoom:{id:'group'},crName:()=> '当餐厨师',esc:String,Date,Math,console,
+    document:{getElementById:id=>({crSysLogList:list,crSysLogCount:count,crSysLogModal:modal})[id]},
+    fetch:async url=>{assert.equal(url,'/api/system-logs?room_id=group');return {ok:true,json:async()=>calls}},
+    navigator:{clipboard:{writeText:async text=>{p.copied=text}}},toast() {}};
+  vm.createContext(p);
+  vm.runInContext(roomSource.slice(roomSource.indexOf('function crHandleDebug('),roomSource.indexOf('async function fetchChatroomModels()')),p);
+  await p.crOpenSystemLog();
+  p.crHandleDebug({...calls[1],type:'debug',recall_topic:'测试'});
+  p.crAddSystemLog({...calls[0],room_id:'another',log_id:'hidden'});
+  assert.equal(p.crSystemLogs.length,2);
+  assert.match(list.innerHTML,/当餐厨师 · test/);
+  assert.doesNotMatch(list.innerHTML,/第\s*\d+\s*次调用/);
+  assert.match(list.innerHTML,/\[小厨房本次查询\]/);
+  await p.crCopyAllSystemLogs();
+  assert.doesNotMatch(p.copied,/第\s*\d+\s*次调用/);
+  assert.match(p.copied,/厨房工具 \[KITCHEN:查看\]/);
+  assert.match(p.copied,/\[小厨房本次查询\] 样例库存/);
+});

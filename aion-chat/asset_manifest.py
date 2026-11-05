@@ -66,6 +66,9 @@ _DOCUMENT_ROUTES = {
     "/xhs-lite": "xhs-lite.html",
     "/xhs-lite-logs": "xhs-lite-logs.html",
     "/health": "health.html",
+    "/kitchen": "kitchen.html",
+    "/music-box": "music-box.html",
+    "/static/composition-player.html": "composition-player.html",
     "/hug": "hug.html",
     "/pet": "pet.html",
 }
@@ -87,6 +90,11 @@ def _iter_client_assets():
     for path in static_dir.rglob("*"):
         if path.is_file() and path.suffix.lower() in {".js", ".css", ".json"}:
             yield "/static/" + path.relative_to(static_dir).as_posix(), path, "frontend"
+        elif (path.is_file() and path.relative_to(static_dir).as_posix().startswith("vendor/strudel-1.3.0/samples/")
+              and path.suffix.lower() in {".mp3", ".wav"}):
+            # Audio is retained on first use, without staging the whole bank
+            # before Android can activate the updated frontend.
+            yield "/static/" + path.relative_to(static_dir).as_posix(), path, "audio"
 
     for directory, prefix in ((BASE_DIR / "entertainment", "/entertainment-assets/"),
                               (pool, "/billiards-assets/")):

@@ -31,6 +31,8 @@ else:
     DB_PATH = DATA_DIR / "chat.db"
 UPLOADS_DIR = DATA_DIR / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
+IMAGE_ANCHORS_DIR = DATA_DIR / "image_anchors"
+IMAGE_ANCHORS_DIR.mkdir(exist_ok=True)
 ALBUM_DIR = DATA_DIR / "album"
 ALBUM_IMAGES_DIR = ALBUM_DIR / "images"
 ALBUM_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
@@ -67,7 +69,10 @@ INDEX_PATH = CHATS_DIR / "_index.json"
 def load_settings():
     if SETTINGS_PATH.exists():
         with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
+            settings = json.load(f)
+        if settings.get('flowai_image_model') == 'jimeng_imgref_v4.5':
+            settings['flowai_image_model'] = 'seedream_5_0_flash'
+        return settings
     keys = {"gemini_key": "", "siliconflow_key": "", "gemini_free_key": "", "aipro_key": ""}
     txt = BASE_DIR.parent / "所需要的API.txt"
     if txt.exists():
@@ -310,6 +315,8 @@ def _read_antigravity_models() -> dict:
 
 ANTIGRAVITY_MODELS = _read_antigravity_models()
 
+VERTEX_CREDENTIALS_PATH = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".local" / "share") / "AionsHome" / "credentials" / "vertex.json"
+
 BUILTIN_MODELS = {
     "硅基GLM-5.2":      {"provider": "siliconflow", "model": "zai-org/GLM-5.2", "vision": False},
     "官Gem3.8flash":  {"provider": "gemini", "model": "gemini-3.8-flash", "vision": True, "audio": True},
@@ -318,11 +325,16 @@ BUILTIN_MODELS = {
     # "Codex-5.5":            {"provider": "codex_cli",  "model": "gpt-5.5", "vision": True},
     # "Codex-Astra":    {"provider": "codex_cli",  "model": "gpt-6-astra", "vision": True, "transport_mode": "safe_live"},
     "Codex-5.6-Sol":      {"provider": "codex_cli",  "model": "gpt-5.6-sol", "vision": True, "transport_mode": "safe_live"},
-    "Codex-6.1-Sol":  {"provider": "codex_cli",  "model": "gpt-6.1-sol", "vision": True, "transport_mode": "safe_live"},
+    "Codex-6.1-Sol":   {"provider": "codex_cli",  "model": "gpt-6.1-sol", "vision": True, "transport_mode": "safe_live"},
+    "Codex-6.1-Terra": {"provider": "codex_cli", "model": "gpt-6.1-terra","vision": True, "transport_mode": "safe_live",},
     # "Codex-Luna":     {"provider": "codex_cli",  "model": "gpt-5.6-luna", "vision": True},
     # "AGY（默认）": {"provider": "antigravity_cli", "model": "", "vision": False, "audio": False},
     
 }
+
+if VERTEX_CREDENTIALS_PATH.is_file():
+    for label, model_id in (("Vertex · 3.8 Flash", "gemini-3.8-flash"), ("Vertex · 4 Argon", "gemini-4-argon")):
+        BUILTIN_MODELS[label] = {"provider": "vertex", "model": model_id, "vision": True, "audio": True}
 
 
 def _clean_text(value) -> str:

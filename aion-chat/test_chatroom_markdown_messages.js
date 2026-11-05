@@ -22,12 +22,13 @@ function loadMessageRenderer() {
   const rendererSource = [
     functionBlock(source, 'function crMsgMenuHtml', 'function crCanRateAiMsg'),
     functionBlock(source, 'function crMsgSenderLineHtml', 'function crEnsureMsgMenu'),
-    functionBlock(source, 'const CR_STRUCTURED_LINE_RE', 'let crProactiveCompanionshipStatus'),
+    functionBlock(source, 'function crBubbleParts', 'let crProactiveCompanionshipStatus'),
     functionBlock(source, 'function crBubbleUnitHtml', 'function crBandVibrationNoteHtml'),
     functionBlock(source, 'function crPrivateWhisperNoteHtml', 'let crMsgFeedbackPopover'),
   ].join('\n');
 
   const context = {
+    document: {readyState:'loading',addEventListener() {}},
     AVATARS: {
       user: '/avatar-user.png',
       aion: '/avatar-aion.png',
@@ -47,10 +48,39 @@ function loadMessageRenderer() {
     timeStr: () => '16:42',
     window: { LoungeVisitUI: null, ChatroomMarkdown: markdown, SystemNoticeUI: require('./static/system-notice-ui.js') },
   };
+  context.window.AionPat = require('./static/pat.js');
+  context.window.addEventListener = () => {};
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(ROOT,'static','kitchen-cards.js'),'utf8'),context);
   vm.runInContext(`${rendererSource}\nthis.renderMessage = msgHTML;`, context);
   return context.renderMessage;
 }
+
+test('each actor keeps the fridge lookup between the preamble and the returned reply', () => {
+  const before = '我去翻冰箱😊。';
+  for (const [sender,name] of [['aion','Primary AI'],['connor','Second AI']]) {
+    const message = {id:'fridge',sender,content:before+'\n\n看好啦，**先吃饭**。',attachments:[
+      {type:'kitchen_lookup',actor:sender,actor_name:'旧名字',offset:before.length,before,status:'done'},
+    ]};
+    const render = loadMessageRenderer(), html = render(message);
+    assert.ok(html.indexOf(before)<html.indexOf('class="kc-lookup"'));
+    assert.ok(html.indexOf('class="kc-lookup"')<html.indexOf('看好啦'));
+    assert.match(html,new RegExp('「'+name+'」查看了冰箱库存'));
+    assert.match(html,/<strong>先吃饭<\/strong>/);
+    assert.doesNotMatch(render({...message,attachments:[]}),/查看了冰箱库存/);
+  }
+});
+
+test('fridge lookup follows its preamble after saved paragraph whitespace is compressed', () => {
+  const before = '前面的话😊。\n\n\n\n先去翻一下冰箱😼。';
+  const html = loadMessageRenderer()({
+    id:'compressed-fridge',sender:'connor',
+    content:before.replace(/\n+/g,'\n')+'\n家底看完了，嚯。',
+    attachments:[{type:'kitchen_lookup',actor:'connor',offset:before.length,before,status:'done'}],
+  });
+  assert.ok(html.indexOf('class="kc-lookup"')<html.indexOf('家底看完了'));
+  assert.match(html,/家底看完了，嚯。/);
+});
 
 test('private whisper receipt is shown below the reply, including an empty public reply', () => {
   for (const content of ['公开正文', '']) {
@@ -308,13 +338,14 @@ test('streaming AI reply uses the same identity header above its live body', () 
   assert.ok(html.indexOf('class="message-header"') < html.indexOf('class="message-live-content'));
 });
 
-test('plain AI line breaks become readable paragraphs inside the same text flow', () => {
+test('AI single line breaks stay within a paragraph and blank lines start another', () => {
   const html = loadMessageRenderer()({
     id: 'ai-2', sender: 'connor', created_at: 1, attachments: [],
-    content: '第一段。\n第二段。\n第三段。',
+    content: '第一行。\n第二行。\n\n第二段。',
   });
 
   assert.equal((html.match(/class="avatar"/g) || []).length, 1);
   assert.equal((html.match(/class="ai-message-content markdown-body"/g) || []).length, 1);
-  assert.equal((html.match(/<p>/g) || []).length, 3);
+  assert.equal((html.match(/<p>/g) || []).length, 2);
+  assert.match(html, /第一行。<br>\n<span class="line-indent" aria-hidden="true"><\/span>第二行。/);
 });

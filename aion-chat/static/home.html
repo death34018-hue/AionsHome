@@ -590,6 +590,7 @@ const APPS = [
   { id: 'chatroom', name: '聊天室', icon: '/public/funIcon_0020_聊天室.png', url: '/chatroom' ,  dock: true  },
   { id: 'memory',   name: '记忆库',   icon: '/public/funIcon_0006_日记本.png',  url: '/memory' ,  dock: true },
   { id: 'moments',  name: '朋友圈',   icon: '/public/funIcon_0010_朋友圈.png',  url: '/moments' ,  dock: true },
+  { id: 'music-box', name: '小音乐盒', icon: '/public/music-box-icon.svg', url: '/music-box' },
   { id: 'music-station', name: '点歌台', icon: '/public/funIcon_0032_点歌台.png', url: '/music-station' },
   { id: 'album', name: '相册', icon: '/public/funIcon_0033_相册.png', url: '/album' },
   { id: 'taobao', name: '逛淘宝', icon: '/public/funIcon_0034_逛淘宝.png', url: '/taobao' },
@@ -612,6 +613,7 @@ const APPS = [
   { id: 'activity', name: '活动日志',     icon: '/public/funIcon_0000_备忘录.png', url: '/activity-logs' },
   { id: 'family-dynamics', name: '家庭动态', icon: '/public/funIcon_0031_家庭动态.png', url: '/family-dynamics' },
   { id: 'health',   name: '健康',     icon: '/public/funIcon_0003_健康心.png', url: '/health' },
+  { id: 'kitchen', name: '小厨房', icon: '/public/kitchen-icon.svg?v=20261102-3', url: '/kitchen' },
   { id: 'reading',  name: '陪伴阅读',     icon: '/public/funIcon_0016_陪伴阅读.png',   url: '/reading' },
   { id: 'gift', name: '爱的印记', icon: '/public/funIcon_0018_爱的印记.png', url: '/gift' },
   { id: 'fund', name: '奥罗斯财团', icon: '/public/funIcon_0019_奥罗斯财团.png', url: '/fund' },
@@ -921,7 +923,7 @@ function appCellHTML(cell, cellIndex) {
 
 function appHTML(app, options = {}) {
   const disabled = !app.url;
-  const badgeId = app.id === 'moments' ? 'id="momentsBadge"' : '';
+  const badgeId = app.id === 'moments' ? 'id="momentsBadge"' : app.id === 'kitchen' ? 'id="kitchenBadge"' : '';
   return `
     <button class="app-icon ${disabled ? 'disabled' : ''}"
        type="button"
@@ -1405,6 +1407,8 @@ setInterval(checkMomentsUnread, 60000);
 </script>
 <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
 <script src="/static/home-popups.js?v=20260923"></script>
+<script src="/static/kitchen-cards.js?v=20261103-lookup3"></script>
+<script>setInterval(() => window.KitchenCards?.refreshBadge(), 60000); window.addEventListener('focus', () => window.KitchenCards?.refreshBadge());</script>
 <script src="/lounge-board/assets/home_board_notice.js?v=20260925"></script>
 </body>
 </html>

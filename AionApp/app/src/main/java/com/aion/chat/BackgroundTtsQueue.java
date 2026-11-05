@@ -36,6 +36,17 @@ final class BackgroundTtsQueue {
 
     boolean contains(String id) { return messages.containsKey(id); }
 
+    java.util.List<String> upcoming(int limit) {
+        java.util.List<String> urls = new java.util.ArrayList<>();
+        for (Message message : messages.values()) {
+            for (String url : message.chunks.tailMap(message.next).values()) {
+                if (urls.size() >= limit) return urls;
+                urls.add(url);
+            }
+        }
+        return urls;
+    }
+
     boolean cancel(String id) {
         boolean wasFirst = !messages.isEmpty() && messages.keySet().iterator().next().equals(id);
         messages.remove(id);

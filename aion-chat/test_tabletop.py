@@ -40,14 +40,14 @@ class DiceTests(unittest.TestCase):
 
 
 class PokerTests(unittest.TestCase):
-    def test_five_hands_stop_and_keep_per_hand_accounts(self):
+    def test_three_hands_stop_and_keep_per_hand_accounts(self):
         state = game.new_game('texas-holdem', ['user', 'aion'])
-        for hand in range(1, 6):
+        for hand in range(1, 4):
             game.act(state, state['turn'], {'action': 'fold'})
             self.assertEqual(len(state['rounds']), hand)
             self.assertEqual(sum(state['rounds'][-1]['net'].values()), 0)
             self.assertEqual(sum(state['rounds'][-1]['balances'].values()), 1000)
-            if hand < 5:
+            if hand < 3:
                 game.next_round(state)
         self.assertEqual(state['phase'], 'game_over')
         self.assertTrue(state['closed'])
@@ -124,6 +124,21 @@ class TableApiTests(unittest.IsolatedAsyncioTestCase):
     def turn(self, state=None, **action):
         state = state or self.state
         return self.api.Turn(game_id=state['id'], revision=state['revision'], **action)
+
+    def test_saved_poker_adopts_three_hands_without_resetting_cards(self):
+        state = game.new_game('texas-holdem', ['user', 'aion'])
+        state['round_limit'] = 5
+        self.api._save(state)
+        loaded = self.api._load('texas-holdem')
+        self.assertEqual(loaded['round_limit'], 3)
+        self.assertEqual(loaded['hands'], state['hands'])
+        self.assertEqual(loaded['stacks'], state['stacks'])
+        for hand in range(1, 4):
+            game.act(loaded, loaded['turn'], {'action': 'fold'})
+            if hand < 3:
+                game.next_round(loaded)
+        self.assertEqual(loaded['phase'], 'game_over')
+        self.assertEqual(loaded['end_reason'], '已完成 3 手')
 
     async def test_new_table_defaults_to_requested_money_amounts(self):
         import tabletop_wallet as money
@@ -373,12 +388,12 @@ class TableMoneyTests(unittest.TestCase):
             self.money.open_table(self.path, 'liars-dice', ['user', 'connor', 'aion'], True, 4000)
         self.assertEqual(self.money.balances(self.path), {'aion': 3000, 'connor': 8000})
 
-    def test_fifth_hand_automatically_returns_wallet_and_cannot_continue(self):
+    def test_third_hand_automatically_returns_wallet_and_cannot_continue(self):
         state = self.money.open_table(self.path, 'texas-holdem', ['user', 'aion'], True, 2000)
-        for hand in range(5):
+        for hand in range(3):
             game.act(state, state['turn'], {'action': 'fold'})
             self.money.save(self.path, state)
-            if hand < 4:
+            if hand < 2:
                 game.next_round(state)
         self.assertEqual(state['wallet']['status'], 'settled')
         self.assertEqual(self.money.balances(self.path)['aion'], 1000 + state['stacks']['aion'])
@@ -403,6 +418,10 @@ class TableReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('同伴：本场 +10.00 元', content)
         self.assertIn('伙伴：本场 +50.00 元', content)
         self.assertEqual(len(attachments[0]['lines']), 3)
+        self.assertEqual(attachments[0]['balanceLabel'], '收桌余额')
+        self.assertEqual(attachments[0]['rows'][0], dict(actor='user', name='用户', delta=-6000,
+                         net='-60.00 元', balance='140.00 元'))
+        self.assertEqual([row['delta'] for row in attachments[0]['rows']], [-6000, 1000, 5000])
 
     async def test_table_end_group_report_retry_and_early_cashout(self):
         import database
@@ -457,15 +476,15 @@ class TableReportTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('共完成 3 轮', cards[0][0])
             self.assertEqual(json.loads(cards[0][1])[0]['type'], 'table_game_result')
             self.assertEqual(db.execute("SELECT COUNT(*) FROM messages WHERE role='system'").fetchone()[0], 0)
-        # Cashing out after three hands immediately sends one cumulative report.
+        # Cashing out after two hands immediately sends one cumulative report.
         with money.connect(path) as db:
             db.execute('INSERT INTO bookkeeping VALUES (?,?,?,?,?)', ('fund','wallet_user',50,'test',1))
         state = money.open_table(path, 'texas-holdem', ['user', 'aion'], True, 2000)
         with patch('sync_events.broadcast_synced', AsyncMock()):
-            for hand in range(1, 4):
+            for hand in range(1, 3):
                 game.act(state, state['turn'], {'action': 'fold'})
                 await api._commit(state)
-                if hand < 3:
+                if hand < 2:
                     game.next_round(state)
             with money.connect(path) as db:
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM chatroom_messages WHERE sender='system'").fetchone()[0], 1)
@@ -478,27 +497,27 @@ class TableReportTests(unittest.IsolatedAsyncioTestCase):
         with money.connect(path) as db:
             cards = db.execute("SELECT content FROM chatroom_messages WHERE sender='system' ORDER BY created_at").fetchall()
             self.assertEqual(len(cards), 2)
-            self.assertIn('共完成 3 手', cards[-1][0])
+            self.assertIn('共完成 2 手', cards[-1][0])
             self.assertEqual(db.execute("SELECT COUNT(*) FROM messages WHERE role='system'").fetchone()[0], 0)
         self.assertEqual(money.pending_reports(path), [])
 
-        # Automatic five-hand closure also emits exactly one report.
+        # Automatic three-hand closure also emits exactly one report.
         state = money.open_table(path, 'texas-holdem', ['user', 'aion'], True, 2000)
         with patch('sync_events.broadcast_synced', AsyncMock()):
-            for hand in range(1, 6):
+            for hand in range(1, 4):
                 while state['phase'] == 'playing':
                     game.act(state, state['turn'], {'action': 'fold'})
                     await api._commit(state)
                 with money.connect(path) as db:
                     count = db.execute("SELECT COUNT(*) FROM chatroom_messages WHERE sender='system'").fetchone()[0]
-                self.assertEqual(count, 3 if hand == 5 else 2)
-                if hand < 5:
+                self.assertEqual(count, 3 if hand == 3 else 2)
+                if hand < 3:
                     game.next_round(state)
             await api._commit(state)
         with money.connect(path) as db:
             cards = db.execute("SELECT content FROM chatroom_messages WHERE sender='system' ORDER BY created_at").fetchall()
         self.assertEqual(len(cards), 3)
-        self.assertIn('共完成 5 手', cards[-1][0])
+        self.assertIn('共完成 3 手', cards[-1][0])
 
 
 

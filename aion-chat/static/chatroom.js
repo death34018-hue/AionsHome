@@ -27,6 +27,7 @@ let chatroomMemoryKindFilter = 'all';
 let chatroomMemoryKindMenuId = null;
 let crMsgDebugData = {};
 let crSystemLogs = [];
+let crLogLoadVersion = 0;
 let crSysLogHasUnreadError = false;
 const CR_AMBIENT_LOCAL_ARMED_KEY = 'aion_chatroom_ambient_local_armed';
 const CR_TTS_VOICES_CACHE_KEY = 'chatroom_tts_voices_v1';
@@ -114,10 +115,10 @@ function applyChatroomTheme(theme) {
   const next = theme === 'light' ? 'light' : 'dark';
   document.documentElement.dataset.theme = next;
   document.body.dataset.theme = next;
-  document.documentElement.style.backgroundColor = next === 'dark' ? '#03061c' : '#eef3ff';
+  document.documentElement.style.backgroundColor = next === 'dark' ? '#03061c' : '#f5e5e4';
   localStorage.setItem(CHATROOM_THEME_KEY, next);
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute('content', next === 'dark' ? '#050923' : '#eef3ff');
+  if (meta) meta.setAttribute('content', next === 'dark' ? '#050923' : '#f5e5e4');
   if (window.AionStatusBar) window.AionStatusBar.setBarStyle(next);
 }
 
@@ -339,6 +340,7 @@ const _ttsEngine = (function() {
     chunkQueues: {},
     playOrder: [],
     _next() {
+      eng.audio.prefetchQueued?.(eng.chunkQueues, eng.playOrder);
       while (eng.playOrder.length > 0) {
         const msgId = eng.playOrder[0];
         const q = eng.chunkQueues[msgId];
@@ -411,11 +413,14 @@ const _ttsEngine = (function() {
 	        eng.playOrder.push(msgId);
 	      }
 	      eng.chunkQueues[msgId].chunks[seq] = { url, text: text || "" };
+	      eng.audio.prefetchQueued?.(eng.chunkQueues, eng.playOrder);
 	      if (!eng.playing) eng._next();
 	    },
     finish(msgId) {
       const q = eng.chunkQueues[msgId];
       if (!q) return;
+      window.AionTtsReplayPlaylist?.remember(msgId, Object.keys(q.chunks).map(Number).sort((a, b) => a - b)
+        .map(seq => typeof q.chunks[seq] === 'object' ? q.chunks[seq].url : q.chunks[seq]));
       q.finished = true;
       while (eng.playOrder.length > 0) {
         const id = eng.playOrder[0];
@@ -824,12 +829,20 @@ async function crReplayTTS(msgId, triggerBtn = null) {
   _crPlayReplayChunk(btn, token);
 
   crReplayDiscoverPromise = crDiscoverReplayChunks(msgId).then(chunks => {
-    if (token === crReplayToken && chunks.length) crReplayChunks = chunks;
+    if (token === crReplayToken && chunks.length) {
+      crReplayChunks = chunks;
+      crReplayAudio.prefetch?.(chunks.slice(crReplayIdx, crReplayIdx + 3));
+    }
     return chunks;
   });
 }
 
 async function crDiscoverReplayChunks(msgId) {
+  if (window.AionTtsReplayPlaylist) return window.AionTtsReplayPlaylist.load(msgId, () => crDiscoverLegacyReplayChunks(msgId));
+  return crDiscoverLegacyReplayChunks(msgId);
+}
+
+async function crDiscoverLegacyReplayChunks(msgId) {
   const chunks = [];
   for (let i = 0; i < 120; i++) {
     const resp = await fetch(`/api/tts/audio/${msgId}_s${i}`, { method: 'HEAD' });
@@ -862,6 +875,7 @@ function _crPlayReplayChunk(btn, token = crReplayToken) {
     return;
   }
   crReplayAudio.src = crReplayChunks[crReplayIdx];
+  crReplayAudio.prefetch?.(crReplayChunks.slice(crReplayIdx, crReplayIdx + 3));
   crReplayAudio.onended = () => { crReplayIdx++; _crPlayReplayChunk(btn, token); };
   crReplayAudio.onerror = () => { crReplayIdx++; _crPlayReplayChunk(btn, token); };
   crReplayAudio.play().catch((err) => {
@@ -1843,24 +1857,41 @@ window.addEventListener('beforeunload', () => {
 function crHandleDebug(data) {
   const d = data?.data && data.data.type === 'debug' ? data.data : data;
   if (!d || d.type !== 'debug') return;
-  if (d.room_id && currentRoom && d.room_id !== currentRoom.id) return;
+  if (!currentRoom || d.room_id !== currentRoom.id) return;
   if (d.msg_id) crMsgDebugData[d.msg_id] = d;
   crAddSystemLog(d);
 }
 
-function crAddSystemLog(d) {
-  if (!d) return;
-  if (d.msg_id && crSystemLogs.some(log => log.msg_id === d.msg_id)) return;
-  const now = new Date();
-  const ts = String(now.getHours()).padStart(2, '0') + ':' +
-    String(now.getMinutes()).padStart(2, '0') + ':' +
-    String(now.getSeconds()).padStart(2, '0');
-  crSystemLogs.unshift({ ...d, _ts: ts, _id: 'cr_slog_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) });
-  if (d.has_error) {
+function crAddSystemLog(d, live = true) {
+  if (!currentRoom || d?.room_id !== currentRoom.id) return;
+  const id = d.log_id || d.usage?.system_log_id;
+  const index = crSystemLogs.findIndex(item => id ? item.log_id === id
+    : !item.log_id && d.msg_id && item.msg_id === d.msg_id);
+  const previous = crSystemLogs[index] || {};
+  if (previous.finished_at && d.status === 'running') return;
+  if (previous.prompt_source === 'dispatch' && d.status === 'running' && d.prompt_source !== 'dispatch') return;
+  if (!live && previous.type === 'debug' && d.type !== 'debug') return;
+  const started = d.started_at ?? previous.started_at ?? Date.now()/1000;
+  const item = {...previous,...d,log_id:id,started_at:started,
+    _ts:new Date(started*1000).toLocaleTimeString('zh-CN',{hour12:false}),
+    _id:previous._id || 'cr_slog_'+(id || Math.random().toString(36).slice(2))};
+  if (index >= 0) crSystemLogs.splice(index,1);
+  crSystemLogs.unshift(item);
+  crSystemLogs.sort((a,b) => b.started_at-a.started_at);
+  crSystemLogs = crSystemLogs.slice(0,30);
+  if (live && d.has_error) {
     crSysLogHasUnreadError = true;
     document.getElementById('crSysLogBtn')?.classList.add('cr-syslog-btn-flash');
   }
-  crRenderSystemLogList();
+  if (live && document.getElementById('crSysLogModal')?.classList.contains('show')) crRenderSystemLogList();
+}
+
+function crLogTitle(d) {
+  return [d.actor && crName(d.actor), d.model || (d.log_kind === 'ambient_voice' ? 'ambient-sentinel' : '?')].filter(Boolean).join(' · ');
+}
+
+function crPromptLabel(d) {
+  return d.prompt_source === 'dispatch' ? '实际发送的 Prompt' : '请求记录中的 Prompt';
 }
 
 function crFixed(value, digits = 4) {
@@ -1916,7 +1947,7 @@ function crBuildTokenDetailHtml(u) {
 
 function crFormatSystemLogForCopy(d) {
   const lines = [];
-  lines.push(`[${d._ts || ''}] ${d.model || (d.log_kind === 'ambient_voice' ? 'ambient-sentinel' : '?')}`);
+  lines.push(`[${d._ts || ''}] ${crLogTitle(d)}`);
   if (d.has_error && d.error_text) lines.push(`错误: ${d.error_text}`);
   if (d.log_kind === 'ambient_voice') {
     if (d.ambient_source) lines.push(`音源: ${d.ambient_source}`);
@@ -1940,7 +1971,7 @@ function crFormatSystemLogForCopy(d) {
     });
   }
   if (Array.isArray(d.prompt_messages) && d.prompt_messages.length) {
-    lines.push('完整 Prompt:');
+    lines.push(crPromptLabel(d));
     d.prompt_messages.forEach((m, i) => {
       lines.push(`--- ${i + 1}. ${m.role || ''} ---\n${m.content || ''}`);
     });
@@ -2020,12 +2051,13 @@ function crRenderSystemLogList() {
   const el = document.getElementById('crSysLogList');
   const countEl = document.getElementById('crSysLogCount');
   if (!el) return;
-  if (countEl) countEl.textContent = `共 ${crSystemLogs.length} 条（刷新后清空）`;
+  if (countEl) countEl.textContent = `当前聊天室 · ${crSystemLogs.length} 条`;
   if (crSystemLogs.length === 0) {
     el.innerHTML = '<div class="cr-syslog-empty">暂无日志</div>';
     return;
   }
 
+  const expanded = new Set([...el.querySelectorAll('.cr-syslog-detail.show')].map(node => node.id));
   el.innerHTML = crSystemLogs.map(d => {
     const detailId = 'crsd_' + d._id;
     if (d.log_kind === 'ambient_voice') {
@@ -2074,7 +2106,7 @@ function crRenderSystemLogList() {
         const roleCls = m.role === 'user' ? 'user' : 'assistant';
         return `<div class="debug-prompt-item"><span class="debug-prompt-role ${roleCls}">[${esc(m.role || '')}]</span> <span class="debug-prompt-text">${esc(m.content || '')}</span></div>`;
       }).join('');
-      detailHtml += `<h4>📝 完整 Prompt (${d.prompt_count || prompts.length} 条)</h4><div class="debug-prompt-list">${pmItems}</div>`;
+      detailHtml += `<h4>📝 ${crPromptLabel(d)} (${d.prompt_count || prompts.length} 条)</h4><div class="debug-prompt-list">${pmItems}</div>`;
     }
 
     const hasDetail = detailHtml.length > 0;
@@ -2083,7 +2115,7 @@ function crRenderSystemLogList() {
     return `<div class="${entryCls}">
       <span class="cr-syslog-time">${d._ts}</span>
       ${errorTag}
-      <span class="cr-syslog-model">📦 ${esc(d.model || '?')}</span>
+      <span class="cr-syslog-model">📦 ${esc(crLogTitle(d))}</span>
       <span class="cr-syslog-tokens">${tokenText}</span>
       <span class="${memCls}">${memText}</span>
       ${hasDetail ? `<button class="cr-syslog-detail-toggle" onclick="crToggleSysLogDetail('${detailId}')">详情 ▾</button>` : ''}
@@ -2091,30 +2123,50 @@ function crRenderSystemLogList() {
       ${hasDetail ? `<div class="cr-syslog-detail" id="${detailId}">${detailHtml}</div>` : ''}
     </div>`;
   }).join('');
+  for (const id of expanded) if (document.getElementById(id)) crToggleSysLogDetail(id);
 }
 
 function crToggleSysLogDetail(id) {
   const el = document.getElementById(id);
   if (!el) return;
   el.classList.toggle('show');
-  const btn = el.previousElementSibling;
+  const btn = el.parentElement?.querySelector('.cr-syslog-detail-toggle');
   if (btn && btn.classList.contains('cr-syslog-detail-toggle')) {
     btn.textContent = el.classList.contains('show') ? '收起 ▴' : '详情 ▾';
   }
 }
 
-function crOpenSystemLog() {
+async function crOpenSystemLog() {
   crSysLogHasUnreadError = false;
   document.getElementById('crSysLogBtn')?.classList.remove('cr-syslog-btn-flash');
   crRenderSystemLogList();
   document.getElementById('crSysLogModal')?.classList.add('show');
+  if (!currentRoom) return;
+  const version = ++crLogLoadVersion, roomId = currentRoom.id;
+  try {
+    const response = await fetch('/api/system-logs?room_id='+encodeURIComponent(roomId),{cache:'no-store'});
+    if (!response.ok) throw new Error('日志读取失败');
+    const saved = await response.json();
+    if (version !== crLogLoadVersion || roomId !== currentRoom?.id) return;
+    saved.forEach(d => crAddSystemLog(d,false));
+    crRenderSystemLogList();
+  } catch (e) { if (version === crLogLoadVersion) toast('暂时无法读取已保存的日志'); }
 }
 
 function crCloseSystemLog() {
   document.getElementById('crSysLogModal')?.classList.remove('show');
 }
 
-function crClearSystemLog() {
+async function crClearSystemLog() {
+  if (!currentRoom) return;
+  const roomId = currentRoom.id;
+  ++crLogLoadVersion;
+  try {
+    const response = await fetch('/api/system-logs?room_id='+encodeURIComponent(roomId),{method:'DELETE'});
+    if (!response.ok) throw new Error('日志清空失败');
+  } catch (e) { toast('日志清空失败'); return; }
+  if (roomId !== currentRoom?.id) return;
+  ++crLogLoadVersion;
   crSystemLogs = [];
   crSysLogHasUnreadError = false;
   document.getElementById('crSysLogBtn')?.classList.remove('cr-syslog-btn-flash');
@@ -2416,6 +2468,11 @@ async function selectRoom(roomId) {
   document.getElementById('chatroomReplyPreparation')?.remove();
   const room = rooms.find(r => r.id === roomId);
   if (!room) return;
+  if (currentRoom?.id !== roomId) {
+    crSystemLogs = [];
+    ++crLogLoadVersion;
+    crCloseSystemLog();
+  }
   currentRoom = room;
   crApplyIntimacyState({
     enabled: crIntimacyEnabled(roomId),
@@ -2489,6 +2546,7 @@ function crFetchRoomMessages(options = {}) {
   // an older disk snapshot just because the user selects that room again.
   if (options.snapshot && crRenderedRoomId !== roomId) {
     let messages = [];
+    let savedAt = 0;
     try {
       const bridge = window.top?.AppSharedData || window.AppSharedData;
       const candidates = [bridge?.get?.(snapshotKey), localStorage.getItem(snapshotKey)]
@@ -2496,11 +2554,14 @@ function crFetchRoomMessages(options = {}) {
         .filter(item => Array.isArray(item?.messages))
         .sort((a, b) => Number(b.savedAt || 0) - Number(a.savedAt || 0));
       messages = candidates[0]?.messages || [];
+      savedAt = Number(candidates[0]?.savedAt || 0);
     } catch(e) {}
     renderMessages(messages);
+    window.resetAionNativeMessages?.(savedAt);
     scrollToBottom(true);
   }
 
+  window.onAionNativeMessages?.();
   load.promise = (async () => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const revision = crMessageRevision;
@@ -2509,7 +2570,10 @@ function crFetchRoomMessages(options = {}) {
       // A live create/edit/delete crossed this request. Re-read instead of
       // guessing whether the HTTP snapshot or the event is newer.
       if (revision !== crMessageRevision) continue;
-      if (!options.snapshot && (isSending || isAiChatting || isReplyOnce)) return false;
+      if (!options.snapshot && (isSending || isAiChatting || isReplyOnce)) {
+        msgs.forEach(crApplyReceivedMessage);
+        return true;
+      }
       oldestMsgTs = msgs[0]?.created_at || null;
       noMoreMessages = msgs.length < 100;
       loadingOlder = false;
@@ -2946,8 +3010,6 @@ function crEnsureMsgMenu(row, sender, msgId) {
   }
 }
 
-const CR_STRUCTURED_LINE_RE = /^\s*(```|[-*+]\s+|\d+[.)]\s+|[>|#]|\|)/;
-
 function crBubbleParts(raw, isUser = false) {
   const text = raw || '';
   if (isUser) {
@@ -2978,13 +3040,16 @@ function crMessageContentItems(raw, isUser = false) {
   return items;
 }
 
-function crMessageContentItemsWithInlinePats(raw, isUser, notices) {
-  if (isUser || !notices?.length || !window.AionPat?.interleaveContent) {
+function crMessageContentItemsWithInlinePats(raw, isUser, notices, attachments) {
+  if (isUser) {
     return crMessageContentItems(raw, isUser);
   }
   const items = [];
-  for (const part of window.AionPat.interleaveContent(raw, notices)) {
-    if (part.type === 'notice') items.push({type: 'pat_notice', message: part.message});
+  const parts = window.KitchenCards?.contentParts(raw,notices,attachments)
+    || window.AionPat?.interleaveContent(raw,notices) || [{type:'text',text:raw}];
+  for (const part of parts) {
+    if (part.type === 'kitchen_lookup') items.push(part);
+    else if (part.type === 'notice') items.push({type: 'pat_notice', message: part.message});
     else items.push(...crMessageContentItems(part.text, isUser));
   }
   return items;
@@ -3054,17 +3119,10 @@ function crMessageUnitHtml({ sender, name, avatar, senderLine, contentHtml, extr
 
 const CR_MESSAGE_SPECIAL_TOKEN_RE = /(\[\[image:\S+?\]\]|\[转账(?:给[^\uff1a:]+?)?[：:]\s*-?\d+(?:\.\d+)?\s*元\])/g;
 
-function crNormalizeMarkdownParagraphs(value, isUser) {
-  if (isUser) return value;
-  const lines = String(value || '').split(/\n+/).map(line => line.trim()).filter(Boolean);
-  if (lines.length < 2 || lines.some(line => CR_STRUCTURED_LINE_RE.test(line))) return value;
-  return lines.join('\n\n');
-}
-
 function crMarkdownMessageHtml(raw, isUser = false) {
   const text = String(raw || '');
   const renderMarkdown = value => window.ChatroomMarkdown
-    ? window.ChatroomMarkdown.render(crNormalizeMarkdownParagraphs(value, isUser))
+    ? window.ChatroomMarkdown.render(value, { indentLineBreaks: !isUser })
     : `<p>${isUser ? escWithTransfer(value) : escWithImages(value)}</p>`;
   let html = '';
   let lastIndex = 0;
@@ -3091,7 +3149,9 @@ function crRenderMessageItems(items, { sender, name, avatar, msgId, msg, fmt, is
     tts: !isUser,
     memory: !isUser && crMemoryRecordMsgIds.has(msgId),
   });
-  const contentHtml = items.map(item => item.type === 'pat_notice'
+  const contentHtml = items.map(item => item.type === 'kitchen_lookup'
+    ? window.KitchenCards.lookupHTML(item.lookup,name)
+    : item.type === 'pat_notice'
     ? msgHTML(item.message)
     : item.type === 'monologue'
       ? `<div class="inner-monologue-line">${esc(item.text)}</div>`
@@ -3160,6 +3220,24 @@ async function crOpenPrivateWhisper(event, link) {
   }
 }
 
+async function crRetryImage(event, button) {
+  event.stopPropagation();
+  const id = button.closest('[data-msg-id]')?.dataset.msgId;
+  const room = currentRoom?.id;
+  if (!id || !room || button.disabled) return;
+  button.disabled = true;
+  button.textContent = '重试中…';
+  try {
+    const result = await api('/rooms/' + encodeURIComponent(room) + '/messages/' + encodeURIComponent(id) + '/retry-image', {
+      method: 'POST', body: JSON.stringify({attempt: Number(button.dataset.attempt)}),
+    });
+    if (!result.accepted && result.message && button.isConnected) crApplyReceivedMessage(result.message);
+  } catch (err) {
+    toast(err.message || '重试请求未送达');
+    if (button.isConnected) { button.disabled = false; button.textContent = '重试'; }
+  }
+}
+
 function msgHTML(m, nextMessage = null) {
   const sender = m.sender || 'user';
   const pat = window.AionPat?.isPat(m);
@@ -3208,6 +3286,7 @@ function msgHTML(m, nextMessage = null) {
   const inlineToy = !isUser && window.SystemNoticeUI?.splitInlineToyCommands?.(originalRaw);
   const raw = crStripWishFulfillmentMarker(inlineToy ? inlineToy.content : originalRaw);
   const messageAttachments = crWithWishFallbackAttachments(m);
+  const imageRetry = !isUser && messageAttachments.find(a => a?.type === 'chatroom_image_retry');
 
   // 判断是否为纯语音消息（只有语音附件，content 是转写文本或为空）
   const hasVoiceAtt = messageAttachments.some(a => typeof a === 'object' && a.type === 'voice');
@@ -3223,7 +3302,15 @@ function msgHTML(m, nextMessage = null) {
   const attHtml = renderAttachments(messageAttachments, { actorName: name });
   const bandVibrationHtml = crBandVibrationNoteHtml(messageAttachments);
   let bubblesHtml = '';
-  if (isVoiceOnly) {
+  if (imageRetry) {
+    const action = imageRetry.running
+      ? '<button class="cr-image-retry" type="button" disabled>重试中…</button>'
+      : `<button class="cr-image-retry" type="button" data-attempt="${Number(imageRetry.attempt)}" onclick="crRetryImage(event,this)">重试</button>`;
+    bubblesHtml = `<div class="message-stack">${crBubbleUnitHtml({
+      sender, name, avatar, msgId: m.id, msg: m, showHeader: true, deleteOnly: true,
+      html: `<span class="cr-image-retry-line">${imageRetry.running ? '' : esc(raw)}${action}</span>`,
+    })}</div>`;
+  } else if (isVoiceOnly) {
     bubblesHtml = `<div class="message-stack">${crBubbleUnitHtml({
       sender, name, avatar, msgId: m.id || '', msg: m,
       html: '',
@@ -3242,7 +3329,7 @@ function msgHTML(m, nextMessage = null) {
       preBubbleHtml: attHtml,
     })}</div>`;
   } else if (!hasDateSummaryAtt && !hasLoungeReportAtt && (!hasWishFulfillmentAtt || !isUser)) {
-    const items = crMessageContentItemsWithInlinePats(raw, isUser, m._inlinePatNotices);
+    const items = crMessageContentItemsWithInlinePats(raw, isUser, m._inlinePatNotices, messageAttachments);
     bubblesHtml = items.length
       ? `<div class="message-stack">${crRenderMessageItems(items, { sender, name, avatar, msgId: m.id || '', msg: m, fmt, isUser })}</div>`
       : `<div class="message-stack">${crBubbleUnitHtml({
@@ -3752,15 +3839,22 @@ function appendTyping(who) {
   scrollToBottom();
 }
 
-function updateTypingStatus(who, statusText) {
-  const indicator = messagesEl.querySelector('.typing-indicator');
-  if (indicator) {
-    indicator.textContent = `${who} ${statusText}`;
-  } else {
-    appendTyping(who);
-    const el = messagesEl.querySelector('.typing-indicator');
-    if (el) el.textContent = `${who} ${statusText}`;
+function updateTypingStatus(who, statusText, lookup) {
+  if (lookup) {
+    if (!streamingBubble) {
+      startStreamingBubble(lookup.actor,pendingStreamId || crSseMessageIds[lookup.actor]);
+      pendingStreamSender = null;
+      pendingStreamId = null;
+    }
+    streamingLookup = lookup;
+    renderStreamingLookup();
+    scrollToBottom();
+    return;
   }
+  if (streamingLookup) return;
+  if (!messagesEl.querySelector('.typing-indicator')) appendTyping(who);
+  messagesEl.querySelector('.typing-indicator').textContent =
+    statusText.startsWith(who) ? statusText : `${who} ${statusText}`;
 }
 
 function appendAiChatStatus(text) {
@@ -3828,11 +3922,13 @@ function crHandleSongGenStart(data) {
 // ── 流式消息累积 ──
 let streamingBubble = null;
 let streamingText = '';
+let streamingLookup = null;
 let pendingStreamSender = null;
 let pendingStreamId = null;
 
 function startStreamingBubble(sender, id) {
   streamingText = '';
+  streamingLookup = null;
   const name = crName(sender);
   const avatar = AVATARS[sender] || AVATARS.user;
   const liveContentClass = sender === 'user' ? 'bubble markdown-body' : 'ai-message-content markdown-body';
@@ -3874,9 +3970,19 @@ function crStripScheduleCommands(text) {
 
 function feedStreamingChunk(text) {
   if (!streamingBubble) return;
+  messagesEl.querySelector('.typing-indicator')?.remove();
   streamingText += text;
-  streamingBubble.textContent = crStripScheduleCommands(streamingText);
+  if (streamingLookup) renderStreamingLookup();
+  else streamingBubble.textContent = crStripScheduleCommands(streamingText);
   scrollToBottom();
+}
+
+function renderStreamingLookup() {
+  if (!streamingBubble) return;
+  const parts = window.KitchenCards.contentParts(crStripScheduleCommands(streamingText),[],[streamingLookup]);
+  streamingBubble.innerHTML = parts.map(part => part.type === 'kitchen_lookup'
+    ? window.KitchenCards.lookupHTML(part.lookup,crName(part.lookup.actor))
+    : `<span style="white-space:pre-wrap">${esc(part.text)}</span>`).join('');
 }
 
 function resetStreamingBubble(sender) {
@@ -3887,17 +3993,24 @@ function resetStreamingBubble(sender) {
   if (streamRow) streamRow.remove();
   streamingBubble = null;
   streamingText = '';
+  streamingLookup = null;
   pendingStreamSender = sender;
   pendingStreamId = streamId;
   appendTyping(crName(sender));
 }
 
 function endStreamingBubble(messageOrAttachments) {
+  const lookup = streamingLookup;
+  streamingLookup = null;
+  messagesEl.querySelector('.typing-indicator')?.remove();
   crMessageRevision++;
   // 先获取流式行的引用（后面 replaceChild 可能破坏 streamingBubble 的 DOM 位置）
   const streamRow = streamingBubble ? streamingBubble.closest('.message-row') : null;
   const finalMsg = messageOrAttachments && !Array.isArray(messageOrAttachments) ? messageOrAttachments : null;
-  const attachments = finalMsg ? finalMsg.attachments : messageOrAttachments;
+  const attachments = finalMsg ? finalMsg.attachments : [
+    ...(messageOrAttachments || []),
+    ...(lookup ? [{...lookup,status:'stopped'}] : []),
+  ];
 
   if (finalMsg?.id) crMessagesById[finalMsg.id] = finalMsg;
   // A whisper-only reply has no public chunks to create a streaming row.
@@ -3931,13 +4044,13 @@ function endStreamingBubble(messageOrAttachments) {
   }
 
   // 流结束后一次性排版 Markdown，避免未闭合标记在流式阶段闪烁。
-  if (streamingBubble && streamingText) {
+  if (streamingBubble && (streamingText || lookup)) {
     const sender = streamRow?.classList.contains('connor') ? 'connor' : (streamRow?.classList.contains('aion') ? 'aion' : 'user');
     const name = crName(sender);
     const avatar = AVATARS[sender] || AVATARS.user;
     const msgId = streamRow?.id?.startsWith('streaming-') ? streamRow.id.replace('streaming-', '') : '';
     const stack = streamingBubble.closest('.message-stack') || streamingBubble.closest('.msg-content');
-    const items = crMessageContentItems(streamingText, sender === 'user');
+    const items = crMessageContentItemsWithInlinePats(streamingText, sender === 'user', [], attachments);
     if (stack) {
       stack.innerHTML = crRenderMessageItems(items, {
         sender, name, avatar, msgId,
@@ -4086,6 +4199,12 @@ function crHandleReplyFailure(data) {
 }
 
 function handleSSE(data) {
+  const sender = /^(aion|connor)_/.exec(data.type)?.[1];
+  if (sender) {
+    if (data.type.endsWith('_start')) crSseMessageIds[sender] = data.id;
+    // A final message can arrive through native push before the old SSE catches up.
+    if (crFinalMessageIds.has(crSseMessageIds[sender])) return;
+  }
   switch (data.type) {
     case 'aion_start':
       crRememberTTSMsgSender(data.id, 'aion');
@@ -4095,7 +4214,7 @@ function handleSSE(data) {
       pendingStreamId = data.id;
       break;
     case 'aion_status':
-      updateTypingStatus(crName('aion'), data.text);
+      updateTypingStatus(crName('aion'), data.text, data.kitchen_lookup);
       break;
     case 'aion_chunk':
       if (pendingStreamSender && !streamingBubble) {
@@ -4124,7 +4243,7 @@ function handleSSE(data) {
       pendingStreamId = data.id;
       break;
     case 'connor_status':
-      updateTypingStatus(crName('connor'), data.text);
+      updateTypingStatus(crName('connor'), data.text, data.kitchen_lookup);
       break;
     case 'connor_chunk':
       if (pendingStreamSender && !streamingBubble) {
@@ -5556,6 +5675,49 @@ function crApplySettingsSync(data) {
   renderRoomList();
 }
 
+const crFinalMessageIds = new Set();
+const crSseMessageIds = {};
+
+function crApplyReceivedMessage(msg) {
+  if (!msg?.id || msg.room_id !== currentRoom?.id) return;
+  crFinalMessageIds.add(msg.id);
+  if (crFinalMessageIds.size > 500) crFinalMessageIds.delete(crFinalMessageIds.values().next().value);
+  const old = crMessagesById[msg.id];
+  const row = messagesEl.querySelector(`[data-msg-id="${msg.id}"]`);
+  if (row?.classList.contains('ai-text-editing')) return;
+  crMessagesById[msg.id] = msg;
+  if (pendingStreamId === msg.id) {
+    pendingStreamId = null;
+    pendingStreamSender = null;
+  }
+  const streamRow = document.getElementById(`streaming-${msg.id}`);
+  if (streamRow && streamingBubble?.closest('.message-row') === streamRow) {
+    endStreamingBubble(msg);
+  } else if (row || streamRow) {
+    if (!streamRow && JSON.stringify(old) === JSON.stringify(msg)) return;
+    const holder = document.createElement('div');
+    holder.innerHTML = msgHTML(msg);
+    (row || streamRow).replaceWith(holder.firstElementChild);
+  } else if (!reconcileLocalUserEcho(msg)) appendMessage(msg);
+  crMessageRevision++;
+}
+
+const crNativeMessages = window.NativeMessageSync?.create({
+  read: () => window.NativeMessageSync.read(), target: () => currentRoom?.id, field: 'room_id',
+  apply(event) {
+    const msg = event.data;
+    if (event.type === 'chatroom_msg_deleted') {
+      delete crMessagesById[msg.id];
+      crFinalMessageIds.add(msg.id);
+      messagesEl.querySelector(`[data-msg-id="${msg.id}"]`)?.remove();
+      document.getElementById(`streaming-${msg.id}`)?.remove();
+      crMessageRevision++;
+    } else crApplyReceivedMessage(msg);
+  },
+});
+window.onAionNativeMessages = () => crNativeMessages?.drain();
+window.resetAionNativeMessages = after => { crNativeMessages?.reset(); crNativeMessages?.drain(after); };
+
 function crApplyReplayedSyncEvent(event) {
   // Historical message events may precede the snapshot already on screen.
   // Reconcile them with one fresh read after replay, never replay old edits
@@ -5634,6 +5796,7 @@ function connectWS() {
     if (crWs !== ws) return;
     try {
       const data = JSON.parse(e.data);
+      if (crNativeMessages?.observe(data) === false) return;
       if (data.type === 'generation_stopped') { _crControl.remoteStop(data.data); return; }
       if (!_crControl.accepts(data)) return;
       if (data.data?.room_id === currentRoom?.id
@@ -5669,6 +5832,7 @@ function connectWS() {
       if (data.type === 'debug' && data.data) {
         crHandleDebug(data);
       }
+      if (data.type === 'system_log') crAddSystemLog(data.data);
 
       if (data.type === 'chatroom_ai_status' && currentRoom) {
         const d = data.data || {};
@@ -5690,13 +5854,7 @@ function connectWS() {
           }
           if (msg.id && msg.sender) crRememberTTSMsgSender(msg.id, msg.sender);
           // 避免重复：流式回复本身已有 streaming 行；异步跟进消息即使还在发送中也要显示。
-          const existing = document.getElementById(`streaming-${msg.id}`);
-          if (!existing && !messagesEl.querySelector(`[data-msg-id="${msg.id}"]`)) {
-            if (!reconcileLocalUserEcho(msg)) {
-              appendMessage(msg);
-              playRecv();
-            }
-          }
+          crApplyReceivedMessage(msg);
         }
       }
 
@@ -5729,6 +5887,8 @@ function connectWS() {
           }
         }
       }
+
+      if (data.type === 'kitchen_changed') window.KitchenCards?.refresh();
 
       if (data.type === 'chatroom_settings_updated' && data.data) {
         crApplySettingsSync(data.data);
@@ -6397,7 +6557,7 @@ function renderAttachments(atts, options = {}) {
   const wishBlock = wishHtml || '';
   if (images.length) html = html.replace('<!--chat-images-->', ChatImagePreview.group(images));
   const mediaBlock = html ? '<div class="msg-media">' + html + '</div>' : '';
-  return musicBlock + wishBlock + mediaBlock;
+  return musicBlock + wishBlock + mediaBlock + (window.KitchenCards?.render(atts) || '');
 }
 
 async function handleChatroomFileSelect(input) {
@@ -6524,6 +6684,7 @@ function escWithTransfer(str) {
 /** 将文本中的 [[image:...]] 标记渲染为 <img>，[转账：N元] 渲染为卡片，其余部分转义 */
 function escWithImages(str) {
   if (window.AionRps) str = window.AionRps.stripCommands(str);
+  if (window.CompositionCards) str = window.CompositionCards.stripCommands(str);
   if (!str) return '';
   const imgRe = /\[\[image:(\S+?)\]\]/g;
   let result = '';

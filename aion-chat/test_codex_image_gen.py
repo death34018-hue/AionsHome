@@ -1,10 +1,12 @@
 import asyncio
 import base64
+import random
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+from PIL import Image
 import image_gen
 from codex_app_server import CodexAppServerEvent, stream_codex_app_server
 from test_codex_app_server import _FakeProcess, _happy_messages
@@ -12,6 +14,94 @@ from test_album import sample_image
 
 
 class CodexImageTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stalled_image_yields_to_waiting_image_before_retry(self):
+        import codex_image_gen as provider
+        first_started = asyncio.Event()
+        calls = []
+        active = set()
+        async def stream(*args, prompt, **kwargs):
+            actor = prompt.splitlines()[-1]
+            self.assertFalse(active, 'Two Codex image turns shared the slot')
+            active.add(actor)
+            calls.append(actor)
+            try:
+                if len(calls) == 1:
+                    first_started.set()
+                    await asyncio.Event().wait()
+                yield CodexAppServerEvent('image', image={
+                    'status': 'completed', 'result': base64.b64encode(sample_image()).decode()})
+            finally:
+                active.remove(actor)
+        with patch.object(provider, '_build_codex_chat_environment', return_value={'CODEX_HOME': '.'}), \
+                patch.object(provider, 'stream_codex_app_server', stream), \
+                patch.object(provider, 'CODEX_IMAGE_QUEUE_TURN', 0.03, create=True), \
+                patch.object(provider, 'CODEX_IMAGE_FIRST_ATTEMPT_TIMEOUT', 2), \
+                patch.object(provider, 'save_generated_image', new=AsyncMock(return_value='photo.png')):
+            first = asyncio.create_task(provider.generate_codex_image('first'))
+            await first_started.wait()
+            try:
+                async with asyncio.timeout(1):
+                    await asyncio.gather(first, provider.generate_codex_image('second'))
+            finally:
+                first.cancel()
+                await asyncio.gather(first, return_exceptions=True)
+        self.assertEqual(calls, ['first', 'second', 'first'])
+
+    async def test_cli_receives_small_copies_in_order_and_keeps_original_anchors(self):
+        import codex_image_gen as provider
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rng = random.Random(10)
+            paths = [root/'portrait.png', root/'transparent.png', root/'tiny.png']
+            for mode, path in zip(('RGB', 'RGBA'), paths):
+                Image.frombytes(mode, (700, 500), rng.randbytes(700 * 500 * len(mode))).save(path)
+            paths[-1].write_bytes(sample_image())
+            originals = [p.read_bytes() for p in paths]
+            sent = []
+            async def stream(command, **kwargs):
+                sent.extend(map(Path, kwargs['image_paths']))
+                self.assertEqual(sent[2], paths[2])
+                for path in sent:
+                    self.assertLess(path.stat().st_size, 500_000)
+                with Image.open(sent[1]) as transparent:
+                    self.assertIn('A', transparent.getbands())
+                yield CodexAppServerEvent('image', image={
+                    'status': 'completed', 'result': base64.b64encode(sample_image()).decode()})
+            with patch.object(provider, '_build_codex_chat_environment', return_value={'CODEX_HOME': directory}), \
+                    patch.object(provider, 'stream_codex_app_server', stream), \
+                    patch.object(provider, 'save_generated_image', new=AsyncMock()):
+                await provider.generate_codex_image('group', references=[
+                    {'name': path.stem, 'path': str(path)} for path in paths])
+            self.assertEqual(originals, [p.read_bytes() for p in paths])
+            self.assertFalse(any(p.exists() for p in sent[:2]))
+
+    async def test_cancelled_waiter_does_not_start_or_shorten_the_remaining_turn(self):
+        import codex_image_gen as provider
+        started, finish = asyncio.Event(), asyncio.Event()
+        calls = []
+        async def stream(*args, prompt, **kwargs):
+            calls.append(prompt.splitlines()[-1])
+            started.set()
+            await finish.wait()
+            yield CodexAppServerEvent('image', image={
+                'status': 'completed', 'result': base64.b64encode(sample_image()).decode()})
+        with patch.object(provider, '_build_codex_chat_environment', return_value={'CODEX_HOME': '.'}), \
+                patch.object(provider, 'stream_codex_app_server', stream), \
+                patch.object(provider, 'CODEX_IMAGE_QUEUE_TURN', 0.04), \
+                patch.object(provider, 'save_generated_image', new=AsyncMock()):
+            first = asyncio.create_task(provider.generate_codex_image('first'))
+            await started.wait()
+            waiting = asyncio.create_task(provider.generate_codex_image('cancelled'))
+            await asyncio.sleep(0)
+            waiting.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await waiting
+            await asyncio.sleep(0.08)
+            finish.set()
+            await first
+            await provider.generate_codex_image('next')
+        self.assertEqual(calls, ['first', 'next'])
+
     async def test_chat_timeout_is_not_swallowed(self):
         with patch('image_anchors.resolve_chat_references', AsyncMock(return_value=('portrait', []))), \
                 patch('codex_image_gen.generate_codex_image', AsyncMock(side_effect=TimeoutError())), \
@@ -21,7 +111,9 @@ class CodexImageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_missing_image_keeps_provider_explanation_for_theater(self):
         import codex_image_gen as provider
+        attempts = []
         async def stream(*args, **kwargs):
+            attempts.append(True)
             yield CodexAppServerEvent('text_delta', text='Image generation refused: safety policy')
             yield CodexAppServerEvent('completed')
         with patch.object(provider, '_build_codex_chat_environment', return_value={'CODEX_HOME': '.'}), \
@@ -30,6 +122,33 @@ class CodexImageTests(unittest.IsolatedAsyncioTestCase):
                 patch.dict(image_gen.SETTINGS, {'image_gen_provider': 'codex'}):
             with self.assertRaisesRegex(RuntimeError, 'safety policy'):
                 await image_gen.generate_image('draw', raise_errors=True)
+        self.assertEqual(len(attempts), 1)
+
+    async def test_stalled_attempt_closes_then_retries_and_keeps_completed_image(self):
+        import codex_image_gen as provider
+        steps = []
+        async def stream(*args, **kwargs):
+            first = not steps
+            steps.append('open')
+            try:
+                yield CodexAppServerEvent('image_started')
+                if not first:
+                    yield CodexAppServerEvent('image', image={
+                        'status': 'completed', 'result': base64.b64encode(sample_image()).decode()})
+                await asyncio.Event().wait()
+            finally:
+                steps.append('close')
+        with patch.object(provider, '_CODEX_SCRIPT', 'codex'), \
+                patch.object(provider, '_build_codex_chat_environment', return_value={'CODEX_HOME': '.'}), \
+                patch.object(provider, 'stream_codex_app_server', stream), \
+                patch.object(provider, 'CODEX_IMAGE_FIRST_ATTEMPT_TIMEOUT', 0.02, create=True), \
+                patch.object(provider, 'CODEX_IMAGE_TIMEOUT', 0.5), \
+                patch.object(provider, 'save_generated_image', new=AsyncMock(return_value='album/photo.png')) as save:
+            result = await provider.generate_codex_image('draw')
+        self.assertEqual(result, 'album/photo.png')
+        self.assertEqual(steps, ['open', 'close', 'open', 'close'])
+        save.assert_awaited_once()
+        self.assertEqual(save.call_args.args[0], sample_image())
 
     async def test_timeout_closes_stream_without_saving_an_unfinished_image(self):
         import codex_image_gen as provider
@@ -43,11 +162,12 @@ class CodexImageTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(provider, '_build_codex_chat_environment', return_value={'CODEX_HOME': '.'}), \
                 patch.object(provider, 'image_command', return_value=['codex']), \
                 patch.object(provider, 'stream_codex_app_server', stream), \
-                patch.object(provider, 'CODEX_IMAGE_TIMEOUT', 0.01), \
+                patch.object(provider, 'CODEX_IMAGE_FIRST_ATTEMPT_TIMEOUT', 0.02), \
+                patch.object(provider, 'CODEX_IMAGE_TIMEOUT', 0.15), \
                 patch.object(provider, 'save_generated_image', new=AsyncMock()) as save:
             with self.assertRaises(TimeoutError):
                 await provider.generate_codex_image('draw')
-        self.assertEqual(closed, [True])
+        self.assertEqual(closed, [True, True])
         save.assert_not_awaited()
 
     async def test_selfie_keeps_secondary_anchor_and_missing_photo_fails(self):
@@ -94,6 +214,9 @@ class CodexImageTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_protocol_returns_image_without_turning_it_into_chat_text(self):
         messages = _happy_messages()
+        messages.insert(-1, {'method': 'error', 'params': {
+            'willRetry': True, 'error': {'message': 'reconnecting'},
+        }})
         messages.insert(-1, {'method': 'item/started', 'params': {'item': {
             'type': 'imageGeneration', 'id': 'img', 'status': 'in_progress',
         }}})

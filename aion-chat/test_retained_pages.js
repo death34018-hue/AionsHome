@@ -7,12 +7,35 @@ const vm = require('node:vm');
 const read = file => fs.readFileSync(path.join(__dirname, 'static', file), 'utf8');
 const block = (s, start, end) => s.slice(s.indexOf(start), s.indexOf(end, s.indexOf(start)));
 
+test('floating chat follows the visible subpage and returning to private chat', () => {
+  const pages = [];
+  const element = { classList: { remove() {}, toggle() {}, contains: () => true } };
+  const ctx = vm.createContext({
+    URL, location: { origin: 'http://home' }, $: () => element,
+    window: { AionFloatingChat: { setVisiblePage: page => pages.push(page) }, AionSubPageNavigation: { hide() {} } },
+    _subPageNames: {}, resetSubPageChrome() {}, applySubPageThemeChrome() {},
+    activeSubPageFrame: null, transientSubPageFrame: {}, currentSubPage: '/theater',
+    notifySubPageLifecycle() {}, syncHealthRingPageVisibility() {}, applyAionTheme() {},
+    localStorage: { getItem: () => 'dark' }, currentConvId: null,
+  });
+  const source = read('chat.js');
+  vm.runInContext(block(source, 'function syncSubPageMode(', 'const persistentSubPageFrames =')
+    + block(source, 'function closeSubPage(', '// 导航到 Home'), ctx);
+  ctx.syncSubPageMode('/reading?book=1');
+  ctx.syncSubPageMode('/theater');
+  ctx.syncSubPageMode('/chatroom?room=1');
+  ctx.closeSubPage();
+  assert.deepEqual(pages, ['/reading', '/theater', '/chatroom', '/chat']);
+  delete ctx.window.AionFloatingChat;
+  assert.doesNotThrow(() => ctx.syncSubPageMode('/reading'), 'older apps and browsers still navigate');
+});
+
 function subPageLifecycle(userAgent, hidden = false) {
   const events = {}, foreground = [];
   const frame = { dataset: {}, contentWindow: { onAionAppForegroundChanged: value => foreground.push(value) } };
   const ctx = vm.createContext({
     navigator: { userAgent }, document: { hidden, addEventListener: (name, fn) => events[name] = fn },
-    window: {}, activeSubPageFrame: frame,
+    window: {}, activeSubPageFrame: frame, _sendTTSState() {},
   });
   vm.runInContext(block(read('chat.js'), 'let _aionAppForeground =', 'window.onAionPhoneCameraCaptureState ='), ctx);
   ctx.notifySubPageLifecycle(frame, true);

@@ -78,6 +78,15 @@ public class WebViewActivity extends AppCompatActivity
     private boolean initialPageLoadStarted = false;
     private boolean pageLoaded = false;
     private boolean activityResumed = false;
+    private static java.lang.ref.WeakReference<WebViewActivity> visibleChat = new java.lang.ref.WeakReference<>(null);
+
+    static void notifyNativeMessages() {
+        WebViewActivity activity = visibleChat.get();
+        if (activity != null) activity.mainHandler.post(() -> {
+            if (!activity.activityResumed || !activity.pageLoaded || activity.webView == null) return;
+            activity.webView.evaluateJavascript(ForegroundResumeSyncScript.nativeMessages(), null);
+        });
+    }
     private boolean permissionsRequested = false;
     private int retryCount = 0;
     private static final int MAX_RETRY = 5;
@@ -168,7 +177,7 @@ public class WebViewActivity extends AppCompatActivity
 
         webView = new WebView(this);
         sharedAssetCache = new SharedAssetCache(this);
-        mediaCacheStore = new MediaCacheStore(this);
+        mediaCacheStore = MediaCacheStore.shared(this);
         sharedJsonStore = new SharedJsonStore(this);
         webView.setBackgroundColor(android.graphics.Color.TRANSPARENT);
         setContentView(webView);
@@ -351,6 +360,11 @@ public class WebViewActivity extends AppCompatActivity
         // localStorage's LAN/Tailscale/Cloudflare origin isolation.
         webView.addJavascriptInterface(new Object() {
             @JavascriptInterface
+            public String messageEvents() {
+                return NativeMessageInbox.read(WebViewActivity.this, targetUrl);
+            }
+
+            @JavascriptInterface
             public String get(String key) {
                 return sharedJsonStore.get(key);
             }
@@ -440,6 +454,7 @@ public class WebViewActivity extends AppCompatActivity
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
+                FloatingChatService.setVisiblePage(url == null ? "" : Uri.parse(url).getPath());
                 pageLoaded = false;
             }
 
@@ -932,6 +947,7 @@ public class WebViewActivity extends AppCompatActivity
         AppSupervisionRuntime runtime = AppSupervisionRuntime.get();
         if (runtime != null) runtime.onAionsHomeForegroundChanged(true);
         activityResumed = true;
+        visibleChat = new java.lang.ref.WeakReference<>(this);
         FloatingChatService.setAppForeground(true);
         FloatingChatBridge.resume(this);
         showAttentionCall();
@@ -960,6 +976,7 @@ public class WebViewActivity extends AppCompatActivity
         AppSupervisionRuntime runtime = AppSupervisionRuntime.get();
         if (runtime != null) runtime.onAionsHomeForegroundChanged(false);
         activityResumed = false;
+        if (visibleChat.get() == this) visibleChat.clear();
         FloatingChatService.setAppForeground(false);
         setNativeCameraForeground(false);
         if (webView != null) {

@@ -231,7 +231,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(completed['status'],'draft')
         await studio.set_chapter_completion('chapter',studio.ChapterCompletion(completed=True))
         edited = await studio.edit_chapter('chapter',studio.ChapterPatch(content='完成后的文字修订。'))
-        self.assertEqual(edited['status'],'ready')
+        self.assertEqual(edited['status'],'draft')
 
     async def test_directory_counts_remain_available_without_chapter_content(self):
         await studio.change('chapter',content='你好，\n 世界！')

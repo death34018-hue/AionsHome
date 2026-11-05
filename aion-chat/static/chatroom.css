@@ -569,6 +569,8 @@ button, input, textarea, select { font-family: inherit; }
 .markdown-body p { margin: 0 0 .35em; }
 .ai-message-content.markdown-body > p,
 .message-row:not(.user) .inner-monologue-content.markdown-body > p { text-indent: 1.5em; }
+.ai-message-content.markdown-body > p .line-indent,
+.message-row:not(.user) .inner-monologue-content.markdown-body > p .line-indent { display: inline-block; width: 1.5em; }
 .markdown-body h1,
 .markdown-body h2,
 .markdown-body h3 {
@@ -3788,3 +3790,20 @@ body[data-theme="light"] .toast {
 .message-row:not(.user) .msg-media:has(.lounge-report-card) { margin-left: 0; }
 .lounge-report-card small { color: var(--text-muted); font-size: 10px; }
 body[data-theme="light"] .lounge-report-card { background: var(--surface); }
+.cr-image-retry-line { display: inline-flex; align-items: center; gap: .65em; flex-wrap: wrap; }
+.cr-image-retry {
+  position: relative;
+  font: inherit;
+  font-size: .82em;
+  font-weight: 400;
+  line-height: 1.35;
+  color: inherit;
+  min-height: 24px;
+  padding: .15em .65em;
+  border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+.cr-image-retry::after { content: ''; position: absolute; inset: -5px -3px; border-radius: inherit; }
+.cr-image-retry:disabled { opacity: .65; cursor: default; }

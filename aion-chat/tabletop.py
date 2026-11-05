@@ -6,6 +6,7 @@ from collections import Counter
 from itertools import combinations
 
 KINDS = {'liars-dice': '吹牛骰子', 'texas-holdem': '德州扑克'}
+POKER_ROUND_LIMIT = 3
 RANKS = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 HAND_NAMES = ['高牌', '一对', '两对', '三条', '顺子', '同花', '葫芦', '四条', '同花顺']
 
@@ -23,7 +24,7 @@ def new_game(kind, players, wild=True, *, stacks=None, blind=10, dice_stake=1):
         _roll(state, 'user')
     else:
         initial = dict(stacks) if stacks else {p: 500 for p in players}
-        state.update(stacks=initial.copy(), starting_stacks=initial, rounds=[], round_limit=5,
+        state.update(stacks=initial.copy(), starting_stacks=initial, rounds=[], round_limit=POKER_ROUND_LIMIT,
                      dealer=players[0], blind=blind)
         _deal(state)
     return state
@@ -155,7 +156,7 @@ def next_round(state):
         raise ValueError('这桌已经收桌，请重新入座')
     if state['phase'] != 'round_over':
         raise ValueError('本轮尚未结束，或整局已经结束')
-    if state['kind'] == 'texas-holdem' and state['round'] >= state.get('round_limit', 5):
+    if state['kind'] == 'texas-holdem' and state['round'] >= state.get('round_limit', POKER_ROUND_LIMIT):
         _finish_poker(state)
         return
     if state['kind'] == 'liars-dice':
@@ -335,7 +336,7 @@ def settle_poker(state):
                                    balances=state['stacks'].copy(), hand_names=state['result']['hand_names'].copy()))
     survivors = [p for p, n in state['stacks'].items() if n > 0]
     state['phase'], state['winner'] = 'round_over', None
-    if len(survivors) == 1 or state['round'] >= state.get('round_limit', 5):
+    if len(survivors) == 1 or state['round'] >= state.get('round_limit', POKER_ROUND_LIMIT):
         _finish_poker(state)
 
 
@@ -345,7 +346,7 @@ def _finish_poker(state):
     best = max(net.values())
     winners = [p for p, n in net.items() if n == best]
     state.update(phase='game_over', closed=True, turn=None, pending=[], winner=winners[0] if len(winners) == 1 else None,
-                 leaders=winners, end_reason='已完成 5 手' if state['round'] >= state.get('round_limit', 5) else '桌上只剩一位有余额')
+                 leaders=winners, end_reason=f"已完成 {state['round']} 手" if state['round'] >= state.get('round_limit', POKER_ROUND_LIMIT) else '桌上只剩一位有余额')
 
 
 def view(state, player='user'):
@@ -359,7 +360,7 @@ def view(state, player='user'):
     public['wallet'] = state.get('wallet')
     public['closed'] = state.get('closed', False)
     public['blind'] = state.get('blind', 10)
-    public['round_limit'] = state.get('round_limit', 5 if state['kind'] == 'texas-holdem' else None)
+    public['round_limit'] = state.get('round_limit', POKER_ROUND_LIMIT if state['kind'] == 'texas-holdem' else None)
     public['rounds'] = state.get('rounds', [])
     public['end_reason'] = state.get('end_reason', '')
     public['starting_stacks'] = state.get('starting_stacks', {})

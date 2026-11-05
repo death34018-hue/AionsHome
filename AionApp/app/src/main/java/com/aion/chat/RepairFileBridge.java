@@ -9,7 +9,7 @@ import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.widget.Toast;
 
-/** Download authenticated repair attachments without exposing device cookies to JavaScript. */
+/** Download authenticated attachments and novel exports without exposing cookies to JavaScript. */
 public final class RepairFileBridge {
     private final Activity activity;
     private final String homeUrl;
@@ -20,6 +20,9 @@ public final class RepairFileBridge {
     }
 
     @JavascriptInterface
+    public boolean supportsTheaterExport() { return true; }
+
+    @JavascriptInterface
     public void save(String url, String filename) {
         activity.runOnUiThread(() -> {
             try {
@@ -28,8 +31,9 @@ public final class RepairFileBridge {
                         || !ConnectionEndpoint.isAllowedContentHost(uri.getHost(), homeUrl)
                         || uri.getUserInfo() != null
                         || uri.getPath() == null
-                        || !uri.getPath().matches("/api/repair/files/[a-f0-9]{32}")) {
-                    throw new IllegalArgumentException("不是小家维修室的附件地址");
+                        || !(uri.getPath().matches("/api/repair/files/[a-f0-9]{32}")
+                             || uri.getPath().matches("/api/theater/studio/books/[A-Za-z0-9_-]+/export"))) {
+                    throw new IllegalArgumentException("不是小家的附件或小说导出地址");
                 }
                 String name = filename == null ? "attachment" : filename.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_");
                 if (name.trim().isEmpty() || ".".equals(name) || "..".equals(name)) name = "attachment";

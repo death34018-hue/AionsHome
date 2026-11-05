@@ -8,6 +8,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 import sys
 
+if __name__ == "__main__" and "--scheduled" in sys.argv:
+    from scheduled_home import run
+    run(Path(__file__).resolve())
+    raise SystemExit(0)
+
 _visitor_lounge_src = Path(__file__).resolve().parents[1] / "AionsHome-Visitor-Lounge" / "src"
 if str(_visitor_lounge_src) not in sys.path:
     sys.path.insert(0, str(_visitor_lounge_src))
@@ -28,7 +33,7 @@ logging.getLogger("uvicorn.access").addFilter(_QuietCamFilter())
 logging.getLogger("asyncio").setLevel(logging.CRITICAL)
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
-from config import BASE_DIR, DATA_DIR, PUBLIC_DIR, UPLOADS_DIR, ALBUM_IMAGES_DIR, SONGS_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, load_cam_config
+from config import BASE_DIR, DATA_DIR, PUBLIC_DIR, UPLOADS_DIR, ALBUM_IMAGES_DIR, IMAGE_ANCHORS_DIR, SONGS_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, load_cam_config
 from database import init_db, get_db
 from active_window_state import restore_active_windows
 from ws import manager
@@ -42,6 +47,8 @@ from routes import chat, cam as cam_routes, files, settings, memories
 from routes import memory_library
 from routes import user_profile
 import post_sentinel
+import kitchen_sentinel
+from routes import kitchen as kitchen_routes
 from routes import voice as voice_routes
 from routes import music as music_routes
 from routes import music_station as music_station_routes
@@ -158,12 +165,15 @@ async def _auto_digest_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    from image_anchors import migrate_anchor_images
+    await migrate_anchor_images()
     from expressive_voice import archive_legacy_audio
     await asyncio.to_thread(archive_legacy_audio)
     try:
         await post_sentinel.start()
     except Exception:
         logging.getLogger(__name__).exception("Post-sentinel startup skipped")
+    await kitchen_sentinel.start()
     imported_music_requests = await init_music_station()
     if imported_music_requests:
         print(f"[music_station] 已补入 {imported_music_requests} 条历史点歌记录")
@@ -230,6 +240,9 @@ async def lifespan(app: FastAPI):
     finally:
         qq_social_task.cancel()
         await asyncio.gather(qq_social_task, return_exceptions=True)
+        from sentinel_dispatch import stop as stop_sentinel_dispatch
+        await stop_sentinel_dispatch()
+        await kitchen_sentinel.stop()
         await post_sentinel.stop()
         try:
             from billiards.service import get_service as billiards_service
@@ -288,7 +301,11 @@ class NoCacheStaticMiddleware(BaseHTTPMiddleware):
                 return Response("wallpaper only available on local network", status_code=403)
         response = await call_next(request)
         if request.url.path.startswith("/static/"):
-            response.headers["Cache-Control"] = "public, max-age=0, must-revalidate, no-transform"
+            if (request.url.path.startswith("/static/vendor/strudel-1.3.0/")
+                    and response.status_code in (200, 206, 304)):
+                response.headers["Cache-Control"] = "public, max-age=31536000, immutable, no-transform"
+            else:
+                response.headers["Cache-Control"] = "public, max-age=0, must-revalidate, no-transform"
         elif response.headers.get("content-type", "").split(";", 1)[0] == "text/html":
             # Cloudflare's injected analytics changes the document hash and
             # prevents Android from activating the entire verified asset bundle.
@@ -306,6 +323,7 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 app.mount("/entertainment-assets", StaticFiles(directory=str(BASE_DIR / "entertainment"), check_dir=False), name="entertainment-assets")
 # 更具体的相册挂载必须在 /uploads 之前；URL 兼容聊天附件，磁盘目录独立。
 app.mount("/uploads/album", StaticFiles(directory=str(ALBUM_IMAGES_DIR)), name="album-images")
+app.mount("/image-anchors", StaticFiles(directory=str(IMAGE_ANCHORS_DIR)), name="image-anchors")
 app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 app.mount("/songs", StaticFiles(directory=str(SONGS_DIR)), name="songs")
 app.mount("/cr-uploads", StaticFiles(directory=str(CODEX_UPLOADS_DIR)), name="cr-uploads")
@@ -332,6 +350,7 @@ app.include_router(settings.router)
 app.include_router(memories.router)
 app.include_router(memory_library.router)
 app.include_router(user_profile.router)
+app.include_router(kitchen_routes.router)
 app.include_router(voice_routes.router)
 app.include_router(music_routes.router)
 app.include_router(music_station_routes.router)
@@ -380,6 +399,8 @@ app.include_router(persona_evolution_routes.router)
 app.include_router(wishes_routes.router)
 app.include_router(xhs_lite_routes.router)
 app.include_router(capabilities_routes.router)
+from routes import compositions as composition_routes
+app.include_router(composition_routes.router)
 app.include_router(english_corner_routes.router)
 app.include_router(wechat_routes.router)
 app.include_router(qq_social_routes.router)
@@ -403,6 +424,11 @@ async def client_assets():
 
 
 # 页面
+@app.get('/kitchen')
+async def kitchen_page():
+    return FileResponse(BASE_DIR / 'static' / 'kitchen.html', headers={'Cache-Control': 'no-cache, no-store'})
+
+
 @app.get("/")
 async def home():
     return FileResponse(BASE_DIR / "static" / "home.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
@@ -440,6 +466,11 @@ async def album_page():
 @app.get("/music-station")
 async def music_station_page():
     return FileResponse(BASE_DIR / "static" / "music-station.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/music-box")
+async def music_box_page():
+    return FileResponse(BASE_DIR / "static" / "music-box.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 @app.get("/taobao")

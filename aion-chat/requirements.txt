@@ -5,6 +5,7 @@ edge-tts==7.2.8
 aiosqlite
 opencv-python
 Pillow
+python-docx>=1.2.0,<2
 sounddevice
 numpy
 webrtcvad-wheels
@@ -21,3 +22,4 @@ akshare
 chinese-calendar
 mcp
 cryptography
+google-auth[requests]>=2.30,<3

@@ -1135,6 +1135,7 @@ async def build_aion_group_context(
     query_keywords: list[str] = None,
     *,
     include_image_attachments: bool = True,
+    include_kitchen: bool = False,
     digest_result: dict = None,
     whisper_mode: bool = False,
 ) -> list[dict]:
@@ -1157,6 +1158,7 @@ async def build_aion_group_context(
     ability_block = await build_ability_block(
         user_name,
         who="aion",
+        include_kitchen=include_kitchen,
         whisper_mode=whisper_mode,
         include_private_whisper=True,
         profile_query=query_text,
@@ -1236,6 +1238,7 @@ async def build_connor_group_context(
     query_keywords: list[str] = None,
     *,
     include_image_attachments: bool = True,
+    include_kitchen: bool = False,
     digest_result: dict = None,
     whisper_mode: bool = False,
 ) -> list[dict]:
@@ -1259,6 +1262,7 @@ async def build_connor_group_context(
     ability_block = await build_ability_block(
         user_name,
         who="connor",
+        include_kitchen=include_kitchen,
         whisper_mode=whisper_mode,
         include_private_whisper=True,
         profile_query=query_text,
@@ -1351,6 +1355,7 @@ async def build_connor_1v1_context(
     query_keywords: list[str] = None,
     *,
     include_image_attachments: bool = True,
+    include_kitchen: bool = False,
     digest_result: dict = None,
     whisper_mode: bool = False,
 ) -> tuple[list[dict], dict]:
@@ -1370,7 +1375,8 @@ async def build_connor_1v1_context(
     if wb.get("user_persona"):
         messages.append({"role": "system", "content": f"[{user_name}信息]\n{wb['user_persona']}"})
 
-    ability_block = await build_ability_block(user_name, who="connor", whisper_mode=whisper_mode, profile_query=query_text)
+    ability_block = await build_ability_block(user_name, who="connor", whisper_mode=whisper_mode,
+                                             include_kitchen=include_kitchen, profile_query=query_text)
     if ability_block:
         messages.append({"role": "user", "content": ability_block})
     merged = await fetch_merged_timeline("connor", context_limit)

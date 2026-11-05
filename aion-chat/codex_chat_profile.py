@@ -35,6 +35,7 @@ def _chat_catalog_text(node: str, script: str, cache: Path | None, cache_mtime_n
         result = subprocess.run(
             [node, script, "debug", "models", "--bundled"],
             capture_output=True, check=True, timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         source = json.loads(result.stdout.decode("utf-8"))
     return json.dumps(build_chat_model_catalog(source), ensure_ascii=False)

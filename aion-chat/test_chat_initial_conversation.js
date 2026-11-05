@@ -42,6 +42,7 @@ async function runInit({ initialConversations, lastConversationId = null, apiOve
     conversations: [],
     currentConvId: null,
     privateConversationLoadId: 0,
+    privateMessageRevision: 0,
     sending: false,
     streamingAiId: null,
     currentMessages: [],

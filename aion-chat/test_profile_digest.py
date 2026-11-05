@@ -111,14 +111,14 @@ class ProfileDigestTests(unittest.IsolatedAsyncioTestCase):
         await self.digest.store_result(context, {})
         async with self.connect() as db:
             await db.execute("UPDATE messages SET content='已纠正' WHERE id='one'")
-            await db.execute("INSERT INTO messages VALUES ('two','user','喜欢简洁协作',?)", (time.time(),))
+            await db.execute("INSERT INTO messages VALUES ('two','user','周六一起挑图',?)", (time.time(),))
             await db.commit()
-        context = await self.digest.prepare([{'_source_id': 'private:two', 'role': 'user', 'content': '喜欢简洁协作'}], 'Sol', 'Mira')
-        result = {'profile_updates': [{'category': 'recent', 'reason': '近期变化', 'content': '喜欢简洁协作', 'sources': ['private:two']}]}
+        context = await self.digest.prepare([{'_source_id': 'private:two', 'role': 'user', 'content': '周六一起挑图'}], 'Sol', 'Mira')
+        result = {'profile_updates': [{'category': 'recent', 'kind':'task', 'reason': '定下挑图时间', 'content': '周六一起挑图', 'sources': ['private:two']}]}
         await self.digest.store_result(context, result)
         data = await post_sentinel.snapshot()
         self.assertEqual(data['digest_pending'], 0)
-        self.assertEqual(data['entries'][0]['content'], '喜欢简洁协作')
+        self.assertEqual(data['entries'][0]['content'], '周六一起挑图')
 
     async def test_digest_checks_budget_after_all_reductions(self):
         data = await post_sentinel.save_manual({'entries': [
@@ -187,7 +187,7 @@ class ProfileMergeTests(unittest.TestCase):
         self.assertIsNone(material[0]['last_confirmed'])
 
     def fixtures(self):
-        entries = {k: {'key': k, 'category': 'recent', 'reason': '正在创作有后续', 'topic': '告别视频', 'content': k,
+        entries = {k: {'key': k, 'category': 'recent', 'kind': 'project', 'reason': '正在创作有后续', 'topic': '告别视频', 'content': k,
                        'source_ts': 10, 'sources': ['private:' + k]} for k in ('a', 'b')}
         document = {'entries': copy.deepcopy(entries)}
         job = {'digest': True, 'consolidation': True, 'source_ts': 30,

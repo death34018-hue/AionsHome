@@ -14,6 +14,7 @@ import httpx
 import weakref
 
 from config import SETTINGS, get_key, TTS_CACHE_DIR, TTS_CACHE_MAX_BYTES
+from expressive_voice_markup import VOICE_SPAN, strip_voice_blocks
 from link_preview import strip_urls_for_message
 
 log = logging.getLogger("tts")
@@ -99,8 +100,8 @@ def cleanup_tts_cache_dir(cache_dir: Path = TTS_CACHE_DIR, max_bytes: int = TTS_
 # 需要从 TTS 文本中剥除的特殊标签
 _WIDGET_TTS_COMMAND = re.compile(r'[【\[]\s*(?:小组件|横幅)\s*[:：][^】\]]*(?:[】\]]|$)')
 _STRIP_PATTERNS = [
+    VOICE_SPAN,
     _WIDGET_TTS_COMMAND,
-    re.compile(r'\[语音\s*(?:[|｜:：])[^\]]*(?:\]|$)'),
     re.compile(r'\[CAM_CHECK\]'),
     re.compile(r'\[POI_SEARCH:[^\]]*\]'),
     re.compile(r'\[MUSIC:[^\]]*\]'),
@@ -183,11 +184,15 @@ def _find_cut_position_for_text(buffer: str, min_chars: int, max_chars: int) -> 
     in_meta = False
     best_comma_cut = None
     markdown_ends = {match.start(): match.end() for match in _MARKDOWN_MARKUP_RE.finditer(buffer)}
+    voice_ends = {match.start(): match.end() for match in VOICE_SPAN.finditer(buffer)}
     last_line_start = buffer.rfind('\n') + 1
     pending_prefix = _MARKDOWN_PENDING_PREFIX_RE.fullmatch(buffer[last_line_start:])
 
     i = 0
     while i < len(buffer):
+        if i in voice_ends:
+            i = voice_ends[i]
+            continue
         # A streamed "1." may still become "1. item"; wait for its content
         # instead of mistaking the list marker for the end of a sentence.
         if pending_prefix and i >= last_line_start:
@@ -236,7 +241,7 @@ def _find_cut_position_for_text(buffer: str, min_chars: int, max_chars: int) -> 
 
 def split_text_for_tts(text: str, *, min_chars: int = 300, max_chars: int = 500) -> list[str]:
     """Split long text into TTS-sized chunks, preferring sentence boundaries."""
-    remaining = (text or "").strip()
+    remaining = strip_voice_blocks(text or "").strip()
     segments: list[str] = []
     min_chars = max(1, min_chars)
     max_chars = max(min_chars, max_chars)
@@ -266,8 +271,8 @@ def split_text_for_tts(text: str, *, min_chars: int = 300, max_chars: int = 500)
 
 async def _request_tts_audio(text: str, voice: str, *, seq: int | None = None) -> bytes | None:
     # Every ordinary entry point, including background and manual TTS, excludes
-    # the complete expressive command. The director calls its provider directly.
-    text = re.sub(r'\[语音\s*(?:[|｜:：])[^\]]*(?:\]|$)', '', text).strip()
+    # the complete expressive block. Only the voice attachment calls its provider directly.
+    text = strip_voice_blocks(text).strip()
     text = _WIDGET_TTS_COMMAND.sub('', text).strip()
     if not text:
         return None

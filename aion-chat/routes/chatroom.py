@@ -11,18 +11,21 @@ from pathlib import Path
 from datetime import date
 
 import aiosqlite, httpx
+import chatroom_image_retry as image_retry
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from config import DEFAULT_MODEL, DATA_DIR, CODEX_UPLOADS_DIR, ALBUM_IMAGES_DIR, MODELS, SETTINGS, get_sentinel_config, resolve_model_key, resolve_model_transport_mode
 from database import get_db
 from ws import manager
+from system_logs import emit_chat_debug
 from reply_timing import model_started
 from generation_control import (cancellable, cancel_generation, generation_status, GenerationQueue, spawn_generation_task, current_generation)
 from cancelled_reply import save_cancelled_replies
 from active_window_state import record_chatroom_active
 from ai_providers import stream_ai, CLI_STATUS_PREFIX, model_chat_idle_timeout
+from kitchen_chat import chat_stream as kitchen_stream, finish_reply as finish_kitchen_reply
 from tts import TTSStreamer, synthesize_message_tts_later
 from message_dedup import build_message_dedupe_key, reserve_message_ingress
 from sync_events import append_sync_event, attach_sync_seq, broadcast_synced
@@ -37,7 +40,7 @@ from chatroom import (
 )
 from context_builder import (
     MUSIC_CMD_PATTERN, MOMENT_CMD_PATTERN, MEMORY_CMD_PATTERN,
-    ACTIVITY_CHECK_PATTERN, SELFIE_CMD_PATTERN, DRAW_CMD_PATTERN, SONG_CMD_PATTERN,
+    ACTIVITY_CHECK_PATTERN, extract_image_command, SONG_CMD_PATTERN,
     POI_SEARCH_PATTERN, TOY_CMD_PATTERN, PET_CMD_PATTERN,
     PRIVATE_WHISPER_CMD_PATTERN, VIDEO_CALL_CMD, META_TAG_PATTERN, strip_tool_commands,
     WISH_CMD_PATTERN,
@@ -67,11 +70,13 @@ from stream_safety import (
     consume_safe_stream,
 )
 from safe_live_stream import consume_safe_live_stream, KnownCommandStreamFilter
+from expressive_voice_markup import VOICE_SPAN
 from realtime_stream_transport import consume_realtime_transport
 from band_commands import process_band_vibration, with_band_vibration_attachment
 from hug_pillow_commands import process_hug_pillow_commands
 from capabilities import process_pat_commands
 from game_invites import process_game_invites
+from compositions import process_compositions
 from rps import process_rps_commands, notification_message, attach_to_message, validate_send, reply_round_id
 from app_supervision_ai import (
     queue_app_supervision_reply_command,
@@ -426,7 +431,7 @@ def _normalize_cli_bubble_breaks(text: str, model_key: str | None) -> str:
         return text
 
     normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
-    if not normalized.strip():
+    if not normalized.strip() or VOICE_SPAN.search(normalized):
         return text
 
     lines = [line.strip() for line in normalized.split("\n") if line.strip()]
@@ -891,6 +896,10 @@ async def _process_chatroom_commands(
         full_text, source_type="chatroom", source_id=room_id,
         sender=who_identity, source_msg_id=msg_id, on_saved=_save_pat_event,
     )
+    full_text = await process_compositions(
+        full_text, source_type="chatroom", source_id=room_id,
+        sender=who_identity, source_msg_id=msg_id, on_saved=_save_pat_event,
+    )
     full_text = await process_band_vibration(
         full_text,
         source_type="chatroom",
@@ -1172,14 +1181,9 @@ async def _process_chatroom_commands(
             pass
 
     # ── 图片生成 ──
-    selfie_match = SELFIE_CMD_PATTERN.search(full_text)
-    draw_match = DRAW_CMD_PATTERN.search(full_text)
-    if selfie_match:
-        triggered["image_gen"] = {"prompt": selfie_match.group(1).strip(), "is_selfie": True}
-        full_text = SELFIE_CMD_PATTERN.sub("", full_text)
-    elif draw_match:
-        triggered["image_gen"] = {"prompt": draw_match.group(1).strip(), "is_selfie": False}
-        full_text = DRAW_CMD_PATTERN.sub("", full_text)
+    full_text, image_prompt, is_selfie = extract_image_command(full_text)
+    if image_prompt:
+        triggered["image_gen"] = {"prompt": image_prompt, "is_selfie": is_selfie}
 
     # ── 视频通话 ──
     song_match = SONG_CMD_PATTERN.search(full_text)
@@ -1926,25 +1930,95 @@ async def _chatroom_memory_search(room_id: str, sender: str, model_key: str, pay
     )
 
 
-async def _chatroom_image_gen(room_id: str, sender: str, prompt: str, is_selfie: bool):
-    """聊天室版图片生成"""
-    from image_gen import generate_chat_image
-
+async def _image_result(generation):
     try:
-        filename = await generate_chat_image(prompt, is_selfie=is_selfie, source_identity=sender)
-        if filename:
-            await _save_msg(room_id, sender, "", attachments=[f"/uploads/{filename}"])
-            print(f"[CHATROOM_IMG_GEN] {sender} 生图完成, room={room_id}")
-        else:
-            print(f"[CHATROOM_IMG_GEN] {sender} 生图失败, room={room_id}")
-            await _save_msg(room_id, sender, '图片没有生成：生图服务没有返回图片，请稍后再试。')
+        filename = await generation
+        return filename, '' if filename else '图片没有生成：生图服务没有返回图片'
     except TimeoutError:
-        await _save_msg(room_id, sender, '图片生成超时，这次没有收到图片，请稍后再试。')
-    except ValueError as e:
-        await _save_msg(room_id, sender, f"图片没有生成：{e}。可以在设置的「管理人物锚点」中检查。")
-    except Exception as e:
-        print(f"[CHATROOM_IMG_GEN] {sender} 生图异常: {e}")
-        await _save_msg(room_id, sender, '图片生成失败，请稍后再试；具体原因已记录到系统日志。')
+        return None, '图片生成超时'
+    except ValueError as exc:
+        return None, f'图片没有生成：{exc}'
+    except Exception as exc:
+        print(f'[CHATROOM_IMG_GEN] 生图异常：{exc}')
+        return None, '图片生成失败'
+
+
+async def _chatroom_image_gen(room_id: str, sender: str, prompt: str, is_selfie: bool):
+    from image_gen import generate_chat_image
+    prepared = []
+    filename, error = await _image_result(generate_chat_image(
+        prompt, is_selfie=is_selfie, source_identity=sender, on_prepared=prepared.append))
+    if filename:
+        await _save_msg(room_id, sender, "", attachments=[f"/uploads/{filename}"])
+    elif prepared:
+        await _save_msg(room_id, sender, error, msg_id=f'cm_{time.time_ns()}_img',
+                        attachments=[image_retry.marker()], retry_inputs=prepared[-1], auto_tts=False)
+    else:
+        await _save_msg(room_id, sender, error, auto_tts=False)
+
+
+class ImageRetryClick(BaseModel):
+    attempt: int = Field(ge=0)
+
+
+async def _run_image_retry(message, attempt, snapshot):
+    try:
+        await broadcast_synced(manager, {'type': 'chatroom_msg_updated', 'data': message})
+    except Exception as exc:
+        print(f'[CHATROOM_IMG_GEN] 重试状态广播失败：{exc}')
+    async def remember_snapshot(updated):
+        async with get_db() as db:
+            await db.execute('UPDATE chatroom_image_retries SET snapshot=? WHERE message_id=?',
+                             (updated, message['id']))
+            await db.commit()
+    filename, error = await _image_result(image_retry.generate(snapshot, on_snapshot=remember_snapshot))
+    attachments = [f'/uploads/{filename}'] if filename else [image_retry.marker(attempt)]
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("""UPDATE chatroom_messages SET content=?,attachments=?
+            WHERE id=? AND room_id=? AND json_extract(attachments,'$[0].running')=1
+            AND json_extract(attachments,'$[0].attempt')=?""",
+            (error, json.dumps(attachments), message['id'], message['room_id'], attempt))
+        if not cur.rowcount:
+            return
+        if filename:
+            await db.execute('DELETE FROM chatroom_image_retries WHERE message_id=?', (message['id'],))
+        row = await (await db.execute('SELECT * FROM chatroom_messages WHERE id=?', (message['id'],))).fetchone()
+        await db.commit()
+    await broadcast_synced(manager, {'type': 'chatroom_msg_updated', 'data': _chatroom_message_dict(row)})
+
+
+_image_retry_tasks = set()
+
+
+@router.post('/rooms/{room_id}/messages/{msg_id}/retry-image', status_code=202)
+async def retry_room_image(room_id: str, msg_id: str, body: ImageRetryClick):
+    from capabilities import is_capability_enabled
+    if not is_capability_enabled('image_gen'):
+        raise HTTPException(409, '请先开启生图功能')
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute('BEGIN IMMEDIATE')
+        row = await (await db.execute('SELECT * FROM chatroom_messages WHERE room_id=? AND id=?',
+                                      (room_id, msg_id))).fetchone()
+        if not row or row['sender'] not in ('aion', 'connor'):
+            raise HTTPException(404, '未找到这条生图消息')
+        msg = _chatroom_message_dict(row)
+        mark = next((a for a in msg['attachments'] if isinstance(a, dict) and a.get('type') == 'chatroom_image_retry'), None)
+        if not mark or mark['running'] or mark['attempt'] != body.attempt:
+            return {'accepted': False, 'message': msg}
+        saved = await (await db.execute('SELECT snapshot FROM chatroom_image_retries WHERE message_id=?', (msg_id,))).fetchone()
+        if not saved:
+            raise HTTPException(409, '这张图片没有保存可重试的原始请求')
+        attempt = body.attempt + 1
+        msg.update(content='正在重新生成图片', attachments=[image_retry.marker(attempt, True)])
+        await db.execute('UPDATE chatroom_messages SET content=?,attachments=? WHERE id=?',
+                         (msg['content'], json.dumps(msg['attachments']), msg_id))
+        await db.commit()
+    task = asyncio.create_task(_run_image_retry(msg, attempt, saved['snapshot']))
+    _image_retry_tasks.add(task)
+    task.add_done_callback(_image_retry_tasks.discard)
+    return {'accepted': True}
 
 
 # ── 图片 URL 检测 & 下载保存 ──
@@ -2119,7 +2193,6 @@ def _chatroom_debug_payload(
     room_id: str,
     model_key: str,
     msg_id: str,
-    history: list[dict],
     digest_result: dict | None,
     usage_meta: dict | None = None,
     has_error: bool = False,
@@ -2143,20 +2216,14 @@ def _chatroom_debug_payload(
         "is_search_needed": digest.get("is_search_needed", False),
         "recalled_memories": digest.get("recalled_memories") or [],
         "debug_top6": digest.get("debug_top6") or [],
-        "prompt_messages": [
-            {"role": m.get("role", ""), "content": str(m.get("content", ""))}
-            for m in (history or [])
-        ],
-        "prompt_count": len(history or []),
-        "usage": usage_meta if usage_meta else None,
+        "usage": {k:v for k,v in (usage_meta or {}).items() if not k.startswith("_")} or None,
         "has_error": has_error,
         "error_text": error_text if has_error else None,
     }
 
 
 async def _emit_chatroom_debug(_q: asyncio.Queue, payload: dict):
-    await _q.put(payload)
-    await manager.broadcast({"type": "debug", "data": payload})
+    await emit_chat_debug(_q, payload, manager)
 
 
 def _ambient_voice_debug_payload(
@@ -3026,12 +3093,7 @@ async def list_messages(room_id: str, limit: int = Query(50, ge=1, le=500), befo
                 (room_id, limit),
             )
         rows = await cur.fetchall()
-        result = []
-        for r in reversed(rows):
-            d = dict(r)
-            d["attachments"] = json.loads(d.get("attachments") or "[]") if d.get("attachments") else []
-            result.append(d)
-        return result
+        return [_chatroom_message_dict(r) for r in reversed(rows)]
 
 
 def _like_escape(text: str) -> str:
@@ -3040,6 +3102,9 @@ def _like_escape(text: str) -> str:
 
 def _chatroom_message_dict(row: aiosqlite.Row) -> dict:
     d = dict(row)
+    if d["sender"] in ("connor", "aion"):
+        # Older scheduled replies can contain an unprocessed image command.
+        d["content"], _, _ = extract_image_command(d["content"] or "")
     d["attachments"] = json.loads(d.get("attachments") or "[]") if d.get("attachments") else []
     return d
 
@@ -3185,6 +3250,7 @@ async def _save_msg(
     dedupe_key: str | None = None,
     dedupe_target_type: str = "chatroom",
     dedupe_target_id: str = "",
+    retry_inputs: bytes | None = None,
 ) -> dict:
     """保存消息到数据库"""
     now = time.time()
@@ -3233,6 +3299,9 @@ async def _save_msg(
                 (msg_id, room_id, sender, content, att_json, reasoning_content, now),
             )
             await db.execute("UPDATE chatroom_rooms SET updated_at=? WHERE id=?", (now, room_id))
+            if retry_inputs is not None:
+                await db.execute('INSERT INTO chatroom_image_retries(message_id,snapshot) VALUES (?,?)',
+                                 (msg_id, retry_inputs))
         await db.commit()
     if duplicate_msg:
         return duplicate_msg
@@ -3274,11 +3343,7 @@ async def _load_room_and_messages(room_id: str, limit: int = 50) -> tuple[dict, 
             (room_id, limit),
         )
         rows = await cur.fetchall()
-        msgs = []
-        for r in reversed(rows):
-            d = dict(r)
-            d["attachments"] = json.loads(d.get("attachments") or "[]") if d.get("attachments") else []
-            msgs.append(d)
+        msgs = [_chatroom_message_dict(r) for r in reversed(rows)]
     return room, msgs
 
 
@@ -3831,19 +3896,21 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
         room_id, msgs,
         context_limit=context_limit,
         query_text=query_text,
+        include_kitchen=True,
         whisper_mode=whisper_mode,
     )
     _process_voice_attachments(connor_messages)
 
     connor_msg_id = f"cm_{int(time.time() * 1000)}_c"
     await _q.put({"type": "connor_start", "id": connor_msg_id})
+    kitchen_state = {}
 
     full_text = ""
     has_reply = False
     has_error = False
     error_text = None
     tts_from_model = True
-    usage_meta: dict = {}
+    usage_meta: dict = {"_room_log":{"room_id":room_id,"msg_id":connor_msg_id,"actor":"connor"}}
     transport_mode = resolve_model_transport_mode(_resolve_connor_model(connor_model_key))
     live_tts = None
     if transport_mode == "safe_live" and tts_enabled and tts_connor_voice:
@@ -3859,7 +3926,9 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
         nonlocal has_reply
         usage_meta.pop("provider_error", None)
         _mark_first_text = model_started()
-        async for chunk in _stream_connor_model(connor_messages, connor_model_key, usage_meta):
+        async for chunk in kitchen_stream(connor_messages,
+                lambda prompts: _stream_connor_model(prompts, connor_model_key, usage_meta),
+                actor='connor', scope='chatroom', parent_id=room_id, query=query_text, queue=_q, state=kitchen_state):
             if usage_meta.get("provider_error"):
                 raise RuntimeError(usage_meta["provider_error"])
             if chunk.startswith(CLI_STATUS_PREFIX):
@@ -3917,6 +3986,7 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
         clean_text = _visible_chatroom_text(full_text)
         triggered = {}
 
+    clean_text, kitchen_atts = await finish_kitchen_reply(clean_text, actor='connor', state=kitchen_state)
     clean_text = _normalize_cli_bubble_breaks(clean_text, connor_model_key)
 
     if triggered.get("memory_search") and not clean_text:
@@ -3946,7 +4016,7 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
     saved_imgs = await _extract_and_save_images(reply)
     msg = await _save_msg(
         room_id, "connor", reply, connor_msg_id,
-        attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered),
+        attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered) + kitchen_atts,
         auto_tts=not safety_notice and tts_from_model and not (tts_enabled and tts_connor_voice and clean_text),
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
@@ -3958,7 +4028,6 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
         room_id=room_id,
         model_key=connor_model_key,
         msg_id=connor_msg_id,
-        history=connor_messages,
         digest_result=digest_out,
         usage_meta=usage_meta,
         has_error=has_error,
@@ -4043,6 +4112,7 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
     aion_history, digest_out = await build_aion_group_context(
         room_id, msgs, context_limit, query_text,
         include_image_attachments=not bool(ambient_context),
+        include_kitchen=True,
         digest_result=digest_result,
         whisper_mode=whisper_mode,
     )
@@ -4051,12 +4121,13 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
     _process_voice_attachments(aion_history)
     aion_msg_id = f"cm_{int(time.time() * 1000)}_a"
     await _q.put({"type": "aion_start", "id": aion_msg_id})
+    kitchen_state = {}
 
     full_text = ""
     has_error = False
     error_text = None
     tts_from_model = True
-    usage_meta: dict = {}
+    usage_meta: dict = {"_room_log":{"room_id":room_id,"msg_id":aion_msg_id,"actor":"aion"}}
     transport_mode = resolve_model_transport_mode(model_key)
     live_tts = None
     if transport_mode == "safe_live" and tts_enabled and tts_voice:
@@ -4071,7 +4142,9 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
     async def content_stream():
         usage_meta.pop("provider_error", None)
         _mark_first_text = model_started()
-        async for chunk in stream_ai(aion_history, model_key, usage_meta):
+        async for chunk in kitchen_stream(aion_history,
+                lambda prompts: stream_ai(prompts, model_key, usage_meta),
+                actor='aion', scope='chatroom', parent_id=room_id, query=query_text, queue=_q, state=kitchen_state):
             if usage_meta.get("provider_error"):
                 raise RuntimeError(usage_meta["provider_error"])
             if chunk.startswith(CLI_STATUS_PREFIX):
@@ -4128,6 +4201,7 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
         clean_text = _visible_chatroom_text(full_text)
         triggered = {}
 
+    clean_text, kitchen_atts = await finish_kitchen_reply(clean_text, actor='aion', state=kitchen_state)
     clean_text = _normalize_cli_bubble_breaks(clean_text, model_key)
 
     if triggered.get("memory_search") and not clean_text:
@@ -4152,7 +4226,7 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
     saved_imgs = await _extract_and_save_images(clean_text)
     aion_msg = await _save_msg(
         room_id, "aion", clean_text, aion_msg_id,
-        attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered) + _toy_attachments_from_triggered(triggered) + _private_whisper_attachments(triggered),
+        attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered) + _toy_attachments_from_triggered(triggered) + _private_whisper_attachments(triggered) + kitchen_atts,
         auto_tts=not PRIVATE_WHISPER_CMD_PATTERN.search(full_text) and not safety_notice and tts_from_model and not (tts_enabled and tts_voice and clean_text),
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
@@ -4164,7 +4238,6 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
         room_id=room_id,
         model_key=model_key,
         msg_id=aion_msg_id,
-        history=aion_history,
         digest_result=digest_out,
         usage_meta=usage_meta,
         has_error=has_error,
@@ -4184,6 +4257,7 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
     connor_history, digest_out = await build_connor_group_context(
         room_id, msgs, context_limit, query_text,
         include_image_attachments=not bool(ambient_context),
+        include_kitchen=True,
         digest_result=digest_result,
         whisper_mode=whisper_mode,
     )
@@ -4192,12 +4266,13 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
     _process_voice_attachments(connor_history)
     connor_msg_id = f"cm_{int(time.time() * 1000)}_c"
     await _q.put({"type": "connor_start", "id": connor_msg_id})
+    kitchen_state = {}
 
     full_text = ""
     has_error = False
     error_text = None
     tts_from_model = True
-    usage_meta: dict = {}
+    usage_meta: dict = {"_room_log":{"room_id":room_id,"msg_id":connor_msg_id,"actor":"connor"}}
     transport_mode = resolve_model_transport_mode(_resolve_connor_model(connor_model_key))
     live_tts = None
     if transport_mode == "safe_live" and tts_enabled and tts_voice:
@@ -4212,7 +4287,9 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
     async def content_stream():
         usage_meta.pop("provider_error", None)
         _mark_first_text = model_started()
-        async for chunk in _stream_connor_model(connor_history, connor_model_key, usage_meta):
+        async for chunk in kitchen_stream(connor_history,
+                lambda prompts: _stream_connor_model(prompts, connor_model_key, usage_meta),
+                actor='connor', scope='chatroom', parent_id=room_id, query=query_text, queue=_q, state=kitchen_state):
             if usage_meta.get("provider_error"):
                 raise RuntimeError(usage_meta["provider_error"])
             if chunk.startswith(CLI_STATUS_PREFIX):
@@ -4270,6 +4347,7 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
         clean_text = _visible_chatroom_text(full_text)
         triggered = {}
 
+    clean_text, kitchen_atts = await finish_kitchen_reply(clean_text, actor='connor', state=kitchen_state)
     clean_text = _normalize_cli_bubble_breaks(clean_text, connor_model_key)
 
     if triggered.get("memory_search") and not clean_text:
@@ -4301,7 +4379,7 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
     saved_imgs = await _extract_and_save_images(clean_text)
     connor_msg = await _save_msg(
         room_id, "connor", clean_text, connor_msg_id,
-        attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered) + _toy_attachments_from_triggered(triggered) + _private_whisper_attachments(triggered),
+        attachments=saved_imgs + _music_attachments_from_triggered(triggered) + _luckin_attachments_from_triggered(triggered) + _toy_attachments_from_triggered(triggered) + _private_whisper_attachments(triggered) + kitchen_atts,
         auto_tts=not PRIVATE_WHISPER_CMD_PATTERN.search(full_text) and not safety_notice and tts_from_model and not (tts_enabled and tts_voice and clean_text),
         reasoning_content=usage_meta.get("reasoning_content", "").strip(),
     )
@@ -4313,7 +4391,6 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
         room_id=room_id,
         model_key=connor_model_key,
         msg_id=connor_msg_id,
-        history=connor_history,
         digest_result=digest_out,
         usage_meta=usage_meta,
         has_error=has_error,

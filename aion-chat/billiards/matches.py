@@ -1,7 +1,12 @@
-"""Series rules and small lobby summaries; legacy saves keep their original meaning."""
+"""Single-game results and lobby summaries; historical series keep their meaning."""
 
 
 def match_info(game):
+    if game.get('match_format') == 'single':
+        status = game.get('match_status', 'active')
+        winner = (game['state'].get('result') or {}).get('winner') if status == 'completed' else None
+        return {'format': 'single', 'status': status, 'winner': winner,
+                'max_racks': 1, 'deciding': False, 'match_point': False}
     series = game.get('match_format') == 'best_of_3'
     status = game.get('match_status', 'active') if series else ('legacy' if game['status'] == 'finished' else 'active')
     winner = game['score'].index(2) if series and status == 'completed' and 2 in game['score'] else None

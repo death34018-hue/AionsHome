@@ -101,7 +101,7 @@ const Studio = (() => {
   function bindReaderGestures() {
     const reader=$('messages');
     let gesture=null;
-    const prose=target=>target.closest('#novelBody') && !target.closest('button,a,img,figure,input,textarea');
+    const prose=target=>target.closest('#novelBody') && !target.closest('button,a,img,figure,input,textarea,.anno-bubble,.user-hl');
     const hide=()=>{readerComposerOpen=false;updateReaderComposer();};
     reader.addEventListener('pointerdown',e=>{
       gesture=novel() && !planningView && e.isPrimary && e.button===0 && prose(e.target)
@@ -153,12 +153,18 @@ const Studio = (() => {
         currentTime: audio?.currentTime ?? player?.at ?? 0,
         duration: Number.isFinite(audio?.duration) && audio.duration > 0 ? audio.duration : durations.get(segment?.url)};
     });
+    $('studioReadingHeader').insertAdjacentHTML('beforeend','<div id="studioCoreading" hidden></div>');
+    TheaterReading.mount({
+      state:()=>({book,chapter:chapter(),visible:novel() && !planningView && subPageVisible}),
+      content:()=>$('novelBody'), inviteHost:$('studioCoreading'),
+      onRender:()=>readingFollow?.update(), onUnavailable:()=>renderNovel()
+    });
     document.body.insertAdjacentHTML('beforeend',`<dialog class="studio-dialog studio-image-dialog" id="studioImageDialog"><header><h2>故事插画</h2><button class="studio-btn" onclick="document.getElementById('studioImageDialog').close()" aria-label="关闭插画">✕</button></header><img id="studioFullImage" alt="故事插画原图"><p class="field-help">可长按图片保存；App 内点下方按钮保存到相册。</p><footer><a class="studio-btn" id="studioImageOriginal" target="_blank" rel="noopener">打开原图</a><button class="studio-btn primary" id="studioSaveImage">保存图片</button></footer></dialog>`);
     $('messages').addEventListener('click',e=>{
-      const img=e.target.closest('.novel-body figure img');if(img)viewImage(img.src);
+      const img=e.target.closest('.novel-body figure img,.novel-body .book-img img');if(img)viewImage(img.src);
     });
     $('messages').addEventListener('keydown',e=>{
-      if((e.key==='Enter'||e.key===' ') && e.target.matches('.novel-body figure img')){e.preventDefault();viewImage(e.target.src);}
+      if((e.key==='Enter'||e.key===' ') && e.target.matches('.novel-body figure img,.novel-body .book-img img')){e.preventDefault();viewImage(e.target.src);}
     });
     $('ttsTopPlayer').insertAdjacentHTML('afterbegin','<div class="studio-player-label" id="studioPlayerLabel" onclick="Studio.returnToPlaying()" title="回到正在听的内容"></div>');
     $('ttsTopPlayer').insertAdjacentHTML('beforeend','<button class="studio-stop-synthesis" id="studioCancelAudio" onclick="Studio.cancelAudio()" title="停止合成，保留已生成语音" style="display:none">停止合成</button><button class="studio-stop-synthesis" id="studioRetryAudio" onclick="Studio.retryAudio()" style="display:none">重试</button>');
@@ -171,6 +177,7 @@ const Studio = (() => {
       previousVisibility?.(visible);
       const returning = !subPageVisible && visible;
       subPageVisible = !!visible;
+      if (!visible) window.TheaterReading?.clear();
       if (returning && !document.hidden) refresh();
       if (returning) readingFollow.update(true);
     };
@@ -187,6 +194,7 @@ const Studio = (() => {
   }
 
   function modeUI() {
+    if (!novel()) window.TheaterReading?.clear();
     updateReaderComposer();
     document.body.classList.toggle('novel-mode', novel());
     document.body.classList.toggle('studio-discussing',novel() && planningView && chapters.length>0);
@@ -224,14 +232,17 @@ const Studio = (() => {
   function toolbar() {
     const c=chapter();
     const copy=novel() && book?.outline && chapters.length ? button('复制大纲为新剧场','Studio.copyOutline()') : '';
+    const exporting=novel() && chapters.some(c=>c.content || c.word_count) ? button('导出小说','Studio.exportNovel()') : '';
+    const reading=novel() ? (book.reading_book_id ? button('前往陪伴阅读','Studio.readTogether()') :
+      `<button type="button" class="studio-btn" onclick="Studio.readTogether()" ${chapters.some(c=>c.status==='ready')?'':'disabled title="完成第一章后可加入"'}>加入陪伴阅读</button>`) : '';
     const writer=book?.writer_ready?`<span class="studio-writer">由 ${escHtml(book.writer_name)} 陪你创作</span>`:button('先选择讲故事的角色','Studio.persona()');
     if (novel() && planningView) {
-      $('studioToolbar').innerHTML=writer+button('创作设置','Studio.settings()')+copy+
+      $('studioToolbar').innerHTML=writer+button('创作设置','Studio.settings()')+copy+reading+exporting+
         button(outlineBusy?'正在拟定…':book?.outline?'重新生成大纲':'按讨论生成大纲','Studio.outline()','primary')+
         (outlineDraft?button('查看待确认草稿','Studio.outlineEditor(true)','primary'):'');
       return;
     }
-    $('studioToolbar').innerHTML=writer+button('创作设置','Studio.settings()')+copy+button('商量剧情','Studio.discussionMode()')+(c ?
+    $('studioToolbar').innerHTML=writer+button('创作设置','Studio.settings()')+copy+reading+exporting+button('商量剧情','Studio.discussionMode()')+(c ?
       button(c.audio?'收听本章':'开始朗读',`Studio.speak('${c.id}')`,'primary')+
       (c.writing?button('停止写作',`Studio.stopWriting()`):button('重写本章','Studio.write(true)'))+
       (!c.writing && c.content ? button('编辑正文','Studio.editChapter(true)'):'')+
@@ -239,6 +250,7 @@ const Studio = (() => {
       (c.versions?.length && !c.writing ? button('恢复上一版','Studio.restore()'):'') : '');
   }
   function renderPlanning() {
+    window.TheaterReading?.clear();
     $('studioReadingHeader').hidden=true;
     const el=$('messages'),bottom=el.scrollHeight-el.scrollTop-el.clientHeight<80;
     let html='<section class="studio-planning"><div class="studio-kicker">一起聊脑洞 → 拟定大纲 → 确认后写正文</div>';
@@ -251,9 +263,11 @@ const Studio = (() => {
   }
   function discussionMessage(m) {
     const isUser=m.role==='user';
+    const content=escHtml(m.content || (!isUser && discussion.status==='running'?'正在想象这个故事…':''));
+    const body=isUser ? content : content.replace(/\n(?!\s*(?:\n|$))/g, '\n<span class="line-indent" aria-hidden="true"></span>');
     const name=isUser ? discussionNames.user_name : (personas.find(p=>p.id===currentPersonaId)?.name || book?.writer_name || discussionNames.ai_name);
     const menu=m.id ? `<div class="msg-actions"><button class="msg-dots" aria-label="消息操作" onclick="toggleMenu(event,'talk_menu_${m.id}')">⋯</button><div class="msg-menu" id="talk_menu_${m.id}">${isUser?`<button onclick="Studio.talkAction('edit','${m.id}')">编辑</button>`:`<button onclick="Studio.talkAction('regenerate','${m.id}')">重新生成</button>`}<button onclick="Studio.talkAction('copy','${m.id}')">复制</button><button onclick="Studio.talkAction('delete','${m.id}')">删除</button></div></div>` : '';
-    return `<div class="studio-talk ${isUser?'user':'assistant'}"><div class="studio-talk-name"><span>${escHtml(name)}</span>${menu}</div><div class="studio-talk-content">${escHtml(m.content || (!isUser && discussion.status==='running'?'正在想象这个故事…':''))}</div></div>`;
+    return `<div class="studio-talk ${isUser?'user':'assistant'}"><div class="studio-talk-name"><span>${escHtml(name)}</span>${menu}</div><div class="studio-talk-content">${body}</div></div>`;
   }
   function renderNovel() {
     if(planningView || !chapter())return renderPlanning();
@@ -274,6 +288,7 @@ const Studio = (() => {
     $('novelNotice').innerHTML=escHtml(c.error||'')+(c.image_error?` ${escHtml(c.image_error)} ${button('重试配图','Studio.illustrate()')}`:'');
     const completion=!c.writing && c.content && c.status!=='ready'?`<p>本轮生成已停止，你可以续写，或确认本章结束。</p><div>${button('续写本章','Studio.write(false)')}${button('本章已写完','Studio.completeChapter(true)','primary')}</div>`:'';
     if($('novelCompletion').innerHTML!==completion)$('novelCompletion').innerHTML=completion;
+    if (window.TheaterReading?.sync()) { readingFollow?.update(); return; }
     const images=[...(c.images||[])].sort((a,b)=>a.after-b.after);
     let pos=0, html='';
     const paras=t=>TheaterFollow.paragraphs(t,pos,escHtml);
@@ -316,6 +331,8 @@ const Studio = (() => {
     try {
       const data=await request('/books/'+id);
       if (token!==selectionToken) return;
+      moveConversationToFront(id);
+      localStorage.setItem('theater_last_conv', id);
       lastBookPoll=performance.now();
       book=data.book; chapters=data.chapters; outlineDraft=data.outline_draft; discussion=data.discussion||{messages:[],status:'idle'};currentConvId=id;
       readerComposerOpen=false;
@@ -572,6 +589,20 @@ const Studio = (() => {
     const cid=book.id;
     await request('/chapters/'+c.id+'/completion','POST',{completed});
     if(currentConvId===cid)await refresh();
+    if(completed && book?.reading_book_id)showToast('本章已同步到陪伴阅读');
+  }
+  async function readTogether() {
+    if(!novel())return;
+    const cid=book.id;
+    if(!book.reading_book_id) {
+      const result=await request('/books/'+cid+'/reading','POST');
+      if(currentConvId===cid)await refresh();
+      showToast(`已加入陪伴阅读，共 ${Object.keys(result.chapters).length} 章`);
+      return;
+    }
+    const url='/reading?book='+encodeURIComponent(book.reading_book_id);
+    if(window.parent!==window && typeof window.parent.openSubPage==='function')window.parent.openSubPage(url);
+    else window.location.href=url;
   }
   async function editChapter(body=false) {
     if(!body)return outlineEditor(false);
@@ -727,13 +758,21 @@ const Studio = (() => {
     if(!currentConvId)$('messages').innerHTML='<div class="studio-empty"><div class="ornament">❧</div><h2>今晚，去哪个宇宙？</h2><p>自由对话，或把一个念头写成一本小说。<br>故事留在这里，随时回来接着听。</p>'+button('创建第一个故事','newConversation()','primary')+'</div>';
   }
   return {
+    exportNovel:()=>{
+      if(!novel())return;
+      const cid=book.id, title=conversations.find(c=>c.id===cid)?.title||'小剧场小说';
+      modal('导出小说', '<label for="novelExportFormat">文件格式</label><select id="novelExportFormat"><option value="docx">Word（.docx，带插画）</option><option value="txt">TXT（纯文字）</option></select><p class="field-help">按章节顺序导出正文。Word 会把已生成的插画放进文件，朋友无需登录小家也能查看。</p><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="novelExportDrafts" style="width:auto">包含未完成正文</label><p class="field-help">默认只导出已确认完成的章节；未完成章节会注明状态。创作讨论、共读批注和聊天不包含在内。</p>', '导出文件', async()=>{
+        const format=$('novelExportFormat').value, drafts=$('novelExportDrafts').checked;
+        await TheaterExport.download(cid,title,format,drafts);
+      });
+    },
     copyOutline:()=>action(copyOutline),
     outlineEditor:prefer=>action(()=>outlineEditor(prefer)),
     completeChapter:completed=>action(()=>completeChapter(completed)),
     talkAction:(kind,id)=>action(()=>talkAction(kind,id)),
     boot,selectChapter,next,readerSize,readingSettings,
     returnToReader(){if(chapters.length)selectChapter(chapter()?.id||chapters[0].id);},
-    discussionMode:()=>action(discussionMode),confirmOutline:()=>action(confirmOutline),restoreOutline:()=>action(restoreOutline),
+    readTogether:()=>action(readTogether),discussionMode:()=>action(discussionMode),confirmOutline:()=>action(confirmOutline),restoreOutline:()=>action(restoreOutline),
     modelSettings:openModelSettings,
     persona:()=>openPersonaModal(),
     directory(){if(!novel())return showToast('小说模式会显示章节目录');renderDirectory();$('studioChapterDialog').showModal();},

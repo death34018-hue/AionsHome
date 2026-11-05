@@ -31,7 +31,8 @@ async function testSettingsLoadWithoutWaitingForModels() {
     if (!fields.has(id)) fields.set(id, { value: '' });
     return fields.get(id);
   };
-  const saved = { gemini_key: 'saved-test-key', custom_model_routes: [{ id: 'saved-route' }] };
+  const saved = { gemini_key: 'saved-test-key', custom_model_routes: [{ id: 'saved-route' }],
+    image_gen_provider: 'flowai', flowai_image_model: 'grok_imagine_image_2_0' };
   const initContext = {
     $: field,
     api: (method, url) => url === '/api/settings'
@@ -46,11 +47,18 @@ async function testSettingsLoadWithoutWaitingForModels() {
     refreshFloatingChatStatus() {},
     refreshMediaCacheStatus() {},
   };
-  vm.runInNewContext(initSource, initContext);
+  const imageUi = source.match(/function updateImageGenProviderUi\(\) \{[\s\S]*?\n\}/)[0];
+  vm.runInNewContext(imageUi + '\n' + initSource, initContext);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(field('geminiKeyInput').value, saved.gemini_key,
     'Saved keys should display even while model discovery is pending');
   assert.deepEqual(initContext.customModelRoutes, saved.custom_model_routes);
+  assert.equal(field('flowaiModelInput').value, 'grok_imagine_image_2_0');
+  const options = source.match(/<select[^>]+id="flowaiModelInput"[^>]*>([\s\S]*?)<\/select>/)[1];
+  assert.deepEqual(Array.from(options.matchAll(/value="([^"]+)"/g), m => m[1]),
+    ['gpt_image2_5_flare', 'seedream_5_0_flash', 'grok_imagine_image_2_0']);
+  assert.equal(field('imageGenFlowConfig').hidden, false);
+  assert.equal(field('imageGenApiConfig').hidden, true);
   console.log('settings load independently of model discovery passed');
 }
 
