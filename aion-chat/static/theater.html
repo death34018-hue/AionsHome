@@ -334,13 +334,6 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
           <span class="slider-val" id="contextVal">20</span>
         </div>
 
-        <label>温度</label>
-        <div class="slider-row">
-          <input type="range" id="tempSlider" min="0" max="2" step="0.1" value="0.8"
-            oninput="$('tempVal').textContent=this.value; localStorage.setItem('theater_temperature',this.value)">
-          <span class="slider-val" id="tempVal">0.8</span>
-        </div>
-
         <!-- TTS -->
         <div class="tts-section">
           <div class="tts-toggle-row">
@@ -456,8 +449,6 @@ function escHtml(s) {
 async function init() {
   var savedCtx = localStorage.getItem('theater_context_limit');
   if (savedCtx) { $('contextSlider').value = savedCtx; $('contextVal').textContent = savedCtx; }
-  var savedTemp = localStorage.getItem('theater_temperature');
-  if (savedTemp) { $('tempSlider').value = savedTemp; $('tempVal').textContent = savedTemp; }
   var savedTts = localStorage.getItem('theater_tts_enabled');
   if (savedTts === 'true') { ttsEnabled = true; $('ttsToggle').checked = true; }
   var savedVoice = localStorage.getItem('theater_tts_voice');
@@ -1031,13 +1022,11 @@ async function send() {
   input.style.height = 'auto';
 
   const ctx = parseInt($('contextSlider').value) || 20;
-  const temp = parseFloat($('tempSlider').value);
 
   const body = {
     content,
     context_limit: ctx,
     attachments: pendingAttachments.map(a => a.url),
-    temperature: temp,
     tts_enabled: false,
     tts_voice: ttsVoice,
   };
@@ -1141,10 +1130,9 @@ async function regenerateMsg(aiMsgId) {
   isStreaming = true;
   $('sendBtn').disabled = true;
   const ctx = parseInt($('contextSlider').value) || 20;
-  const temp = parseFloat($('tempSlider').value);
 
   try {
-    const res = await fetch(`/api/theater/conversations/${requestConvId}/regenerate?context_limit=${ctx}&temperature=${temp}&tts_enabled=${requestTtsEnabled}&tts_voice=${encodeURIComponent(ttsVoice)}`, {
+    const res = await fetch(`/api/theater/conversations/${requestConvId}/regenerate?context_limit=${ctx}&tts_enabled=${requestTtsEnabled}&tts_voice=${encodeURIComponent(ttsVoice)}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({

@@ -189,7 +189,6 @@ async def _call_ai_with_tools(messages: list, tools: list, model_cfg: dict,
         "model": model,
         "messages": trimmed,
         "tools": tools,
-        "temperature": 0.8,
     }
 
     async with httpx.AsyncClient(timeout=180) as client:
@@ -232,7 +231,6 @@ async def _stream_ai_text(messages: list, model_cfg: dict, cancel_event: asyncio
         "model": model,
         "messages": messages,
         "stream": True,
-        "temperature": 0.8,
     }
 
     async with httpx.AsyncClient(timeout=120) as client:

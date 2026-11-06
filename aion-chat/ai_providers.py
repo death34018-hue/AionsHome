@@ -13,6 +13,8 @@ from system_logs import logged_ai_call, record_cli_prompt, record_sent_messages
 
 import httpx
 import tempfile
+import hashlib
+import io
 
 from config import get_key, MODELS, UPLOADS_DIR, ALBUM_IMAGES_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, SETTINGS, get_sentinel_config, DATA_DIR, resolve_model_key, is_model_deprecated
 from codex_app_server import (
@@ -375,6 +377,51 @@ def _resolve_attachment_path(att) -> Path | None:
         return UPLOADS_DIR / Path(att).name
 
 
+def prepare_image_context_attachment(attachment) -> str:
+    """Cache a small viewing copy shared by API and CLI chat providers."""
+    from PIL import Image, ImageOps
+
+    original_url = _attachment_file_ref(attachment)
+    source = _resolve_attachment_path(attachment)
+    if not source or not source.is_file():
+        return original_url
+    try:
+        stat = source.stat()
+        identity = f'{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:1280-80-v1'
+        filename = hashlib.sha256(identity.encode()).hexdigest() + '.jpg'
+        directory = UPLOADS_DIR / 'image-context'
+        destination = directory / filename
+        url = '/uploads/image-context/' + filename
+        if destination.is_file():
+            return url
+        with Image.open(source) as image:
+            image = ImageOps.exif_transpose(image).convert('RGBA')
+            image.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+            background = Image.new('RGB', image.size, 'white')
+            background.paste(image, mask=image.getchannel('A'))
+        while True:
+            output = io.BytesIO()
+            background.save(output, 'JPEG', quality=80, optimize=True)
+            if output.tell() <= 350 * 1024:
+                break
+            scale = 0.9 * (350 * 1024 / output.tell()) ** 0.5
+            background = background.resize(
+                tuple(max(1, int(size * scale)) for size in background.size), Image.Resampling.LANCZOS)
+        directory.mkdir(parents=True, exist_ok=True)
+        # Atomic publication keeps simultaneous readers away from partial JPEGs.
+        with tempfile.NamedTemporaryFile(dir=directory, suffix='.tmp', delete=False) as temp:
+            pending = Path(temp.name)
+            temp.write(output.getvalue())
+        try:
+            pending.replace(destination)
+        finally:
+            pending.unlink(missing_ok=True)
+        return url
+    except (OSError, ValueError, Image.DecompressionBombError) as exc:
+        print(f'[image_context] 图片压缩失败（{type(exc).__name__}）')
+        return original_url
+
+
 def _ensure_gemini_accessible(fpath: Path) -> Path:
     """如果文件在 Connor-Codex/uploads/ 下（Gemini CLI 无权访问），
     则复制一份到 data/uploads/ 并返回新路径；否则原样返回。"""
@@ -544,8 +591,6 @@ async def call_siliconflow(messages: list, model: str, meta: dict | None = None,
     await record_sent_messages(api_messages)
     payload = {"model": model, "messages": api_messages, "stream": True,
                "stream_options": {"include_usage": True}}
-    if temperature is not None:
-        payload["temperature"] = temperature
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
     async with httpx.AsyncClient(timeout=120) as client:
@@ -654,8 +699,6 @@ async def _stream_gemini(messages, url, headers, meta, temperature, max_tokens, 
         payload["systemInstruction"] = {"parts": system_parts}
     await record_sent_messages(([{"role":"system","parts":system_parts}] if system_parts else []) + contents)
     gen_config = {}
-    if temperature is not None:
-        gen_config["temperature"] = temperature
     if max_tokens is not None:
         gen_config["maxOutputTokens"] = max_tokens
     if gen_config:
@@ -708,8 +751,6 @@ async def call_aipro(messages: list, model: str, meta: dict | None = None, tempe
     api_messages = build_multimodal_messages(messages)
     await record_sent_messages(api_messages)
     payload = {"model": model, "messages": api_messages, "stream": True}
-    if temperature is not None:
-        payload["temperature"] = temperature
     if max_tokens is not None:
         payload["max_tokens"] = max_tokens
     async with httpx.AsyncClient(timeout=120) as client:
@@ -790,10 +831,9 @@ async def call_custom_openai(messages: list, cfg: dict, meta: dict | None = None
         return
     await record_sent_messages(api_messages)
     payload = {"model": model, "messages": api_messages, "stream": True}
-    if temperature is not None:
-        payload["temperature"] = temperature
     if max_tokens is not None:
-        payload["max_tokens"] = max_tokens
+        token_field = "max_completion_tokens" if httpx.URL(url).host == "api.openai.com" else "max_tokens"
+        payload[token_field] = max_tokens
     if cfg.get("use_default_reasoning_effort") is False:
         payload["reasoning_effort"] = cfg.get("reasoning_effort", "high")
     reasoning_status_sent = False
@@ -1957,6 +1997,8 @@ def with_current_device_context(
 
 
 async def stream_ai(messages: list, model_key: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, cancel_event=None, *, include_device_context: bool = True, request_timeout: float = 120):
+    # Older callers may still supply temperature; all routes use model defaults.
+    temperature = None
     if include_device_context:
         messages = with_current_device_context(messages)
     model_key = resolve_model_key(model_key)

@@ -14,6 +14,7 @@
   --connor-bg: #c5d8ed;
   --danger: #cf222e;
   --connor-accent: #4a7dbd;
+  --chatroom-safe-top: env(safe-area-inset-top, 0px);
   --chatroom-message-avatar-size: 21px;
   --chatroom-message-avatar-gap: 6px;
   --chatroom-message-font-size: 13.5px;
@@ -22,6 +23,7 @@
   --system-notice-left-offset: calc(var(--chatroom-message-avatar-size) + var(--chatroom-message-avatar-gap));
   --user-link-preview-offset: calc(var(--chatroom-message-avatar-size) + var(--chatroom-message-avatar-gap));
 }
+html.aion-app { --chatroom-safe-top: max(34px, env(safe-area-inset-top, 0px)); }
 * { margin:0; padding:0; box-sizing:border-box; }
 html, body { height:100%; }
 html { background: #03061c; }
@@ -1880,7 +1882,7 @@ body[data-theme="light"] .monitor-camera-snapshot summary {
 body[data-theme="light"] #settingsOverlay .settings-panel { background: rgba(244,247,255,.97); }
 #settingsOverlay .panel-header {
   flex-shrink: 0;
-  padding-top: max(10px, env(safe-area-inset-top));
+  padding-top: max(10px, var(--chatroom-safe-top));
 }
 #settingsOverlay .panel-body { min-height: 0; padding: 12px 14px; }
 #settingsOverlay .field { margin-bottom: 10px; }
@@ -1951,6 +1953,7 @@ body[data-theme="light"] #settingsOverlay .settings-panel { background: rgba(244
 }
 .persona-page-panel .panel-header {
   padding: 12px 16px;
+  padding-top: max(12px, var(--chatroom-safe-top));
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -2549,6 +2552,7 @@ body[data-theme="light"] #settingsOverlay .settings-panel { background: rgba(244
 }
 .memory-panel .panel-header {
   padding: 14px 16px;
+  padding-top: max(14px, var(--chatroom-safe-top));
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
@@ -2674,7 +2678,6 @@ body[data-theme="light"] #settingsOverlay .settings-panel { background: rgba(244
 @keyframes memFadeIn { from { opacity:0; transform:scale(0.95); } to { opacity:1; transform:scale(1); } }
 
 @media (max-width: 700px) {
-  .memory-panel .panel-header { padding-top: max(14px, env(safe-area-inset-top)); }
   .memory-panel .panel-body { padding: 10px; }
   .memory-footer-actions {
     margin-inline: 6px;
@@ -3590,8 +3593,8 @@ body[data-theme="light"] .toast {
 
 @media (min-width: 701px) {
   .app {
-    height: calc(100dvh - 16px);
-    margin: 8px 18px;
+    height: calc(100dvh - 16px - var(--chatroom-safe-top));
+    margin: calc(8px + var(--chatroom-safe-top)) 18px 8px;
     gap: 18px;
   }
   .sidebar,
@@ -3604,6 +3607,8 @@ body[data-theme="light"] .toast {
 
 @media (max-width: 700px) {
   .app {
+    --chatroom-header-top: max(10px, var(--chatroom-safe-top));
+    --chatroom-content-top: calc(var(--chatroom-header-top) + 62px);
     height: 100dvh;
     margin: 0;
     gap: 0;
@@ -3620,7 +3625,7 @@ body[data-theme="light"] .toast {
     top: 0;
     left: 0;
     right: 0;
-    height: calc(max(10px, env(safe-area-inset-top, 0px)) + 82px);
+    height: calc(var(--chatroom-header-top) + 82px);
     z-index: 7;
     pointer-events: none;
     background: linear-gradient(
@@ -3646,15 +3651,16 @@ body[data-theme="light"] .toast {
   }
   .chat-header {
     position: fixed;
-    top: max(10px, env(safe-area-inset-top, 0px));
+    top: var(--chatroom-header-top);
     left: 8px;
     right: 8px;
     border-radius: 14px;
     padding: 7px 8px;
     z-index: 8;
   }
+  .chat-search-panel { top: var(--chatroom-content-top); }
   .messages {
-    padding-top: calc(max(10px, env(safe-area-inset-top, 0px)) + 62px);
+    padding-top: var(--chatroom-content-top);
     padding-bottom: 112px;
   }
   .system-event-msg {
@@ -3757,7 +3763,7 @@ body[data-theme="light"] .toast {
     display: flex;
   }
   .sidebar {
-    top: max(10px, env(safe-area-inset-top, 0px));
+    top: var(--chatroom-header-top);
     bottom: max(10px, env(safe-area-inset-bottom, 0px));
     border-radius: 0 18px 18px 0;
   }

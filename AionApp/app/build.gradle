@@ -10,8 +10,12 @@ android {
         applicationId "com.aion.chat"
         minSdk 24
         targetSdk 34
-        versionCode 23
-        versionName "1.22"
+        versionCode 31
+        versionName "1.30"
+        // Optional per-device build avoids shipping other CPUs' native ASR libraries.
+        if (project.hasProperty('targetAbi')) {
+            ndk { abiFilters project.property('targetAbi') }
+        }
     }
 
     buildTypes {
@@ -25,6 +29,14 @@ android {
         buildConfig true
     }
 
+    packagingOptions {
+        jniLibs.excludes += ['**/libsherpa-onnx-c-api.so', '**/libsherpa-onnx-cxx-api.so']
+    }
+
+    testOptions {
+        unitTests.returnDefaultValues = true
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
@@ -32,6 +44,8 @@ android {
 }
 
 dependencies {
+    implementation files('libs/sherpa-onnx-1.13.8.aar')
+    implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.10'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.webkit:webkit:1.8.0'
     implementation 'com.squareup.okhttp3:okhttp:4.12.0'

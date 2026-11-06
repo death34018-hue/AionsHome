@@ -226,6 +226,34 @@ class BoardRepository:
                 (str(uuid4()), actor_id, visitor_id, thread_id, kind, summary, now),
             )
 
+    def list_experiences(self, *, actor_id: str | None = None, kind: str | None = None,
+                         limit: int = 30, offset: int = 0) -> dict:
+        """Owner's read-only archive, including visits to friends' boards."""
+        query = """SELECT e.id, e.actor_id, e.kind, e.summary, e.created_at,
+                          t.title, COALESCE(v.display_name, '访客') AS friend_name,
+                          'home' AS source
+                   FROM board_experiences e JOIN board_threads t ON t.id = e.thread_id
+                   JOIN visitors v ON v.id = e.visitor_id
+                   UNION ALL
+                   SELECT id, actor_id, kind, summary, created_at, '', friend_name, 'outbound'
+                   FROM board_outbound_experiences"""
+        conditions, params = [], []
+        if actor_id is not None:
+            conditions.append("actor_id = ?")
+            params.append(actor_id)
+        if kind is not None:
+            conditions.append("kind = ?")
+            params.append(kind)
+        archive = f"SELECT * FROM ({query})"
+        if conditions:
+            archive += " WHERE " + " AND ".join(conditions)
+        with self.database.connection() as conn:
+            total = conn.execute(f"SELECT COUNT(*) FROM ({archive})", params).fetchone()[0]
+            rows = conn.execute(archive + " ORDER BY created_at DESC, source, id DESC LIMIT ? OFFSET ?",
+                                [*params, limit, offset]).fetchall()
+        columns = ("id", "actor_id", "kind", "summary", "created_at", "title", "friend_name", "source")
+        return {"items": [dict(zip(columns, row)) for row in rows], "total": total}
+
     def recent_experiences(self, actor_id: str, *, limit: int = 8) -> list[dict[str, str]]:
         if actor_id not in {"aion", "connor"}:
             raise BoardInvalidInput("家庭成员无效")
@@ -346,11 +374,13 @@ class BoardRepository:
         return self.get_thread(visitor_id, thread_id)
 
     def close_thread(
-        self, visitor_id: str, thread_id: str, *, author_name: str,
+        self, visitor_id: str, thread_id: str, *, author_name: str, require_open: bool = False,
     ) -> dict[str, object]:
         author_name = _text(author_name, label="署名", limit=80)
         with self.database.transaction(immediate=True) as conn:
             thread = self._thread_row(conn, visitor_id, thread_id)
+            if require_open and thread[3] != "open":
+                raise BoardThreadClosed("话题已经结束")
             if thread[3] == "open":
                 now = utc_now().isoformat()
                 conn.execute(

@@ -1,0 +1,4 @@
+$env:USE_SYSTEM_CHROME = "1"
+$env:ALLOW_BROWSER_MUTATIONS = "0"
+$env:TRUST_AGENT_ACTIONS = "0"
+npm start

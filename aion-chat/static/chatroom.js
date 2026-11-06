@@ -3225,7 +3225,8 @@ async function crRetryImage(event, button) {
   const id = button.closest('[data-msg-id]')?.dataset.msgId;
   const room = currentRoom?.id;
   if (!id || !room || button.disabled) return;
-  button.disabled = true;
+  const controls = button.closest('.cr-image-retry-line').querySelectorAll('button');
+  controls.forEach(control => { control.disabled = true; });
   button.textContent = '重试中…';
   try {
     const result = await api('/rooms/' + encodeURIComponent(room) + '/messages/' + encodeURIComponent(id) + '/retry-image', {
@@ -3234,7 +3235,45 @@ async function crRetryImage(event, button) {
     if (!result.accepted && result.message && button.isConnected) crApplyReceivedMessage(result.message);
   } catch (err) {
     toast(err.message || '重试请求未送达');
-    if (button.isConnected) { button.disabled = false; button.textContent = '重试'; }
+    if (button.isConnected) {
+      controls.forEach(control => { control.disabled = false; });
+      button.textContent = '重试';
+    }
+  }
+}
+
+async function crEditImagePrompt(event, button) {
+  event.stopPropagation();
+  const row = button.closest('[data-msg-id]');
+  const id = row?.dataset.msgId;
+  const room = currentRoom?.id;
+  if (!id || !room || button.disabled) return;
+  const controls = button.closest('.cr-image-retry-line').querySelectorAll('button');
+  controls.forEach(control => { control.disabled = true; });
+  const path = '/rooms/' + encodeURIComponent(room) + '/messages/' + encodeURIComponent(id) + '/retry-image';
+  try {
+    const saved = await api(path, { cache: 'no-store' });
+    if (currentRoom?.id !== room || !row.isConnected) return;
+    window.AIMessageEditor.open(row, row.querySelector('.msg-content'), saved.prompt,
+      async prompt => {
+        const result = await api(path, {
+          method: 'PUT', body: JSON.stringify({ attempt: saved.attempt, prompt }),
+        });
+        return result.message;
+      },
+      updated => {
+        if (currentRoom?.id !== room || !row.isConnected) return;
+        if (updated) {
+          crMessagesById[id] = updated;
+          crMessageRevision++;
+        }
+        row.outerHTML = msgHTML(crMessagesById[id]);
+      });
+    row.querySelector('.ai-edit-textarea')?.setAttribute('aria-label', '生图提示词');
+  } catch (err) {
+    toast(err.message || '读取提示词失败');
+  } finally {
+    controls.forEach(control => { control.disabled = false; });
   }
 }
 
@@ -3304,8 +3343,8 @@ function msgHTML(m, nextMessage = null) {
   let bubblesHtml = '';
   if (imageRetry) {
     const action = imageRetry.running
-      ? '<button class="cr-image-retry" type="button" disabled>重试中…</button>'
-      : `<button class="cr-image-retry" type="button" data-attempt="${Number(imageRetry.attempt)}" onclick="crRetryImage(event,this)">重试</button>`;
+      ? '<button class="cr-image-retry" type="button" disabled>编辑</button><button class="cr-image-retry" type="button" disabled>重试中…</button>'
+      : `<button class="cr-image-retry" type="button" onclick="crEditImagePrompt(event,this)">编辑</button><button class="cr-image-retry" type="button" data-attempt="${Number(imageRetry.attempt)}" onclick="crRetryImage(event,this)">重试</button>`;
     bubblesHtml = `<div class="message-stack">${crBubbleUnitHtml({
       sender, name, avatar, msgId: m.id, msg: m, showHeader: true, deleteOnly: true,
       html: `<span class="cr-image-retry-line">${imageRetry.running ? '' : esc(raw)}${action}</span>`,

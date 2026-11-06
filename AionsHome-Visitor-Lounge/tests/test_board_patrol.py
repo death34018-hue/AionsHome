@@ -157,6 +157,166 @@ def test_scheduled_patrol_goes_directly_to_board_without_general_autonomy(board_
     assert store.config("connor")["next_check_at"] == 1_600
 
 
+def test_due_patrol_waits_for_fifteen_quiet_minutes_without_restarting_interval(board_home, monkeypatch):
+    home, board, (visitor_id, _) = board_home
+    from visitor_lounge import board_patrol
+    note(board, visitor_id, "等聊完再看")
+    clock = [1_300.0]
+    async def latest_message():
+        return 1_290.0
+    async def actor(*args):
+        return '{"action":"none"}'
+    monkeypatch.setattr(board_patrol, "latest_user_message_ts", latest_message)
+    monkeypatch.setattr(board_patrol.time, "time", lambda: clock[0])
+    monkeypatch.setitem(sys.modules, "autonomy", SimpleNamespace(_call_actor=actor))
+    store = board_patrol.PatrolStore(board.database)
+    store.update("connor", enabled=True, min_interval_minutes=5, max_interval_minutes=5, now=1_000)
+    manager = board_patrol.BoardPatrolManager(store)
+    assert asyncio.run(manager.run_due("connor"))["status"] == "waiting_user"
+    assert store.config("connor")["next_check_at"] == 1_300
+    assert board.recent_experiences("connor") == []
+    clock[0] = 2_189
+    assert asyncio.run(manager.run_due("connor"))["status"] == "waiting_user"
+    clock[0] = 2_190
+    assert asyncio.run(manager.run_due("connor"))["status"] == "read"
+    assert store.config("connor")["next_check_at"] == 2_490
+
+
+def test_user_returning_during_model_response_leaves_paper_unhandled(board_home, monkeypatch):
+    home, board, (visitor_id, _) = board_home
+    from visitor_lounge import board_patrol
+    thread = note(board, visitor_id, "聊天优先")
+    last_message = [0.0]
+    async def latest_message():
+        return last_message[0]
+    async def actor(*args):
+        last_message[0] = board_patrol.time.time()
+        return '{"action":"reply","content":"准备发给朋友","share":true,"share_message":"回家分享"}'
+    monkeypatch.setattr(board_patrol, "latest_user_message_ts", latest_message)
+    monkeypatch.setitem(sys.modules, "autonomy", SimpleNamespace(_call_actor=actor))
+    result = asyncio.run(home.inspect_actor("aion"))
+    assert result["status"] == "waiting_user" and result["shared"] is False
+    assert len(board.get_thread(visitor_id, thread["id"])["posts"]) == 1
+    assert [item["id"] for item in board.unread_threads("aion")] == [thread["id"]]
+    assert board.recent_experiences("aion") == []
+
+
+def test_manual_inspection_can_reply_and_share_while_user_is_chatting(board_home, monkeypatch):
+    home, board, (visitor_id, _) = board_home
+    from visitor_lounge import board_patrol
+    thread = note(board, visitor_id, "主人请我来看")
+    async def latest_message():
+        return board_patrol.time.time()
+    async def actor(*args):
+        return '{"action":"reply","content":"按你的安排来了","share":true,"share_message":"看过啦"}'
+    shared = []
+    async def save(actor, content, **kwargs):
+        shared.append(content)
+        return {"id": "shared"}
+    monkeypatch.setattr(board_patrol, "latest_user_message_ts", latest_message)
+    monkeypatch.setitem(sys.modules, "autonomy", SimpleNamespace(_call_actor=actor, _save_private_message=save))
+    result = asyncio.run(home.inspect_actor("aion", trigger="manual"))
+    assert result["status"] == "replied" and result["shared"] is True
+    assert board.get_thread(visitor_id, thread["id"])["posts"][-1]["content"] == "按你的安排来了"
+    assert shared == ["看过啦"]
+
+
+def test_user_returning_after_reply_blocks_share_and_next_paper(board_home, monkeypatch):
+    home, board, (visitor_id, _) = board_home
+    from visitor_lounge import board_patrol
+    first = note(board, visitor_id, "先看到我")
+    second = note(board, visitor_id, "留到下次")
+    last_message = [0.0]
+    async def latest_message():
+        return last_message[0]
+    async def actor(*args):
+        return '{"action":"reply","content":"已经回复","share":true,"share_message":"别插播", "next_thread_id":"' + second["id"] + '"}'
+    original_reply = board.reply
+    def reply(*args, **kwargs):
+        result = original_reply(*args, **kwargs)
+        last_message[0] = board_patrol.time.time()
+        return result
+    shared = []
+    async def save(*args, **kwargs):
+        shared.append(True)
+    monkeypatch.setattr(board_patrol, "latest_user_message_ts", latest_message)
+    monkeypatch.setattr(board, "reply", reply)
+    monkeypatch.setitem(sys.modules, "autonomy", SimpleNamespace(_call_actor=actor, _save_private_message=save))
+    result = asyncio.run(home.inspect_actor("aion"))
+    assert result["status"] == "waiting_user" and shared == []
+    assert board.get_thread(visitor_id, first["id"])["posts"][-1]["content"] == "已经回复"
+    assert [item["id"] for item in board.unread_threads("aion")] == [second["id"]]
+
+
+def test_patrol_estimate_uses_quiet_deadline_for_both_actors(board_home, tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from visitor_lounge import board_patrol
+    home, board, _ = board_home
+    async def latest_message():
+        return 9_995.0
+    monkeypatch.setattr(board_patrol, "latest_user_message_ts", latest_message)
+    monkeypatch.setattr(board_patrol.time, "time", lambda: 10_000.0)
+    store = board_patrol.PatrolStore(board.database)
+    store.update("aion", enabled=True, min_interval_minutes=5, max_interval_minutes=5, now=9_700)
+    store.update("connor", enabled=True, min_interval_minutes=5, max_interval_minutes=5, now=10_700)
+    app = FastAPI()
+    app.include_router(home.create_home_board_router())
+    with TestClient(app) as client:
+        roles = client.get("/api/lounge-board/patrol").json()["roles"]
+    assert roles[0]["config"]["estimated_check_at"] == 10_895
+    assert roles[0]["config"]["waiting_for_quiet"] is True
+    assert roles[1]["config"]["estimated_check_at"] == 11_000
+
+
+def test_mid_round_pause_keeps_due_time_and_preserves_new_settings(board_home, monkeypatch):
+    home, board, _ = board_home
+    from visitor_lounge.board_patrol import BoardPatrolManager, PatrolStore
+    store = PatrolStore(board.database)
+    store.update("aion", enabled=True, min_interval_minutes=5, max_interval_minutes=5, now=1_000)
+    async def pause(*args, **kwargs):
+        return {"status": "waiting_user"}
+    monkeypatch.setattr(home, "inspect_actor", pause)
+    assert asyncio.run(BoardPatrolManager(store).run_due("aion", now=1_300))["status"] == "waiting_user"
+    assert store.config("aion")["next_check_at"] == 1_300
+    async def changed_settings(*args, **kwargs):
+        store.update("aion", min_interval_minutes=10, max_interval_minutes=10, now=1_400)
+        return {"status": "waiting_user"}
+    monkeypatch.setattr(home, "inspect_actor", changed_settings)
+    asyncio.run(BoardPatrolManager(store).run_due("aion", now=1_400))
+    assert store.config("aion")["next_check_at"] == 2_000
+
+
+def test_unavailable_chat_presence_defers_automatic_check(board_home, monkeypatch):
+    home, board, (visitor_id, _) = board_home
+    from visitor_lounge import board_patrol
+    thread = note(board, visitor_id, "聊天状态未知先等等")
+    async def unavailable():
+        raise RuntimeError("聊天数据库暂不可用")
+    monkeypatch.setattr(board_patrol, "latest_user_message_ts", unavailable)
+    assert asyncio.run(home.inspect_actor("aion"))["status"] == "waiting_user"
+    assert board.unread_threads("aion")[0]["id"] == thread["id"]
+
+
+def test_user_returning_during_failed_model_response_keeps_original_deadline(board_home, monkeypatch):
+    home, board, (visitor_id, _) = board_home
+    from visitor_lounge import board_patrol
+    note(board, visitor_id, "生成失败也不重掷时间")
+    latest = [0.0]
+    async def latest_message():
+        return latest[0]
+    async def actor(*args):
+        latest[0] = board_patrol.time.time()
+        return "无效 JSON"
+    monkeypatch.setattr(board_patrol, "latest_user_message_ts", latest_message)
+    monkeypatch.setitem(sys.modules, "autonomy", SimpleNamespace(_call_actor=actor))
+    store = board_patrol.PatrolStore(board.database)
+    store.update("aion", enabled=True, min_interval_minutes=5, max_interval_minutes=5, now=1_000)
+    result = asyncio.run(board_patrol.BoardPatrolManager(store).run_due("aion", now=1_300))
+    assert result["status"] == "waiting_user"
+    assert store.config("aion")["next_check_at"] == 1_300
+
+
 def test_round_limit_leaves_fourth_topic_unread(board_home, monkeypatch):
     home, board, (visitor_id, _) = board_home
     threads = [note(board, visitor_id, f"便签{index}") for index in range(4)]
@@ -197,18 +357,15 @@ def test_duplicate_inspection_is_skipped_without_blocking_other_actor(board_home
     assert board.unread_threads("aion") == board.unread_threads("connor") == []
 
 
-def test_patrol_settings_require_owner_login_and_validate_independent_intervals(board_home, tmp_path, monkeypatch):
+def test_patrol_settings_without_login_validate_independent_intervals(board_home, tmp_path, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from visitor_lounge import board_owner_auth
 
     home, board, _ = board_home
-    monkeypatch.setattr(board_owner_auth, "CODE_PATH", tmp_path / "owner-code.txt")
     app = FastAPI()
     app.include_router(home.create_home_board_router())
     with TestClient(app) as client:
-        assert client.get("/api/lounge-board/patrol").status_code == 401
-        client.post("/api/lounge-board/unlock", json={"code": board_owner_auth.owner_code()})
+        assert client.get("/api/lounge-board/patrol").status_code == 200
         before = client.get("/api/lounge-board/patrol").json()
         assert [role["name"] for role in before["roles"]] == ["家人甲", "家人乙"]
         assert client.put("/api/lounge-board/actors/aion/patrol", json={

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime
 from uuid import uuid4
 
@@ -107,7 +108,11 @@ class McpLoungeService:
         self._visit_start_after: dict[str, str | None] = {}
 
     def get_lounge_info(self, visitor_id: str) -> dict[str, object]:
-        visitor = self.visitor_service.effective_visitor(visitor_id)
+        # Report an expired lock as released without mutating state on a read.
+        visitor = self.visitors.visitor(visitor_id)
+        if (visitor.status == "safety_lock" and visitor.safety_locked_until is not None
+                and visitor.safety_locked_until <= self.container.clock()):
+            visitor = replace(visitor, status="active", safety_locked_until=None)
         reception = self.reception.get()
         return {
             "status": "ok",

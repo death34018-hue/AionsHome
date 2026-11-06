@@ -568,7 +568,6 @@ async def _call_sentinel_text(scfg: dict, prompt: str, timeout: int = 60) -> str
         payload = {
             "model": scfg["model"],
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.3,
             "max_tokens": 4096,
             "enable_thinking": False,
         }
@@ -617,7 +616,6 @@ async def _call_sentinel_vision(scfg: dict, prompt: str, img_b64: str, mime_type
                 {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}}
             ]}],
-            "temperature": 0.3,
             "max_tokens": 4096,
             "enable_thinking": False,
         }

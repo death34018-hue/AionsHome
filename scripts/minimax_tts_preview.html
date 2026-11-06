@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MiniMax 克隆音色试听</title>
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#687086; --line:#dfe3ec; --soft:#f5f7fb; --blue:#5267d8; --blue2:#6f7fe3; --danger:#c63d4f; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; font-family:"Microsoft YaHei UI","Segoe UI",sans-serif; color:var(--ink); background:linear-gradient(135deg,#edf1ff,#fbf5f0 52%,#eef8f5); }
+    main { width:min(900px,calc(100% - 28px)); margin:28px auto; }
+    .shell { background:rgba(255,255,255,.92); border:1px solid rgba(255,255,255,.8); border-radius:22px; box-shadow:0 18px 60px rgba(49,57,93,.12); overflow:hidden; }
+    header { padding:24px 28px 18px; border-bottom:1px solid var(--line); }
+    h1 { margin:0 0 7px; font-size:23px; }
+    header p,.hint { margin:0; color:var(--muted); font-size:13px; line-height:1.65; }
+    .content { padding:22px 28px 28px; display:grid; gap:20px; }
+    label { display:block; margin-bottom:7px; font-size:13px; font-weight:700; }
+    input,select,textarea,button { font:inherit; }
+    input,select,textarea { width:100%; border:1px solid var(--line); border-radius:10px; background:#fff; color:var(--ink); padding:11px 12px; outline:none; transition:.15s border,.15s box-shadow; }
+    input:focus,select:focus,textarea:focus { border-color:var(--blue2); box-shadow:0 0 0 3px rgba(82,103,216,.12); }
+    textarea { min-height:130px; resize:vertical; line-height:1.7; }
+    .key-row { display:grid; grid-template-columns:1fr auto; gap:10px; align-items:end; }
+    .toggle { height:42px; padding:0 14px; color:var(--blue); background:#f2f4ff; border:1px solid #d9defa; border-radius:10px; cursor:pointer; }
+    .voices { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .voice { padding:15px; background:var(--soft); border:1px solid var(--line); border-radius:14px; }
+    .voice-top { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; }
+    .voice-top input { padding:7px 9px; font-weight:700; background:transparent; }
+    .voice button { width:100%; margin-top:10px; }
+    .settings { display:grid; grid-template-columns:1.2fr 1fr 1fr 1fr; gap:12px; }
+    .range-wrap { display:grid; grid-template-columns:1fr 44px; gap:8px; align-items:center; }
+    input[type="range"] { padding:0; border:0; box-shadow:none; }
+    output { font-size:12px; color:var(--muted); text-align:right; }
+    button.primary { min-height:44px; border:0; border-radius:10px; color:#fff; background:linear-gradient(135deg,var(--blue),#765dcc); cursor:pointer; font-weight:700; }
+    button.primary:hover { filter:brightness(1.04); }
+    button:disabled { opacity:.55; cursor:wait; }
+    .player { padding:16px; border:1px solid var(--line); border-radius:14px; background:#fff; }
+    audio { width:100%; margin-top:10px; }
+    .player-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    #download { display:none; color:var(--blue); text-decoration:none; font-size:13px; font-weight:700; }
+    #status { font-size:13px; color:var(--muted); }
+    #status.error { color:var(--danger); }
+    .cost { margin-top:7px; font-size:12px; color:var(--muted); }
+    @media (max-width:700px) { main{margin:12px auto}.voices,.settings{grid-template-columns:1fr}.key-row{grid-template-columns:1fr}.content,header{padding-left:17px;padding-right:17px} }
+  </style>
+</head>
+<body>
+<main>
+  <section class="shell">
+    <header>
+      <h1>MiniMax 克隆音色试听</h1>
+      <p>只连接本机与 MiniMax 国内接口。API Key 不会保存；音色名称和 ID 只保存在这个浏览器里。</p>
+    </header>
+    <div class="content">
+      <div class="key-row">
+        <div><label for="apiKey">API Key / 订阅 Key</label><input id="apiKey" type="password" autocomplete="off" placeholder="首次测试粘贴普通按量 Key；买套餐后可换订阅 Key"></div>
+        <button class="toggle" id="toggleKey" type="button">显示</button>
+      </div>
+
+      <div class="voices">
+        <article class="voice">
+          <div class="voice-top"><input id="nameA" aria-label="音色 A 名称" value="音色 A"></div>
+          <label for="voiceA">克隆音色 ID</label><input id="voiceA" autocomplete="off" placeholder="粘贴第一个 voice_id">
+          <button class="primary preview" type="button" data-slot="A">用这个音色试听</button>
+        </article>
+        <article class="voice">
+          <div class="voice-top"><input id="nameB" aria-label="音色 B 名称" value="音色 B"></div>
+          <label for="voiceB">克隆音色 ID</label><input id="voiceB" autocomplete="off" placeholder="粘贴第二个 voice_id">
+          <button class="primary preview" type="button" data-slot="B">用这个音色试听</button>
+        </article>
+      </div>
+
+      <div>
+        <label for="text">试听文字 <span id="count" class="hint"></span></label>
+        <textarea id="text" maxlength="1000">宝宝，我在这里。今天辛苦了，先慢慢坐下来休息一会儿，好不好？</textarea>
+        <p class="hint">建议第一次控制在 20～50 个汉字。支持 <code>(laughs)</code>、<code>(breath)</code>、<code>(sighs)</code> 等 Speech 2.8 语气词。</p>
+      </div>
+
+      <div class="settings">
+        <div><label for="model">模型</label><select id="model"><option value="speech-2.8-hd">Speech 2.8 HD</option><option value="speech-2.8-turbo">Speech 2.8 Turbo</option></select></div>
+        <div><label for="emotion">情绪</label><select id="emotion"><option value="">自动</option><option value="neutral">中性</option><option value="happy">开心</option><option value="sad">悲伤</option><option value="angry">愤怒</option><option value="fearful">恐惧</option><option value="disgusted">厌恶</option><option value="surprised">惊讶</option></select></div>
+        <div><label for="speed">语速</label><div class="range-wrap"><input id="speed" type="range" min="0.5" max="2" step="0.1" value="1"><output id="speedOut">1.0</output></div></div>
+        <div><label for="pitch">音调</label><div class="range-wrap"><input id="pitch" type="range" min="-12" max="12" step="1" value="0"><output id="pitchOut">0</output></div></div>
+      </div>
+
+      <section class="player" aria-live="polite">
+        <div class="player-row"><span id="status">填好 API Key 和音色 ID，就可以试听。</span><a id="download" download="minimax-preview.mp3">下载音频</a></div>
+        <audio id="audio" controls preload="metadata"></audio>
+        <div class="cost" id="cost"></div>
+      </section>
+    </div>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const state = { url:null, busy:false };
+  const saved = JSON.parse(localStorage.getItem('minimax_voice_preview') || '{}');
+  for (const id of ['nameA','voiceA','nameB','voiceB']) if (saved[id]) $(id).value = saved[id];
+  function saveVoices(){ const data={}; for(const id of ['nameA','voiceA','nameB','voiceB']) data[id]=$(id).value.trim(); localStorage.setItem('minimax_voice_preview',JSON.stringify(data)); }
+  function setStatus(message,error=false){ $('status').textContent=message; $('status').className=error?'error':''; }
+  function busy(value){ state.busy=value; document.querySelectorAll('.preview').forEach(b=>b.disabled=value); }
+  function refreshCount(){ $('count').textContent=`${$('text').value.length} / 1000`; }
+  async function errorMessage(response){ try { return (await response.json()).error || `请求失败（${response.status}）`; } catch { return `请求失败（${response.status}）`; } }
+  async function preview(slot){
+    if(state.busy) return;
+    const apiKey=$('apiKey').value.trim(), voiceId=$(`voice${slot}`).value.trim(), name=$(`name${slot}`).value.trim()||`音色 ${slot}`;
+    if(!apiKey){ setStatus('请先填写 API Key 或订阅 Key。',true); $('apiKey').focus(); return; }
+    if(!voiceId){ setStatus(`请先填写${name}的音色 ID。`,true); $(`voice${slot}`).focus(); return; }
+    const text=$('text').value.trim(); if(!text){ setStatus('请填写试听文字。',true); $('text').focus(); return; }
+    saveVoices(); busy(true); setStatus(`正在生成「${name}」…`); $('cost').textContent=''; $('download').style.display='none';
+    try {
+      const response=await fetch('/api/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({api_key:apiKey,voice_id:voiceId,text,model:$('model').value,emotion:$('emotion').value,speed:$('speed').value,volume:1,pitch:$('pitch').value})});
+      if(!response.ok) throw new Error(await errorMessage(response));
+      const blob=await response.blob(); if(!blob.size) throw new Error('没有收到音频');
+      if(state.url) URL.revokeObjectURL(state.url); state.url=URL.createObjectURL(blob); $('audio').src=state.url;
+      $('download').href=state.url; $('download').download=`${name}-MiniMax-${Date.now()}.mp3`; $('download').style.display='inline';
+      const chars=Number(response.headers.get('X-MiniMax-Usage-Characters')||0); const rate=$('model').value.endsWith('hd')?3.5:2; const estimate=chars?chars/10000*rate:0;
+      $('cost').textContent=chars?`本次计费字符：${chars}，按量价格估算约 ¥${estimate.toFixed(4)}。`:'';
+      setStatus(`「${name}」已经生成，正在播放。`); try{ await $('audio').play(); }catch{}
+    } catch(error){ setStatus(`试听失败：${error.message}`,true); }
+    finally { busy(false); }
+  }
+  $('toggleKey').addEventListener('click',()=>{ const show=$('apiKey').type==='password'; $('apiKey').type=show?'text':'password'; $('toggleKey').textContent=show?'隐藏':'显示'; });
+  document.querySelectorAll('.preview').forEach(button=>button.addEventListener('click',()=>preview(button.dataset.slot)));
+  for(const id of ['nameA','voiceA','nameB','voiceB']) $(id).addEventListener('change',saveVoices);
+  $('text').addEventListener('input',refreshCount); refreshCount();
+  for(const [input,out] of [['speed','speedOut'],['pitch','pitchOut']]) $(input).addEventListener('input',()=>$(out).textContent=$(input).value);
+  window.addEventListener('pagehide',()=>{ if(state.url) URL.revokeObjectURL(state.url); });
+})();
+</script>
+</body>
+</html>

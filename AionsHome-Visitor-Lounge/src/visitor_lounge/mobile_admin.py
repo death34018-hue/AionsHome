@@ -1,4 +1,4 @@
-"""Owner-only LAN bridge to the existing loopback Visitor Lounge admin."""
+"""LAN bridge to the existing loopback Visitor Lounge admin."""
 
 from __future__ import annotations
 
@@ -7,9 +7,7 @@ from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import RedirectResponse, Response
-
-from visitor_lounge.board_owner_auth import COOKIE, valid_owner_cookie
+from fastapi.responses import Response
 
 
 ADMIN_ORIGIN = "http://127.0.0.1:8002"
@@ -41,10 +39,6 @@ def create_mobile_admin_router() -> APIRouter:
     async def admin_bridge(request: Request, rest: str = ""):
         if not _local_request(request):
             raise HTTPException(status_code=403, detail="请从家里的 Wi-Fi 地址打开后台")
-        if not valid_owner_cookie(request.cookies.get(COOKIE)):
-            if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
-                return RedirectResponse("/lounge-board", status_code=303)
-            raise HTTPException(status_code=401, detail="请先解锁家里的留言板")
         if request.method not in {"GET", "HEAD"}:
             origin = request.headers.get("origin")
             if origin:

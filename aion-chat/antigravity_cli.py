@@ -13,6 +13,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from antigravity_image_hook import is_allowed_attachment_read
+
 
 AGENT_NAME = 'home-companion'
 VISION_AGENT_NAME = 'home-companion-vision'
@@ -223,7 +225,8 @@ async def stream_chat(binary, prompt, model, workspace=CHAT_WORKSPACE, timeout='
             staged.append(str(target.resolve()))
             attachment_list += f'\n音频{index}：{target.resolve()}'
         prompt = ('[System Instruction]\nThe user supplied these image/audio attachments. '
-                  'Use view_file to inspect these attachments before answering; do not read other files. '
+                  'Use read_file (view_file on older CLI versions) to inspect these attachments before answering; '
+                  'do not read other files. '
                   'Listen to the original audio, including tone and non-speech sounds; transcription is only a reference. '
                   'Do not include internal file paths or file links in your reply.\n'
                   + attachment_list + '\n\n' + prompt)
@@ -284,9 +287,7 @@ async def _stream_chat(binary, prompt, model, workspace, timeout, *, agent=AGENT
                         if step.get('step_type') == 'tool' or step.get('tool_info'):
                             info = step.get('tool_info') or {}
                             name = step.get('tool_name') or info.get('name')
-                            path = (info.get('parameters') or {}).get('AbsolutePath', '')
-                            allowed = {os.path.normcase(str(Path(item).resolve())) for item in attachment_paths}
-                            if name != 'view_file' or not path or os.path.normcase(str(Path(path).resolve())) not in allowed:
+                            if not is_allowed_attachment_read(name, info.get('parameters'), attachment_paths):
                                 raise AntigravityError('AGY 陪伴模式出现未授权的原生工具调用，已停止：' + (name or 'unknown'))
                             if info.get('error'):
                                 raise AntigravityError('AGY 附件读取失败：' + str(info['error'].get('message', info['error'])))

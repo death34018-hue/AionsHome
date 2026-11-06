@@ -181,7 +181,12 @@
         try {
           const result = await send(prefix(selected) + "/actors/" + actor + "/visit", {});
           setStatus(({started: "写了一张新纸条", replied: "回复了朋友",
-            read: "看过了，暂时没留言"})[result.status] || "串门结束");
+            read: "看过了，暂时没留言", busy: "已经在看留言板啦"})[result.status] || "串门结束", result.visit_id ? 15000 : 5000);
+          if (result.visit_id) {
+            const link = make("a", "", " · 翻翻这次的手记 ↗");
+            link.href = "/lounge-board/visits?visit=" + encodeURIComponent(result.visit_id);
+            $("#status").append(link);
+          }
           await load(true);
         } catch (error) {
           setStatus(error.message);

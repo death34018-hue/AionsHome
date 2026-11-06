@@ -248,6 +248,7 @@ test('native feature launch keeps all later navigation inside the shell', async 
   assert.equal(frames[0].src, 'https://test.invalid' + destination);
   assert.equal(classes.has('show'), true);
   assert.equal(classes.has('home-subpage'), false);
+  assert.equal(classes.has('immersive-subpage'), true);
   const opened = [];
   context.openSubPage = url => opened.push(url);
   context.init = async () => {};
@@ -258,6 +259,7 @@ test('native feature launch keeps all later navigation inside the shell', async 
   for (const feature of ['/theater', '/settings', '/diary']) {
     context.window.openSubPage(feature);
     assert.equal(classes.has('home-subpage'), false);
+    assert.equal(classes.has('immersive-subpage'), false);
     assert.equal(frames[0].src, 'https://test.invalid' + feature);
     assert.equal(context.window.handleNativeBack(), 'handled');
     assert.equal(frames[0].src, 'https://test.invalid/');

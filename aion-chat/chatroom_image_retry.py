@@ -46,7 +46,29 @@ def _pack_snapshot(request, paths):
     return buf.getvalue()
 
 
-async def snapshot(prompt, refs, is_selfie, sender):
+def read_prompt(payload):
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        return json.loads(archive.read('request.json'))['prompt']
+
+
+def replace_prompt(payload, prompt):
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        request = json.loads(archive.read('request.json'))
+        if request['prompt'] == prompt:
+            return payload
+        request['prompt'] = prompt
+        buf = io.BytesIO()
+        # Rebuild the archive so only the new prompt remains. A previous Flow AI
+        # ticket describes the old prompt and must not be resumed after editing.
+        with zipfile.ZipFile(buf, 'w') as updated:
+            for entry in archive.infolist():
+                if entry.filename != 'request.json':
+                    updated.writestr(entry, archive.read(entry))
+            updated.writestr('request.json', json.dumps(request, ensure_ascii=False))
+    return buf.getvalue()
+
+
+async def snapshot(prompt, refs, is_selfie, sender, *, output_format=None):
     from image_gen import _selfie_reference_path
     legacy = is_selfie and not refs
     if legacy:
@@ -60,8 +82,11 @@ async def snapshot(prompt, refs, is_selfie, sender):
             paths = await _prepare_reference_paths(paths, tmp)
         files = [{'name': ref['name'], 'file': f'{index}{Path(path).suffix}'}
                  for index, (ref, path) in enumerate(zip(refs, paths, strict=True))]
-        return _pack_snapshot(dict(prompt=prompt, files=files, is_selfie=is_selfie,
-                                   sender=sender, legacy=legacy, provider=provider), paths)
+        request = dict(prompt=prompt, files=files, is_selfie=is_selfie,
+                       sender=sender, legacy=legacy, provider=provider)
+        if output_format:
+            request['output_format'] = output_format
+        return _pack_snapshot(request, paths)
 
 
 async def generate(payload, *, on_snapshot=None):
@@ -83,6 +108,8 @@ async def generate(payload, *, on_snapshot=None):
                 payload = _pack_snapshot(req, [ref['path'] for ref in refs])
                 await on_snapshot(payload)
         kwargs = dict(is_selfie=req['is_selfie'], source_identity=req['sender'], raise_errors=True)
+        if req.get('output_format'):
+            kwargs['output_format'] = req['output_format']
         if provider.startswith('flowai/'):
             async def remember_job(job_id):
                 if on_snapshot:

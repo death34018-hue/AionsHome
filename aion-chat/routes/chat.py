@@ -2708,7 +2708,7 @@ async def send_message(conv_id: str, body: MsgCreate):
 # ── 异步生图任务 ─────────────────────────────────
 async def _do_image_gen(conv_id: str, trigger_msg_id: str, prompt: str, is_selfie: bool):
     """按出场人物附带共享锚点，成功后作为图片消息保存并广播。"""
-    from image_gen import generate_chat_image
+    from image_gen import generate_chat_image, generated_image_attachment
 
     try:
         filename = await generate_chat_image(prompt, is_selfie=is_selfie)
@@ -2716,7 +2716,7 @@ async def _do_image_gen(conv_id: str, trigger_msg_id: str, prompt: str, is_selfi
             # 生成成功 → 创建新的 assistant 消息（仅含图片）
             now = time.time()
             img_msg_id = f"msg_{int(now*1000)}_img"
-            att_list = [f"/uploads/{filename}"]
+            att_list = [generated_image_attachment(filename)]
             att_json = json.dumps(att_list, ensure_ascii=False)
             async with get_db() as db:
                 await db.execute(

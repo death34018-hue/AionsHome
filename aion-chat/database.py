@@ -8,6 +8,30 @@ from config import DB_PATH
 from message_dedup import ensure_message_ingress_dedupe_table
 
 
+def timeline_created_at_sql(sender, prefix=""):
+    # Retried images enter model context when they finish; their UI bubble stays put.
+    return (
+        f"CASE WHEN {sender} IN ('assistant','aion','connor') AND json_valid({prefix}attachments) "
+        f"THEN COALESCE(json_extract({prefix}attachments, '$[0].generated_at'), {prefix}created_at) "
+        f"ELSE {prefix}created_at END"
+    )
+
+
+async def ensure_timeline_indexes(db):
+    # Share the expression with context queries so SQLite can avoid a JSON scan/sort.
+    for table, sender, channel in (
+        ("messages", "role", "conv_id"),
+        ("chatroom_messages", "sender", "room_id"),
+    ):
+        timestamp = timeline_created_at_sql(sender)
+        await db.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_timeline ON {table}(({timestamp}))"
+        )
+        await db.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_channel_timeline ON {table}({channel}, ({timestamp}))"
+        )
+
+
 async def _recover_lounge_runtime_state(db):
     """Converge locally persisted visits and their temporary UI status lines."""
     from lounge_visit_repository import LoungeVisitRepository
@@ -665,6 +689,7 @@ async def init_db():
         await init_image_retries(db)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_chatroom_msg_created ON chatroom_messages(created_at DESC)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_chatroom_ai_feedback ON chatroom_messages(ai_feedback_updated_at)")
+        await ensure_timeline_indexes(db)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS persona_evolution_runs (
                 id TEXT PRIMARY KEY,

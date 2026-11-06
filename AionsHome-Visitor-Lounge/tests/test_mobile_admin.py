@@ -1,14 +1,13 @@
-"""The phone admin bridge is available only to an unlocked owner on the LAN."""
+"""The phone admin bridge is available on the LAN without an owner access code."""
 
 import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from visitor_lounge import board_owner_auth, home_board, mobile_admin
+from visitor_lounge import home_board, mobile_admin
 
 
 def test_lan_owner_can_use_admin_and_other_origins_cannot(tmp_path, monkeypatch):
-    monkeypatch.setattr(board_owner_auth, "CODE_PATH", tmp_path / "owner-code.txt")
     monkeypatch.setattr(home_board, "_require_enabled", lambda: None)
     upstream = []
 
@@ -29,12 +28,7 @@ def test_lan_owner_can_use_admin_and_other_origins_cannot(tmp_path, monkeypatch)
 
     with TestClient(app, base_url="http://192.168.1.10:8080",
                     client=("192.168.1.20", 50000)) as phone:
-        locked = phone.get("/admin", headers={"accept": "text/html"}, follow_redirects=False)
-        assert locked.status_code == 303
-        assert locked.headers["location"] == "/lounge-board"
-        assert phone.post("/api/lounge-board/unlock", json={
-            "code": board_owner_auth.owner_code(),
-        }).status_code == 200
+        assert not phone.cookies
         page = phone.get("/admin")
         assert page.status_code == 200
         assert "href='/'" in page.text
@@ -50,6 +44,5 @@ def test_lan_owner_can_use_admin_and_other_origins_cannot(tmp_path, monkeypatch)
 
     with TestClient(app, base_url="https://home.example",
                     client=("127.0.0.1", 50000)) as tunnel:
-        tunnel.cookies.set(board_owner_auth.COOKIE, board_owner_auth.owner_cookie())
         assert tunnel.get("/admin").status_code == 403
         assert len(upstream) == 2

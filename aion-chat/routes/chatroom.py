@@ -1944,12 +1944,12 @@ async def _image_result(generation):
 
 
 async def _chatroom_image_gen(room_id: str, sender: str, prompt: str, is_selfie: bool):
-    from image_gen import generate_chat_image
+    from image_gen import generate_chat_image, generated_image_attachment
     prepared = []
     filename, error = await _image_result(generate_chat_image(
         prompt, is_selfie=is_selfie, source_identity=sender, on_prepared=prepared.append))
     if filename:
-        await _save_msg(room_id, sender, "", attachments=[f"/uploads/{filename}"])
+        await _save_msg(room_id, sender, "", attachments=[generated_image_attachment(filename)])
     elif prepared:
         await _save_msg(room_id, sender, error, msg_id=f'cm_{time.time_ns()}_img',
                         attachments=[image_retry.marker()], retry_inputs=prepared[-1], auto_tts=False)
@@ -1961,7 +1961,65 @@ class ImageRetryClick(BaseModel):
     attempt: int = Field(ge=0)
 
 
+class ImageRetryPrompt(ImageRetryClick):
+    prompt: str = Field(min_length=1)
+
+
+async def _editable_image_retry(db, room_id, msg_id):
+    row = await (await db.execute(
+        'SELECT * FROM chatroom_messages WHERE room_id=? AND id=?', (room_id, msg_id))).fetchone()
+    if not row or row['sender'] not in ('aion', 'connor'):
+        raise HTTPException(404, '未找到这条生图消息')
+    msg = _chatroom_message_dict(row)
+    mark = next((a for a in msg['attachments']
+                 if isinstance(a, dict) and a.get('type') == 'chatroom_image_retry'), None)
+    if not mark:
+        raise HTTPException(409, '这条消息已无法编辑生图提示词')
+    if mark['running']:
+        raise HTTPException(409, '图片正在生成，请结束后再编辑提示词')
+    saved = await (await db.execute(
+        'SELECT snapshot FROM chatroom_image_retries WHERE message_id=?', (msg_id,))).fetchone()
+    if not saved:
+        raise HTTPException(409, '这张图片没有保存可重试的原始请求')
+    return msg, mark, saved['snapshot']
+
+
+@router.get('/rooms/{room_id}/messages/{msg_id}/retry-image')
+async def get_room_image_prompt(room_id: str, msg_id: str):
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        _, mark, snapshot = await _editable_image_retry(db, room_id, msg_id)
+    return {'prompt': image_retry.read_prompt(snapshot), 'attempt': mark['attempt']}
+
+
+@router.put('/rooms/{room_id}/messages/{msg_id}/retry-image')
+async def update_room_image_prompt(room_id: str, msg_id: str, body: ImageRetryPrompt):
+    if not body.prompt.strip():
+        raise HTTPException(400, '提示词不能为空')
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute('BEGIN IMMEDIATE')
+        msg, mark, snapshot = await _editable_image_retry(db, room_id, msg_id)
+        if mark['attempt'] != body.attempt:
+            raise HTTPException(409, '生图请求已更新，请重新打开编辑')
+        updated = image_retry.replace_prompt(snapshot, body.prompt)
+        if updated == snapshot:
+            return {'message': msg}
+        # Invalidate stale edit forms and retry clicks on other devices.
+        msg.update(content='提示词已更新', attachments=[image_retry.marker(mark['attempt'] + 1)])
+        await db.execute('UPDATE chatroom_image_retries SET snapshot=? WHERE message_id=?', (updated, msg_id))
+        await db.execute('UPDATE chatroom_messages SET content=?,attachments=? WHERE id=?',
+                         (msg['content'], json.dumps(msg['attachments']), msg_id))
+        await db.commit()
+    try:
+        await broadcast_synced(manager, {'type': 'chatroom_msg_updated', 'data': msg})
+    except Exception as exc:
+        print(f'[CHATROOM_IMG_GEN] 提示词更新广播失败：{exc}')
+    return {'message': msg}
+
+
 async def _run_image_retry(message, attempt, snapshot):
+    from image_gen import generated_image_attachment
     try:
         await broadcast_synced(manager, {'type': 'chatroom_msg_updated', 'data': message})
     except Exception as exc:
@@ -1972,7 +2030,7 @@ async def _run_image_retry(message, attempt, snapshot):
                              (updated, message['id']))
             await db.commit()
     filename, error = await _image_result(image_retry.generate(snapshot, on_snapshot=remember_snapshot))
-    attachments = [f'/uploads/{filename}'] if filename else [image_retry.marker(attempt)]
+    attachments = [generated_image_attachment(filename)] if filename else [image_retry.marker(attempt)]
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute("""UPDATE chatroom_messages SET content=?,attachments=?

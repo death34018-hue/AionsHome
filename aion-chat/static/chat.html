@@ -176,11 +176,6 @@
         <input type="range" id="contextSlider" min="1" max="100" value="30" oninput="document.getElementById('contextValue').textContent=this.value+'条'; localStorage.setItem('aion_context_limit', this.value)">
         <span class="slider-val" id="contextValue">30条</span>
       </div>
-      <label>模型温度</label>
-      <div class="slider-row">
-        <input type="range" id="tempSlider" min="0" max="2" step="0.1" value="1" oninput="document.getElementById('tempValue').textContent=this.value; localStorage.setItem('aion_temperature', this.value); syncTemperature()">
-        <span class="slider-val" id="tempValue">1</span>
-      </div>
       <label>最大回复长度</label>
       <div class="slider-row">
         <input type="range" id="maxTokensSlider" min="0" max="16384" step="256" value="0" oninput="const v=parseInt(this.value); document.getElementById('maxTokensValue').textContent=v===0?'不限':v; localStorage.setItem('aion_max_tokens', this.value)">
@@ -392,6 +387,11 @@ window.AionSubPageNavigation = (() => {
 })();
 </script>
 <script id="initial-desktop">
+function syncSubPageLayout(overlay, path) {
+  overlay.classList.toggle('home-subpage', path === '/');
+  overlay.classList.toggle('immersive-subpage', ['/chatroom', '/wishes', '/texas-holdem', '/liars-dice'].includes(path));
+}
+
 // Start the desktop before any external chat script can block the parser.
 // chat.js adopts this same frame once it is ready, preserving early navigation.
 (() => {
@@ -430,7 +430,7 @@ window.AionSubPageNavigation = (() => {
       window.AionSubPageNavigation.show(frame);
       frame.src = target.href;
     }
-    overlay.classList.toggle('home-subpage', target.pathname === '/');
+    syncSubPageLayout(overlay, target.pathname);
     overlay.classList.add('show');
   };
   window.closeSubPage = () => {
@@ -483,7 +483,7 @@ window.AionSubPageNavigation = (() => {
 <script src="/static/native-message-sync.js?v=20261030-weak-network"></script>
 <link rel="stylesheet" href="/static/kitchen-cards.css?v=20261103-lookup2">
 <script src="/static/kitchen-cards.js?v=20261103-lookup3"></script>
-<script src="/static/chat.js?v=20261103-lookup"></script>
+<script src="/static/chat.js?v=20261106-default-temperature"></script>
 <script src="/static/voice-call-policy.js?v=voice-latency-20260902a"></script>
 <script src="/static/voice-call.js?v=voice-latency-20260902a"></script>
 

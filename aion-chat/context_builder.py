@@ -10,7 +10,7 @@ from datetime import datetime
 import aiosqlite
 
 from config import load_worldbook
-from database import get_db
+from database import get_db, timeline_created_at_sql
 from taobao_context import trip_card, load_trip_products, render_trip_context
 from schedule import get_active_schedules, build_schedule_prompt
 from luckin import LUCKIN_CMD_PATTERN
@@ -716,28 +716,30 @@ def _merged_timeline_sources(
     sources = []
 
     if who == "aion":
+        created_at = timeline_created_at_sql("role")
         conditions = ["role IN ('user','assistant','system')"]
         params = []
         if conv_id:
             conditions.append("conv_id=?")
             params.append(conv_id)
         if since_ts is not None:
-            conditions.append("created_at >= ?")
+            conditions.append(f"({created_at}) >= ?")
             params.append(since_ts)
         if until_ts is not None:
-            conditions.append("created_at <= ?")
+            conditions.append(f"({created_at}) <= ?")
             params.append(until_ts)
         sources.append((
             "private", "role", "FROM messages", conditions, params,
         ))
     elif who == "connor":
+        created_at = timeline_created_at_sql("m.sender", "m.")
         conditions = ["r.type = 'connor_1v1'"]
         params = []
         if since_ts is not None:
-            conditions.append("m.created_at >= ?")
+            conditions.append(f"({created_at}) >= ?")
             params.append(since_ts)
         if until_ts is not None:
-            conditions.append("m.created_at <= ?")
+            conditions.append(f"({created_at}) <= ?")
             params.append(until_ts)
         sources.append((
             "private", "m.sender", "FROM chatroom_messages m "
@@ -745,15 +747,16 @@ def _merged_timeline_sources(
         ))
 
     conditions = ["r.type = 'group'"]
+    created_at = timeline_created_at_sql("m.sender", "m.")
     params = []
     if room_id:
         conditions.append("m.room_id=?")
         params.append(room_id)
     if since_ts is not None:
-        conditions.append("m.created_at >= ?")
+        conditions.append(f"({created_at}) >= ?")
         params.append(since_ts)
     if until_ts is not None:
-        conditions.append("m.created_at <= ?")
+        conditions.append(f"({created_at}) <= ?")
         params.append(until_ts)
     sources.append((
         "group", "m.sender", "FROM chatroom_messages m "
@@ -787,19 +790,22 @@ async def _load_model_visible_merged_timeline(
             since_ts=since_ts, until_ts=until_ts,
         ):
             prefix = "" if from_sql == "FROM messages" else "m."
+            created_at = timeline_created_at_sql(sender, prefix)
+            channel = "conv_id" if not prefix else "m.room_id"
             collected = []
             cursor = None
             while limit is None or len(collected) < limit:
                 filters, values = list(conditions), list(params)
                 if cursor is not None:
-                    filters.append(f"({prefix}created_at < ? OR "
-                                   f"({prefix}created_at = ? AND {prefix}rowid < ?))")
+                    filters.append(f"(({created_at}) < ? OR "
+                                   f"(({created_at}) = ? AND {prefix}rowid < ?))")
                     values.extend((cursor[0], cursor[0], cursor[1]))
                 cur = await db.execute(
                     f"SELECT {prefix}rowid AS _timeline_rowid, {prefix}id, "
-                    f"{sender} AS sender, {prefix}content, {prefix}created_at, {prefix}attachments "
+                    f"{sender} AS sender, {prefix}content, ({created_at}) AS created_at, {prefix}attachments, "
+                    f"{channel} AS _timeline_channel "
                     f"{from_sql} WHERE {' AND '.join(filters)} "
-                    f"ORDER BY {prefix}created_at DESC, {prefix}rowid DESC"
+                    f"ORDER BY ({created_at}) DESC, {prefix}rowid DESC"
                     + (" LIMIT ?" if limit is not None else ""),
                     [*values, page_size] if limit is not None else values,
                 )
@@ -934,6 +940,14 @@ def render_merged_timeline(
     retained_image_user_indices = set(
         user_message_indices[-TIMELINE_IMAGE_CONTEXT_USER_TURNS:]
     )
+    # Generated images belong to the next user turn in their own conversation.
+    # Both AI speakers read the same window without consuming a separate turn.
+    image_user_windows = {}
+    for message in merged:
+        if message.get("sender") == "user":
+            channel = (message["source"], message.get("_timeline_channel"))
+            previous = image_user_windows.get(channel, (float("-inf"), float("-inf")))[1]
+            image_user_windows[channel] = (previous, message.get("created_at", 0))
 
     for idx, msg in enumerate(merged):
         source = msg["source"]
@@ -942,6 +956,11 @@ def render_merged_timeline(
         message_attachments = _parse_timeline_attachments(
             msg.get("attachments", [])
         )
+        ai_images = []
+        if sender in ("assistant", "aion", "connor"):
+            ai_images = [a for a in message_attachments if _is_timeline_image_attachment(a)]
+            if ai_images:
+                content = (content + f"\n[发送了{len(ai_images)}张图片]").strip()
         rps_context = [a['content'] for a in message_attachments
                        if isinstance(a, dict) and a.get('type') == 'rps_context' and a.get('content')]
         if rps_context:
@@ -1037,6 +1056,16 @@ def render_merged_timeline(
                 for attachment in message_attachments
                 if _is_timeline_image_attachment(attachment)
             ]
+        elif include_image_attachments and ai_images:
+            from ai_providers import prepare_image_context_attachment
+            window = image_user_windows.get((source, msg.get("_timeline_channel")))
+            if window:
+                for attachment in ai_images:
+                    completed_at = msg.get("created_at", 0)
+                    if isinstance(attachment, dict):
+                        completed_at = attachment.get("generated_at") or completed_at
+                    if window[0] < completed_at <= window[1]:
+                        attachments.append(prepare_image_context_attachment(attachment))
         if attachments:
             entry["attachments"] = attachments
 

@@ -8,6 +8,33 @@ from visitor_lounge.database import Database
 
 
 ACTORS = ("aion", "connor")
+QUIET_SECONDS = 15 * 60
+
+
+async def latest_user_message_ts() -> float:
+    from autonomy import _latest_user_message_ts
+    return await _latest_user_message_ts()
+
+
+async def chat_quiet_state(*, now: float | None = None) -> dict:
+    try:
+        latest = await latest_user_message_ts()
+    except Exception:
+        return {"is_quiet": False, "quiet_until": None}
+    timestamp = time.time() if now is None else now
+    quiet_until = latest + QUIET_SECONDS if latest else None
+    return {"is_quiet": quiet_until is None or timestamp >= quiet_until,
+            "quiet_until": quiet_until}
+
+
+def patrol_estimate(config: dict, quiet: dict, *, checking: bool = False) -> dict:
+    due = config["next_check_at"]
+    known = quiet["is_quiet"] or quiet["quiet_until"] is not None
+    estimate = (max(due, quiet["quiet_until"] or 0, time.time())
+                if config["enabled"] and due is not None and known else None)
+    return {**config, "estimated_check_at": estimate, "checking": checking,
+            "waiting_for_quiet": bool(config["enabled"] and not quiet["is_quiet"]
+                                      and due is not None and due <= time.time())}
 
 
 class PatrolStore:
@@ -91,6 +118,15 @@ class PatrolStore:
             if cfg["enabled"] and cfg["next_check_at"] is None:
                 self.finish(actor, "interrupted")
 
+    def defer(self, actor: str, due: float, status: str) -> None:
+        """Keep the original deadline unless a settings change already replaced it."""
+        with self.database.transaction(immediate=True) as conn:
+            conn.execute(
+                "UPDATE board_patrol_configs SET next_check_at=CASE "
+                "WHEN enabled=1 THEN COALESCE(next_check_at,?) ELSE NULL END,"
+                "last_status=?,last_error='' WHERE actor_id=?", (due, status, actor),
+            )
+
 
 class BoardPatrolManager:
     def __init__(self, store: PatrolStore | None = None):
@@ -150,7 +186,12 @@ class BoardPatrolManager:
         _require_enabled()
         store = self._current_store()
         timestamp = time.time() if now is None else now
-        store.config(actor)
+        config = store.config(actor)
+        due = config["next_check_at"]
+        if not config["enabled"] or due is None or due > timestamp:
+            return {"status": "not_due"}
+        if not (await chat_quiet_state(now=timestamp))["is_quiet"]:
+            return {"status": "waiting_user"}
         if not store.claim_due(actor, timestamp):
             return {"status": "not_due"}
         status, error = "interrupted", ""
@@ -159,10 +200,14 @@ class BoardPatrolManager:
             status = str(result["status"])
             return result
         except Exception as exc:
-            status, error = "failed", str(exc)
+            status = "failed" if (await chat_quiet_state())["is_quiet"] else "waiting_user"
+            error = str(exc)
             return {"status": status, "error": error}
         finally:
-            store.finish(actor, status, error, now=now)
+            if status in {"waiting_user", "busy"}:
+                store.defer(actor, due, status)
+            else:
+                store.finish(actor, status, error, now=now)
 
 
 board_patrol_mgr = BoardPatrolManager()

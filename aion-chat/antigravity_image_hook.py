@@ -9,14 +9,23 @@ import sys
 from pathlib import Path
 
 
+def is_allowed_attachment_read(name, parameters, image_paths):
+    # AGY 1.5.2 renamed view_file(AbsolutePath) to read_file(Path).
+    path_key = {'view_file': 'AbsolutePath', 'read_file': 'Path'}.get(name)
+    if not path_key or not isinstance(parameters, dict):
+        return False
+    path = parameters.get(path_key)
+    if not isinstance(path, str) or not path:
+        return False
+    allowed = {os.path.normcase(str(Path(item).resolve())) for item in image_paths}
+    return os.path.normcase(str(Path(path).resolve())) in allowed
+
+
 def image_permission_decision(event, image_paths):
     call = event.get('toolCall') or {}
-    path = (call.get('args') or {}).get('AbsolutePath')
-    allowed = {os.path.normcase(str(Path(item).resolve())) for item in image_paths}
-    if call.get('name') == 'view_file' and isinstance(path, str) and path:
-        if os.path.normcase(str(Path(path).resolve())) in allowed:
-            # CLI 1.2.16 still consumes the legacy allowTool/denyReason fields.
-            return {'decision': 'allow', 'allowTool': True}
+    if is_allowed_attachment_read(call.get('name'), call.get('args'), image_paths):
+        # CLI 1.2.16 still consumes the legacy allowTool/denyReason fields.
+        return {'decision': 'allow', 'allowTool': True}
     reason = 'Only the current chat image/audio attachments may be read.'
     return {'decision': 'deny', 'allowTool': False, 'reason': reason, 'denyReason': reason}
 

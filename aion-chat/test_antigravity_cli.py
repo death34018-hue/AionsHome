@@ -85,6 +85,22 @@ class AntigravityProfileTests(unittest.TestCase):
             call['toolCall']['name'] = 'run_command'
             self.assertEqual(antigravity_image_hook.image_permission_decision(call, [image])['decision'], 'deny')
 
+    def test_read_file_hook_only_grants_current_attachments_with_new_path_parameter(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = str(Path(directory) / 'image.png')
+            for name, args, expected in [
+                ('read_file', {'Path': image}, 'allow'),
+                ('read_file', {'Path': str(Path(directory) / 'other.png')}, 'deny'),
+                ('read_file', {'AbsolutePath': image}, 'deny'),
+                ('read_file', {}, 'deny'),
+                ('write_file', {'Path': image}, 'deny'),
+            ]:
+                with self.subTest(name=name, args=args):
+                    call = {'toolCall': {'name': name, 'args': args}}
+                    result = antigravity_image_hook.image_permission_decision(call, [image])
+                    self.assertEqual(result['decision'], expected)
+                    self.assertEqual(result['allowTool'], expected == 'allow')
+
     def test_chat_requires_explicit_denials_before_launch(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = Path(directory) / 'settings.json'
@@ -436,6 +452,42 @@ class AntigravityStreamTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(staged.exists())
             self.assertFalse((workspace / '.agents/image-input.json').exists())
             self.assertTrue(source.exists())
+
+    async def test_two_image_read_file_turn_keeps_exact_attachment_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / 'workspace'
+            sources = [Path(directory) / f'photo-{index}.png' for index in (1, 2)]
+            for source in sources:
+                make_image(source)
+            for outside in (False, True):
+                async def spawn(*command, **kwargs):
+                    paths = json.loads((workspace / '.agents/image-input.json').read_text(encoding='utf-8'))
+                    self.assertEqual(len(paths), 2)
+                    reads = [paths[0], str(sources[1]) if outside else paths[1]]
+                    return FakeProcess([
+                        {'event': 'init', 'init': {'agent': agy.VISION_AGENT_NAME}},
+                        *[{'event': 'step_update', 'step_update': {
+                            'step_type': 'tool', 'tool_name': 'read_file',
+                            'tool_info': {'name': 'read_file', 'parameters': {'Path': path}},
+                        }} for path in reads],
+                        {'event': 'result', 'result': {'status': 'SUCCESS', 'response': '两张都看到了'}},
+                    ])
+
+                with self.subTest(outside=outside), patch.object(agy.asyncio, 'create_subprocess_exec', spawn):
+                    async def collect():
+                        return [event async for event in agy.stream_chat(
+                            'agy.exe', '看看两张图', 'test-model', workspace,
+                            image_paths=tuple(map(str, sources)))]
+                    if outside:
+                        with self.assertRaisesRegex(agy.AntigravityError, '未授权'):
+                            await collect()
+                    else:
+                        events = await collect()
+                        self.assertEqual(events[-2]['text'], '两张都看到了')
+                        self.assertEqual(events[-1]['kind'], 'completed')
+                self.assertFalse((workspace / '.agents/image-input.json').exists())
+                self.assertEqual(list((workspace / 'images').iterdir()), [])
+            self.assertTrue(all(source.exists() for source in sources))
 
     async def test_voice_files_reach_only_gemini_with_message_association(self):
         import ai_providers

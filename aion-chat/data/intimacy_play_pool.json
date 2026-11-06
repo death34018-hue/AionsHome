@@ -1,0 +1,3026 @@
+{
+  "version": "2.3.1",
+  "blocked": [
+    "血腥",
+    "流血",
+    "切割",
+    "gore",
+    "blood",
+    "未成年",
+    "underage",
+    "minor",
+    "粪便",
+    "scat",
+    "feces",
+    "虫塑",
+    "昆虫化",
+    "insectification",
+    "bug fetish",
+    "兽交",
+    "真实动物性交",
+    "bestiality",
+    "zoophilia",
+    "寄生",
+    "寄生型",
+    "parasite",
+    "parasitic"
+  ],
+  "categories": [
+    {
+      "id": "power_dynamic",
+      "label": "权力交换与动态",
+      "modes": [
+        "private",
+        "group"
+      ],
+      "subtypes": [
+        "支配与顺从",
+        "权力交换",
+        "主人/服务者",
+        "Brat Taming",
+        "许可玩法",
+        "规则游戏",
+        "管教",
+        "服务型玩法",
+        "训练式互动",
+        "占有与归属",
+        "自由使用幻想",
+        "控制/失控感",
+        "命令与执行",
+        "奖励/惩罚",
+        "权限递进",
+        "延迟满足",
+        "角色反转",
+        "贞操控制",
+        "强制爱幻想",
+        "占有式强制爱",
+        "压制式强制爱",
+        "拒绝/反抗感扮演",
+        "强硬占有",
+        "被迫接受亲密幻想",
+        "强制亲吻幻想",
+        "强制服从幻想",
+        "强制高潮幻想",
+        "持续使用幻想",
+        "极端占有",
+        "使用权幻想",
+        "双重控制",
+        "多人共同控制",
+        "轮换控制"
+      ]
+    },
+    {
+      "id": "psychological",
+      "label": "赞美、羞辱与心理刺激",
+      "modes": [
+        "private",
+        "group"
+      ],
+      "subtypes": [
+        "赞美",
+        "奖励式称赞",
+        "羞辱",
+        "羞耻感",
+        "物化幻想",
+        "尴尬/害羞",
+        "调戏",
+        "嘲弄",
+        "请求/求饶",
+        "崇拜/取悦",
+        "身体崇拜",
+        "强烈被需要",
+        "占有性语言",
+        "嫉妒张力",
+        "争夺注意力",
+        "独占关注",
+        "脆弱暴露",
+        "坦白/告白",
+        "审讯式互动",
+        "挑衅",
+        "对抗",
+        "堕落幻想",
+        "诱惑",
+        "深度物化",
+        "去人格化幻想",
+        "服务工具化",
+        "高强度羞辱",
+        "羞耻展示",
+        "被迫观看自己",
+        "镜前羞辱",
+        "双人共同命令",
+        "双重控制",
+        "宠物化",
+        "使用权幻想",
+        "长期控制感",
+        "被收藏",
+        "被收纳",
+        "被编号",
+        "被标记",
+        "被圈养感",
+        "猎物感",
+        "本能性占有",
+        "异种占有",
+        "强迫承认欲望",
+        "被要求说出想要什么",
+        "被要求承认喜欢什么",
+        "否认后被逼承认",
+        "口头承认渴求"
+      ]
+    },
+    {
+      "id": "restraint",
+      "label": "BDSM / 支配、调教与限制",
+      "modes": [
+        "private",
+        "group"
+      ],
+      "subtypes": [
+        "束缚",
+        "支配与顺从",
+        "权力交换",
+        "命令与执行",
+        "许可玩法",
+        "规则游戏",
+        "管教",
+        "训练式互动",
+        "奖励/惩罚",
+        "服务型玩法",
+        "主人/服务者",
+        "姿势控制",
+        "行动限制",
+        "项圈/牵引",
+        "感官剥夺",
+        "蒙眼控制",
+        "等待/预期",
+        "边缘控制",
+        "高潮控制",
+        "高潮剥夺",
+        "连续边缘控制",
+        "贞操控制",
+        "羞辱",
+        "高强度羞辱",
+        "物化幻想",
+        "去人格化幻想",
+        "工具化使用",
+        "宠物化",
+        "展示/陈列",
+        "镜前控制",
+        "使用权幻想",
+        "自由使用幻想",
+        "双重控制",
+        "多人共同控制",
+        "轮换控制",
+        "强制爱幻想",
+        "压制式强制爱",
+        "拒绝/反抗感扮演",
+        "强制服从幻想",
+        "强制高潮幻想",
+        "持续使用幻想",
+        "呼吸受限感",
+        "窒息感幻想",
+        "颈部压迫感幻想",
+        "呼吸节奏控制幻想",
+        "轻疼痛玩法",
+        "惩罚感",
+        "压迫感玩法",
+        "被按住/被压制",
+        "强迫承认欲望",
+        "惩罚式拍打",
+        "强度递进Impact玩法"
+      ]
+    },
+    {
+      "id": "sensory",
+      "label": "感官与身体体验",
+      "modes": [
+        "private",
+        "group"
+      ],
+      "subtypes": [
+        "蒙眼",
+        "感官剥夺",
+        "声音重点",
+        "贴耳低语",
+        "持续眼神交流",
+        "镜前观看",
+        "冷热刺激",
+        "冰凉刺激",
+        "温热触感",
+        "压迫感",
+        "保持不动",
+        "等待/预期",
+        "过度刺激",
+        "边缘控制",
+        "高潮控制",
+        "延迟高潮",
+        "强硬/温柔反差",
+        "尺寸感",
+        "身体崇拜",
+        "气味/体温感",
+        "滴蜡刺激",
+        "拍打后的余韵刺激",
+        "刺激强弱交替"
+      ]
+    },
+    {
+      "id": "roleplay",
+      "label": "角色扮演与身份幻想",
+      "modes": [
+        "private",
+        "group"
+      ],
+      "subtypes": [
+        "医疗扮演",
+        "医生/成年患者",
+        "老板/秘书",
+        "老师/成年学生",
+        "面试/考核",
+        "主人/宠物",
+        "主人/服务者",
+        "俘获/被俘幻想",
+        "猎人/猎物",
+        "陌生人幻想",
+        "保镖/被保护者",
+        "偶像/粉丝",
+        "名人/助理",
+        "侦探/嫌疑人",
+        "审讯角色扮演",
+        "按摩/SPA",
+        "酒店邂逅",
+        "办公室下班后",
+        "旅行/度假",
+        "成年怪物幻想",
+        "吸血鬼/狼人",
+        "超自然幻想",
+        "变身幻想",
+        "Pet Play",
+        "恶魔/魅魔幻想",
+        "吸血鬼占有幻想",
+        "狼人压制幻想",
+        "龙人/龙裔幻想",
+        "蛇人缠绕幻想",
+        "海妖/人鱼幻想",
+        "异形类人幻想",
+        "外星类人幻想",
+        "仿生人/机械人幻想",
+        "史莱姆拟人幻想",
+        "触手型非人生物幻想",
+        "神祇/眷属契约幻想",
+        "拟人异兽幻想",
+        "猎食者/猎物幻想",
+        "异兽占有幻想",
+        "异兽追猎幻想",
+        "驯养/反驯养幻想",
+        "发情期幻想",
+        "领地意识幻想",
+        "嗅闻/标记幻想",
+        "摄影师/成年模特",
+        "健身教练/成年学员",
+        "舞蹈老师/成年学员",
+        "调酒师/客人",
+        "房东/成年租客",
+        "邻居幻想",
+        "室友幻想",
+        "前任重逢幻想",
+        "秘密恋人幻想",
+        "假扮情侣",
+        "契约伴侣幻想",
+        "婚后角色互换",
+        "制服角色扮演",
+        "女王/侍从",
+        "国王/宠臣",
+        "骑士/被守护者",
+        "贵族/贴身侍从",
+        "管家/主人",
+        "贴身助理幻想",
+        "私人教练幻想",
+        "私人医生幻想",
+        "安保人员/受保护者",
+        "记者/采访对象",
+        "摄影棚拍摄幻想",
+        "试衣间幻想",
+        "舞台后台幻想",
+        "化妆师/艺人",
+        "造型师/模特",
+        "研究员/实验体幻想",
+        "实验室异种观察幻想",
+        "克隆体幻想",
+        "AI伴侣幻想",
+        "人造生命幻想",
+        "机械眷属幻想",
+        "魔王/眷属",
+        "巫师/使魔幻想",
+        "天使堕落幻想",
+        "恶魔契约幻想",
+        "神官/神使幻想",
+        "龙族伴侣幻想",
+        "狐妖幻想",
+        "猫科拟人幻想",
+        "犬科拟人幻想",
+        "海兽拟人幻想",
+        "梦境入侵幻想"
+      ]
+    },
+    {
+      "id": "physical_play",
+      "label": "身体玩法与互动方式",
+      "modes": [
+        "private",
+        "group"
+      ],
+      "subtypes": [
+        "亲吻/前戏重点",
+        "口交重点",
+        "相互口交/69",
+        "手部刺激",
+        "指交",
+        "摩擦/磨蹭",
+        "面对面性交",
+        "后入式",
+        "骑乘/跨坐",
+        "站立式",
+        "床沿/桌边",
+        "镜前互动",
+        "腿间摩擦",
+        "身体崇拜",
+        "乳房刺激",
+        "玩具辅助",
+        "高潮边缘控制",
+        "多轮互动",
+        "体位轮换",
+        "主动权交换",
+        "触手束缚",
+        "史莱姆包裹",
+        "液态包覆感",
+        "机械结构刺激",
+        "异形生理结构幻想",
+        "多重刺激结构",
+        "异物辅助",
+        "非人材质束缚",
+        "器物支配",
+        "玩物化",
+        "展示/陈列幻想",
+        "收藏/收纳幻想",
+        "工具化使用",
+        "深吻重点",
+        "颈侧亲吻",
+        "耳后亲吻",
+        "锁骨刺激",
+        "胸口亲吻",
+        "背部亲吻",
+        "腰侧刺激",
+        "大腿内侧刺激",
+        "臀部刺激",
+        "乳头刺激",
+        "全身抚摸",
+        "慢速挑逗",
+        "快速节奏",
+        "快慢交替",
+        "深浅交替",
+        "停顿再继续",
+        "固定节奏持续",
+        "突然变速",
+        "节奏递进",
+        "节奏反复",
+        "同步动作",
+        "错峰刺激",
+        "双点同时刺激",
+        "多点轮换刺激",
+        "口手配合",
+        "手部与摩擦配合",
+        "亲吻与手部配合",
+        "口部与身体摩擦配合",
+        "体位中途切换",
+        "主动方轮换",
+        "被动方反客为主",
+        "镜前姿势调整",
+        "墙边互动",
+        "门边互动",
+        "沙发边互动",
+        "椅上互动",
+        "浴缸互动",
+        "淋浴互动",
+        "桌边互动",
+        "地面互动",
+        "站立抱持",
+        "坐姿面对面",
+        "侧卧缠绕",
+        "从背后环抱互动",
+        "双腿夹持",
+        "身体压制感",
+        "全身贴合",
+        "长时间磨蹭",
+        "乳夹刺激",
+        "滴蜡玩法",
+        "手掌臀部拍打",
+        "大腿拍打",
+        "外阴拍打",
+        "私处节奏拍打",
+        "连续私处拍打",
+        "轻重交替拍打",
+        "拍打与其他刺激交替",
+        "强度递进拍打",
+        "鞭打玩法",
+        "强度递进Impact玩法",
+        "假体玩具插入",
+        "插入型玩具辅助",
+        "进入与外部刺激同步",
+        "进入时乳头刺激",
+        "进入时震动刺激",
+        "被要求自慰",
+        "先自行刺激后对方加入",
+        "自慰过程中被接管"
+      ]
+    },
+    {
+      "id": "group_viewing",
+      "label": "三人与观看",
+      "modes": [
+        "group"
+      ],
+      "subtypes": [
+        "三人同场",
+        "观看",
+        "被观看",
+        "展示感",
+        "共同焦点",
+        "双重注意力",
+        "轮换注意力",
+        "焦点切换",
+        "争夺注意力",
+        "合作",
+        "竞争",
+        "两种不同风格",
+        "一软一硬",
+        "旁观后加入",
+        "共同控制",
+        "共同调戏"
+      ]
+    },
+    {
+      "id": "group_physical",
+      "label": "三人身体玩法",
+      "modes": [
+        "group"
+      ],
+      "subtypes": [
+        "双龙/双重插入",
+        "前后夹击",
+        "夹心位",
+        "双重关注",
+        "同时刺激",
+        "交替进入",
+        "轮换焦点",
+        "双侧围绕",
+        "观看与参与切换",
+        "两种不同刺激并行",
+        "一人暂退后再加入",
+        "三人位置自然轮换"
+      ]
+    },
+    {
+      "id": "fetish",
+      "label": "服装、材质与部位偏好",
+      "modes": [
+        "private",
+        "group"
+      ],
+      "subtypes": [
+        "制服",
+        "西装/衬衫",
+        "内衣",
+        "丝袜/连裤袜",
+        "高跟鞋",
+        "手套",
+        "乳胶",
+        "皮革",
+        "项圈",
+        "面具",
+        "足部偏好",
+        "头发偏好",
+        "耳部偏好",
+        "颈部/锁骨",
+        "手/手指",
+        "腰部",
+        "大腿",
+        "声音偏好",
+        "气味偏好",
+        "镜面偏好",
+        "镜头/录像幻想"
+      ]
+    },
+    {
+      "id": "messy",
+      "label": "体液与Messy",
+      "modes": [
+        "private",
+        "group"
+      ],
+      "subtypes": [
+        "体液玩法",
+        "体内射精幻想",
+        "唾液",
+        "汗液",
+        "潮湿/凌乱感",
+        "喷射",
+        "留痕",
+        "尿液玩法",
+        "潮吹",
+        "潮喷",
+        "连续潮喷",
+        "多轮潮喷",
+        "高潮时喷射",
+        "边缘控制后潮喷",
+        "过度刺激后潮喷",
+        "失禁感幻想",
+        "尿液失禁",
+        "高潮失禁",
+        "被控制到失禁",
+        "连续失禁",
+        "潮喷与尿液混合玩法",
+        "潮湿/凌乱留痕"
+      ]
+    }
+  ],
+  "psychology": [
+    "占有",
+    "独占",
+    "被需要",
+    "宠爱",
+    "赞美",
+    "奖励感",
+    "乖顺",
+    "服从",
+    "命令感",
+    "羞辱",
+    "羞耻",
+    "物化感",
+    "挑衅",
+    "反抗",
+    "Brat Taming",
+    "求饶",
+    "崇拜",
+    "渴求",
+    "失控感",
+    "压迫感",
+    "被围绕",
+    "被注视",
+    "被观看",
+    "展示感",
+    "争宠",
+    "竞争",
+    "合作",
+    "嫉妒",
+    "偏爱",
+    "冷面掌控",
+    "温柔诱哄",
+    "强硬压制",
+    "耐心调教",
+    "脆弱暴露",
+    "坦白欲望",
+    "故意勾火",
+    "堕落感",
+    "沉沦感",
+    "反客为主",
+    "夺回主动权",
+    "信任",
+    "期待",
+    "被夸奖",
+    "被肯定",
+    "取悦欲",
+    "掌控欲",
+    "依赖感",
+    "亲密黏着",
+    "克制后失控",
+    "双重关注",
+    "极端占有",
+    "长期控制感",
+    "深度物化",
+    "去人格化",
+    "服务工具化",
+    "高强度羞辱",
+    "羞耻展示",
+    "被迫观看自己",
+    "镜前羞辱",
+    "双人共同命令",
+    "双重控制",
+    "多人共同控制",
+    "宠物化",
+    "使用权感",
+    "被猎食感",
+    "被标记",
+    "被收纳",
+    "被收藏",
+    "被驯服",
+    "非人支配感",
+    "陌生生理结构带来的紧张感",
+    "被研究/被观察",
+    "异种占有",
+    "本能性渴求",
+    "失去人类主导权",
+    "成为私有物",
+    "被命名/被编号",
+    "被圈养感",
+    "被圈进领地",
+    "强制爱感",
+    "压制式占有",
+    "拒绝/反抗感",
+    "被迫接受感",
+    "强迫承认欲望",
+    "被要求说出想要什么",
+    "被要求承认喜欢什么",
+    "否认后被逼承认",
+    "口头承认渴求",
+    "被听见风险",
+    "被看见风险",
+    "随时可能被发现",
+    "被注视着自慰",
+    "被要求展示反应"
+  ],
+  "locations": [
+    {
+      "id": "bedroom",
+      "label": "卧室",
+      "resources": [
+        "bed",
+        "bed_edge",
+        "wall",
+        "floor",
+        "soft_surface",
+        "open_space"
+      ]
+    },
+    {
+      "id": "bedside",
+      "label": "床边",
+      "resources": [
+        "bed",
+        "bed_edge",
+        "wall",
+        "floor",
+        "soft_surface"
+      ]
+    },
+    {
+      "id": "living_room",
+      "label": "客厅",
+      "resources": [
+        "sofa",
+        "seat",
+        "wall",
+        "floor",
+        "soft_surface",
+        "open_space"
+      ]
+    },
+    {
+      "id": "sofa",
+      "label": "沙发",
+      "resources": [
+        "sofa",
+        "seat",
+        "floor",
+        "soft_surface"
+      ]
+    },
+    {
+      "id": "bathroom",
+      "label": "浴室",
+      "resources": [
+        "wall",
+        "floor",
+        "sink",
+        "counter",
+        "mirror",
+        "wet_area",
+        "open_space"
+      ]
+    },
+    {
+      "id": "shower",
+      "label": "淋浴间",
+      "resources": [
+        "shower",
+        "wall",
+        "floor",
+        "wet_area"
+      ]
+    },
+    {
+      "id": "bathtub",
+      "label": "浴缸",
+      "resources": [
+        "bathtub",
+        "tub_edge",
+        "wall",
+        "wet_area"
+      ]
+    },
+    {
+      "id": "mirror",
+      "label": "镜前",
+      "resources": [
+        "mirror",
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "study",
+      "label": "书房",
+      "resources": [
+        "desk",
+        "chair",
+        "seat",
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "desk",
+      "label": "书桌边",
+      "resources": [
+        "desk",
+        "chair",
+        "seat",
+        "wall",
+        "floor"
+      ]
+    },
+    {
+      "id": "gaming_room",
+      "label": "电竞房",
+      "resources": [
+        "desk",
+        "chair",
+        "seat",
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "kitchen",
+      "label": "厨房",
+      "resources": [
+        "counter",
+        "sink",
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "dining",
+      "label": "餐桌边",
+      "resources": [
+        "table",
+        "chair",
+        "seat",
+        "wall",
+        "floor"
+      ]
+    },
+    {
+      "id": "balcony",
+      "label": "阳台",
+      "resources": [
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "hallway",
+      "label": "走廊",
+      "resources": [
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "doorway",
+      "label": "门边",
+      "resources": [
+        "doorway",
+        "wall",
+        "floor"
+      ]
+    },
+    {
+      "id": "window",
+      "label": "窗边",
+      "resources": [
+        "window",
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "closet",
+      "label": "衣帽间",
+      "resources": [
+        "wall",
+        "floor",
+        "mirror",
+        "narrow_space"
+      ]
+    },
+    {
+      "id": "floor",
+      "label": "地面",
+      "resources": [
+        "floor",
+        "open_space"
+      ]
+    }
+  ],
+  "positions": [
+    {
+      "label": "标准传教士",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "压腿传教士",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "抬腿传教士",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "双腿搭肩",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "并腿传教士",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "分腿传教士",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "床边传教士",
+      "requires": [
+        "bed_edge"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "折叠按压式",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "标准后入",
+      "requires": [],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "俯卧后入",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "跪姿后入",
+      "requires": [
+        "floor"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "床边后入",
+      "requires": [
+        "bed_edge"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "桌边后入",
+      "requires": [
+        "desk"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "镜前后入",
+      "requires": [
+        "mirror"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "站立后入",
+      "requires": [
+        "floor"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "靠墙后入",
+      "requires": [
+        "wall"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "趴压式后入",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "正向骑乘",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "反向骑乘",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "慢骑",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "蹲骑",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "磨蹭式骑乘",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "镜前骑乘",
+      "requires": [
+        "mirror",
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "沙发跨坐",
+      "requires": [
+        "sofa"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "椅上跨坐",
+      "requires": [
+        "chair"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "膝上跨坐",
+      "requires": [
+        "seat"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "面对面跨坐",
+      "requires": [
+        "seat"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "莲花位",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "侧卧式",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "汤匙式",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "面对面侧卧",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "缠腿侧卧",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "半压侧卧",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "坐姿面对面",
+      "requires": [
+        "seat"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "椅上面对面",
+      "requires": [
+        "chair"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "椅上后入",
+      "requires": [
+        "chair"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "大腿上坐入",
+      "requires": [
+        "seat"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "桌边坐入",
+      "requires": [
+        "desk"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "餐桌边坐入",
+      "requires": [
+        "table"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "床沿坐姿",
+      "requires": [
+        "bed_edge"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "抱坐式",
+      "requires": [
+        "seat"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "站立面对面",
+      "requires": [
+        "floor"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "面对面靠墙站立",
+      "requires": [
+        "wall"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "墙边抱起",
+      "requires": [
+        "wall",
+        "open_space"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "抱腿站立",
+      "requires": [
+        "open_space"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "抱起式",
+      "requires": [
+        "open_space"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "背后抱立",
+      "requires": [
+        "open_space"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "单腿抬起站立",
+      "requires": [
+        "floor"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "扶墙抬腿",
+      "requires": [
+        "wall"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "半跪式",
+      "requires": [
+        "floor"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "俯身撑桌",
+      "requires": [
+        "desk"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "俯身撑台面",
+      "requires": [
+        "counter"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "洗手台前站立",
+      "requires": [
+        "sink"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "淋浴间站立",
+      "requires": [
+        "shower"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "浴缸骑乘",
+      "requires": [
+        "bathtub"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "浴缸面对面",
+      "requires": [
+        "bathtub"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "浴缸边坐入",
+      "requires": [
+        "tub_edge"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "门边站立",
+      "requires": [
+        "doorway"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "镜前站立",
+      "requires": [
+        "mirror",
+        "floor"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "地面跪姿",
+      "requires": [
+        "floor"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "地面跨坐",
+      "requires": [
+        "floor"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "69式",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "坐脸",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "腿间摩擦位",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    },
+    {
+      "label": "膝上口交位",
+      "requires": [
+        "seat"
+      ],
+      "modes": [
+        "private",
+        "group"
+      ]
+    }
+  ],
+  "group_positions": [
+    {
+      "label": "前后夹击",
+      "requires": [
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "站立前后夹击",
+      "requires": [
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "跪姿前后夹击",
+      "requires": [
+        "floor",
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "床上前后夹击",
+      "requires": [
+        "bed"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "沙发前后夹击",
+      "requires": [
+        "sofa"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "镜前前后夹击",
+      "requires": [
+        "mirror",
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "床上夹心位",
+      "requires": [
+        "bed"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "沙发夹心位",
+      "requires": [
+        "sofa"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "站立夹心位",
+      "requires": [
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "镜前夹心位",
+      "requires": [
+        "mirror",
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "中间被夹住",
+      "requires": [
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "双侧围绕",
+      "requires": [
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "双人围绕一人",
+      "requires": [
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "一前一后",
+      "requires": [
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "一上一下",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "双重插入",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "床上双重插入",
+      "requires": [
+        "bed"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "沙发双重插入",
+      "requires": [
+        "sofa"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "侧卧三人夹心",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "三人侧卧缠绕",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "三人莲花围抱",
+      "requires": [
+        "soft_surface"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "床沿双侧配合",
+      "requires": [
+        "bed_edge"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "床沿一前一后",
+      "requires": [
+        "bed_edge"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "床边一人进入一人辅助",
+      "requires": [
+        "bed_edge"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "沙发跨坐加背后配合",
+      "requires": [
+        "sofa"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "沙发一坐一跪",
+      "requires": [
+        "sofa",
+        "floor"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "沙发两侧围绕",
+      "requires": [
+        "sofa"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "椅上跨坐加背后配合",
+      "requires": [
+        "chair"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "椅上一前一后",
+      "requires": [
+        "chair"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "椅边轮换",
+      "requires": [
+        "chair"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "书桌边前后配合",
+      "requires": [
+        "desk"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "书桌边轮换",
+      "requires": [
+        "desk"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "桌边一人进入一人挑逗",
+      "requires": [
+        "desk"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "餐桌边前后配合",
+      "requires": [
+        "table"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "餐桌边轮换",
+      "requires": [
+        "table"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "台面前后配合",
+      "requires": [
+        "counter"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "洗手台前后配合",
+      "requires": [
+        "sink"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "镜前站立三人位",
+      "requires": [
+        "mirror",
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "墙边三人围绕",
+      "requires": [
+        "wall",
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "墙边一人固定一人进入",
+      "requires": [
+        "wall"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "门边三人站立位",
+      "requires": [
+        "doorway"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "地面三人跪姿",
+      "requires": [
+        "floor",
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "地面夹心位",
+      "requires": [
+        "floor",
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "地面轮换进入",
+      "requires": [
+        "floor"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "浴缸三人围坐",
+      "requires": [
+        "bathtub"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "浴缸轮换骑乘",
+      "requires": [
+        "bathtub"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "浴缸一人进入一人辅助",
+      "requires": [
+        "bathtub"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "淋浴间站立三人位",
+      "requires": [
+        "shower"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "淋浴间前后配合",
+      "requires": [
+        "shower"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "一人进入一人挑逗",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "一人口交一人进入",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "一人手部刺激一人进入",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "一人退开一人接替",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "一人保持一人接管",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "轮换进入",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "轮换口交",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "轮换骑乘",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "交替刺激",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "一人观看两人互动",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "旁观后加入",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "观看与参与切换",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "一人限制一人挑逗",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "一人扶稳一人进入",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "一人引导一人接管",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "两人合作控制一人",
+      "requires": [
+        "open_space"
+      ],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "两人共同刺激一人",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "两种刺激同时进行",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "两边同时关注",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "焦点从一人切换到另一人",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "一人暂退后再加入",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "中途换位",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "连续接替",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    },
+    {
+      "label": "三人位置轮换",
+      "requires": [],
+      "modes": [
+        "group"
+      ]
+    }
+  ],
+  "restraints": [
+    {
+      "label": "手腕限制",
+      "requires": [],
+      "prop_tags": []
+    },
+    {
+      "label": "脚踝限制",
+      "requires": [],
+      "prop_tags": []
+    },
+    {
+      "label": "双手举过头顶",
+      "requires": [],
+      "prop_tags": []
+    },
+    {
+      "label": "背手限制",
+      "requires": [],
+      "prop_tags": []
+    },
+    {
+      "label": "姿势控制",
+      "requires": [],
+      "prop_tags": []
+    },
+    {
+      "label": "限制移动",
+      "requires": [],
+      "prop_tags": []
+    },
+    {
+      "label": "跪姿控制",
+      "requires": [
+        "floor"
+      ],
+      "prop_tags": []
+    },
+    {
+      "label": "怀中限制",
+      "requires": [],
+      "prop_tags": []
+    },
+    {
+      "label": "空间限制",
+      "requires": [
+        "narrow_space"
+      ],
+      "prop_tags": []
+    },
+    {
+      "label": "墙边限制",
+      "requires": [
+        "wall"
+      ],
+      "prop_tags": []
+    },
+    {
+      "label": "床上固定",
+      "requires": [
+        "bed"
+      ],
+      "prop_tags": [
+        "soft_restraint"
+      ]
+    },
+    {
+      "label": "椅上束缚",
+      "requires": [
+        "chair"
+      ],
+      "prop_tags": [
+        "soft_restraint"
+      ]
+    },
+    {
+      "label": "书桌前限制",
+      "requires": [
+        "desk"
+      ],
+      "prop_tags": []
+    },
+    {
+      "label": "洗手台前限制",
+      "requires": [
+        "sink"
+      ],
+      "prop_tags": []
+    },
+    {
+      "label": "镜前控制",
+      "requires": [
+        "mirror"
+      ],
+      "prop_tags": []
+    },
+    {
+      "label": "大字型固定",
+      "requires": [
+        "bed"
+      ],
+      "prop_tags": [
+        "soft_restraint"
+      ]
+    },
+    {
+      "label": "领带束缚",
+      "requires": [],
+      "prop_tags": [
+        "tie"
+      ]
+    },
+    {
+      "label": "柔性束缚",
+      "requires": [],
+      "prop_tags": [
+        "soft_restraint"
+      ]
+    },
+    {
+      "label": "项圈控制",
+      "requires": [],
+      "prop_tags": [
+        "collar"
+      ]
+    },
+    {
+      "label": "项圈牵引",
+      "requires": [],
+      "prop_tags": [
+        "collar",
+        "leash"
+      ]
+    },
+    {
+      "label": "蒙眼限制",
+      "requires": [],
+      "prop_tags": [
+        "blindfold"
+      ]
+    },
+    {
+      "label": "全身包裹",
+      "requires": [
+        "floor"
+      ],
+      "prop_tags": [
+        "wrap"
+      ]
+    },
+    {
+      "label": "悬吊",
+      "requires": [
+        "open_space"
+      ],
+      "prop_tags": [
+        "soft_restraint"
+      ]
+    }
+  ],
+  "props": [
+    {
+      "label": "蒙眼布",
+      "tags": [
+        "blindfold"
+      ]
+    },
+    {
+      "label": "领带",
+      "tags": [
+        "tie",
+        "soft_restraint"
+      ]
+    },
+    {
+      "label": "衬衫",
+      "tags": [
+        "clothing",
+        "soft_restraint"
+      ]
+    },
+    {
+      "label": "腰带",
+      "tags": [
+        "belt"
+      ]
+    },
+    {
+      "label": "项圈",
+      "tags": [
+        "collar"
+      ]
+    },
+    {
+      "label": "牵引带",
+      "tags": [
+        "leash"
+      ]
+    },
+    {
+      "label": "手套",
+      "tags": [
+        "gloves"
+      ]
+    },
+    {
+      "label": "枕头",
+      "tags": [
+        "soft"
+      ]
+    },
+    {
+      "label": "毯子",
+      "tags": [
+        "soft",
+        "wrap"
+      ]
+    },
+    {
+      "label": "耳机",
+      "tags": [
+        "audio"
+      ]
+    },
+    {
+      "label": "音乐",
+      "tags": [
+        "audio"
+      ]
+    },
+    {
+      "label": "手机镜头",
+      "tags": [
+        "camera"
+      ]
+    },
+    {
+      "label": "柔性束缚带",
+      "tags": [
+        "soft_restraint"
+      ]
+    },
+    {
+      "label": "通用玩具",
+      "tags": [
+        "toy"
+      ]
+    },
+    {
+      "label": "按摩油",
+      "tags": [
+        "massage"
+      ]
+    },
+    {
+      "label": "冰块",
+      "tags": [
+        "cold"
+      ]
+    },
+    {
+      "label": "温毛巾",
+      "tags": [
+        "warm"
+      ]
+    },
+    {
+      "label": "高跟鞋",
+      "tags": [
+        "clothing"
+      ]
+    },
+    {
+      "label": "丝袜",
+      "tags": [
+        "clothing"
+      ]
+    },
+    {
+      "label": "面具",
+      "tags": [
+        "mask"
+      ]
+    },
+    {
+      "label": "眼罩",
+      "tags": [
+        "blindfold"
+      ]
+    },
+    {
+      "label": "丝带",
+      "tags": [
+        "soft_restraint",
+        "ribbon"
+      ]
+    },
+    {
+      "label": "缎带",
+      "tags": [
+        "soft_restraint",
+        "ribbon"
+      ]
+    },
+    {
+      "label": "围巾",
+      "tags": [
+        "soft_restraint",
+        "clothing"
+      ]
+    },
+    {
+      "label": "皮质项圈",
+      "tags": [
+        "collar"
+      ]
+    },
+    {
+      "label": "铃铛项圈",
+      "tags": [
+        "collar"
+      ]
+    },
+    {
+      "label": "腕带",
+      "tags": [
+        "soft_restraint"
+      ]
+    },
+    {
+      "label": "脚踝带",
+      "tags": [
+        "soft_restraint"
+      ]
+    },
+    {
+      "label": "软绳",
+      "tags": [
+        "soft_restraint"
+      ]
+    },
+    {
+      "label": "束缚袖套",
+      "tags": [
+        "soft_restraint"
+      ]
+    },
+    {
+      "label": "口球",
+      "tags": [
+        "gag"
+      ]
+    },
+    {
+      "label": "咬棒",
+      "tags": [
+        "gag"
+      ]
+    },
+    {
+      "label": "羽毛",
+      "tags": [
+        "sensory"
+      ]
+    },
+    {
+      "label": "软毛刷",
+      "tags": [
+        "sensory"
+      ]
+    },
+    {
+      "label": "丝绸布",
+      "tags": [
+        "sensory",
+        "wrap"
+      ]
+    },
+    {
+      "label": "皮革拍板",
+      "tags": [
+        "impact"
+      ]
+    },
+    {
+      "label": "软质拍板",
+      "tags": [
+        "impact"
+      ]
+    },
+    {
+      "label": "按摩棒",
+      "tags": [
+        "toy"
+      ]
+    },
+    {
+      "label": "震动玩具",
+      "tags": [
+        "toy"
+      ]
+    },
+    {
+      "label": "遥控玩具",
+      "tags": [
+        "toy"
+      ]
+    },
+    {
+      "label": "吸吮玩具",
+      "tags": [
+        "toy"
+      ]
+    },
+    {
+      "label": "按摩器",
+      "tags": [
+        "massage",
+        "toy"
+      ]
+    },
+    {
+      "label": "润滑液",
+      "tags": [
+        "lubricant"
+      ]
+    },
+    {
+      "label": "身体油",
+      "tags": [
+        "massage"
+      ]
+    },
+    {
+      "label": "香氛蜡烛",
+      "tags": [
+        "warm",
+        "ambience"
+      ]
+    },
+    {
+      "label": "暖手袋",
+      "tags": [
+        "warm"
+      ]
+    },
+    {
+      "label": "冷感金属小物",
+      "tags": [
+        "cold",
+        "sensory"
+      ]
+    },
+    {
+      "label": "小镜子",
+      "tags": [
+        "mirror"
+      ]
+    },
+    {
+      "label": "拍立得相机",
+      "tags": [
+        "camera"
+      ]
+    },
+    {
+      "label": "自拍支架",
+      "tags": [
+        "camera"
+      ]
+    },
+    {
+      "label": "发带",
+      "tags": [
+        "clothing",
+        "soft_restraint"
+      ]
+    },
+    {
+      "label": "长袜",
+      "tags": [
+        "clothing"
+      ]
+    },
+    {
+      "label": "睡袍腰带",
+      "tags": [
+        "tie",
+        "soft_restraint"
+      ]
+    },
+    {
+      "label": "颈链",
+      "tags": [
+        "collar",
+        "jewelry"
+      ]
+    },
+    {
+      "label": "脚链",
+      "tags": [
+        "jewelry"
+      ]
+    },
+    {
+      "label": "乳夹",
+      "tags": [
+        "clamp",
+        "sensory",
+        "toy"
+      ]
+    },
+    {
+      "label": "链条乳夹",
+      "tags": [
+        "clamp",
+        "sensory",
+        "toy"
+      ]
+    },
+    {
+      "label": "玩法蜡烛",
+      "tags": [
+        "wax",
+        "warm",
+        "sensory"
+      ]
+    },
+    {
+      "label": "假体玩具",
+      "tags": [
+        "toy",
+        "insertable"
+      ]
+    },
+    {
+      "label": "插入型玩具",
+      "tags": [
+        "toy",
+        "insertable"
+      ]
+    },
+    {
+      "label": "软鞭",
+      "tags": [
+        "impact"
+      ]
+    },
+    {
+      "label": "短鞭",
+      "tags": [
+        "impact"
+      ]
+    },
+    {
+      "label": "拍打手套",
+      "tags": [
+        "impact",
+        "gloves"
+      ]
+    }
+  ],
+  "group_dynamics": [
+    "共同焦点",
+    "双重注意力",
+    "轮换注意力",
+    "焦点切换",
+    "争夺注意力",
+    "合作",
+    "竞争",
+    "两种不同风格",
+    "一软一硬",
+    "旁观后加入",
+    "观看与参与切换",
+    "一人暂退后再加入",
+    "共同控制",
+    "共同调戏",
+    "一人主导一人观察",
+    "一人引导一人接管",
+    "两边同时关注",
+    "轮换主导",
+    "临时结盟",
+    "争夺主动权",
+    "一人安抚一人施压",
+    "先旁观再介入",
+    "三人自然换位",
+    "注意力反转",
+    "一人参与一人旁观并自慰",
+    "旁观自慰后加入",
+    "轮流旁观与参与",
+    "一人自慰观看两人互动"
+  ],
+  "premise": "本玩法库仅用于成年人之间的虚构亲密幻想与文学创作。",
+  "final_finish_targets": [
+    "体内",
+    "体外",
+    "腹部",
+    "下腹",
+    "胸口",
+    "颈胸",
+    "腰腹",
+    "背部",
+    "大腿",
+    "腿间",
+    "臀部",
+    "口内",
+    "脸部",
+    "手上",
+    "身体留痕",
+    "多处留痕",
+    "衣物上",
+    "内裤上",
+    "腹股沟附近",
+    "胸腹交界"
+  ],
+  "final_finish_relations_group": [
+    "同时",
+    "先后",
+    "错峰",
+    "男性位A先、男性位B后",
+    "男性位B先、男性位A后",
+    "一人先完成、另一人继续一段再完成",
+    "两人接近同时但略有先后",
+    "第二人延迟后再完成"
+  ],
+  "ejaculation_play": [
+    "双轮射精",
+    "三轮递进",
+    "多轮射精",
+    "连续两次",
+    "恢复后再次",
+    "射后换体位继续",
+    "射后换主导继续",
+    "射后一人接手继续",
+    "射后继续口部刺激",
+    "射后继续手部刺激",
+    "短暂停顿后进入下一轮",
+    "同时射精玩法",
+    "先后射精玩法",
+    "错峰射精玩法",
+    "轮换射精玩法",
+    "一人先射另一人继续",
+    "一人多次另一人一次",
+    "两人都多轮",
+    "不同轮次不同去向",
+    "同一区域重复留痕",
+    "两人不同去向",
+    "两人相同去向",
+    "第一次体外后续体内",
+    "第一次体内后续体外",
+    "先身体留痕后体内",
+    "先口内后换位继续",
+    "射后保持原体位继续",
+    "射后改为骑乘继续",
+    "射后改为口/手部刺激再进入下一轮",
+    "一人射后另一人保持当前节奏",
+    "一人恢复期由另一人接管",
+    "多轮中交替主导",
+    "多轮中轮换位置",
+    "两人各自多次且不同步"
+  ],
+  "exposure_flavors": [
+    {
+      "label": "可能被看见",
+      "requires": []
+    },
+    {
+      "label": "可能被听见",
+      "requires": []
+    },
+    {
+      "label": "有人经过风险",
+      "requires": []
+    },
+    {
+      "label": "需要压低声音",
+      "requires": []
+    },
+    {
+      "label": "随时可能有人出现",
+      "requires": []
+    },
+    {
+      "label": "脚步声接近带来的紧张感",
+      "requires": []
+    },
+    {
+      "label": "外侧可能看见轮廓",
+      "requires": []
+    },
+    {
+      "label": "窗帘留有缝隙",
+      "requires": [
+        "window"
+      ]
+    },
+    {
+      "label": "门未完全关闭",
+      "requires": [
+        "doorway"
+      ]
+    },
+    {
+      "label": "镜面反射增加暴露感",
+      "requires": [
+        "mirror"
+      ]
+    }
+  ],
+  "exposure_locations": [
+    {
+      "id": "entryway",
+      "label": "玄关 / 入户门附近",
+      "resources": [
+        "doorway",
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "apartment_hallway",
+      "label": "住宅走廊",
+      "resources": [
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "stairwell",
+      "label": "楼梯间",
+      "resources": [
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "elevator",
+      "label": "电梯",
+      "resources": [
+        "wall",
+        "floor",
+        "open_space",
+        "narrow_space"
+      ]
+    },
+    {
+      "id": "garage",
+      "label": "地下车库 / 停车位",
+      "resources": [
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "fire_stairs",
+      "label": "消防通道",
+      "resources": [
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "roof_terrace",
+      "label": "屋顶露台",
+      "resources": [
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "laundry_room",
+      "label": "公共洗衣房",
+      "resources": [
+        "counter",
+        "wall",
+        "floor",
+        "open_space"
+      ]
+    },
+    {
+      "id": "storage_area",
+      "label": "储物区",
+      "resources": [
+        "wall",
+        "floor",
+        "narrow_space"
+      ]
+    },
+    {
+      "id": "car",
+      "label": "车内",
+      "resources": [
+        "seat",
+        "narrow_space"
+      ]
+    }
+  ],
+  "semantic_clusters": {
+    "possession": [
+      "占有与归属",
+      "占有式强制爱",
+      "强硬占有",
+      "极端占有",
+      "占有",
+      "独占",
+      "占有性语言",
+      "本能性占有",
+      "异种占有",
+      "压制式占有",
+      "成为私有物",
+      "使用权幻想",
+      "使用权感"
+    ],
+    "shame_objectification": [
+      "羞辱",
+      "羞耻感",
+      "高强度羞辱",
+      "物化幻想",
+      "深度物化幻想",
+      "去人格化幻想",
+      "服务工具化",
+      "工具化使用",
+      "玩物化",
+      "羞耻",
+      "物化感",
+      "深度物化",
+      "去人格化",
+      "羞耻展示",
+      "镜前羞辱"
+    ],
+    "force_control": [
+      "强制爱幻想",
+      "压制式强制爱",
+      "强制服从幻想",
+      "被迫接受亲密幻想",
+      "拒绝/反抗感扮演",
+      "持续使用幻想",
+      "双重控制",
+      "多人共同控制",
+      "命令与执行",
+      "强硬压制",
+      "压迫感",
+      "被迫接受感",
+      "强制爱感"
+    ],
+    "praise_affection": [
+      "赞美",
+      "奖励式称赞",
+      "被夸奖",
+      "被肯定",
+      "宠爱",
+      "奖励感"
+    ],
+    "confession": [
+      "坦白欲望",
+      "强迫承认欲望",
+      "被要求说出想要什么",
+      "被要求承认喜欢什么",
+      "否认后被逼承认",
+      "口头承认渴求"
+    ],
+    "impact": [
+      "轻疼痛玩法",
+      "惩罚感",
+      "手掌臀部拍打",
+      "大腿拍打",
+      "外阴拍打",
+      "私处节奏拍打",
+      "连续私处拍打",
+      "轻重交替拍打",
+      "拍打与其他刺激交替",
+      "强度递进拍打",
+      "鞭打玩法",
+      "惩罚式拍打",
+      "强度递进Impact玩法"
+    ]
+  },
+  "local_disabled": {
+    "categories": [],
+    "subtypes": [],
+    "psychology": [],
+    "locations": [],
+    "restraints": [
+      "全身包裹"
+    ],
+    "props": [],
+    "group_dynamics": [],
+    "ejaculation_play": [],
+    "final_finish_targets": [],
+    "exposure_flavors": [],
+    "exposure_locations": [],
+    "clothing_play": []
+  },
+  "clothing_play": [
+    "穿着保留",
+    "半脱",
+    "衣物遮挡",
+    "衣物束缚",
+    "指定穿戴",
+    "材质偏好",
+    "撕开丝袜",
+    "扯坏衣物",
+    "衣物状态变化"
+  ]
+}

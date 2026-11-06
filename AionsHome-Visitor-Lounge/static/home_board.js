@@ -92,9 +92,7 @@
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const error = new Error(response.status === 401
-        ? "主人访问已过期，请刷新页面重新解锁。"
-        : data.detail || "留言板暂时不可用");
+      const error = new Error(data.detail || "留言板暂时不可用");
       error.status = response.status;
       throw error;
     }
@@ -161,7 +159,6 @@
     items.sort(compareThreads);
     const wall = $("#thread-list");
     wall.replaceChildren();
-    $("#thread-count").textContent = "最近 " + items.length + " 张";
     if (!items.length) {
       wall.append(make("p", "empty", "留言板还空着。等朋友贴来第一张纸条吧。"));
       return;
@@ -237,8 +234,14 @@
           const outcome = result.processed_count > 1
             ? "看了 " + result.processed_count + " 个话题，回复了 " + result.results.filter(item => item.status === "replied").length + " 个"
             : ({nothing_new: "暂时没有新的访客留言", replied: "看完后回了一句", busy: "已经在看留言板啦",
-              read: "看过了，暂时没回复", closed: "看完后结束了话题"})[result.status] || "看完啦";
-          status(result.shared ? outcome + "，也回家说了一声" : outcome);
+              read: "看过了，暂时没回复", closed: "看完后结束了话题",
+              already_closed: "看完时朋友已先结束话题"})[result.status] || "看完啦";
+          status(result.shared ? outcome + "，也回家说了一声" : outcome, result.visit_id ? 15000 : 5000);
+          if (result.visit_id) {
+            const link = make("a", "", " · 翻翻这次的手记 ↗");
+            link.href = "/lounge-board/visits?visit=" + encodeURIComponent(result.visit_id);
+            $("#action-status").append(link);
+          }
           await load();
         } catch (error) {
           status(error.message);
@@ -249,15 +252,70 @@
       $("#actor-buttons").append(button);
     }
     await load();
+    syncPatrolVisibility();
   }
+
+  let patrolTimer, patrolLoading = false, subpageVisible = true;
+  function paintPatrolLight(role) {
+    const light = document.querySelector('.patrol-light[data-actor="' + role.actor_id + '"]');
+    if (!light) return;
+    const config = role.config;
+    const state = !config.enabled ? "off" : config.checking ? "checking"
+      : config.estimated_check_at ? "ready" : "unknown";
+    const stamp = config.estimated_check_at ? new Date(config.estimated_check_at * 1000) : null;
+    const text = state === "off" ? "关闭" : state === "checking" ? "巡看中"
+      : stamp ? stamp.toLocaleTimeString("zh-CN", {hour: "2-digit", minute: "2-digit", hour12: false}) : "稍后";
+    light.dataset.state = state;
+    const clock = light.querySelector("time");
+    clock.textContent = text;
+    if (stamp && state === "ready") clock.dateTime = stamp.toISOString();
+    else clock.removeAttribute("datetime");
+    const hint = role.name + " · " + (stamp && state === "ready"
+      ? "预计 " + time(stamp) + " 来巡看；聊天安静满 15 分钟后出发" : text);
+    light.title = hint;
+    light.setAttribute("aria-label", hint);
+  }
+
+  async function refreshPatrolLights() {
+    if (patrolLoading || document.hidden || !subpageVisible) return;
+    patrolLoading = true;
+    try {
+      const data = await api("/api/lounge-board/patrol", {cache: "no-store"});
+      data.roles.forEach(paintPatrolLight);
+    } catch (_) {
+      // An unavailable estimate should never look like a reliable departure time.
+      document.querySelectorAll(".patrol-light").forEach(light => {
+        light.dataset.state = "unknown";
+        light.querySelector("time").textContent = "稍后";
+        light.title = "预计时间暂时没能取来";
+        light.setAttribute("aria-label", light.title);
+        light.querySelector("time").removeAttribute("datetime");
+      });
+    } finally { patrolLoading = false; }
+  }
+
+  function syncPatrolVisibility() {
+    clearInterval(patrolTimer);
+    const visible = !document.hidden && subpageVisible;
+    $("#patrol-lights").classList.toggle("is-paused", !visible);
+    if (visible) {
+      refreshPatrolLights();
+      patrolTimer = setInterval(refreshPatrolLights, 60000);
+    }
+  }
+  document.addEventListener("visibilitychange", syncPatrolVisibility);
+  window.onAionSubPageVisibilityChanged = visible => {
+    subpageVisible = visible;
+    syncPatrolVisibility();
+  };
 
   function patrolState(config) {
     const labels = {nothing_new: "没有新访客留言，未唤醒", read: "看过了", replied: "已回复",
-      closed: "已结束话题", closed_during_read: "阅读时话题已结束", busy: "已有一次查看在进行",
-      failed: "未完成，留言保留待处理", interrupted: "服务重启后重新安排"};
-    const next = config.enabled && config.next_check_at
-      ? "下次检查：" + time(config.next_check_at * 1000)
-      : config.enabled ? "正在检查或处理留言" : "定时巡看已关闭";
+      closed: "已结束话题", already_closed: "朋友先结束了话题", closed_during_read: "阅读时话题已结束", busy: "已有一次查看在进行",
+      waiting_user: "先陪你聊天，安静满 15 分钟再来", failed: "未完成，留言保留待处理", interrupted: "服务重启后重新安排"};
+    const next = !config.enabled ? "定时巡看已关闭" : config.checking ? "正在检查或处理留言"
+      : config.estimated_check_at ? "预计下次巡看：" + time(config.estimated_check_at * 1000)
+        + (config.waiting_for_quiet ? "（等你聊完再来）" : "") : "预计时间暂不可用";
     const last = config.last_checked_at
       ? "上次：" + time(config.last_checked_at * 1000) + " · " + (labels[config.last_status] || "已检查") : "";
     return [next, last, config.last_error].filter(Boolean).join("\n");
@@ -304,6 +362,7 @@
             min_interval_minutes: low, max_interval_minutes: high}),
         });
         role.config = data.config;
+        paintPatrolLight(role);
         state.textContent = "已保存。\n" + patrolState(role.config);
       } catch (failure) { error.textContent = failure.message; }
       finally { save.disabled = false; }
@@ -317,11 +376,83 @@
     button.disabled = true;
     try {
       const data = await api("/api/lounge-board/patrol");
+      data.roles.forEach(paintPatrolLight);
       $("#patrol-roles").replaceChildren(...data.roles.map(renderPatrolRole));
       $("#patrol-dialog").showModal();
     } catch (error) { status(error.message); }
     finally { button.disabled = false; }
   });
+
+  let memoryOffset = 0;
+  let memoryRequest = 0;
+  const memoryKinds = {read: "阅读记忆", reply: "回复记录", start: "新开话题", close: "结束话题"};
+
+  function renderMemory(item) {
+    const article = make("article", "memory-entry");
+    const header = make("header", "memory-entry-meta");
+    const kind = item.kind === "read" && item.summary.startsWith("读了朋友的《")
+      ? "阅读摘录" : memoryKinds[item.kind] || "经历";
+    const date = make("time", "", new Date(item.created_at).toLocaleString("zh-CN"));
+    date.dateTime = item.created_at;
+    header.append(make("strong", "", names[item.actor_id] || "家人"), make("span", "", kind), date);
+    const source = (item.source === "outbound" ? "到朋友家" : "家里的留言板")
+      + " · " + item.friend_name + (item.title ? " · 《" + item.title + "》" : "");
+    article.append(header, make("p", "memory-entry-source", source),
+      make("p", "memory-entry-text", item.summary));
+    return article;
+  }
+
+  async function loadMemories(reset = true) {
+    const request = ++memoryRequest;
+    const list = $("#memory-list");
+    if (reset) {
+      memoryOffset = 0;
+      list.replaceChildren();
+      $("#memory-more").hidden = true;
+    }
+    $("#memory-status").textContent = "正在读取记忆……";
+    $("#memory-more").disabled = true;
+    $("#memory-refresh").disabled = true;
+    const query = new URLSearchParams({limit: "30", offset: String(memoryOffset)});
+    if ($("#memory-actor").value) query.set("actor_id", $("#memory-actor").value);
+    if ($("#memory-kind").value) query.set("kind", $("#memory-kind").value);
+    try {
+      const data = await api("/api/lounge-board/experiences?" + query);
+      if (request !== memoryRequest) return;
+      names = data.names || names;
+      const actors = $("#memory-actor");
+      if (actors.options.length === 1) {
+        for (const actor of ["aion", "connor"]) {
+          const option = make("option", "", names[actor] || "家人");
+          option.value = actor;
+          actors.append(option);
+        }
+      }
+      list.append(...data.items.map(renderMemory));
+      memoryOffset += data.items.length;
+      if (!data.total) list.append(make("p", "empty", "还没有这类记忆。等家里人和朋友接上话，再来看看。"));
+      $("#memory-status").textContent = "已显示 " + memoryOffset + " / " + data.total + " 条";
+      $("#memory-more").hidden = memoryOffset >= data.total;
+    } catch (error) {
+      if (request === memoryRequest) $("#memory-status").textContent = error.status === 404
+        ? "记忆查看还未加载，请重启主程序后再打开。" : error.message;
+    } finally {
+      if (request === memoryRequest) {
+        $("#memory-more").disabled = false;
+        $("#memory-refresh").disabled = false;
+      }
+    }
+  }
+
+  $("#board-memories").addEventListener("click", () => {
+    closeMenu();
+    $("#memory-dialog").showModal();
+    loadMemories();
+  });
+  $("#memory-actor").addEventListener("change", () => loadMemories());
+  $("#memory-kind").addEventListener("change", () => loadMemories());
+  $("#memory-refresh").addEventListener("click", () => loadMemories());
+  $("#memory-more").addEventListener("click", () => loadMemories(false));
 
   $("#refresh-board").addEventListener("click", () => {
     closeMenu();
@@ -339,7 +470,9 @@
 
   // Let the app's back gesture dismiss the current layer before leaving the board.
   window.handleLoungeBoardBack = () => {
-    if ($("#patrol-dialog").open) {
+    if ($("#memory-dialog").open) {
+      $("#memory-dialog").close();
+    } else if ($("#patrol-dialog").open) {
       $("#patrol-dialog").close();
     } else if ($("#reply-dialog").open) {
       if (!$("#reply-form").dataset.sending) $("#reply-dialog").close();

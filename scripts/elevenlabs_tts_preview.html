@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ElevenLabs · 声音试验室</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">Ⅱ</span><span>ELEVENLABS <span class="brand-divider">/</span> LISTENING ROOM</span></div>
+      <span class="local-badge"><span aria-hidden="true">●</span> 本机独立试听</span>
+    </header>
+    <section class="intro">
+      <div><p class="eyebrow">A LITTLE ROOM FOR YOUR VOICES</p><h1>让文字，带一点情绪。</h1><p class="subtitle">选一个熟悉的声音，试试轻声、笑意，或一句耳语。</p></div>
+      <div class="sound-mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+    </section>
+
+    <div class="workspace">
+      <aside class="sidebar">
+        <section class="panel account">
+          <div class="section-heading"><h2><span class="step">01</span>连接账号</h2><span id="connectionBadge" class="pill">未连接</span></div>
+          <label for="apiKey">ElevenLabs API Key</label>
+          <div class="key-input"><input id="apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴你的 API Key"><button id="toggleKey" type="button" aria-label="显示 API Key">显示</button></div>
+          <div class="button-row"><button id="saveKey" type="button" class="secondary">保存到此浏览器</button><button id="clearKey" type="button" class="text-button">清除 Key</button></div>
+          <p class="hint" id="keyHint">保存后下次可直接使用。Key 以明文保存在此浏览器的本地存储中，仅发往本机服务和 ElevenLabs。</p>
+          <button id="loadVoices" type="button" class="primary full">连接并加载全部音色 <span aria-hidden="true">↗</span></button>
+          <p id="connectionStatus" class="status" role="status">填写 Key 后即可读取已有音色，不会自动生成语音。</p>
+        </section>
+
+        <section class="panel voice-panel">
+          <div class="section-heading"><h2><span class="step">02</span>选择声音</h2><span id="voiceCount" class="count">0 个</span></div>
+          <label for="voiceSearch" class="sr-only">搜索音色名称、ID 或描述</label>
+          <input id="voiceSearch" type="search" placeholder="搜索名称、ID 或描述…" autocomplete="off">
+          <label for="voiceCategory" class="sr-only">音色类型</label>
+          <select id="voiceCategory"><option value="">全部类型</option><option value="cloned">即时克隆</option><option value="professional">专业克隆</option><option value="generated">设计音色</option><option value="premade">预置音色</option></select>
+          <label for="voiceSelect" class="sr-only">可用音色</label>
+          <select id="voiceSelect" size="7" disabled><option>等待加载你的声音…</option></select>
+          <div id="voiceInfo" class="voice-info">这里会显示当前 Key 可访问的全部音色，包括你的克隆声音和已添加的音色。</div>
+          <a class="small-link" href="https://elevenlabs.io/app/voice-library" target="_blank" rel="noreferrer">去官方音色库添加更多声音 ↗</a>
+        </section>
+      </aside>
+
+      <div class="studio">
+        <section class="panel editor-panel">
+          <div class="section-heading"><h2><span class="step">03</span>写一句，听听看</h2><span id="charCount" class="count">0 / 5000</span></div>
+          <div class="model-row"><div class="model-field"><label for="model">语音模型</label><select id="model"><option value="eleven_v4">Eleven v4 · 推荐</option><option value="eleven_v3">Eleven v3 · 对照试听</option></select></div><p id="modelHint" class="hint">默认使用 v4。连接后补充账号返回的其他模型。</p></div>
+          <label for="text" class="sr-only">试听文本</label>
+          <textarea id="text" maxlength="5000" spellcheck="false" placeholder="写下想听的话，也可以点击下方标签插入…">[softly] 今天辛苦了。先慢慢坐下来，跟我说说今天发生了什么吧。
+[chuckles] 不着急，我在听。</textarea>
+          <div class="editor-tools"><span>在光标位置插入标签；选中文字时，会加在选区前。</span><button id="removeTags" class="text-button" type="button">移除语气标签</button></div>
+          <p id="tagStatus" class="hint"></p>
+          <div class="generate-row"><div><span class="tiny-label">READY WHEN YOU ARE</span><p id="generateHint" class="hint">生成会使用 ElevenLabs 额度；重播已生成音频不重复合成。</p></div><button id="generate" class="primary generate" type="button" disabled><span aria-hidden="true">▶</span> 生成并试听</button></div>
+          <p id="generationStatus" class="status" role="status">先连接账号、选择音色。</p>
+        </section>
+
+        <section class="panel tags-panel">
+          <div class="section-heading"><h2>给声音一点方向</h2><button id="copyRules" class="text-button" type="button">复制给 AI 的规则 ↗</button></div>
+          <p class="hint">常用项来自官方示例，效果仍取决于模型和音色。自由描述可以尝试，但不保证被准确执行。</p>
+          <div id="tagTabs" class="tag-tabs" role="group" aria-label="语气标签分类"></div>
+          <p id="tagGroupHint" class="hint" aria-live="polite"></p>
+          <div id="tagList" class="tag-list"></div>
+          <div class="custom-row"><div class="custom-input"><label for="customTag">自定义试验标签</label><input id="customTag" maxlength="80" placeholder="如：warm, reassuring voice" autocomplete="off"></div><button id="addCustomTag" class="secondary" type="button">保存并插入</button></div>
+          <p id="customStatus" class="hint" role="status">可输入带或不带 [] 的短描述。自定义项仅保存在此浏览器，不自动加入 AI 推荐范围。</p>
+          <details class="guide"><summary>标签有没有范围？AI 应该怎么用？</summary><p>没有固定、穷尽的官方白名单。方括号里可以放自然语言的情绪、发声方式或人声反应；“可以输入”不等于“稳定有效”。例如 [Smirk] 偏视觉表情，可先比较 [mischievously]（调皮地说）和 [chuckles]（轻笑）。</p><p>日常让 AI 从下方规则的推荐集合里选择，保留原文，每句最多 1～2 个标签。试验标签先用目标音色试听，通过后再人工加入允许范围。</p><textarea id="aiRules" readonly aria-label="给 AI 的语气标签规则"></textarea><p><a href="https://elevenlabs.io/blog/elevenlabs-audio-tags-list" target="_blank" rel="noreferrer">官方标签示例 ↗</a><a href="https://elevenlabs.io/docs/overview/capabilities/text-to-speech/best-practices" target="_blank" rel="noreferrer">官方提示指南 ↗</a></p></details>
+        </section>
+      </div>
+    </div>
+
+    <section class="panel recordings">
+      <div class="section-heading"><div><h2>刚刚听过的声音</h2><p class="hint">保留本次页面中的最近 8 次试听，方便换音色比较。刷新前可下载音频。</p></div><button id="clearHistory" class="text-button" type="button" disabled>清空记录</button></div>
+      <div id="history"><div class="empty-state"><span class="empty-icon" aria-hidden="true">♫</span><p>第一段声音，还在等你。</p><span>生成后可在这里重播、下载，或复用那一句话。</span></div></div>
+    </section>
+    <footer><span>ELEVENLABS · 声音试验室</span><span>文字与标签可记住，试听音频留在当前页面。</span></footer>
+  </main>
+</body>
+</html>

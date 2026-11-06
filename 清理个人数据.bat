@@ -12,6 +12,7 @@ echo     - 导出的聊天记录 (chats/)
 echo     - 监控日志 (monitor_logs/)
 echo     - 摄像头截图 (screenshots/)
 echo     - 上传的图片/视频 (uploads/)
+echo     - 人物锚点原图 (image_anchors/)
 echo     - 活动日志 (activity_logs/)
 echo     - TTS 语音缓存 (tts_cache/)
 echo     - 英语角语音缓存 (english_corner_audio/)
@@ -77,6 +78,9 @@ mkdir "aion-chat\data\screenshots"
 if exist "aion-chat\data\uploads" rmdir /s /q "aion-chat\data\uploads"
 mkdir "aion-chat\data\uploads"
 type nul > "aion-chat\data\uploads\.gitkeep"
+
+if exist "aion-chat\data\image_anchors" rmdir /s /q "aion-chat\data\image_anchors"
+mkdir "aion-chat\data\image_anchors"
 
 if exist "aion-chat\data\activity_logs" rmdir /s /q "aion-chat\data\activity_logs"
 mkdir "aion-chat\data\activity_logs"

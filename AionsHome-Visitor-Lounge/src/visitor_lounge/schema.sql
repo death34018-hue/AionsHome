@@ -189,6 +189,15 @@ CREATE TABLE IF NOT EXISTS board_experiences (
 CREATE INDEX IF NOT EXISTS board_experiences_actor_recent
     ON board_experiences(actor_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS board_visits (
+    id TEXT PRIMARY KEY,
+    actor_id TEXT NOT NULL CHECK(actor_id IN ('aion', 'connor')),
+    source TEXT NOT NULL CHECK(source IN ('home', 'outbound')),
+    started_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS board_visits_recent ON board_visits(started_at DESC);
+
 CREATE TABLE IF NOT EXISTS board_outbound_experiences (
     id TEXT PRIMARY KEY,
     actor_id TEXT NOT NULL CHECK(actor_id IN ('aion', 'connor')),

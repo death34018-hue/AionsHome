@@ -1,20 +1,23 @@
-param(
-    [switch]$DryRun
+﻿param(
+    [switch]$DryRun,
+    [switch]$ServersOnly
 )
 
-$ErrorActionPreference = "SilentlyContinue"
+$ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'home-server-task.ps1')
+$workspacePath = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+$workspacePattern = [regex]::Escape($workspacePath)
 
-$targetPorts = @(8080, 8011)
+$targetPorts = @(8080, 8011, 18788)
 $directPatterns = @(
     'uvicorn\s+main:app',
-    'python(?:\.exe)?\s+-u\s+main\.py',
+    '(?:^|\s)-u\s+main\.py(?:\s|$)',
     'aion-chat[\\/]+main\.py',
-    'aion-chat[\\/]+mcp_servers[\\/]+home_assistant_server\.py',
-    'desktop_pet\.py',
-    '一键启动\.bat',
-    '启动桌宠\.bat',
-    '--app=http://localhost:8080/wallpaper'
+    '-m\s+qq_social\.worker'
 )
+if (-not $ServersOnly) {
+    $directPatterns += @('desktop_pet\.py', '--app=http://localhost:8080/wallpaper')
+}
 
 function Add-Target {
     param(
@@ -22,7 +25,7 @@ function Add-Target {
         [int]$Id,
         [string]$Reason
     )
-    if ($Id -le 0 -or $Id -eq $PID) { return }
+    if ($Id -le 0 -or $protected.ContainsKey($Id)) { return }
     if (-not $Set.ContainsKey($Id)) {
         $Set[$Id] = New-Object System.Collections.Generic.List[string]
     }
@@ -45,20 +48,52 @@ foreach ($p in $processes) {
 }
 
 $targets = @{}
+# Never close the restart command itself, or the terminal that invoked it.
+$protected = @{}
+$ancestorId = $PID
+while ($ancestorId -gt 0 -and -not $protected.ContainsKey($ancestorId)) {
+    $protected[$ancestorId] = $true
+    if (-not $byPid.ContainsKey($ancestorId)) { break }
+    $ancestorId = [int]$byPid[$ancestorId].ParentProcessId
+}
 
-foreach ($conn in @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $targetPorts -contains $_.LocalPort })) {
-    Add-Target $targets ([int]$conn.OwningProcess) "listening on port $($conn.LocalPort)"
+function Test-WorkspaceProcess {
+    param($Process)
+    $seen = @{}
+    while ($null -ne $Process -and -not $seen.ContainsKey([int]$Process.ProcessId)) {
+        $seen[[int]$Process.ProcessId] = $true
+        if ($Process.CommandLine -match $workspacePattern -or $Process.ExecutablePath -like "$workspacePath\*") { return $true }
+        $Process = $byPid[[int]$Process.ParentProcessId]
+    }
+    return $false
 }
 
 foreach ($p in $processes) {
+    if ($protected.ContainsKey([int]$p.ProcessId)) { continue }
     $cmd = ""
     if ($null -ne $p.CommandLine) { $cmd = [string]$p.CommandLine }
+    if (-not (Test-WorkspaceProcess $p)) { continue }
+    # Only dedicated /c launchers are disposable; never kill an interactive shell.
+    if ($p.Name -eq 'cmd.exe' -and $cmd -match '(?i)\s/c\s' -and
+        $cmd -match '(?:一键启动|重启小家)\.bat') {
+        Add-Target $targets ([int]$p.ProcessId) 'old home launcher window'
+        continue
+    }
+    if ($p.Name -notmatch '^(?:pythonw?|uvicorn|chrome|msedge)(?:\d+(?:\.\d+)*)?\.exe$') { continue }
     foreach ($pattern in $directPatterns) {
         if ($cmd -match $pattern) {
             Add-Target $targets ([int]$p.ProcessId) "command matches '$pattern'"
             break
         }
     }
+}
+
+foreach ($conn in @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $targetPorts -contains $_.LocalPort })) {
+    $owner = $byPid[[int]$conn.OwningProcess]
+    if ($null -eq $owner -or -not (Test-WorkspaceProcess $owner) -or $owner.Name -notmatch '^(?:pythonw?|uvicorn).*\.exe$') {
+        throw "Port $($conn.LocalPort) belongs to another application (PID $($conn.OwningProcess)). Nothing was stopped."
+    }
+    Add-Target $targets ([int]$conn.OwningProcess) "listening on port $($conn.LocalPort)"
 }
 
 $queue = New-Object System.Collections.Generic.Queue[int]
@@ -69,6 +104,7 @@ while ($queue.Count -gt 0) {
     $id = $queue.Dequeue()
     if (-not $childrenByParent.ContainsKey($id)) { continue }
     foreach ($childId in $childrenByParent[$id]) {
+        if ($targets.ContainsKey([int]$childId) -or $protected.ContainsKey([int]$childId)) { continue }
         Add-Target $targets ([int]$childId) "child of target $id"
         $queue.Enqueue([int]$childId)
     }
@@ -98,8 +134,13 @@ $ordered = @($targets.Keys | ForEach-Object {
         Process = $byPid[$id]
         Reason = ($targets[$id] -join "; ")
     }
-} | Sort-Object Depth, Id -Descending)
+} | Sort-Object Depth, Id)
 
+# Only pause recovery after verifying the port owners, even if the server already exited.
+if (-not $DryRun) {
+    $homeTask = Get-HomeServerTask
+    if ($homeTask) { Suspend-HomeServerTask $homeTask }
+}
 if (-not $ordered -or $ordered.Count -eq 0) {
     Write-Host "No AionsHome processes found."
     exit 0
@@ -122,6 +163,7 @@ if ($DryRun) {
 
 Write-Host ""
 Write-Host "Stopping..."
+# Stop launchers/supervisors first, then their captured children, so they cannot respawn.
 foreach ($item in $ordered) {
     try {
         Stop-Process -Id $item.Id -Force -ErrorAction Stop
@@ -133,6 +175,11 @@ foreach ($item in $ordered) {
 
 Start-Sleep -Seconds 1
 
+$alive = @($ordered | Where-Object { Get-Process -Id $_.Id -ErrorAction SilentlyContinue })
+if ($alive.Count -gt 0) {
+    throw "Some home processes could not be stopped: $($alive.Id -join ', '). No new server will be started."
+}
+
 $remaining = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $targetPorts -contains $_.LocalPort })
 if ($remaining.Count -gt 0) {
     Write-Host ""
@@ -140,7 +187,9 @@ if ($remaining.Count -gt 0) {
     foreach ($conn in $remaining) {
         Write-Host ("  {0}:{1} PID {2}" -f $conn.LocalAddress, $conn.LocalPort, $conn.OwningProcess)
     }
+    exit 1
 } else {
     Write-Host ""
-    Write-Host "AionsHome backend ports 8080/8011 are clear."
+    Write-Host "AionsHome backend ports 8080/8011/18788 are clear."
 }
+exit 0

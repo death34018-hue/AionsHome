@@ -74,7 +74,7 @@ Get-ChildItem -LiteralPath $rootPath -Recurse -File -ErrorAction SilentlyContinu
     $relativePath = $path.Substring($rootPath.Length + 1)
     $isTestFile = (
         $relativePath -match '(^|\\)(test|tests)\\' -or
-        $_.BaseName -match '^(test_|.*_test$)'
+        $_.BaseName -match '^(test[_-]|.*_test$)'
     )
     try {
         $content = [IO.File]::ReadAllText($path)

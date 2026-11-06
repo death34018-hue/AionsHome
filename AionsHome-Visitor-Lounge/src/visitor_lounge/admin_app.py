@@ -21,7 +21,6 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 
 from visitor_lounge.admin_time import format_admin_payload_timestamps
-from visitor_lounge.board_owner_auth import COOKIE, owner_code, owner_cookie
 from visitor_lounge.container import Container
 from visitor_lounge.repository import (
     RuntimeStateRepository,
@@ -1151,22 +1150,15 @@ def create_admin_app(container: Container) -> FastAPI:
 
     @app.get("/admin/board-access")
     async def board_access():
-        code = owner_code()
         response = HTMLResponse(
             "<!doctype html><html lang='zh-CN'><meta charset='utf-8'>"
-            "<title>留言板主人访问码</title><body style='font:16px system-ui;"
+            "<title>家里的朋友留言板</title><body style='font:16px system-ui;"
             "max-width:42rem;margin:4rem auto;padding:1rem;line-height:1.8'>"
-            "<h1>家里的朋友留言板</h1><p>本机浏览器已自动解锁留言板。"
-            "下面的访问码仅供备用，请像保管邀请 Key 一样保管它。</p>"
-            f"<p><code style='word-break:break-all;font-size:1.2rem'>{code}</code></p>"
+            "<h1>家里的朋友留言板</h1><p>现在可以直接打开，无需访问码。</p>"
             "<a href='/admin'>返回管理端</a> · "
             "<a href='http://127.0.0.1:8080/'>返回 AionsHome</a> · "
             "<a href='http://127.0.0.1:8080/lounge-board'>打开家里的留言板</a>"
             "</body></html>", headers=NO_STORE_HEADERS,
-        )
-        response.set_cookie(
-            COOKIE, owner_cookie(), httponly=True, samesite="strict",
-            max_age=30 * 86400, path="/",
         )
         return response
 

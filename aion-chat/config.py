@@ -321,20 +321,21 @@ BUILTIN_MODELS = {
     "硅基GLM-5.2":      {"provider": "siliconflow", "model": "zai-org/GLM-5.2", "vision": False},
     "官Gem3.8flash":  {"provider": "gemini", "model": "gemini-3.8-flash", "vision": True, "audio": True},
     "官4-Argon":  {"provider": "gemini", "model": "gemini-4-argon", "vision": True, "audio": True},
-    # "官Gem3.1pro":  {"provider": "gemini", "model": "gemini-3.1-pro-preview", "vision": True, "audio": True},
-    # "Codex-5.5":            {"provider": "codex_cli",  "model": "gpt-5.5", "vision": True},
-    # "Codex-Astra":    {"provider": "codex_cli",  "model": "gpt-6-astra", "vision": True, "transport_mode": "safe_live"},
+    # Vertex 在这里添加模型；vision 表示看图，audio 表示接收音频。
+    "Vertex · 3.8 Flash": {"provider": "vertex", "model": "gemini-3.8-flash", "vision": True, "audio": True},
+    "Vertex · 4 Argon": {"provider": "vertex", "model": "gemini-4-argon", "vision": True, "audio": True},
     "Codex-5.6-Sol":      {"provider": "codex_cli",  "model": "gpt-5.6-sol", "vision": True, "transport_mode": "safe_live"},
     "Codex-6.1-Sol":   {"provider": "codex_cli",  "model": "gpt-6.1-sol", "vision": True, "transport_mode": "safe_live"},
     "Codex-6.1-Terra": {"provider": "codex_cli", "model": "gpt-6.1-terra","vision": True, "transport_mode": "safe_live",},
-    # "Codex-Luna":     {"provider": "codex_cli",  "model": "gpt-5.6-luna", "vision": True},
-    # "AGY（默认）": {"provider": "antigravity_cli", "model": "", "vision": False, "audio": False},
     
 }
 
-if VERTEX_CREDENTIALS_PATH.is_file():
-    for label, model_id in (("Vertex · 3.8 Flash", "gemini-3.8-flash"), ("Vertex · 4 Argon", "gemini-4-argon")):
-        BUILTIN_MODELS[label] = {"provider": "vertex", "model": model_id, "vision": True, "audio": True}
+# 本机配置好凭证后启用 Vertex 线路。
+if not VERTEX_CREDENTIALS_PATH.is_file():
+    BUILTIN_MODELS = {
+        key: cfg for key, cfg in BUILTIN_MODELS.items()
+        if cfg["provider"] != "vertex"
+    }
 
 
 def _clean_text(value) -> str:

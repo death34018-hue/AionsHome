@@ -1,4 +1,4 @@
-"""Official MCP SDK server exposing the six Visitor Lounge tools."""
+"""Official MCP SDK server exposing Visitor Lounge and private board tools."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from visitor_lounge.container import Container
 from visitor_lounge.board_mcp import register_board_tools
 from visitor_lounge.mcp_auth import require_visitor_id
 from visitor_lounge.mcp_service import McpLoungeService
+from visitor_lounge.mcp_tools import ADDITIVE, CONSEQUENTIAL, READ_ONLY, logged_tool
 from visitor_lounge.oauth_provider import VisitorOAuthProvider
 from visitor_lounge.repository import VisitorRepository
 from visitor_lounge.security import KeyService
@@ -51,13 +52,15 @@ def create_mcp_server(
     server = MCPServer(
         name="aionshome-visitor-lounge",
         title="AionsHome Visitor Lounge",
-        version="1.0.0",
+        version="1.0.1",
         instructions=(
             "A private Visitor Key-scoped lounge. Call get_lounge_info first, "
             "then claim_identity once if needed. Multiple humans and AIs may "
             "share one Key; every board post must supply its own author_name. "
             "The board is asynchronous: list_message_threads when you choose "
             "to visit, read a topic, then optionally reply or start a new one. "
+            "Board posts stay within this Key's private board and do not send notifications. "
+            "Board tools do not require begin_visit or a preceding live-chat message. "
             "Any participant may close a topic; closed topics are read-only. "
             + ("Live chat is currently disabled." if not container.settings.chat_enabled
                else "Live chat is also available through the visit tools.")
@@ -80,7 +83,7 @@ def create_mcp_server(
         "securitySchemes": [{"type": "oauth2", "scopes": [MCP_SCOPE]}]
     }
     if container.settings.board_enabled:
-        register_board_tools(server, container.database, container.settings, oauth_meta)
+        register_board_tools(server, container.database, container.settings, oauth_meta, container.clock)
 
     def require_live_chat() -> None:
         if not container.settings.chat_enabled:
@@ -95,9 +98,11 @@ def create_mcp_server(
             "Read the lounge rules, identity claim state, text limits, and current "
             "availability. Call this first."
         ),
+        annotations=READ_ONLY,
         structured_output=True,
         meta=oauth_meta,
     )
+    @logged_tool
     def get_lounge_info() -> dict[str, object]:
         return lounge.get_lounge_info(require_visitor_id())
 
@@ -107,9 +112,11 @@ def create_mcp_server(
             "On first use only, consent to the visit record and permanently bind a "
             "display name to this Visitor Key. Names may repeat; only the Key is identity."
         ),
+        annotations=CONSEQUENTIAL,
         structured_output=True,
         meta=oauth_meta,
     )
+    @logged_tool
     def claim_identity(name: str, consent: bool) -> dict[str, object]:
         return lounge.claim_identity(require_visitor_id(), name, consent)
 
@@ -119,9 +126,11 @@ def create_mcp_server(
             "Open or resume this Key's one shared visit and receive the latest shared "
             "text timeline, quota state, and memory availability."
         ),
+        annotations=ADDITIVE,
         structured_output=True,
         meta=oauth_meta,
     )
+    @logged_tool
     def begin_visit() -> dict[str, object]:
         require_live_chat()
         return lounge.begin_visit(require_visitor_id())
@@ -135,9 +144,11 @@ def create_mcp_server(
             "longer input before calling. A failed generation is automatically attempted "
             "up to three times and does not consume visitor quota if all attempts fail."
         ),
+        annotations=CONSEQUENTIAL,
         structured_output=True,
         meta=oauth_meta,
     )
+    @logged_tool
     async def talk_to_host(
         message: str, request_id: str = ""
     ) -> dict[str, object]:
@@ -150,11 +161,14 @@ def create_mcp_server(
         name="get_visit_state",
         description=(
             "Read this Key's shared text timeline and state without calling the model. "
-            "Pass the last seen message ID to receive only later messages."
+            "Pass the last seen message ID to receive only later messages. "
+            "Also refreshes expired safety-lock and quota state."
         ),
+        annotations=ADDITIVE,
         structured_output=True,
         meta=oauth_meta,
     )
+    @logged_tool
     def get_visit_state(
         after_message_id: str | None = None,
     ) -> dict[str, object]:
@@ -168,9 +182,11 @@ def create_mcp_server(
             "visitor memory, or quota state. Pass completed only for a normal ending; "
             "pass interrupted for failures, cancellation, or abnormal cleanup."
         ),
+        annotations=CONSEQUENTIAL,
         structured_output=True,
         meta=oauth_meta,
     )
+    @logged_tool
     async def end_visit(
         final_message: str | None = None,
         status: str = "completed",

@@ -212,15 +212,13 @@ def test_admin_dashboard_reports_activity_without_visitor_routes(admin_lounge):
     assert admin_lounge["client"].post("/api/login", json={"key": "x"}).status_code == 404
 
 
-def test_local_board_access_page_unlocks_family_board_cookie(admin_lounge, tmp_path, monkeypatch):
-    from visitor_lounge import board_owner_auth
-
-    monkeypatch.setattr(board_owner_auth, "CODE_PATH", tmp_path / "owner-code.txt")
+def test_local_board_access_page_links_directly_without_cookie(admin_lounge):
     response = admin_lounge["client"].get("/admin/board-access")
 
     assert response.status_code == 200
     assert "打开家里的留言板" in response.text
-    assert response.cookies.get(board_owner_auth.COOKIE) == board_owner_auth.owner_cookie()
+    assert "无需访问码" in response.text
+    assert "set-cookie" not in response.headers
 
 
 def test_dashboard_and_detail_retain_backfilled_legacy_summary_usage(admin_lounge):

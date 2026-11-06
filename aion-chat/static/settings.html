@@ -747,7 +747,7 @@ body[data-theme="light"] .transport-mode-btn.is-active {
             <input class="form-input mono-input" type="text" id="imageGenModelInput" placeholder="填写服务商提供的完整生图模型 ID" autocomplete="off">
           </div>
         </div>
-        <p class="hint">使用 chat/completions 接口，参考图通过 image_url 发送。请填写支持此格式生图的模型，不是仅支持看图的聊天模型。自定义接口失败时不会自动改用 Gemini。</p>
+        <p class="hint">GPT Image 模型自动使用图片接口，带锚点时上传原图。其他模型沿用 chat/completions；也可填写完整的 images/generations、images/edits 或 chat/completions 地址指定接口。</p>
         </div>
       </div>
     </details>

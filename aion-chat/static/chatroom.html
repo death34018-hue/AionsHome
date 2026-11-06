@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>聊天室</title>
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/public/icon-192.png" type="image/png">
@@ -10,7 +10,10 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#050923">
-<link rel="stylesheet" href="/static/chatroom.css?v=20261104-image-retry-small">
+<script>
+if (navigator.userAgent.includes('AionChatApp')) document.documentElement.classList.add('aion-app');
+</script>
+<link rel="stylesheet" href="/static/chatroom.css?v=20261105-status-bar">
 <link rel="stylesheet" href="/static/ai-message-editor.css?v=20260920">
 <link rel="stylesheet" href="/static/pat.css?v=inline-order-20260910">
 <link rel="stylesheet" href="/static/memory-editor.css?v=20260905">

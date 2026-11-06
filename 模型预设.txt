@@ -1,0 +1,10 @@
+硅基流动模型：
+Pro/zai-org/GLM-5（已内置）
+Pro/zai-org/GLM-4.7
+Pro/moonshotai/Kimi-K2.5（已内置）
+
+Gemini模型：
+gemini-3.1-flash-lite
+gemini-2.5-pro
+gemini-3-flash-preview
+gemini-3.1-pro-preview

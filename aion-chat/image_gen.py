@@ -17,10 +17,15 @@ from system_logs import logged_ai_call
 REFERENCE_IMAGE_PATH = PUBLIC_DIR / "生图锚点.jpg"
 SECONDARY_REFERENCE_IMAGE_PATH = PUBLIC_DIR / "2号机生图锚点.jpg"
 IMAGE_GEN_MODEL = "gemini-3.1-flash-lite-image"
-IMAGE_GEN_TIMEOUT = 120  # 生图超时秒数
+IMAGE_GEN_TIMEOUT = 600  # 静图、动图统一等待 10 分钟
+GIF_MODELS = {'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'}
 
 
 _retry_selfie_reference = ContextVar('retry_selfie_reference', default=None)
+
+
+def generated_image_attachment(filename):
+    return {'type': 'image', 'url': f'/uploads/{filename}', 'generated_at': time.time()}
 
 
 def _selfie_reference_path(source_identity: str = "") -> Path:
@@ -32,12 +37,25 @@ def _selfie_reference_path(source_identity: str = "") -> Path:
     return REFERENCE_IMAGE_PATH
 
 
-def _openai_image_source(data: dict) -> str | None:
-    """兼容中转站 image_urls、结构化图片内容及 Markdown 图片链接。"""
+def supports_gif_generation() -> bool:
+    return (
+        SETTINGS.get('image_gen_provider') not in ('codex', 'flowai')
+        and (SETTINGS.get('image_gen_model') or '').strip() in GIF_MODELS
+        and bool((SETTINGS.get('image_gen_api_key') or '').strip())
+        and bool((SETTINGS.get('image_gen_base_url') or '').strip())
+        and not SETTINGS['image_gen_base_url'].rstrip('/').endswith('/chat/completions')
+    )
+
+
+def _openai_image_source(data: dict, *, output_format: str = 'png') -> str | None:
+    """兼容图片接口的 data 和聊天接口返回的图片内容。"""
     def extract(value):
         if isinstance(value, list):
             return next((source for item in value if (source := extract(item))), None)
         if isinstance(value, dict):
+            if value.get("b64_json"):
+                mime = 'image/gif' if data.get('output_format', output_format) == 'gif' else 'image/png'
+                return f"data:{mime};base64," + value["b64_json"]
             for key in ("image_urls", "images", "image_url", "url", "content", "text"):
                 source = extract(value.get(key))
                 if source:
@@ -52,41 +70,77 @@ def _openai_image_source(data: dict) -> str | None:
         return None
 
     choices = data.get("choices") or []
-    return extract(choices[0].get("message", {}) if choices else {}) or extract(data.get("image_urls"))
+    return (extract(data.get("data"))
+            or extract(choices[0].get("message", {}) if choices else {})
+            or extract(data.get("image_urls")))
 
 
 async def _generate_openai_image(prompt: str, is_selfie: bool, source_identity: str,
-                                 base_url: str, api_key: str, model: str, references=None) -> str | None:
+                                 base_url: str, api_key: str, model: str, references=None,
+                                 *, output_format: str | None = None, raise_errors=False) -> str | None:
     try:
-        content = [{"type": "text", "text": prompt}]
-        for ref in references or []:
-            path = Path(ref['path'])
-            mime = mimetypes.guess_type(path.name)[0] or 'image/jpeg'
-            encoded = base64.b64encode(path.read_bytes()).decode('ascii')
-            content.extend([{'type': 'text', 'text': f"下面的参考照片对应人物：{ref['name']}。保持此人的面部特征，不与其他角色混淆。"},
-                            {'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,{encoded}'}}])
+        refs = list(references or [])
         reference_bytes = None
-        if is_selfie and not references:
+        if is_selfie and not refs:
             reference = _selfie_reference_path(source_identity)
             if reference.exists():
                 reference_bytes = reference.read_bytes()
-                encoded = base64.b64encode(reference_bytes).decode("ascii")
-                content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{encoded}"}})
+                refs.append({'name': '', 'path': reference})
             else:
                 print(f"[image_gen] 参考图不存在: {reference}，降级为 DRAW 模式")
 
         url = base_url.rstrip("/")
-        if not url.endswith("/chat/completions"):
-            url += "/chat/completions" if url.endswith("/v1") else "/v1/chat/completions"
+        # Relays often prefix GPT Image IDs with their billing labels.
+        image_endpoint = url.endswith(("/images/generations", "/images/edits"))
+        use_images = (image_endpoint
+                      or ("gpt-image" in model.lower() and not url.endswith("/chat/completions")))
+        content = [{"type": "text", "text": prompt}]
+        files, labels = [], []
+        for index, ref in enumerate(refs, 1):
+            path = Path(ref['path'])
+            mime = mimetypes.guess_type(path.name)[0] or 'image/jpeg'
+            data = reference_bytes if reference_bytes is not None else path.read_bytes()
+            if use_images:
+                files.append(('image[]', (f'anchor-{index}{path.suffix}', data, mime)))
+                if ref['name']:
+                    labels.append(f"参考图 {index} 对应人物：{ref['name']}。保持各自的面部特征。")
+            else:
+                if ref['name']:
+                    content.append({'type': 'text', 'text': f"下面的参考照片对应人物：{ref['name']}。保持此人的面部特征，不与其他角色混淆。"})
+                encoded = base64.b64encode(data).decode('ascii')
+                content.append({'type': 'image_url', 'image_url': {'url': f'data:{mime};base64,{encoded}'}})
+
+        if use_images:
+            url = url.removesuffix("/images/generations").removesuffix("/images/edits")
+            if not image_endpoint and not url.endswith("/v1"):
+                url += "/v1"
+            if files:
+                url += "/images/edits"
+                request = {'data': {'model': model, 'prompt': '\n'.join([*labels, prompt]), 'n': '1'},
+                           'files': files}
+            else:
+                url += "/images/generations"
+                request = {'json': {'model': model, 'prompt': prompt, 'n': 1}}
+            if output_format == 'gif':
+                animation = {'output_format': 'gif', 'frame_count': 9,
+                             'frame_duration_ms': 200, 'size': 'auto'}
+                if files:
+                    request['data'].update({key: str(value) for key, value in animation.items()})
+                else:
+                    request['json'].update(animation)
+        else:
+            if not url.endswith("/chat/completions"):
+                url += "/chat/completions" if url.endswith("/v1") else "/v1/chat/completions"
+            request = {'json': {"model": model, "stream": False, "messages": [{"role": "user", "content": content}]}}
         async with httpx.AsyncClient(timeout=IMAGE_GEN_TIMEOUT) as client:
             print(f"[image_gen] 使用自定义生图模型: {model}")
             response = await client.post(
                 url,
                 headers={"Authorization": f"Bearer {api_key}"},
-                json={"model": model, "stream": False, "messages": [{"role": "user", "content": content}]},
+                **request,
             )
             response.raise_for_status()
-            source = _openai_image_source(response.json())
+            source = _openai_image_source(response.json(), output_format=output_format or 'png')
             if not source:
                 print("[image_gen] 自定义接口响应中未找到图片")
                 return None
@@ -106,8 +160,29 @@ async def _generate_openai_image(prompt: str, is_selfie: bool, source_identity: 
         return await save_generated_image(image_bytes, prompt=prompt, model=model,
                                           actor=source_identity, kind="selfie" if is_selfie else "draw",
                                           reference_bytes=reference_bytes)
+    except httpx.TimeoutException as exc:
+        print(f"[image_gen] 自定义生图超时（{type(exc).__name__}，等待上限 {IMAGE_GEN_TIMEOUT} 秒），未切换至 Gemini")
+        if raise_errors:
+            raise TimeoutError(f"生图请求超时（等待上限 {IMAGE_GEN_TIMEOUT} 秒），请稍后重试") from exc
     except httpx.HTTPStatusError as exc:
-        print(f"[image_gen] 自定义生图请求失败（HTTP {exc.response.status_code}），未切换至 Gemini")
+        # Keep the error code, not the raw message (which may echo private inputs).
+        code = ''
+        try:
+            body = exc.response.json()
+            error = body.get('error') if isinstance(body, dict) else None
+            if isinstance(error, dict):
+                code = error.get('code') or error.get('type') or ''
+        except ValueError:
+            pass
+        if not isinstance(code, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,79}', code):
+            code = ''
+        reason = ('生图请求被内容审核拒绝' if code in ('moderation_blocked', 'content_policy_violation')
+                  else '生图接口请求失败')
+        detail = f'HTTP {exc.response.status_code}' + (f'，{code}' if code else '')
+        message = f'{reason}（{detail}）'
+        print(f"[image_gen] {message}，未切换至 Gemini")
+        if raise_errors:
+            raise ValueError(message) from None
     except Exception as exc:
         # 不打印请求 URL、响应正文等可能包含凭据的内容。
         print(f"[image_gen] 自定义生图失败（{type(exc).__name__}），未切换至 Gemini")
@@ -137,12 +212,15 @@ def image_model_label():
 
 @logged_ai_call("image", model=image_model_label)
 async def generate_image(prompt: str, is_selfie: bool = False, source_identity: str = "", *, references=None,
-                         raise_errors=False, flow_job_id=None, on_flow_job=None, flow_model=None) -> str | None:
+                         raise_errors=False, flow_job_id=None, on_flow_job=None, flow_model=None,
+                         output_format: str | None = None) -> str | None:
     """
     调用设置中的生图来源，未配置时使用 Gemini；保存到相册并返回 uploads 相对路径。
     is_selfie=True 时自动附带参考图。
-    失败返回 None；调用方可请求保留 Codex 异常以展示失败原因。
+    失败默认返回 None；聊天调用可保留超时等异常以展示失败原因。
     """
+    if output_format == 'gif' and (flow_model or not supports_gif_generation()):
+        raise ValueError('当前生图线路不支持 GIF，请使用 GPT Image 2.6 的图片 API。')
     if flow_model or SETTINGS.get('image_gen_provider') == 'flowai':
         from flowai_image_gen import generate_flowai_image, FLARE
         try:
@@ -164,9 +242,14 @@ async def generate_image(prompt: str, is_selfie: bool = False, source_identity: 
         if not all(custom):
             print("[image_gen] 请完整填写生图 API 地址、Key 和模型名，或全部清空以使用 Gemini")
             return None
+        options = {}
+        if raise_errors:
+            options['raise_errors'] = True
         if references:
-            return await _generate_openai_image(prompt, is_selfie, source_identity, *custom, references=references)
-        return await _generate_openai_image(prompt, is_selfie, source_identity, *custom)
+            options['references'] = references
+        if output_format:
+            options['output_format'] = output_format
+        return await _generate_openai_image(prompt, is_selfie, source_identity, *custom, **options)
 
     api_key = get_key("gemini")
     if not api_key:
@@ -256,15 +339,20 @@ async def generate_image(prompt: str, is_selfie: bool = False, source_identity: 
 async def generate_chat_image(prompt: str, is_selfie: bool = False, source_identity: str = '', *, on_prepared=None):
     """Resolve the chat command's cast before dispatching to any image provider."""
     from image_anchors import resolve_chat_references
+    options = {}
+    animation = re.match(r'^\s*format\s*=\s*gif\s*\|\s*(.+)$', prompt, flags=re.I | re.S)
+    if animation:
+        prompt = animation.group(1)
+        options['output_format'] = 'gif'
     prompt, references = await resolve_chat_references(prompt, is_selfie, source_identity)
     if on_prepared is not None:
         import chatroom_image_retry as retry
-        payload = await retry.snapshot(prompt, references, is_selfie, source_identity)
+        payload = await retry.snapshot(prompt, references, is_selfie, source_identity, **options)
         on_prepared(payload)
         async def remember(updated):
             on_prepared(updated)
         return await retry.generate(payload, on_snapshot=remember)
-    kwargs = {'is_selfie': is_selfie, 'source_identity': source_identity, 'raise_errors': True}
+    kwargs = {'is_selfie': is_selfie, 'source_identity': source_identity, 'raise_errors': True, **options}
     if references:
         kwargs['references'] = references
     return await generate_image(prompt, **kwargs)

@@ -19,7 +19,8 @@ test('floating chat follows the visible subpage and returning to private chat', 
     localStorage: { getItem: () => 'dark' }, currentConvId: null,
   });
   const source = read('chat.js');
-  vm.runInContext(block(source, 'function syncSubPageMode(', 'const persistentSubPageFrames =')
+  vm.runInContext(block(read('chat.html'), 'function syncSubPageLayout(', '// Start the desktop')
+    + block(source, 'function syncSubPageMode(', 'const persistentSubPageFrames =')
     + block(source, 'function closeSubPage(', '// 导航到 Home'), ctx);
   ctx.syncSubPageMode('/reading?book=1');
   ctx.syncSubPageMode('/theater');

@@ -110,10 +110,21 @@ def _character_keys(anchors):
 
 
 async def chat_image_prompt(who='aion'):
+    from image_gen import supports_gif_generation
     intro = (
         '【聊天生图】应请求或聊天情境发图时，每次回复最多用一个生图指令，场景提示词用英文。'
+        '注意生图提示词不要自行添加挑逗、性暗示或露骨的身体细节，会被审核不通过。可用隐晦描述提示词聚焦人物、服饰、构图、光线和动作，减少过于直白的用词。例如不要写“亲密场景”“性爱”“挑逗”等。参考用词方面，可以用“短裤”，但不可以用“内裤”。'
+        'GIF 每次只安排 1—2 个简单动作，避免在短循环中堆叠多个连续事件。'
         '对方只说“发张自拍”时，默认只拍你自己，用 [SELFIE: English scene prompt]，系统按当前发言者选参考照。'
     )
+    if supports_gif_generation():
+        intro += (
+            '\n只有对方明确要求 GIF、动图或动画时，才在生图指令内容最前面加 format=gif |；'
+            '人物选择规则不变，英文场景写清动作和循环方式。'
+            '例如 [DRAW: format=gif | A tiny lantern gently sways in a seamless loop]。'
+            '自拍动图用 [SELFIE: format=gif | English scene and loop]，合拍则在 format=gif | 后加人物名单。'
+            '动图默认 9 帧、每帧 200 毫秒，适合眨眼、挥手、发光等短循环；普通生图不要加这个参数。\n'
+        )
     anchors = await load_anchors()
     if not anchors:
         return intro + '与你合拍的自拍也用 SELFIE，其他照片或绘画用 [DRAW: English scene prompt]。'

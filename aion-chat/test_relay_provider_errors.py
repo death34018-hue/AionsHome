@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from ai_providers import build_multimodal_messages, call_aipro, call_custom_openai
+from ai_providers import build_multimodal_messages, call_aipro, call_custom_openai, call_gemini, call_siliconflow
 from routes import chat as chat_routes
 from stream_safety import StreamActivity
 
@@ -277,9 +277,48 @@ class RelayProviderErrorPassthroughTests(unittest.IsolatedAsyncioTestCase):
             "model": "unit-model",
             "messages": [{"role": "user", "content": "hello"}],
             "stream": True,
-            "temperature": 0.7,
             "max_tokens": 123,
         })
+
+    async def test_official_token_limit_and_default_temperature_preserve_relay_compatibility(self):
+        for base_url, use_default, effort, token_field in (
+            ("https://api.openai.com/v1", True, "high", "max_completion_tokens"),
+            ("https://api.openai.com/v1", False, "none", "max_completion_tokens"),
+            ("https://relay.example/v1", True, "high", "max_tokens"),
+        ):
+            with self.subTest(base_url=base_url, effort=effort):
+                response = FakeStreamResponse(lines=["data: [DONE]"])
+                factory = fake_client_factory(response)
+                cfg = {
+                    "base_url": base_url,
+                    "model": "gpt-6.1-terra",
+                    "use_default_reasoning_effort": use_default,
+                    "reasoning_effort": effort,
+                }
+                with patch("ai_providers.httpx.AsyncClient", new=factory):
+                    async for _ in call_custom_openai.__wrapped__(
+                        [{"role": "user", "content": "hello"}], cfg, temperature=0.7, max_tokens=256
+                    ):
+                        pass
+                payload = factory.clients[0].calls[0][1]["json"]
+                self.assertNotIn("temperature", payload)
+                self.assertEqual(payload.get(token_field), 256)
+                self.assertFalse("max_tokens" in payload and "max_completion_tokens" in payload)
+
+    async def test_chat_providers_ignore_legacy_temperature_and_keep_output_limit(self):
+        for provider in (call_siliconflow, call_aipro, call_gemini):
+            with self.subTest(provider=provider.__name__):
+                factory = fake_client_factory(FakeStreamResponse(lines=["data: [DONE]"]))
+                with patch("ai_providers.httpx.AsyncClient", new=factory):
+                    async for _ in provider.__wrapped__(
+                        [{"role": "user", "content": "hello"}], "unit-model",
+                        temperature=0.7, max_tokens=256
+                    ):
+                        pass
+                payload = factory.clients[0].calls[0][1]["json"]
+                params = payload.get("generationConfig", payload)
+                self.assertNotIn("temperature", params)
+                self.assertEqual(params.get("maxOutputTokens", params.get("max_tokens")), 256)
 
     async def test_custom_openai_sends_selected_reasoning_effort_only_when_overridden(self):
         response = FakeStreamResponse(status_code=200, lines=["data: [DONE]"])

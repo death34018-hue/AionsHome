@@ -164,9 +164,6 @@ async function init() {
   // 恢复上下文数量设置
   const savedCtx = localStorage.getItem('aion_context_limit');
   if (savedCtx) { $("contextSlider").value = savedCtx; $("contextValue").textContent = savedCtx + '条'; }
-  // 恢复温度设置
-  const savedTemp = localStorage.getItem('aion_temperature');
-  if (savedTemp) { $("tempSlider").value = savedTemp; $("tempValue").textContent = savedTemp; }
   // 恢复最大回复长度设置
   const savedMaxTokens = localStorage.getItem('aion_max_tokens');
   if (savedMaxTokens) { $("maxTokensSlider").value = savedMaxTokens; const v = parseInt(savedMaxTokens); $("maxTokensValue").textContent = v === 0 ? '不限' : v; }
@@ -417,12 +414,6 @@ async function rerollIntimacyPreview() {
   } finally {
     if (btn) btn.disabled = false;
   }
-}
-
-// 同步温度到后端 settings
-async function syncTemperature() {
-  const t = parseFloat($("tempSlider").value);
-  await api("PUT", "/api/settings/temperature", { temperature: t });
 }
 
 // ── 语音唤醒通话模式 ──
@@ -3238,12 +3229,11 @@ async function send() {
   _abortController = generation.controller;
   try {
     const contextLimit = parseInt($("contextSlider").value) || 30;
-    const temperature = parseFloat($("tempSlider").value);
     const maxTokens = _getMaxTokens();
     const res = await _chatControl.fetch(generation, `/api/conversations/${currentConvId}/send`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ content: text, rps_round_id: rpsRoundId, context_limit: contextLimit, attachments, whisper_mode: whisperMode, temperature, max_tokens: maxTokens, tts_enabled: ttsEnabled, tts_voice: ttsVoiceId, client_id: _clientId }),
+      body: JSON.stringify({ content: text, rps_round_id: rpsRoundId, context_limit: contextLimit, attachments, whisper_mode: whisperMode, max_tokens: maxTokens, tts_enabled: ttsEnabled, tts_voice: ttsVoiceId, client_id: _clientId }),
       signal: generation.controller.signal
     });
 
@@ -3456,12 +3446,11 @@ async function saveEdit(id) {
   _abortController = generation.controller;
   try {
     const contextLimit = parseInt($('contextSlider').value) || 30;
-    const temperature = parseFloat($('tempSlider').value);
     const maxTokens = _getMaxTokens();
     const res = await _chatControl.fetch(generation, `/api/messages/${id}/edit-resend`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ content: newText, context_limit: contextLimit, whisper_mode: whisperMode, temperature, max_tokens: maxTokens, tts_enabled: ttsEnabled, tts_voice: ttsVoiceId, client_id: _clientId }),
+      body: JSON.stringify({ content: newText, context_limit: contextLimit, whisper_mode: whisperMode, max_tokens: maxTokens, tts_enabled: ttsEnabled, tts_voice: ttsVoiceId, client_id: _clientId }),
       signal: generation.controller.signal
     });
 
@@ -3614,10 +3603,9 @@ async function regenerateMsg(aiMsgId) {
   _abortController = generation.controller;
   try {
     const cl = parseInt($("contextSlider").value) || 30;
-    const temperature = parseFloat($("tempSlider").value);
     const maxTokens = _getMaxTokens();
     const mtParam = maxTokens ? `&max_tokens=${maxTokens}` : '';
-    const res = await _chatControl.fetch(generation, `/api/conversations/${currentConvId}/regenerate?context_limit=${cl}&whisper_mode=${whisperMode}&temperature=${temperature}${mtParam}&tts_enabled=${ttsEnabled}&tts_voice=${encodeURIComponent(ttsVoiceId)}`, {
+    const res = await _chatControl.fetch(generation, `/api/conversations/${currentConvId}/regenerate?context_limit=${cl}&whisper_mode=${whisperMode}${mtParam}&tts_enabled=${ttsEnabled}&tts_voice=${encodeURIComponent(ttsVoiceId)}`, {
       method: "POST", headers: {"Content-Type": "application/json"},
       signal: generation.controller.signal
     });
@@ -5218,12 +5206,11 @@ async function _voiceSendMessage(audioBlob, duration, localTranscript = null, ta
   _abortController = generation.controller;
   try {
     const contextLimit = parseInt($("contextSlider").value) || 30;
-    const temperature = parseFloat($("tempSlider").value);
     const maxTokens = _getMaxTokens();
     const res = await _chatControl.fetch(generation, `/api/conversations/${currentConvId}/send`, {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ content: "", rps_round_id: window.AionRps?.pendingRoundId() || "", context_limit: contextLimit, attachments, whisper_mode: whisperMode, temperature, max_tokens: maxTokens, tts_enabled: ttsEnabled, tts_voice: ttsVoiceId, client_id: _clientId }),
+      body: JSON.stringify({ content: "", rps_round_id: window.AionRps?.pendingRoundId() || "", context_limit: contextLimit, attachments, whisper_mode: whisperMode, max_tokens: maxTokens, tts_enabled: ttsEnabled, tts_voice: ttsVoiceId, client_id: _clientId }),
       signal: generation.controller.signal
     });
     // 复用和 send() 完全相同的 SSE 处理逻辑
@@ -5785,11 +5772,9 @@ function syncSubPageMode(url) {
   })();
   try { window.AionFloatingChat?.setVisiblePage?.(path); } catch(e) {}
   const isHome = path === '/';
-  const isImmersive = ['/wishes', '/texas-holdem', '/liars-dice'].includes(path);
   const ov = $('subPageOverlay');
   ov.classList.remove('album-viewing');
-  ov.classList.toggle('home-subpage', isHome);
-  ov.classList.toggle('immersive-subpage', isImmersive);
+  syncSubPageLayout(ov, path);
   if (isHome) resetSubPageChrome();
   else applySubPageThemeChrome();
   $('subPageTitle').textContent = _subPageNames[path] || '';
