@@ -1,0 +1,990 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>AION · 身份接入</title>
+<style>
+:root{
+  --g:#3dff8f;
+  --g-rgb:61,255,143;
+  --ink:#e4fff0;
+  --ink-dim:rgba(217,255,233,.55);
+  --warn:#ff5d73;
+  --mono:"JetBrains Mono","SF Mono","Cascadia Mono",Consolas,"Roboto Mono",Menlo,monospace;
+  --sans:"PingFang SC","HarmonyOS Sans SC","MiSans","Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;
+  --st:env(safe-area-inset-top,0px);
+  --sb:env(safe-area-inset-bottom,0px);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#000;overflow:hidden}
+body{display:flex;align-items:center;justify-content:center;color:var(--ink);font-family:var(--sans);
+  -webkit-font-smoothing:antialiased;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+button{font:inherit;color:inherit}
+
+/* ---------- 舞台：手机竖屏 ---------- */
+.app{position:relative;width:min(100vw,480px,56.25vh);height:100vh;overflow:hidden;background:#000;
+  isolation:isolate;container-type:inline-size;-webkit-user-select:none;user-select:none}
+@supports (height:100dvh){.app{width:min(100vw,480px,56.25dvh);height:100dvh}}
+
+/* ---------- 人物主视觉 ---------- */
+.portrait-wrap{position:absolute;left:0;top:0;width:100%;aspect-ratio:941/1672;z-index:1}
+.portrait,.ghost-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block;pointer-events:none}
+.portrait{clip-path:inset(0 0 100% 0);
+  -webkit-mask-image:linear-gradient(#000 76%,transparent 100%);mask-image:linear-gradient(#000 76%,transparent 100%);
+  transition:filter 1.2s}
+.portrait.revealing{animation:reveal 1.7s cubic-bezier(.55,0,.3,1) forwards,holo 2.6s ease-out}
+.portrait.revealing.fast{animation-duration:.8s,1.2s}
+.portrait.shown{clip-path:inset(0 0 0 0)}
+@keyframes reveal{to{clip-path:inset(0 0 0 0)}}
+@keyframes holo{
+  0%{filter:sepia(1) hue-rotate(78deg) saturate(4) brightness(1.55) contrast(1.35)}
+  50%{filter:sepia(.55) hue-rotate(78deg) saturate(2) brightness(1.15) contrast(1.1)}
+  100%{filter:none}}
+.ghost-img{opacity:0;mix-blend-mode:screen;filter:sepia(1) hue-rotate(78deg) saturate(4) brightness(1.1)}
+.scanbar{position:absolute;left:0;right:0;top:0;height:2px;background:#eafff3;opacity:0;
+  box-shadow:0 0 10px 2px var(--g),0 0 40px 10px rgba(var(--g-rgb),.35)}
+.scanbar::before{content:"";position:absolute;left:0;right:0;bottom:2px;height:90px;
+  background:linear-gradient(to top,rgba(var(--g-rgb),.28),transparent)}
+.scanbar.run{animation:scanbar 1.7s cubic-bezier(.55,0,.3,1) forwards}
+.scanbar.run.fast{animation-duration:.8s}
+@keyframes scanbar{0%{top:0;opacity:1}90%{opacity:1}100%{top:100%;opacity:0}}
+.app.granted .portrait{filter:brightness(1.07) saturate(1.08)}
+
+/* ---------- 画布与氛围层 ---------- */
+.layer{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#rain{z-index:2;mix-blend-mode:screen;opacity:0;transition:opacity 1.4s}
+#rain.on{opacity:.8}
+#rain.dim{opacity:.55;
+  -webkit-mask-image:linear-gradient(90deg,#000 0%,#000 20%,transparent 46%,transparent 86%,rgba(0,0,0,.5) 100%);
+  mask-image:linear-gradient(90deg,#000 0%,#000 20%,transparent 46%,transparent 86%,rgba(0,0,0,.5) 100%)}
+.shade{position:absolute;left:0;right:0;bottom:0;height:62%;z-index:3;pointer-events:none;opacity:0;transition:opacity 1.4s;
+  background:linear-gradient(to bottom,rgba(0,0,0,0) 0%,rgba(0,5,3,.5) 32%,rgba(0,4,2,.86) 62%,#000 100%)}
+.shade.on{opacity:1}
+#waves{z-index:4;mix-blend-mode:screen;opacity:0;transition:opacity 1.8s}
+#waves.on{opacity:1}
+.fx-scan{position:absolute;inset:0;z-index:20;pointer-events:none;opacity:.55;
+  background:repeating-linear-gradient(to bottom,rgba(0,0,0,.28) 0 1px,transparent 1px 3px)}
+.fx-vig{position:absolute;inset:0;z-index:20;pointer-events:none;
+  background:radial-gradient(ellipse 85% 70% at 55% 38%,transparent 55%,rgba(0,0,0,.65) 100%)}
+.sweep{position:absolute;left:0;right:0;top:-140px;height:130px;z-index:21;pointer-events:none;opacity:0;mix-blend-mode:screen;
+  background:linear-gradient(to bottom,transparent,rgba(var(--g-rgb),.05) 80%,rgba(var(--g-rgb),.22) 99%,transparent)}
+.sweep.on{animation:sweep 8s linear 1s infinite}
+@keyframes sweep{0%{top:-140px;opacity:1}65%{top:100%;opacity:1}65.1%,100%{top:100%;opacity:0}}
+
+/* ---------- 顶部 HUD ---------- */
+.hud-top{position:absolute;z-index:25;left:0;right:0;top:0;display:flex;align-items:center;justify-content:space-between;
+  padding:calc(var(--st) + 12px) 14px 0;font:500 9.5px/1 var(--mono);letter-spacing:.16em;color:rgba(var(--g-rgb),.9);
+  opacity:0;transform:translateY(-6px);transition:opacity .8s,transform .8s;pointer-events:none;text-shadow:0 0 6px rgba(var(--g-rgb),.6)}
+.hud-top.on{opacity:1;transform:none}
+.hud-top .l,.hud-top .r{display:flex;align-items:center;gap:9px}
+.hud-dot{width:6px;height:6px;border-radius:50%;background:var(--warn);box-shadow:0 0 8px var(--warn);animation:blink 1.4s steps(2) infinite}
+.app.granted .hud-dot{background:var(--g);box-shadow:0 0 8px var(--g)}
+.dim{opacity:.5}
+.sig{display:inline-flex;gap:2px;align-items:flex-end;height:9px}
+.sig i{display:block;width:2px;background:currentColor}
+.sig i:nth-child(1){height:3px}.sig i:nth-child(2){height:5px}.sig i:nth-child(3){height:7px}.sig i:nth-child(4){height:9px;opacity:.35}
+.snd{pointer-events:auto;cursor:pointer;background:none;border:1px solid rgba(var(--g-rgb),.35);padding:4px 6px;
+  font:500 9px/1 var(--mono);letter-spacing:.12em;color:var(--g)}
+.snd[aria-pressed="false"]{opacity:.45}
+
+/* ---------- 开机序列 ---------- */
+.boot{position:absolute;inset:0;z-index:30;pointer-events:none}
+.boot.gone{display:none}
+.crt{position:absolute;left:0;right:0;top:50%;height:2px;margin-top:-1px;background:#eafff3;opacity:0;transform:scaleX(0);
+  box-shadow:0 0 18px 4px rgba(var(--g-rgb),.85)}
+.boot.crt-on .crt{animation:crt .85s cubic-bezier(.3,0,.2,1) forwards}
+@keyframes crt{0%{transform:scaleX(0);opacity:1}38%{transform:scaleX(1) scaleY(1);opacity:1}60%{transform:scaleX(1) scaleY(1);opacity:.9}
+  100%{transform:scaleX(1) scaleY(90);opacity:0}}
+.term{position:absolute;left:16px;right:16px;top:calc(var(--st) + 44px);white-space:pre;overflow:hidden;
+  font:400 10px/1.85 var(--mono);font-size:clamp(9px,2.7cqw,11px);color:rgba(var(--g-rgb),.85);
+  text-shadow:0 0 6px rgba(var(--g-rgb),.55);transition:opacity .4s,transform .5s}
+.term .ts{color:rgba(var(--g-rgb),.42)}
+.term .st{color:#eafff3;text-shadow:0 0 8px var(--g)}
+.term .tl:last-child::after{content:"▌";margin-left:2px;animation:blink .7s steps(2) infinite}
+.boot.phase-logo .term{opacity:0;transform:translateY(-10px)}
+.loader{position:absolute;left:50%;top:52%;width:58%;max-width:240px;aspect-ratio:1;opacity:0;
+  transform:translate(-50%,-50%) scale(.8);transition:opacity .7s,transform .9s cubic-bezier(.2,.8,.2,1)}
+.loader.on{opacity:1;transform:translate(-50%,-50%) scale(1)}
+.boot.phase-logo .loader{opacity:0;transform:translate(-50%,-50%) scale(1.3);transition:opacity .35s,transform .5s}
+.loader svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
+.l-r1{fill:none;stroke:rgba(var(--g-rgb),.55);stroke-width:.8;stroke-dasharray:1 5}
+.l-r2{fill:none;stroke:var(--g);stroke-width:1.3;stroke-dasharray:60 22 8 22 90 30;opacity:.75}
+.l-track{fill:none;stroke:rgba(var(--g-rgb),.12);stroke-width:3}
+.l-prog{fill:none;stroke:var(--g);stroke-width:3;stroke-dasharray:477.5;stroke-dashoffset:477.5}
+.l-ticks line{stroke:rgba(var(--g-rgb),.45);stroke-width:.8}
+.spin,.spin-r{transform-box:fill-box;transform-origin:center;animation:spin 14s linear infinite}
+.spin-r{animation-duration:7s;animation-direction:reverse}
+.l-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px}
+.l-pct{font:300 38px/1 var(--mono);font-size:clamp(28px,10cqw,44px);color:#eafff3;text-shadow:0 0 14px rgba(var(--g-rgb),.85)}
+.l-pct small{font-size:.38em;color:var(--g);margin-left:3px}
+.l-label{font:500 8.5px/1 var(--mono);letter-spacing:.28em;color:var(--g);min-height:9px}
+.l-cn{font:400 10px/1 var(--sans);letter-spacing:.45em;margin-right:-.45em;color:var(--ink-dim)}
+
+/* ---------- AION 标志 ---------- */
+.logo{position:absolute;z-index:32;left:13%;right:13%;top:42%;pointer-events:none;opacity:0}
+.logo.on{opacity:1}
+.logo.gone{display:none}
+.logo-mark{display:block;width:100%;height:auto;overflow:visible;transform-origin:0 0}
+.logo.on .logo-mark{animation:glitchIn .95s steps(1) both}
+.logo .gh{opacity:0}
+.logo.on .gh1{animation:ghost1 .95s steps(1) both}
+.logo.on .gh2{animation:ghost2 .95s steps(1) both}
+@keyframes glitchIn{
+  0%{opacity:0}
+  8%{opacity:1;clip-path:inset(20% 0 52% 0);transform:translateX(-12px)}
+  16%{clip-path:inset(58% 0 8% 0);transform:translateX(9px)}
+  24%{opacity:0}
+  32%{opacity:1;clip-path:inset(0 0 66% 0);transform:translateX(5px)}
+  44%{clip-path:inset(36% 0 26% 0);transform:translateX(-7px)}
+  56%{clip-path:none;transform:translateX(3px);opacity:.7}
+  66%{transform:translateX(-1px);opacity:1}
+  76%,100%{clip-path:none;transform:none;opacity:1}}
+@keyframes ghost1{0%{opacity:0}10%{opacity:.9}20%{opacity:0}34%{opacity:.8}48%{opacity:0}58%{opacity:.6}68%,100%{opacity:0}}
+@keyframes ghost2{0%{opacity:0}14%{opacity:.8}26%{opacity:0}40%{opacity:.7}52%{opacity:0}62%{opacity:.5}72%,100%{opacity:0}}
+.logo-sub{margin-top:14px;font:400 8.5px/1 var(--mono);font-size:clamp(7.5px,2.35cqw,10px);letter-spacing:.32em;color:rgba(228,255,240,.75);white-space:nowrap;min-height:10px}
+.logo-bar{display:flex;align-items:center;gap:3px;margin-top:12px}
+.logo-bar i{display:block;width:13px;height:5px;background:var(--g);transform:skewX(-35deg);box-shadow:0 0 8px var(--g)}
+.logo-bar i:nth-child(3){width:6px}
+.logo-bar b{flex:1;height:1px;background:linear-gradient(90deg,var(--g),transparent);transform-origin:left;transform:scaleX(0);transition:transform 1s .3s}
+.logo.on .logo-bar b{transform:scaleX(1)}
+
+/* ---------- 登录面板 ---------- */
+.login{position:absolute;z-index:40;left:14px;right:14px;bottom:calc(var(--sb) + 16px);padding:16px 18px 14px;
+  visibility:hidden;pointer-events:none;transition:opacity .45s,transform .5s}
+.login.on{visibility:visible;pointer-events:auto}
+.login.out{opacity:0;transform:translateY(18px);pointer-events:none}
+.login::before{content:"";position:absolute;inset:0;z-index:-1;opacity:0;transition:opacity .7s;
+  background:linear-gradient(180deg,rgba(6,26,15,.42),rgba(2,12,7,.78));border:1px solid rgba(var(--g-rgb),.16);
+  clip-path:polygon(16px 0,100% 0,100% calc(100% - 16px),calc(100% - 16px) 100%,0 100%,0 16px);
+  -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.login.on::before{opacity:1}
+.cn{position:absolute;width:12px;height:12px;border:0 solid var(--g);pointer-events:none;filter:drop-shadow(0 0 3px var(--g))}
+.cn.tl{top:-1px;left:-1px;border-top-width:1.5px;border-left-width:1.5px}
+.cn.tr{top:-1px;right:-1px;border-top-width:1.5px;border-right-width:1.5px}
+.cn.bl{bottom:-1px;left:-1px;border-bottom-width:1.5px;border-left-width:1.5px}
+.cn.br{bottom:-1px;right:-1px;border-bottom-width:1.5px;border-right-width:1.5px}
+.login>.cn{opacity:0;transition:opacity .5s .15s}
+.login.on>.cn{opacity:1}
+.login>.cn.tl,.login>.cn.br{display:none}
+.stg{opacity:0;transform:translateY(12px);transition:opacity .55s var(--d,0ms),transform .7s cubic-bezier(.2,.8,.2,1) var(--d,0ms)}
+.login.on .stg{opacity:1;transform:none}
+
+.lg-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;
+  font:600 10px/1 var(--mono);letter-spacing:.2em;color:var(--g)}
+.lg-tag{display:flex;align-items:center;gap:8px}
+.lg-tag b{width:0;height:0;border-left:6px solid var(--g);border-top:4px solid transparent;border-bottom:4px solid transparent;
+  filter:drop-shadow(0 0 4px var(--g))}
+.lg-step{font-weight:400;color:var(--ink-dim)}
+.lg-step em{font-style:normal;color:var(--g)}
+
+.field{display:block}
+.field-label{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;
+  font:500 9.5px/1 var(--mono);letter-spacing:.2em;color:rgba(var(--g-rgb),.85)}
+.field-label em{font:400 11px/1 var(--sans);font-style:normal;letter-spacing:.2em;color:var(--ink-dim)}
+.field-box{position:relative;display:flex;align-items:center;height:48px;padding:0 14px;
+  background:rgba(var(--g-rgb),.045);border:1px solid rgba(var(--g-rgb),.26);
+  transition:border-color .3s,box-shadow .3s,background .3s}
+.field-box:focus-within{border-color:rgba(var(--g-rgb),.85);background:rgba(var(--g-rgb),.08);
+  box-shadow:0 0 22px rgba(var(--g-rgb),.22),inset 0 0 18px rgba(var(--g-rgb),.08)}
+.field-box .cn{width:7px;height:7px;opacity:.9}
+.field-prefix{font:600 13px/1 var(--mono);color:var(--g);margin-right:10px;text-shadow:0 0 8px var(--g);animation:blink 1.1s steps(2) infinite}
+.field input{flex:1;min-width:0;height:100%;background:none;border:0;outline:0;border-radius:0;-webkit-appearance:none;appearance:none;
+  font:500 16px/1 var(--sans);letter-spacing:.06em;color:#f0fff6;caret-color:var(--g);
+  -webkit-user-select:text;user-select:text}
+.field input::placeholder{color:rgba(217,255,233,.32);letter-spacing:.12em}
+.field input:disabled{opacity:1;-webkit-text-fill-color:#f0fff6}
+.field-ok{font:700 13px/1 var(--mono);color:var(--g);text-shadow:0 0 8px var(--g);opacity:0;transform:scale(.4);transition:.3s}
+.field.filled .field-ok{opacity:1;transform:none}
+.field.shake .field-box{animation:shake .42s;border-color:var(--warn);box-shadow:0 0 18px rgba(255,93,115,.3)}
+@keyframes shake{20%{transform:translateX(-7px)}40%{transform:translateX(6px)}60%{transform:translateX(-4px)}80%{transform:translateX(2px)}}
+
+.status{display:flex;align-items:center;justify-content:center;gap:12px;height:30px;margin:16px 0 8px;
+  font:500 14px/1 var(--sans);letter-spacing:.3em;color:rgba(217,255,233,.5);transition:color .3s,text-shadow .3s}
+.status .st-text{margin-right:-.3em;white-space:nowrap}
+.status .br{font:300 17px/1 var(--mono);letter-spacing:0;color:rgba(var(--g-rgb),.35);transition:color .3s}
+.status.ready{font-size:17px;color:#f0fff6;text-shadow:0 0 12px rgba(var(--g-rgb),.9),0 0 2px var(--g)}
+.status.ready .br{color:var(--g)}
+.status.ready .br:first-child{animation:brL 1.3s ease-in-out infinite}
+.status.ready .br:last-child{animation:brR 1.3s ease-in-out infinite}
+@keyframes brL{50%{transform:translateX(-5px);opacity:.4}}
+@keyframes brR{50%{transform:translateX(5px);opacity:.4}}
+.status.warn{color:var(--warn);text-shadow:0 0 10px rgba(255,93,115,.55)}
+.status.warn .br{color:var(--warn)}
+.status.ok{font-size:17px;color:#fff;text-shadow:0 0 14px var(--g),0 0 2px var(--g)}
+.status.ok .br{color:var(--g)}
+
+/* 指纹按钮 */
+.finger{position:relative;display:block;margin:0 auto;width:132px;width:clamp(104px,34cqw,136px);aspect-ratio:1;
+  padding:0;border:0;border-radius:50%;background:none;cursor:pointer;outline:none;
+  -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:none}
+.finger:focus-visible{outline:1px dashed var(--g);outline-offset:6px}
+.finger svg{display:block;width:100%;height:100%;overflow:visible;transition:transform .25s cubic-bezier(.2,.8,.2,1),opacity .4s}
+.finger[aria-disabled="true"] svg{opacity:.5}
+.finger.holding svg{transform:scale(.94)}
+.fp-bg{opacity:.45;transition:opacity .3s}
+.finger.holding .fp-bg,.finger.done .fp-bg{opacity:1}
+.ring-track{fill:none;stroke:rgba(var(--g-rgb),.16);stroke-width:1.2}
+.ring-ticks{fill:none;stroke:rgba(var(--g-rgb),.5);stroke-width:2.4;stroke-dasharray:.7 3.4888;
+  transform-box:fill-box;transform-origin:center;animation:spin 24s linear infinite}
+.finger.holding .ring-ticks{stroke:var(--g);animation-duration:2.5s}
+.ring-arcs{fill:none;stroke:rgba(var(--g-rgb),.75);stroke-width:1;transform-box:view-box;transform-origin:60px 60px;animation:spin 9s linear infinite reverse}
+.finger.holding .ring-arcs{animation-duration:1.6s}
+.ring-prog{fill:none;stroke:var(--g);stroke-width:2.6;stroke-linecap:round;stroke-dasharray:339.29;stroke-dashoffset:339.29}
+.finger.done .ring-prog{stroke:#eafff3}
+.pulse{fill:none;stroke:var(--g);stroke-width:1;opacity:0;transform-box:fill-box;transform-origin:center}
+.finger.ready:not(.holding):not(.done) .pulse{animation:pulse 2.1s ease-out infinite}
+.finger.done .pulse{animation:burst .8s ease-out forwards}
+@keyframes pulse{0%{transform:scale(.8);opacity:.75}100%{transform:scale(1.22);opacity:0}}
+@keyframes burst{0%{transform:scale(.9);opacity:1;stroke-width:3}100%{transform:scale(1.6);opacity:0;stroke-width:.5}}
+.fp-base path{fill:none;stroke:rgba(var(--g-rgb),.3);stroke-width:2.1;stroke-linecap:round;transition:stroke .4s}
+.finger.ready .fp-base path{stroke:rgba(var(--g-rgb),.62)}
+.fp-lit path{fill:none;stroke:#d2ffe4;stroke-width:2.3;stroke-linecap:round}
+.fp-scan{fill:#f0fff6;opacity:0}
+.finger.holding .fp-scan{opacity:1;animation:fpscan .85s ease-in-out infinite alternate}
+@keyframes fpscan{from{transform:translateY(0)}to{transform:translateY(68px)}}
+.hint{margin-top:8px;text-align:center;font:500 9.5px/1.4 var(--mono);letter-spacing:.22em;color:rgba(217,255,233,.42);min-height:14px;transition:color .3s}
+.hint.live{color:var(--g);text-shadow:0 0 6px rgba(var(--g-rgb),.7)}
+
+/* ---------- 成功弹窗 ---------- */
+.modal{position:absolute;inset:0;z-index:60;display:flex;align-items:flex-end;justify-content:center;
+  padding:0 18px calc(var(--sb) + 9%);visibility:hidden;opacity:0;transition:opacity .5s,visibility 0s .5s;
+  background:linear-gradient(to bottom,rgba(0,8,4,0) 0%,rgba(0,12,6,.28) 40%,rgba(0,0,0,.72) 100%)}
+.modal.on{visibility:visible;opacity:1;transition:opacity .5s}
+.m-card{position:relative;width:100%;max-width:360px;padding:16px 20px 18px;text-align:center;opacity:0;transform:scale(.15,.006)}
+.modal.on .m-card{animation:winOpen .65s cubic-bezier(.2,.9,.25,1) .05s forwards}
+@keyframes winOpen{0%{opacity:1;transform:scale(.15,.006)}45%{opacity:1;transform:scale(1,.006)}100%{opacity:1;transform:none}}
+.m-card::before{content:"";position:absolute;inset:0;z-index:-1;
+  background:linear-gradient(180deg,rgba(8,34,20,.72),rgba(2,12,7,.9));border:1px solid rgba(var(--g-rgb),.38);
+  clip-path:polygon(18px 0,100% 0,100% calc(100% - 18px),calc(100% - 18px) 100%,0 100%,0 18px);
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+.m-glow{position:absolute;inset:8% 4%;z-index:-2;background:radial-gradient(rgba(var(--g-rgb),.28),transparent 70%);filter:blur(22px)}
+.m-card>.cn.tl,.m-card>.cn.br{display:none}
+.ms{opacity:0;transform:translateY(6px);transition:opacity .45s,transform .55s cubic-bezier(.2,.8,.2,1)}
+.ms.show{opacity:1;transform:none}
+.m-top{display:flex;justify-content:space-between;padding-bottom:10px;margin-bottom:14px;border-bottom:1px dashed rgba(var(--g-rgb),.22);
+  font:500 9px/1 var(--mono);letter-spacing:.2em;color:rgba(var(--g-rgb),.75)}
+.badge{display:block;width:66px;height:66px;margin:0 auto 10px;overflow:visible}
+.b-ring{fill:none;stroke:rgba(var(--g-rgb),.55);stroke-width:1;stroke-dasharray:2 4;transform-box:fill-box;transform-origin:center;animation:spin 10s linear infinite}
+.b-circle{fill:rgba(var(--g-rgb),.08);stroke:var(--g);stroke-width:2;stroke-dasharray:100;stroke-dashoffset:100}
+.b-check{fill:none;stroke:#f0fff6;stroke-width:4;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:100;stroke-dashoffset:100}
+.badge.show .b-circle{animation:draw .6s ease-out forwards}
+.badge.show .b-check{animation:draw .45s .45s ease-out forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+.m-code{min-height:12px;margin-bottom:10px;font:600 10px/1.2 var(--mono);letter-spacing:.42em;margin-right:-.42em;color:var(--g);text-shadow:0 0 8px rgba(var(--g-rgb),.8)}
+.m-title{font:700 23px/1.25 var(--sans);font-size:clamp(20px,6.4cqw,26px);letter-spacing:.2em;margin-right:-.2em;color:#f4fff9;
+  text-shadow:0 0 18px rgba(var(--g-rgb),.7)}
+.m-rule{height:1px;width:0;margin:14px auto;background:linear-gradient(90deg,transparent,var(--g),transparent);transition:width .8s cubic-bezier(.2,.8,.2,1)}
+.m-rule.show{width:100%}
+.m-welcome{min-height:1.5em;font:500 17px/1.5 var(--sans);font-size:clamp(15px,4.7cqw,19px);letter-spacing:.08em;color:#e2fff0;word-break:break-all}
+.m-name{font-weight:700;color:var(--g);text-shadow:0 0 12px rgba(var(--g-rgb),.85)}
+.caret{display:inline-block;width:.5em;height:1.05em;margin-left:3px;vertical-align:-.16em;background:var(--g);box-shadow:0 0 8px var(--g);animation:blink .8s steps(2) infinite}
+.m-sub{min-height:12px;margin-top:6px;font:500 9.5px/1.2 var(--mono);letter-spacing:.28em;color:rgba(217,255,233,.5);word-break:break-all}
+.m-stats{display:flex;justify-content:center;gap:16px;margin-top:14px;font:500 9px/1 var(--mono);letter-spacing:.14em;color:rgba(217,255,233,.5)}
+.m-stats b{margin-left:5px;font-weight:600;color:var(--g)}
+.m-replay{margin-top:16px;padding:9px 16px;cursor:pointer;background:rgba(var(--g-rgb),.06);border:1px solid rgba(var(--g-rgb),.4);
+  font:500 10px/1 var(--mono);letter-spacing:.2em;color:var(--g)}
+.m-replay:active{background:rgba(var(--g-rgb),.18)}
+
+/* ---------- 其他 ---------- */
+.flash{position:absolute;inset:0;z-index:70;pointer-events:none;opacity:0;
+  background:radial-gradient(ellipse at 50% 55%,rgba(210,255,228,.75),rgba(var(--g-rgb),.22) 45%,transparent 75%)}
+.flash.go{animation:flash .6s ease-out}
+@keyframes flash{0%{opacity:0}12%{opacity:1}100%{opacity:0}}
+.app.glitch .portrait-wrap{animation:jit .34s steps(2)}
+@keyframes jit{0%{transform:none}25%{transform:translate(-5px,1px)}50%{transform:translate(4px,-1px)}75%{transform:translate(-2px,0)}100%{transform:none}}
+.skip{position:absolute;z-index:80;right:14px;bottom:calc(var(--sb) + 14px);padding:8px 12px;cursor:pointer;background:none;
+  border:1px solid rgba(var(--g-rgb),.25);font:500 10px/1 var(--mono);letter-spacing:.24em;color:rgba(var(--g-rgb),.65);transition:opacity .4s}
+.skip.hide{opacity:0;pointer-events:none}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+@keyframes blink{50%{opacity:0}}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+@media (max-height:700px){
+  .login{padding:12px 16px 10px}
+  .lg-head{margin-bottom:10px}
+  .field-box{height:44px}
+  .status{margin:10px 0 4px}
+  .finger{width:100px}
+  .modal{padding-bottom:calc(var(--sb) + 5%)}
+  .m-stats{display:none}
+}
+@media (prefers-reduced-motion:reduce){
+  .sweep.on,.ring-ticks,.ring-arcs,.spin,.spin-r,.b-ring{animation:none}
+}
+</style>
+</head>
+<body>
+<main class="app" id="app">
+
+  <!-- 主视觉 -->
+  <div class="portrait-wrap">
+    <img class="portrait" id="portrait" src="assets/aion.webp" alt="" draggable="false">
+    <img class="ghost-img" id="ghost" src="assets/aion.webp" alt="" draggable="false">
+    <div class="scanbar" id="scanbar"></div>
+  </div>
+  <canvas id="rain" class="layer"></canvas>
+  <div class="shade" id="shade"></div>
+  <canvas id="waves" class="layer"></canvas>
+  <div class="fx-scan"></div>
+  <div class="fx-vig"></div>
+  <div class="sweep" id="sweep"></div>
+
+  <!-- 顶部 HUD -->
+  <header class="hud-top" id="hud">
+    <div class="l"><i class="hud-dot"></i><span>AION//OS</span><span class="dim">v4.7.3</span></div>
+    <div class="r">
+      <span id="clock">00:00:00</span>
+      <span class="sig"><i></i><i></i><i></i><i></i></span>
+      <span id="net">LOCKED</span>
+      <button class="snd" id="snd" type="button" aria-pressed="true" aria-label="声音开关">SND ON</button>
+    </div>
+  </header>
+
+  <!-- 开机序列 -->
+  <section class="boot" id="boot" aria-hidden="true">
+    <div class="crt"></div>
+    <div class="term" id="term"></div>
+    <div class="loader" id="loader">
+      <svg viewBox="0 0 200 200">
+        <defs>
+          <filter id="lglow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="2.2" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <circle class="l-r1 spin" cx="100" cy="100" r="97"/>
+        <circle class="l-r2 spin-r" cx="100" cy="100" r="87"/>
+        <g class="l-ticks" id="lTicks"></g>
+        <circle class="l-track" cx="100" cy="100" r="76"/>
+        <circle class="l-prog" id="lProg" cx="100" cy="100" r="76" transform="rotate(-90 100 100)" filter="url(#lglow)"/>
+      </svg>
+      <div class="l-center">
+        <div class="l-pct"><span id="lPct">00</span><small>%</small></div>
+        <div class="l-label" id="lLabel">SYSTEM BOOT</div>
+        <div class="l-cn" id="lCn">系统启动中</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- AION 标志（开机后飞入主视觉中的标志位置） -->
+  <div class="logo" id="logo" aria-hidden="true">
+    <svg class="logo-mark" id="logoMark" viewBox="0 0 254 40">
+      <defs>
+        <linearGradient id="lgGrad" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="254" y2="40">
+          <stop offset="0" stop-color="#ffffff"/>
+          <stop offset=".55" stop-color="#d4fbe4"/>
+          <stop offset="1" stop-color="#8dffbf"/>
+        </linearGradient>
+        <filter id="logoGlow" x="-10%" y="-40%" width="120%" height="180%">
+          <feGaussianBlur stdDeviation="2.4" result="b"/>
+          <feColorMatrix in="b" type="matrix" values="0 0 0 0 .24  0 0 0 0 1  0 0 0 0 .56  0 0 0 .9 0" result="g"/>
+          <feMerge><feMergeNode in="g"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <g id="aionG" fill="none" stroke-width="3.6" stroke-linejoin="miter" stroke-linecap="butt">
+          <path d="M1.8 38.2 L33 1.8 H49.2 V38.2 M24.5 30.6 H49.2"/>
+          <path d="M77 1.8 V38.2"/>
+          <path d="M136 1.8 H122.5 Q116.8 1.8 116.8 7.5 V32.5 Q116.8 38.2 122.5 38.2 H136"/>
+          <path d="M141.5 1.8 H159.2 V38.2 H141.5"/>
+          <path d="M189.8 38.2 V1.8 L240.2 38.2 V1.8"/>
+        </g>
+      </defs>
+      <g transform="translate(10.7 0) skewX(-15)">
+        <use class="gh gh1" href="#aionG" stroke="#00ffd0" transform="translate(-3 0)"/>
+        <use class="gh gh2" href="#aionG" stroke="#c6ff3d" transform="translate(3 0)"/>
+        <use href="#aionG" stroke="url(#lgGrad)" filter="url(#logoGlow)"/>
+      </g>
+    </svg>
+    <div class="logo-sub" id="logoSub">&nbsp;</div>
+    <div class="logo-bar" id="logoBar"><i></i><i></i><i></i><b></b></div>
+  </div>
+
+  <!-- 登录面板 -->
+  <section class="login" id="login" aria-label="身份验证">
+    <i class="cn tl"></i><i class="cn tr"></i><i class="cn bl"></i><i class="cn br"></i>
+    <div class="lg-head stg" style="--d:0ms">
+      <span class="lg-tag"><b></b>IDENTITY ACCESS</span>
+      <span class="lg-step" id="step">STEP <em>01</em> / 02</span>
+    </div>
+    <label class="field stg" id="field" for="username" style="--d:90ms">
+      <span class="field-label"><span>USER ID</span><em>用户名</em></span>
+      <span class="field-box">
+        <span class="field-prefix" aria-hidden="true">&gt;_</span>
+        <input id="username" name="username" type="text" maxlength="16" autocomplete="username"
+               autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="done" placeholder="请输入用户名">
+        <span class="field-ok" aria-hidden="true">✓</span>
+        <i class="cn tl"></i><i class="cn tr"></i><i class="cn bl"></i><i class="cn br"></i>
+      </span>
+    </label>
+    <div class="status stg" id="status" style="--d:180ms" aria-hidden="true">
+      <span class="br">[</span><span class="st-text" id="statusText">等待身份信息</span><span class="br">]</span>
+    </div>
+    <span class="sr" id="srStatus" role="status" aria-live="polite"></span>
+    <button class="finger stg" id="finger" type="button" style="--d:260ms" aria-disabled="true" aria-label="按住指纹 2 秒验证身份">
+      <svg viewBox="0 0 120 120" aria-hidden="true">
+        <defs>
+          <radialGradient id="fpBgGrad" cx="50%" cy="50%" r="50%">
+            <stop offset="0" stop-color="rgb(61,255,143)" stop-opacity=".22"/>
+            <stop offset=".7" stop-color="rgb(61,255,143)" stop-opacity=".05"/>
+            <stop offset="1" stop-color="rgb(61,255,143)" stop-opacity="0"/>
+          </radialGradient>
+          <filter id="fpGlow" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="1.5" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+          <clipPath id="fpClip"><rect id="fpClipRect" x="0" y="96" width="120" height="0"/></clipPath>
+        </defs>
+        <circle class="fp-bg" cx="60" cy="60" r="46" fill="url(#fpBgGrad)"/>
+        <circle class="pulse" cx="60" cy="60" r="54"/>
+        <circle class="ring-track" cx="60" cy="60" r="54"/>
+        <circle class="ring-ticks" cx="60" cy="60" r="48"/>
+        <path class="ring-arcs" d="M60 2 A58 58 0 0 1 101.01 18.99 M60 118 A58 58 0 0 1 18.99 101.01"/>
+        <circle class="ring-prog" id="ringProg" cx="60" cy="60" r="54" transform="rotate(-90 60 60)" filter="url(#fpGlow)"/>
+        <g class="fp-base" id="fpBase"></g>
+        <g class="fp-lit" id="fpLit" clip-path="url(#fpClip)" filter="url(#fpGlow)"></g>
+        <rect class="fp-scan" x="28" y="24" width="64" height="1.6" rx=".8" filter="url(#fpGlow)"/>
+      </svg>
+    </button>
+    <div class="hint stg" id="hint" style="--d:330ms">HOLD 2S · 按住指纹 2 秒</div>
+  </section>
+
+  <!-- 验证成功弹窗 -->
+  <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle" aria-hidden="true">
+    <div class="m-card">
+      <div class="m-glow"></div>
+      <i class="cn tl"></i><i class="cn tr"></i><i class="cn bl"></i><i class="cn br"></i>
+      <div class="m-top ms"><span>AUTH // 0x7F3A</span><span id="mTime">--:--:--</span></div>
+      <svg class="badge ms" viewBox="0 0 80 80" aria-hidden="true">
+        <defs>
+          <filter id="bGlow" x="-40%" y="-40%" width="180%" height="180%">
+            <feGaussianBlur stdDeviation="2" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <circle class="b-ring" cx="40" cy="40" r="37"/>
+        <circle class="b-circle" cx="40" cy="40" r="28" pathLength="100" transform="rotate(-90 40 40)" filter="url(#bGlow)"/>
+        <path class="b-check" d="M27 41 L36 50 L54 31" pathLength="100" filter="url(#bGlow)"/>
+      </svg>
+      <div class="m-code ms" id="mCode">&nbsp;</div>
+      <h2 class="m-title ms" id="mTitle">身份验证成功</h2>
+      <div class="m-rule ms" id="mRule"></div>
+      <p class="m-welcome ms" id="mWelcomeRow"><span id="mWelcome"></span><span class="m-name" id="mName"></span><span class="caret"></span></p>
+      <p class="m-sub ms" id="mSub">&nbsp;</p>
+      <div class="m-stats ms"><span>NEURAL SYNC<b>98.7%</b></span><span>INTEGRITY<b>100%</b></span></div>
+      <button class="m-replay ms" id="replay" type="button">↻ 重新体验</button>
+    </div>
+  </div>
+
+  <div class="flash" id="flash"></div>
+  <button class="skip" id="skip" type="button">SKIP ▸▸</button>
+</main>
+
+<script>
+(() => {
+'use strict';
+const $ = s => document.querySelector(s);
+const app = $('#app'), boot = $('#boot'), term = $('#term'), loader = $('#loader');
+const lPct = $('#lPct'), lProg = $('#lProg'), lLabel = $('#lLabel'), lCn = $('#lCn');
+const logo = $('#logo'), logoMark = $('#logoMark'), logoSub = $('#logoSub'), logoBar = $('#logoBar');
+const portrait = $('#portrait'), ghost = $('#ghost'), scanbar = $('#scanbar');
+const rainCv = $('#rain'), wavesCv = $('#waves'), shade = $('#shade'), hud = $('#hud'), sweep = $('#sweep');
+const login = $('#login'), input = $('#username'), field = $('#field'), stepEl = $('#step');
+const statusEl = $('#status'), statusText = $('#statusText'), srStatus = $('#srStatus');
+const finger = $('#finger'), ringProg = $('#ringProg'), clipRect = $('#fpClipRect'), hint = $('#hint');
+const modal = $('#modal'), skipBtn = $('#skip'), flashEl = $('#flash'), netEl = $('#net'), sndBtn = $('#snd');
+const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const MONO = getComputedStyle(document.documentElement).getPropertyValue('--mono').trim() || 'monospace';
+
+/* ======================= 工具 ======================= */
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+let skipping = false;
+const pending = new Set();
+// 开场动画专用的等待：点 SKIP 时立即结束
+const wait = ms => new Promise(res => {
+  if (skipping) return res();
+  const done = () => { clearTimeout(id); pending.delete(done); res(); };
+  const id = setTimeout(done, ms);
+  pending.add(done);
+});
+const vib = p => { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} };
+const el = (tag, cls, txt) => { const n = document.createElement(tag); if (cls) n.className = cls; if (txt != null) n.textContent = txt; return n; };
+const pad2 = n => String(n).padStart(2, '0');
+const clockStr = () => { const d = new Date(); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`; };
+
+function flash() { flashEl.classList.remove('go'); void flashEl.offsetWidth; flashEl.classList.add('go'); }
+function glitch() { app.classList.remove('glitch'); void app.offsetWidth; app.classList.add('glitch'); }
+
+// 乱码解码文字效果
+const ASCII_POOL = '<>/\\[]{}=+*#%01ABCDEFXZ$&';
+const CJK_POOL = '验证身份请输入用户名系统神经链接同步核心协议加密终端访问矩阵量子';
+function scramble(node, text, dur = 600) {
+  const id = (node._sid = (node._sid || 0) + 1);
+  const t0 = performance.now();
+  return new Promise(res => {
+    const f = now => {
+      if (node._sid !== id) return res();
+      const p = Math.max(0, Math.min(1, (now - t0) / dur));
+      const n = Math.floor(p * text.length);
+      let s = text.slice(0, n);
+      for (let i = n; i < text.length; i++) {
+        const c = text[i];
+        if (c === ' ' || c === '·') s += c;
+        else if (c.charCodeAt(0) > 0x2e80) s += CJK_POOL[(Math.random() * CJK_POOL.length) | 0];
+        else s += ASCII_POOL[(Math.random() * ASCII_POOL.length) | 0];
+      }
+      node.textContent = s;
+      if (p < 1) requestAnimationFrame(f); else { node.textContent = text; res(); }
+    };
+    requestAnimationFrame(f);
+  });
+}
+
+/* ======================= 声音（WebAudio 合成，无外部文件） ======================= */
+let actx = null, soundOn = true;
+function ensureAudio() {
+  try {
+    if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') actx.resume();
+  } catch (e) {}
+}
+function tone(freq, dur, { type = 'sine', vol = .05, at = 0, slideTo } = {}) {
+  if (!actx || !soundOn) return;
+  const t = actx.currentTime + at, o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  g.gain.setValueAtTime(.0001, t);
+  g.gain.exponentialRampToValueAtTime(vol, t + .012);
+  g.gain.exponentialRampToValueAtTime(.0001, t + dur);
+  o.connect(g).connect(actx.destination); o.start(t); o.stop(t + dur + .03);
+}
+const sndTick = () => tone(1900, .03, { type: 'square', vol: .012 });
+const sndErr = () => { tone(300, .14, { type: 'square', vol: .025, slideTo: 170 }); tone(220, .16, { type: 'square', vol: .02, at: .12, slideTo: 120 }); };
+const sndOk = () => { tone(660, .2, { vol: .05 }); tone(990, .2, { vol: .05, at: .09 }); tone(1320, .5, { vol: .06, at: .18 }); tone(1980, .6, { vol: .025, at: .26 }); };
+const scanSnd = {
+  o: null, g: null,
+  start() {
+    if (!actx || !soundOn || this.o) return;
+    const t = actx.currentTime, o = actx.createOscillator(), g = actx.createGain(), f = actx.createBiquadFilter();
+    f.type = 'lowpass'; f.frequency.value = 1600;
+    o.type = 'sawtooth'; o.frequency.setValueAtTime(130, t);
+    g.gain.setValueAtTime(.0001, t); g.gain.exponentialRampToValueAtTime(.03, t + .08);
+    o.connect(f).connect(g).connect(actx.destination); o.start();
+    this.o = o; this.g = g;
+  },
+  update(p) { if (this.o) this.o.frequency.setTargetAtTime(130 + p * 560, actx.currentTime, .05); },
+  stop() {
+    if (!this.o) return;
+    const t = actx.currentTime;
+    this.g.gain.cancelScheduledValues(t); this.g.gain.setValueAtTime(this.g.gain.value || .03, t);
+    this.g.gain.exponentialRampToValueAtTime(.0001, t + .12);
+    this.o.stop(t + .15); this.o = null;
+  }
+};
+sndBtn.addEventListener('click', () => {
+  soundOn = !soundOn; ensureAudio();
+  sndBtn.setAttribute('aria-pressed', soundOn); sndBtn.textContent = soundOn ? 'SND ON' : 'SND OFF';
+  if (!soundOn) scanSnd.stop();
+});
+
+/* ======================= 画布：数字雨 + 流光丝带 ======================= */
+const rctx = rainCv.getContext('2d'), wctx = wavesCv.getContext('2d');
+let W = 0, H = 0, DPR = 1, FS = 12, cols = [], rainOn = false, wavesOn = false, lastRain = 0;
+const RAIN_CHARS = '01010101100101101001ABCDEF0123456789';
+function sizeCanvases() {
+  const r = app.getBoundingClientRect();
+  const widthChanged = Math.round(r.width) !== Math.round(W);
+  W = r.width; H = r.height; DPR = Math.min(2, window.devicePixelRatio || 1);
+  for (const [c, ctx] of [[rainCv, rctx], [wavesCv, wctx]]) {
+    c.width = Math.round(W * DPR); c.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  if (widthChanged || !cols.length) initRain();
+}
+function initRain() {
+  FS = Math.max(10, Math.round(W / 32));
+  const n = Math.ceil(W / (FS * .92));
+  cols = Array.from({ length: n }, () => ({ y: -Math.random() * H * 1.3, v: .3 + Math.random() * .7, acc: 0, prev: '', py: 0 }));
+}
+function rainTick(now) {
+  if (now - lastRain < 42) return;
+  lastRain = now;
+  rctx.fillStyle = 'rgba(0,0,0,.12)';
+  rctx.fillRect(0, 0, W, H);
+  rctx.font = `${FS}px ${MONO}`;
+  rctx.textBaseline = 'top';
+  for (let i = 0; i < cols.length; i++) {
+    const c = cols[i], x = i * FS * .92;
+    c.acc += c.v;
+    if (c.acc < 1) continue;
+    c.acc -= 1;
+    if (c.prev) { rctx.fillStyle = 'rgba(61,255,143,.85)'; rctx.fillText(c.prev, x, c.py); }
+    if (c.y > -FS) {
+      const ch = RAIN_CHARS[(Math.random() * RAIN_CHARS.length) | 0];
+      rctx.fillStyle = '#eafff2'; rctx.fillText(ch, x, c.y);
+      c.prev = ch; c.py = c.y;
+    } else c.prev = '';
+    c.y += FS;
+    if (c.y > H + FS * 3) { c.y = -Math.random() * H * .7; c.v = .3 + Math.random() * .7; c.prev = ''; }
+  }
+}
+function startRain() { if (rainOn) return; rainOn = true; rctx.fillStyle = '#000'; rctx.fillRect(0, 0, W, H); }
+
+// 丝带：多条相位错开的正弦线，交叉处形成"扭转"的光带
+const RIBBONS = [
+  { y: .60, slope: -.24, amp: .035, wl: 1.15, tw: .72, w: .045, n: 14, sp: .32, ts: .55, a: .5 },
+  { y: .84, slope: -.13, amp: .03, wl: 1.4, tw: .95, w: .036, n: 12, sp: -.26, ts: .48, a: .42 },
+  { y: .48, slope: .05, amp: .02, wl: 1.0, tw: .6, w: .02, n: 9, sp: .2, ts: .4, a: .22 },
+];
+const DUST = Array.from({ length: 38 }, () => ({ x: Math.random(), y: Math.random(), v: .006 + Math.random() * .016, s: .5 + Math.random() * 1.4, p: Math.random() * 6.28 }));
+function drawWaves(t, dt) {
+  wctx.clearRect(0, 0, W, H);
+  wctx.globalCompositeOperation = 'lighter';
+  const step = Math.max(5, W / 70);
+  for (const r of RIBBONS) {
+    for (let j = 0; j < r.n; j++) {
+      const ph = j / r.n * Math.PI;
+      wctx.beginPath();
+      for (let x = -20; x <= W + 20; x += step) {
+        const u = x / W;
+        const c = (r.y + r.slope * u) * H + Math.sin(u * Math.PI * 2 / r.wl + t * r.sp) * r.amp * H;
+        const th = u * Math.PI * 2 / r.tw + t * r.ts + ph;
+        const y = c + Math.sin(th) * r.w * H * (.65 + .35 * Math.sin(u * 3 + t * .3));
+        x === -20 ? wctx.moveTo(x, y) : wctx.lineTo(x, y);
+      }
+      const strong = j % 4 === 0;
+      wctx.strokeStyle = `rgba(61,255,143,${r.a * (strong ? 1 : .42)})`;
+      wctx.lineWidth = strong ? 1.15 : .6;
+      wctx.stroke();
+    }
+  }
+  for (const p of DUST) {
+    p.y -= p.v * dt; if (p.y < -.02) { p.y = 1.02; p.x = Math.random(); }
+    const a = .3 + .35 * Math.sin(t * 2.2 + p.p);
+    wctx.fillStyle = `rgba(150,255,195,${a})`;
+    wctx.fillRect(p.x * W, p.y * H, p.s, p.s);
+  }
+  wctx.globalCompositeOperation = 'source-over';
+}
+let lastT = performance.now(), phase = 0, speedMul = 1, targetMul = 1;
+function frame(now) {
+  const dt = Math.min(.05, (now - lastT) / 1000); lastT = now;
+  speedMul += (targetMul - speedMul) * Math.min(1, dt * 2.5);
+  phase += dt * speedMul;
+  if (rainOn) rainTick(now);
+  if (wavesOn) drawWaves(phase, dt * speedMul);
+  requestAnimationFrame(frame);
+}
+let rzT; addEventListener('resize', () => { clearTimeout(rzT); rzT = setTimeout(sizeCanvases, 120); });
+
+/* ======================= 指纹图形（程序生成） ======================= */
+function buildFingerprint() {
+  let seed = 20261108;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  const cx = 60, cy = 63, out = [];
+  const pt = (yc, rx, ry, a) => [cx + rx * Math.cos(a * Math.PI / 180), yc + ry * Math.sin(a * Math.PI / 180)];
+  const N = 8;
+  for (let i = 0; i < N; i++) {
+    const r = 4.2 + i * 3.9, rx = r * .86, ry = r * 1.06, yc = cy - i * .75;
+    const gap = i === 0 ? 95 : 42 + i * 13;
+    const off = (rnd() - .5) * 18;
+    let segs = [[90 + gap / 2 + off, 450 - gap / 2 + off]];
+    const cuts = i === 0 ? 0 : 1 + (rnd() < .45 ? 1 : 0);
+    for (let c = 0; c < cuts; c++) {
+      segs.sort((a, b) => (b[1] - b[0]) - (a[1] - a[0]));
+      const [s, e] = segs.shift(), len = e - s;
+      if (len < 60) { segs.push([s, e]); continue; }
+      const m = s + len * (.25 + rnd() * .5), g = 9 + rnd() * 10;
+      segs.push([s, m - g / 2], [m + g / 2, e]);
+    }
+    segs.sort((a, b) => a[0] - b[0]);
+    segs.forEach(([s, e], k) => {
+      if (e - s < 10) return;
+      const [x0, y0] = pt(yc, rx, ry, s), [x1, y1] = pt(yc, rx, ry, e);
+      let d = `M${x0.toFixed(2)} ${y0.toFixed(2)}A${rx.toFixed(2)} ${ry.toFixed(2)} 0 ${e - s > 180 ? 1 : 0} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+      // 外圈纹路两端向下延伸，更像真实指纹
+      if (i >= 3) {
+        if (k === 0) d = `M${x0.toFixed(2)} ${(y0 + 2 + i * 1.5).toFixed(2)}L` + d.slice(1);
+        if (k === segs.length - 1) d += `L${x1.toFixed(2)} ${(y1 + 1 + i * 1.1).toFixed(2)}`;
+      }
+      out.push(d);
+    });
+  }
+  out.push(`M${cx - .5} ${cy - 1.5}q1.2 3 .2 7`);
+  return out;
+}
+const fpHTML = buildFingerprint().map(d => `<path d="${d}"/>`).join('');
+$('#fpBase').innerHTML = fpHTML;
+$('#fpLit').innerHTML = fpHTML;
+
+/* ======================= 加载环刻度 ======================= */
+(() => {
+  let s = '';
+  for (let i = 0; i < 60; i++) {
+    const a = i * 6 * Math.PI / 180, r1 = i % 5 === 0 ? 61 : 65, r2 = 69;
+    s += `<line x1="${(100 + r1 * Math.cos(a)).toFixed(2)}" y1="${(100 + r1 * Math.sin(a)).toFixed(2)}" x2="${(100 + r2 * Math.cos(a)).toFixed(2)}" y2="${(100 + r2 * Math.sin(a)).toFixed(2)}"/>`;
+  }
+  $('#lTicks').innerHTML = s;
+})();
+const LC = 2 * Math.PI * 76;
+function setPct(v) { lPct.textContent = pad2(Math.floor(v)); lProg.style.strokeDashoffset = LC * (1 - v / 100); }
+function runProgress(ms) {
+  return new Promise(res => {
+    const t0 = performance.now();
+    const f = now => {
+      if (skipping) { setPct(100); return res(); }
+      const p = Math.max(0, Math.min(1, (now - t0) / ms));
+      const e = p < .5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
+      setPct(e * 100);
+      if (p < 1) requestAnimationFrame(f); else res();
+    };
+    requestAnimationFrame(f);
+  });
+}
+
+/* ======================= 开场序列 ======================= */
+const LOG = [
+  ['AION KERNEL v4.7.3 :: COLD START', ''],
+  ['MOUNTING NEURAL CORE', 'OK'],
+  ['CALIBRATING OPTIC SENSORS', 'OK'],
+  ['LINKING CYBERNETIC ARM // L', 'OK'],
+  ['BIOSYNC HANDSHAKE', 'OK'],
+  ['ENCRYPTING SECURE CHANNEL', 'OK'],
+  ['LOADING ENTITY PROFILE', 'DONE'],
+];
+async function typeLine(i) {
+  const [label, st] = LOG[i];
+  const row = el('div', 'tl'), ts = el('span', 'ts', `[${(i * .1374 + (i ? .0213 : 0)).toFixed(3)}] `), tx = el('span'), so = el('span', 'st');
+  row.append(ts, tx, so); term.append(row);
+  for (let k = 2; k <= label.length + 1; k += 2) { tx.textContent = label.slice(0, k); await wait(16); if (skipping) return; }
+  if (st) {
+    tx.textContent = label + ' ' + '.'.repeat(Math.max(3, 30 - label.length)) + ' ';
+    await wait(110); if (skipping) return;
+    so.textContent = st;
+  }
+}
+function revealPortrait(fast) {
+  if (portrait.classList.contains('revealing') || portrait.classList.contains('shown')) return;
+  portrait.classList.toggle('fast', !!fast); scanbar.classList.toggle('fast', !!fast);
+  portrait.classList.add('revealing'); scanbar.classList.add('run');
+  portrait.addEventListener('animationend', e => { if (e.animationName === 'reveal') portrait.classList.add('shown'); });
+}
+function flyLogo() {
+  // 把开场的大 AION 标志飞到主视觉图中 AION 字样的位置（原图坐标：x25 y343 宽254）
+  const a = app.getBoundingClientRect(), r = logoMark.getBoundingClientRect(), k = a.width / 941;
+  const s = (254 * k) / r.width, dx = a.left + 25 * k - r.left, dy = a.top + 343 * k - r.top;
+  logoMark.animate([
+    { transform: 'translate(0px,0px) scale(1)', opacity: 1 },
+    { transform: `translate(${dx}px,${dy}px) scale(${s})`, opacity: 1, offset: .72 },
+    { transform: `translate(${dx}px,${dy}px) scale(${s})`, opacity: 0 }
+  ], { duration: 1250, easing: 'cubic-bezier(.65,0,.25,1)', fill: 'forwards' });
+  for (const n of [logoSub, logoBar]) n.animate([{ opacity: 1 }, { opacity: 0, transform: 'translateY(10px)' }], { duration: 350, fill: 'forwards' });
+}
+async function intro() {
+  if (reduced) { skipping = true; return; }
+  await wait(700); if (skipping) return;
+  boot.classList.add('crt-on');
+  await wait(520); if (skipping) return;
+  startRain(); rainCv.classList.add('on');
+  await wait(260); if (skipping) return;
+  loader.classList.add('on');
+  const prog = runProgress(3100);
+  for (let i = 0; i < LOG.length; i++) { await typeLine(i); if (skipping) return; await wait(90); if (skipping) return; }
+  await prog; if (skipping) return;
+  scramble(lLabel, 'ACCESS NODE READY', 420); lCn.textContent = '就绪';
+  await wait(560); if (skipping) return;
+  flash(); boot.classList.add('phase-logo');
+  logo.classList.add('on'); scramble(logoSub, '// CYBERNETIC ENTITY INTERFACE', 900);
+  await wait(1500); if (skipping) return;
+  revealPortrait(false); flyLogo(); glitch(); rainCv.classList.add('dim');
+  await wait(1200); if (skipping) return;
+  shade.classList.add('on'); wavesOn = true; wavesCv.classList.add('on'); hud.classList.add('on');
+  await wait(450);
+}
+function finalize() {
+  skipBtn.classList.add('hide');
+  startRain(); rainCv.classList.add('on', 'dim');
+  if (skipping && !portrait.classList.contains('revealing')) { revealPortrait(true); flash(); }
+  shade.classList.add('on'); wavesOn = true; wavesCv.classList.add('on'); hud.classList.add('on');
+  if (skipping) { boot.classList.add('gone'); logo.classList.add('gone'); }
+  else setTimeout(() => { boot.classList.add('gone'); logo.classList.add('gone'); }, 400);
+  setTimeout(() => { login.classList.add('on'); if (!reduced) sweep.classList.add('on'); startGhostGlitch(); }, skipping ? 350 : 120);
+}
+skipBtn.addEventListener('click', () => {
+  if (skipping) return;
+  skipping = true;
+  for (const f of [...pending]) f();
+  pending.clear();
+});
+
+// 主视觉偶发的横向撕裂故障
+function startGhostGlitch() {
+  if (reduced) return;
+  const go = async () => {
+    if (!document.hidden) {
+      for (let i = 0; i < 3; i++) {
+        const top = Math.random() * 70, h = 2 + Math.random() * 8;
+        ghost.style.clipPath = `inset(${top}% 0 ${100 - top - h}% 0)`;
+        ghost.style.transform = `translateX(${((Math.random() - .5) * 20).toFixed(1)}px)`;
+        ghost.style.opacity = .85;
+        await sleep(45 + Math.random() * 60);
+      }
+      ghost.style.opacity = 0;
+    }
+    setTimeout(go, 4500 + Math.random() * 5000);
+  };
+  setTimeout(go, 3000);
+}
+
+/* ======================= 用户名 + 状态提示 ======================= */
+const STATUS = {
+  idle:  { t: '等待身份信息', c: '' },
+  ready: { t: '请验证身份', c: 'ready' },
+  need:  { t: '请先输入用户名', c: 'warn' },
+  scan:  { t: '正在扫描指纹', c: 'ready' },
+  abort: { t: '验证中断 · 请按住 2 秒', c: 'warn' },
+  ok:    { t: '身份验证成功', c: 'ok' },
+};
+let curStatus = 'idle', name = '', statusT = 0, needT = 0, abortT = 0;
+function setStatus(k) {
+  if (curStatus === k) return;
+  curStatus = k;
+  const s = STATUS[k];
+  statusEl.classList.remove('ready', 'warn', 'ok');
+  if (s.c) statusEl.classList.add(s.c);
+  srStatus.textContent = s.t;
+  scramble(statusText, s.t, k === 'scan' ? 260 : 440);
+}
+const HINT_IDLE = 'HOLD 2S · 按住指纹 2 秒';
+input.addEventListener('focus', ensureAudio);
+input.addEventListener('input', () => {
+  ensureAudio(); sndTick();
+  name = input.value.trim();
+  const ok = name.length > 0;
+  field.classList.toggle('filled', ok);
+  stepEl.innerHTML = ok ? 'STEP <em>02</em> / 02' : 'STEP <em>01</em> / 02';
+  finger.classList.toggle('ready', ok);
+  finger.setAttribute('aria-disabled', String(!ok));
+  clearTimeout(statusT);
+  statusT = setTimeout(() => setStatus(ok ? 'ready' : 'idle'), ok ? 260 : 0);
+});
+input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); input.blur(); } });
+
+function denyNoName() {
+  field.classList.remove('shake'); void field.offsetWidth; field.classList.add('shake');
+  setTimeout(() => field.classList.remove('shake'), 600);
+  setStatus('need'); sndErr(); vib(80);
+  clearTimeout(needT);
+  needT = setTimeout(() => { if (!name) setStatus('idle'); }, 1700);
+  input.focus();
+}
+
+/* ======================= 指纹长按 2 秒 ======================= */
+const HOLD_MS = 2000, RC = 2 * Math.PI * 54, FP_TOP = 22, FP_H = 74;
+let holding = false, done = false, prog = 0, t0 = 0, raf = 0, decayRaf = 0;
+function renderProg(p) {
+  ringProg.style.strokeDashoffset = RC * (1 - p);
+  clipRect.setAttribute('y', (FP_TOP + (1 - p) * FP_H).toFixed(2));
+  clipRect.setAttribute('height', (p * FP_H).toFixed(2));
+}
+function pressStart() {
+  if (done || holding) return;
+  if (!name) { denyNoName(); return; }
+  holding = true;
+  cancelAnimationFrame(decayRaf); clearTimeout(abortT);
+  t0 = performance.now() - prog * HOLD_MS;
+  finger.classList.add('holding'); hint.classList.add('live');
+  setStatus('scan'); vib(15); scanSnd.start();
+  raf = requestAnimationFrame(loop);
+}
+function loop(now) {
+  prog = Math.max(0, Math.min(1, (now - t0) / HOLD_MS));
+  renderProg(prog); scanSnd.update(prog);
+  hint.textContent = `SCANNING ··· ${pad2(Math.floor(prog * 100))}%`;
+  if (prog >= 1) return success();
+  raf = requestAnimationFrame(loop);
+}
+function pressEnd() {
+  if (!holding || done) return;
+  holding = false; cancelAnimationFrame(raf);
+  finger.classList.remove('holding'); hint.classList.remove('live'); hint.textContent = HINT_IDLE;
+  scanSnd.stop(); sndErr(); vib(60);
+  setStatus('abort');
+  const from = prog, ts = performance.now();
+  const decay = now => {
+    const k = Math.max(0, Math.min(1, (now - ts) / 380));
+    prog = from * (1 - (1 - Math.pow(1 - k, 3)));
+    renderProg(prog);
+    if (k < 1) decayRaf = requestAnimationFrame(decay);
+  };
+  decayRaf = requestAnimationFrame(decay);
+  abortT = setTimeout(() => { if (!holding && !done) setStatus('ready'); }, 1700);
+}
+finger.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  e.preventDefault(); ensureAudio();
+  try { finger.setPointerCapture(e.pointerId); } catch (err) {}
+  pressStart();
+});
+['pointerup', 'pointercancel', 'lostpointercapture'].forEach(t => finger.addEventListener(t, pressEnd));
+finger.addEventListener('contextmenu', e => e.preventDefault());
+finger.addEventListener('keydown', e => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); ensureAudio(); pressStart(); } });
+finger.addEventListener('keyup', e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); pressEnd(); } });
+finger.addEventListener('blur', pressEnd);
+
+/* ======================= 验证成功 ======================= */
+async function success() {
+  done = true; holding = false; cancelAnimationFrame(raf);
+  renderProg(1);
+  finger.classList.remove('holding'); finger.classList.add('done');
+  hint.textContent = 'IDENTITY CONFIRMED';
+  scanSnd.stop(); sndOk(); vib([30, 50, 90]);
+  setStatus('ok'); input.disabled = true;
+  stepEl.innerHTML = '<em>VERIFIED</em>';
+  flash(); targetMul = 2.8; setTimeout(() => { targetMul = 1.2; }, 1300);
+  app.classList.add('granted'); netEl.textContent = 'VERIFIED';
+  await sleep(800);
+  login.classList.add('out');
+  await sleep(220);
+  showModal();
+}
+async function showModal() {
+  const nm = name;
+  $('#mTime').textContent = clockStr();
+  modal.classList.add('on'); modal.setAttribute('aria-hidden', 'false');
+  const ms = [...modal.querySelectorAll('.ms')];
+  const show = n => n.classList.add('show');
+  await sleep(650);
+  show(ms[0]); show(ms[1]);
+  await sleep(260);
+  show(ms[2]); scramble($('#mCode'), 'ACCESS GRANTED', 650);
+  await sleep(280);
+  show(ms[3]); scramble($('#mTitle'), '身份验证成功', 520);
+  await sleep(380);
+  show(ms[4]);
+  await sleep(260);
+  show(ms[5]);
+  const wEl = $('#mWelcome'), nEl = $('#mName'), head = '欢迎回家，';
+  for (let i = 1; i <= head.length; i++) { wEl.textContent = head.slice(0, i); sndTick(); await sleep(85); }
+  for (let i = 1; i <= nm.length; i++) { nEl.textContent = nm.slice(0, i); sndTick(); await sleep(95); }
+  show(ms[6]); scramble($('#mSub'), 'WELCOME HOME, ' + nm.toUpperCase(), 700);
+  await sleep(300);
+  show(ms[7]);
+  await sleep(200);
+  show(ms[8]);
+}
+$('#replay').addEventListener('click', () => location.reload());
+
+/* ======================= 启动 ======================= */
+setInterval(() => { $('#clock').textContent = clockStr(); }, 1000);
+$('#clock').textContent = clockStr();
+portrait.addEventListener('error', () => { portrait.style.display = 'none'; ghost.style.display = 'none'; });
+sizeCanvases();
+requestAnimationFrame(frame);
+intro().then(finalize);
+})();
+</script>
+</body>
+</html>
