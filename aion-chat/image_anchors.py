@@ -109,10 +109,42 @@ def _character_keys(anchors):
     return keys
 
 
+def _family_anchors(anchors, names):
+    return [a for a in anchors if anchor_identity(a, names) in names]
+
+
+def _portrait_roster(anchors, who, names):
+    keys = _character_keys(anchors)
+    roster = []
+    for anchor in anchors:
+        identity = anchor_identity(anchor, names)
+        relation = '当前发言者（你）' if identity == who else ('聊天用户' if identity == 'user' else '另一位聊天伙伴' if identity else '已保存的人物')
+        key = keys[anchor['id']]
+        label = key if key == anchor['name'] else f"{key} = {anchor['name']}"
+        roster.append(f"{label}（别名：{anchor.get('aliases') or '无'}；{relation}）")
+    return roster
+
+
+async def family_image_prompt(who):
+    """Cast selection for the image_prompt field in gifts and journey cards."""
+    names = identity_names()
+    roster = _portrait_roster(_family_anchors(await load_anchors(), names), who, names)
+    if not roster:
+        return ''
+    return (
+        '\n家人参考照：' + '、'.join(roster) + '。\n'
+        'image_prompt 格式为 characters=名字1,名字2 | 英文场景。只填入镜家人的名字（有编号用编号），'
+        '场景中用原名写清各自的动作和位置。没有家人入镜时用 characters=none | 英文场景。\n'
+    )
+
+
 async def chat_image_prompt(who='aion'):
     from image_gen import supports_gif_generation
     intro = (
-        '【聊天生图】应请求或聊天情境发图时，每次回复最多用一个生图指令，场景提示词用英文。'
+        '【聊天生图】应请求或聊天情境发图时，每次回复最多用一个生图指令。'
+        '从对方想要的画面出发，定好具体时间、天气和空气状态；选一个主光源，写清什么光从哪里照来、是什么颜色、哪里留暗。'
+        '选 2～3 个主色，定焦段、机位和是否透过前景拍。用一个小细节暗示故事，选一种胶片或材质质感、一个情绪词，融成一段英文场景提示词。'
+        '省去“氛围感、唯美、高清、8K、杰作”等空词。\n'
         '注意生图提示词不要自行添加挑逗、性暗示或露骨的身体细节，会被审核不通过。可用隐晦描述提示词聚焦人物、服饰、构图、光线和动作，减少过于直白的用词。例如不要写“亲密场景”“性爱”“挑逗”等。参考用词方面，可以用“短裤”，但不可以用“内裤”。'
         'GIF 每次只安排 1—2 个简单动作，避免在短循环中堆叠多个连续事件。'
         '对方只说“发张自拍”时，默认只拍你自己，用 [SELFIE: English scene prompt]，系统按当前发言者选参考照。'
@@ -128,15 +160,7 @@ async def chat_image_prompt(who='aion'):
     anchors = await load_anchors()
     if not anchors:
         return intro + '与你合拍的自拍也用 SELFIE，其他照片或绘画用 [DRAW: English scene prompt]。'
-    names = identity_names()
-    keys = _character_keys(anchors)
-    roster = []
-    for anchor in anchors:
-        identity = anchor_identity(anchor, names)
-        relation = '当前发言者（你）' if identity == who else ('聊天用户' if identity == 'user' else '另一位聊天伙伴' if identity else '已保存的人物')
-        key = keys[anchor['id']]
-        label = key if key == anchor['name'] else f"{key} = {anchor['name']}"
-        roster.append(f"{label}（别名：{anchor.get('aliases') or '无'}；{relation}）")
+    roster = _portrait_roster(anchors, who, identity_names())
     return (
         intro + '\n人物锚点：\n' + '\n'.join(roster) + '\n'
         '按说话人和上下文判断“我、你、我们”指谁，只列实际入镜者，使用名单上的名字（标了编号的用等号左边的编号）。\n'
@@ -146,9 +170,11 @@ async def chat_image_prompt(who='aion'):
     )
 
 
-async def resolve_chat_references(prompt, is_selfie=False, source_identity=''):
+async def resolve_chat_references(prompt, is_selfie=False, source_identity='', *, family_only=False):
     anchors = await load_anchors()
     names = identity_names()
+    if family_only:
+        anchors = _family_anchors(anchors, names)
     speaker = source_identity or 'aion'
     match = re.match(r'^\s*characters\s*=\s*([^|]*)\|\s*(.+)$', prompt, flags=re.I | re.S)
     selected = []

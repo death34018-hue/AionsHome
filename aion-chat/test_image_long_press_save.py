@@ -27,8 +27,10 @@ class ImageLongPressSaveTests(unittest.TestCase):
         self.assertGreaterEqual(js.count("imageInteractionAttrs()"), 3)
 
     def test_both_pages_use_android_image_saver_bridge(self):
-        self.assertIn("AionImageSaver", read_static("chat.js"))
-        self.assertIn("AionImageSaver", read_static("chatroom.js"))
+        for page in ("chat.js", "chatroom.js"):
+            self.assertIn("ChatImagePreview.showSaveMenu", read_static(page))
+        self.assertIn("AionImageViewer.saveOriginal(url)", read_static("chat-image-preview.js"))
+        self.assertIn("AionImageSaver", read_static("image-viewer.js"))
 
 
 

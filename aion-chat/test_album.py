@@ -39,6 +39,17 @@ class AlbumTests(unittest.TestCase):
         self.assertTrue((reopened.images_dir / photo["filename"]).is_file())
         self.assertTrue((reopened.thumbnails_dir / (photo["id"] + ".webp")).is_file())
 
+    def test_purge_photo_file_deletes_record_image_and_thumbnail_only_for_that_photo(self):
+        kept = self.store.save_photo(sample_image(), source="generated", actor="aion", kind="gift")
+        gone = self.store.save_photo(sample_image(), source="generated", actor="aion", kind="gift")
+        self.assertGreater(self.store.purge_photo_file(gone["filename"]), 0)
+        self.assertFalse((self.store.images_dir / gone["filename"]).exists())
+        self.assertFalse((self.store.thumbnails_dir / (gone["id"] + ".webp")).exists())
+        self.assertIsNone(self.store.get_photo(gone["id"]))
+        self.assertTrue((self.store.images_dir / kept["filename"]).is_file())
+        self.assertEqual(self.store.purge_photo_file("../" + kept["filename"]), 0)
+        self.assertEqual(self.store.purge_photo_file("missing.png"), 0)
+
     def test_date_edit_preserves_upload_time_and_invalid_image_is_not_saved(self):
         photo = self.store.save_photo(sample_image(), source="upload", taken_on="2020-01-02")
         updated = self.store.update_photo(photo["id"], taken_on="2021-03-04", title="旅行")

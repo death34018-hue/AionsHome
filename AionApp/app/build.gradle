@@ -2,6 +2,16 @@ plugins {
     id 'com.android.application'
 }
 
+// Package the video page from its editable source, alongside the mobile encodes in src/main/assets.
+def launchAssetsDir = layout.buildDirectory.dir('generated/launchLoginAssets')
+def prepareLaunchLogin = tasks.register('prepareLaunchLogin', Sync) {
+    from(rootProject.file('../public/Aion登录界面')) {
+        include 'index-video.html', 'assets/aion.webp', 'assets/audio/aion-logo.mp3'
+        into 'launch-login'
+    }
+    into launchAssetsDir
+}
+
 android {
     namespace 'com.aion.chat'
     compileSdk 34
@@ -10,8 +20,8 @@ android {
         applicationId "com.aion.chat"
         minSdk 24
         targetSdk 34
-        versionCode 31
-        versionName "1.30"
+        versionCode 33
+        versionName "1.32"
         // Optional per-device build avoids shipping other CPUs' native ASR libraries.
         if (project.hasProperty('targetAbi')) {
             ndk { abiFilters project.property('targetAbi') }
@@ -29,6 +39,10 @@ android {
         buildConfig true
     }
 
+    androidResources { noCompress 'tflite' }
+
+    sourceSets.main.assets.srcDir(launchAssetsDir)
+
     packagingOptions {
         jniLibs.excludes += ['**/libsherpa-onnx-c-api.so', '**/libsherpa-onnx-cxx-api.so']
     }
@@ -43,7 +57,10 @@ android {
     }
 }
 
+tasks.named('preBuild').configure { dependsOn prepareLaunchLogin }
+
 dependencies {
+    implementation 'org.tensorflow:tensorflow-lite:2.17.0'
     implementation files('libs/sherpa-onnx-1.13.8.aar')
     implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.10'
     implementation 'androidx.appcompat:appcompat:1.6.1'

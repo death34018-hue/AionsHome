@@ -1,0 +1,92 @@
+.chat-web-card {
+  --card-glass: rgba(255, 248, 251, .10);
+  --card-blur: 4px;
+  --card-edge: rgba(255, 255, 255, .34);
+  --card-action: #695077;
+  --card-on-action: #fffaff;
+  display: block;
+  box-sizing: border-box;
+  width: min(100%, 25rem);
+  min-width: min(15rem, 100%);
+  margin-block: .4rem;
+  overflow: hidden;
+  border: 1px solid var(--card-edge);
+  border-radius: .95rem;
+  box-shadow: 0 3px 12px rgba(47, 26, 60, .09);
+  text-align: left;
+  color: var(--text, #382e3d);
+}
+body[data-theme="dark"] .chat-web-card {
+  --card-glass: linear-gradient(115deg, rgba(255,255,255,.12), transparent 70%), rgba(31, 30, 53, .78);
+  --card-blur: 12px;
+  --card-edge: rgba(229, 219, 255, .22);
+  --card-action: #d6c6e9;
+  --card-on-action: #302438;
+}
+.chat-web-card header {
+  display: flex;
+  align-items: center;
+  gap: .25rem;
+  padding: .4rem .55rem .4rem .88rem;
+  background: var(--card-glass);
+  -webkit-backdrop-filter: blur(var(--card-blur));
+  backdrop-filter: blur(var(--card-blur));
+}
+.chat-web-card strong { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: .95rem; line-height: 1.35; }
+.chat-web-card button {
+  flex: none;
+  min-height: 2.2rem;
+  padding: .25rem .56rem;
+  border: 0;
+  border-radius: 99px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: .82rem;
+  line-height: 1.15;
+  cursor: pointer;
+}
+.chat-web-card [data-web-action="play"] {
+  display: inline-flex;
+  align-items: center;
+  gap: .45rem;
+  padding-inline: .8rem;
+  background: var(--card-action);
+  color: var(--card-on-action);
+  font-weight: 600;
+}
+.chat-web-card .web-card-title {
+  flex: 1;
+  min-width: 0;
+  padding-inline: 0;
+  text-align: left;
+}
+.chat-web-card [data-web-action="play"]::after {
+  content: "";
+  width: .36em;
+  height: .36em;
+  border: solid currentColor;
+  border-width: 1.5px 1.5px 0 0;
+  transform: rotate(45deg);
+}
+.chat-web-card [aria-expanded="true"]::after { transform: rotate(-45deg); }
+@media (hover: hover) {
+  .chat-web-card [data-web-action="edit"]:hover { background: color-mix(in srgb, currentColor 9%, transparent); }
+  .chat-web-card [data-web-action="play"]:hover { filter: brightness(1.08); }
+}
+.chat-web-card button:focus-visible { outline: 2px solid var(--card-action); outline-offset: 2px; }
+.web-card-stage {
+  width: 100%;
+  aspect-ratio: 360 / 520;
+  max-height: min(520px, 65vh);
+  max-height: min(520px, 65dvh);
+  position: relative;
+  overflow: hidden;
+}
+@media (min-width: 640px) and (pointer: fine) {
+  .web-card-stage { aspect-ratio: 1; min-height: 0; }
+}
+.web-card-stage[hidden] { display: none; }
+/* chat-web-cards.js sizes the virtual screen and scales it into the stage. */
+.web-card-stage iframe { position: absolute; left: 0; top: 0; border: 0; display: block; transform-origin: 0 0; opacity: 0; }
+.chat-web-card small:not(:empty), .web-card-note { display: block; padding: .4rem .7rem; }

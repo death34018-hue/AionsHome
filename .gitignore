@@ -175,3 +175,6 @@ docs/superpowers/specs/2026-07-29-seven-day-data-backup-design.md
 # Reproducible official ASR binaries (scripts/prepare-local-asr.py)
 AionApp/app/libs/sherpa-onnx-1.13.8.aar
 AionApp/app/src/main/assets/asr/zipformer-small-bilingual/
+
+# Reproducible official YAMNet model (scripts/prepare-sound-model.py)
+AionApp/app/src/main/assets/sound/yamnet.tflite

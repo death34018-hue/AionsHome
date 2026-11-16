@@ -18,7 +18,11 @@ class SegmentTests(unittest.TestCase):
             self.assertLessEqual(max(s['char_count'] for s in segments) - min(s['char_count'] for s in segments), 100)
             self.assertEqual([i for s in segments for i in range(s['start_p'], s['end_p'] + 1)], list(range(len(paragraphs))))
         self.assertEqual(book._compute_segments([]), [])
-        self.assertEqual(book._compute_segments(['x' * 15000])[0]['char_count'], 15000)
+        paragraphs = ['甲。' * 7500]
+        pieces = book._compute_segments(paragraphs)
+        self.assertEqual(len(pieces), 3)
+        self.assertEqual(''.join(book.segment_paragraphs(paragraphs, p)[0] for p in pieces), paragraphs[0])
+        self.assertTrue(all(p['char_count'] <= 6500 for p in pieces))
 
 
 class CoreadingTests(unittest.IsolatedAsyncioTestCase):
@@ -46,6 +50,108 @@ class CoreadingTests(unittest.IsolatedAsyncioTestCase):
             await db.execute('UPDATE book_chapters SET segments_meta=?', (json.dumps(segments),))
             await db.commit()
 
+    async def test_night_reading_fills_one_gap_for_only_the_waking_reader(self):
+        import autonomy
+        await self.setup_reading()
+        await api._save_annotations(self.bid, 0, 1, dict(annotations=[], summary='已经共读过'))
+        decision = AsyncMock(side_effect=[
+            {'action': 'book_read', 'book': 1},
+            {'annotations': [{'p': 0, 'text': '这句有意思'}], 'summary': '留在书页里',
+             'share': 'group', 'message': '开场就埋伏笔？', 'quotes': ['x' * 55]},
+        ])
+        with patch.object(autonomy, 'get_actor_config', AsyncMock(return_value={'actions': {'book_read': True}})), \
+             patch.object(autonomy, 'recent_niche_index', AsyncMock(return_value=[])), \
+             patch.object(autonomy, '_ask_actor_json', decision), \
+             patch.object(autonomy, '_latest_group_room_id', AsyncMock(return_value='group')), \
+             patch.object(autonomy, '_save_autonomy_chatroom_message', AsyncMock()) as group, \
+             patch('routes.chatroom._load_room_and_messages', AsyncMock(return_value=({}, []))), \
+             patch('routes.chatroom._reply_connor', AsyncMock()) as reply, \
+             patch.object(autonomy, 'append_idle_event', AsyncMock()):
+            result = await autonomy._run_actor_once('aion', manual=True)
+            self.assertEqual(result['action'], 'book_read')
+            self.assertTrue(result['ok'], result)
+            self.assertEqual(decision.await_count, 2)
+            self.assertIn('Test', decision.await_args_list[0].args[1])
+            self.assertIn('@', group.await_args.args[2])
+            self.assertNotIn('x', group.await_args.args[2])
+            self.assertIn('刚读完《Test》第1章', group.await_args.kwargs['reading_notice'])
+            self.assertIn('x' * 55, reply.await_args.kwargs['reading_context'])
+            self.assertNotIn('x' * 56, reply.await_args.kwargs['reading_context'])
+        detail = await api.get_book(self.bid)
+        self.assertEqual(detail['chapters'][0]['read_counts'], {'aion': 2, 'connor': 0})
+        self.assertEqual(detail['book']['current_chapter'], 0)
+        self.assertEqual(detail['book']['current_paragraph'], 0)
+        self.assertFalse(any(s['status'] == 'done' for s in (await api.get_chapter(self.bid, 0))['chapter']['segments_meta']))
+        ok = AsyncMock(return_value=('{"annotations":[],"summary":"一起读"}', ''))
+        with patch.object(api, '_run_aion_annotation', AsyncMock()) as already_read, patch.object(api, '_run_connor_annotation', ok):
+            response = await api.annotate_all_segments(self.bid, 0, api.AnnotateAllRequest())
+            _ = [chunk async for chunk in response.body_iterator]
+            already_read.assert_not_awaited()
+            self.assertEqual(ok.await_count, 2)
+        self.assertEqual((await api.get_book(self.bid))['chapters'][0]['read_counts'], {'aion': 2, 'connor': 2})
+
+    async def test_separate_bookmarks_resume_and_private_share(self):
+        import autonomy
+        from autonomy_reading import shelf, read_one
+        await self.setup_reading()
+        first = (await shelf('connor'))[0]
+        with patch.object(autonomy, '_latest_group_room_id', AsyncMock(return_value=None)), \
+             patch.object(autonomy, '_ask_actor_json', AsyncMock(side_effect=[
+                 {'summary': '前半段的伏笔', 'share': 'none'},
+                 {'summary': '原来如此', 'share': 'private', 'message': '我找到伏笔了'},
+             ])) as read, patch.object(autonomy, '_save_private_message', AsyncMock(return_value={'id':'pm'})) as dm:
+            await read_one('connor', first)
+            dm.assert_not_awaited()
+            next_part = (await shelf('connor'))[0]
+            self.assertEqual((next_part['segment'], next_part['done']), (1, 1))
+            self.assertTrue(next_part['started'])
+            self.assertEqual((await shelf('aion'))[0]['segment'], 0)
+            result = await read_one('connor', next_part)
+            self.assertIn('前半段的伏笔', read.await_args.args[1])
+            dm.assert_awaited_once()
+            self.assertEqual(dm.await_args.args, ('connor', '我找到伏笔了'))
+            self.assertFalse(dm.await_args.kwargs.get('force_private'))
+            self.assertIn('刚读完《Test》第1章', dm.await_args.kwargs['reading_notice'])
+            self.assertIn('第2/2段', dm.await_args.kwargs['reading_notice'])
+            self.assertTrue(result['shared'])
+            self.assertFalse(await shelf('connor'))
+            self.assertEqual((await read_one('connor', first))['skipped'], '这一段已经读过')
+            self.assertEqual(read.await_count, 2)
+
+    async def test_reading_notice_follows_the_reply_into_chat_and_model_history(self):
+        import autonomy
+        import context_builder
+        from routes import chatroom
+        db_factory = fixtures.studio.get_db
+        async with db_factory() as db:
+            await db.executescript("""
+                CREATE TABLE conversations(id TEXT, model TEXT, updated_at REAL);
+                CREATE TABLE messages(id TEXT PRIMARY KEY,conv_id TEXT,role TEXT,content TEXT,created_at REAL,attachments TEXT);
+                CREATE TABLE chatroom_rooms(id TEXT,type TEXT,updated_at REAL);
+                CREATE TABLE chatroom_messages(id TEXT PRIMARY KEY,room_id TEXT,sender TEXT,content TEXT,created_at REAL,attachments TEXT,reasoning_content TEXT);
+                INSERT INTO conversations VALUES('active','model',1),('newer','model',9);
+                INSERT INTO messages VALUES('user1','active','user','在这里聊天',2,'[]');
+                INSERT INTO chatroom_rooms VALUES('group1','group',3),('solo','connor_1v1',1);
+            """)
+        with patch.object(autonomy, 'get_db', db_factory), patch.object(chatroom, 'get_db', db_factory), \
+             patch.object(context_builder, 'get_db', db_factory), patch('routes.files.export_conversation', AsyncMock()), \
+             patch.object(chatroom, 'with_band_vibration_attachment', AsyncMock(return_value=[])), \
+             patch.object(chatroom, 'connor_1v1_on_message'), patch.object(chatroom, 'broadcast_synced', AsyncMock()), \
+             patch.object(autonomy.manager, 'broadcast', AsyncMock()), \
+             patch.object(autonomy.manager, 'get_aion_last_active', side_effect=['private', 'chatroom:group1']), \
+             patch.object(autonomy.manager, 'get_connor_last_active', side_effect=['group1', 'solo']):
+            for actor, channel in [('aion','active'), ('aion','group1'), ('connor','group1'), ('connor','solo')]:
+                notice = f'{actor} 刚读完《来信》第5章「窗边」（第2/3段）'
+                sent = await autonomy._save_private_message(actor, '看到窗边那封信了', reading_notice=notice, auto_tts=False)
+                self.assertEqual(sent.get('room_id') or sent.get('conv_id'), channel)
+                rows = await context_builder.fetch_merged_timeline(actor, 2)
+                self.assertEqual([r['content'] for r in rows], [notice, sent['content']])
+                self.assertEqual(rows[0]['sender'], 'system')
+                self.assertIn({'type':'system_notice_order','before_msg_id':sent['id']}, json.loads(rows[0]['attachments']))
+                rendered = context_builder.render_merged_timeline(rows, actor)
+                history = '\n'.join(item['content'] for item in rendered)
+                self.assertLess(history.index(notice), history.index(sent['content']))
+
     async def test_upgrade_only_unread_chapters(self):
         await self.setup_reading()
         old = [dict(start_p=0,end_p=49,char_count=5000,status='not_sent'),
@@ -55,7 +161,21 @@ class CoreadingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len((await api.get_chapter(self.bid, 0))['chapter']['segments_meta']), 2)
         await self.set_segments(old)
         await api._save_annotations(self.bid, 0, 0, dict(annotations=[],summary='keep'))
-        self.assertEqual((await api.get_chapter(self.bid, 0))['chapter']['segments_meta'], old)
+        self.assertEqual(json.loads((await self.fetch('SELECT segments_meta FROM book_chapters'))[0]['segments_meta']), old)
+        self.assertEqual((await api.get_chapter(self.bid, 0))['chapter']['segments_meta'][0]['status'], 'partial')
+
+    async def test_legacy_long_paragraph_preserves_the_other_readers_completed_note(self):
+        await self.setup_reading()
+        old = [dict(start_p=0, end_p=0, char_count=12000, status='done')]
+        async with fixtures.studio.get_db() as db:
+            await db.execute('UPDATE book_chapters SET paragraphs=?,segments_meta=?',
+                             (json.dumps(['甲。' * 6000]), json.dumps(old)))
+            await db.commit()
+        await api._save_annotations(self.bid, 0, 0, dict(annotations=[{'p':0,'text':'原批注'}], summary='原感想'))
+        chapter = await api.get_chapter(self.bid, 0)
+        self.assertEqual(chapter['chapter']['read_counts'], {'aion': 2, 'connor': 0})
+        self.assertEqual([n['summary'] for n in chapter['summaries']], ['原感想'])
+        self.assertEqual(chapter['annotations'][0]['text'], '原批注')
 
     async def test_disconnect_saves_each_companion_and_finishes_in_background(self):
         await self.setup_reading()

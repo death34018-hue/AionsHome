@@ -25,6 +25,14 @@ function functionBlock(source, startMarker, endMarker) {
   return source.slice(start, end);
 }
 
+test('flush-left prose after a numbered private chat list starts a separate paragraph', () => {
+  const html = loadPrivateMessageRenderer()({
+    id: 'list', role: 'assistant', attachments: [],
+    content: '1. 第一项\n2. 第二项\n以及接下来的安排。',
+  });
+  assert.match(html, /<li>第二项<\/li>\s*<\/ol>\s*<p>以及接下来的安排。<\/p>/);
+});
+
 function loadPrivateMessageRenderer() {
   const source = fs.readFileSync(path.join(ROOT, 'static', 'chat.js'), 'utf8');
   const markdown = require('./static/chatroom-markdown.js');
@@ -47,12 +55,21 @@ function loadPrivateMessageRenderer() {
     window: { ChatroomMarkdown: markdown, SystemNoticeUI: require('./static/system-notice-ui.js') },
   };
   context.window.AionPat = require('./static/pat.js');
+  context.window.ChatWebCards = {render: () => '<chat-web-card></chat-web-card>'};
   context.window.addEventListener = () => {};
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(ROOT,'static','kitchen-cards.js'),'utf8'),context);
   vm.runInContext(`${rendererSource}\nthis.renderPrivateMessage = renderPrivateMessageHTML;`, context);
   return context.renderPrivateMessage;
 }
+
+test('private reply preserves card position and keeps older attachments at the end', () => {
+  const render = loadPrivateMessageRenderer(), before = '点一下🌟。', after = '好玩吗？';
+  const msg = {id:'card', role:'assistant', content:before+after};
+  const card = {type:'web_card',inline_order:{offset:before.length,before,after}};
+  assert.match(render({...msg,attachments:[card]}), /点一下🌟。[\s\S]*<chat-web-card>[\s\S]*好玩吗？/);
+  assert.match(render({...msg,attachments:[{type:'web_card'}]}), /好玩吗？[\s\S]*<chat-web-card>/);
+});
 
 test('private fridge lookup survives history rendering and displays pending or failed state truthfully', () => {
   const render = loadPrivateMessageRenderer(), before = '我去翻冰箱😊。';

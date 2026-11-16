@@ -7,6 +7,19 @@ import java.util.List;
 import static org.junit.Assert.*;
 
 public class TtsPlaybackCoordinatorTest {
+    @Test public void listeningStaysPausedAcrossChunksAndQueuedPlayers() {
+        TtsPlaybackCoordinator coordinator = new TtsPlaybackCoordinator();
+        List<Boolean> states = new ArrayList<>();
+        coordinator.addListener(states::add);
+        Object first = new Object(), second = new Object();
+        coordinator.request(first, () -> assertTrue(coordinator.isSpeaking()));
+        coordinator.request(first, () -> {});
+        coordinator.request(second, () -> {});
+        coordinator.release(first);
+        assertEquals(Arrays.asList(false, true), states);
+        coordinator.release(second);
+        assertEquals(Arrays.asList(false, true, false), states);
+    }
     @Test public void messageContinuesAcrossChunksBeforeReturningToTheater() {
         TtsPlaybackCoordinator coordinator = new TtsPlaybackCoordinator();
         Object theater = new Object(), message = new Object();

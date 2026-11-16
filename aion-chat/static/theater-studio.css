@@ -188,6 +188,10 @@ body.studio-shell[data-theme="light"] .novel-reader { text-shadow:0 1px 8px rgba
 .studio-outline-status[data-state="running"] .studio-outline-indicator { box-sizing:border-box; border:2px solid var(--border-strong); border-top-color:var(--accent); border-radius:50%; animation:studio-outline-spin 1s linear infinite; }
 @keyframes studio-outline-spin { to { transform:rotate(360deg); } }
 @media(prefers-reduced-motion:reduce) { .studio-outline-status[data-state="running"] .studio-outline-indicator { animation:none; } }
+.studio-write-status>div { flex:1; min-width:0; }
+.studio-write-status strong { font-variant-numeric:tabular-nums; }
+.studio-write-status .studio-btn { flex-shrink:0; }
+.studio-write-status[data-stalled="true"] p { color:var(--text); }
 
 /* Reader controls stay together; the library and chapter drawer are separate. */
 .studio-header-actions { align-items:center; flex-shrink:0; }

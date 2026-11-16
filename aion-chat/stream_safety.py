@@ -13,7 +13,7 @@ from typing import AsyncIterable, Awaitable, Callable
 
 @dataclass(frozen=True)
 class StreamSafetyPolicy:
-    max_chars: int
+    max_chars: int | None
     total_timeout: float
     idle_timeout: float = 60.0
     quarantine_chars: int = 600
@@ -35,7 +35,7 @@ class StreamActivity(str):
 
 
 CHAT_STREAM_POLICY = StreamSafetyPolicy(
-    max_chars=6_000,
+    max_chars=None,
     total_timeout=900.0,
     idle_timeout=300.0,
     quarantine_chars=120,
@@ -148,8 +148,9 @@ class StreamSafetyGuard:
             return ""
 
         candidate = self._buffer + text
-        remaining = self.policy.max_chars - self._committed_chars
-        if len(candidate) > remaining:
+        limit = self.policy.max_chars
+        if limit is not None and self._committed_chars + len(candidate) > limit:
+            remaining = limit - self._committed_chars
             allowed = candidate[:max(0, remaining)]
             if _looks_corrupt(allowed):
                 self._stop("quality")

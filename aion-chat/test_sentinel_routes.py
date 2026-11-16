@@ -54,7 +54,7 @@ class SentinelRouteConfigTests(unittest.TestCase):
 
         self.assertEqual(sentinel["route"], "codex_luna")
         self.assertEqual(sentinel["provider"], "codex")
-        self.assertEqual(sentinel["model"], "gpt-5.6-luna")
+        self.assertEqual(sentinel["model"], "gpt-6-luna")
         self.assertEqual(sentinel["reasoning_effort"], "none")
         self.assertTrue(sentinel["ready"])
 
@@ -101,7 +101,7 @@ class SentinelLunaDispatchTests(unittest.TestCase):
         call = AsyncMock(return_value='{"call_core": false}')
         sentinel = {
             "provider": "codex",
-            "model": "gpt-5.6-luna",
+            "model": "gpt-6-luna",
             "reasoning_effort": "none",
         }
 
@@ -119,7 +119,7 @@ class SentinelLunaDispatchTests(unittest.TestCase):
         self.assertEqual(result, '{"call_core": false}')
         call.assert_awaited_once_with(
             "巡逻提示词",
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             image_b64="ZmFrZS1qcGVn",
             mime_type="image/jpeg",
             timeout=37,

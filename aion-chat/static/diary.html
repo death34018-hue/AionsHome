@@ -301,7 +301,7 @@ body[data-theme="light"] .diary-input {
       <button class="diary-tab" data-author="connor" id="connorTab" onclick="switchAuthor('connor')">Connor</button>
     </div>
     <div class="diary-list" id="diaryList">
-      <div class="diary-empty">还没有日记<br>自动总结后，AI 会把心里话写在这里</div>
+      <div class="diary-empty">还没有日记</div>
     </div>
   </div>
 </div>
@@ -389,7 +389,7 @@ function renderMarkdownBody(value) {
 function renderList() {
   const container = document.getElementById('diaryList');
   if (!allItems.length) {
-    container.innerHTML = '<div class="diary-empty">还没有日记<br>自动总结后，AI 会把心里话写在这里</div>';
+    container.innerHTML = '<div class="diary-empty">还没有日记</div>';
     return;
   }
   let html = '';

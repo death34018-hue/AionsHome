@@ -1,4 +1,4 @@
-"""相册文件与记录：只新增原图，移出相册永远不删除本机文件。"""
+"""相册文件与记录：只新增原图，移出相册不删除本机文件；只有礼物批量删除会连原图一起删。"""
 
 import asyncio
 import hashlib
@@ -186,6 +186,29 @@ class AlbumStore:
             result = db.execute("UPDATE photos SET removed_at=? WHERE id=? AND removed_at IS NULL",
                                 (time.time(), photo_id))
             return result.rowcount > 0
+
+    def purge_photo_file(self, filename: str) -> int:
+        """彻底删除一张照片的记录、原图和缩略图，返回释放的字节数。仅供礼物批量删除使用。"""
+        name = Path(filename).name
+        if not name or name != filename:
+            return 0
+        with self._connect() as db:
+            row = db.execute("SELECT id FROM photos WHERE filename=?", (name,)).fetchone()
+            if row:
+                db.execute("DELETE FROM photo_views WHERE photo_id=?", (row["id"],))
+                db.execute("DELETE FROM photos WHERE id=?", (row["id"],))
+        targets = [self.images_dir / name]
+        if row:
+            targets.append(self.thumbnails_dir / (row["id"] + ".webp"))
+        freed = 0
+        for target in targets:
+            try:
+                size = target.stat().st_size
+                target.unlink()
+                freed += size
+            except OSError:
+                pass
+        return freed
 
     def random_unseen_photos(self, actor: str, limit: int = 2) -> list[dict]:
         if actor not in ("aion", "connor"):

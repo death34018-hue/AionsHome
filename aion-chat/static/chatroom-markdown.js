@@ -39,6 +39,15 @@
     : null;
 
   if (parser) {
+    // In chat, quoted lines need a marker and list continuations need item indentation.
+    // markdown-it checks these terminators before accepting a lazy continuation.
+    parser.block.ruler.before('paragraph', 'chat_block_end', (state, line, endLine, silent) => {
+      if (!silent || !state.env.chatParagraphs) return false;
+      if (state.parentType === 'blockquote') return true;
+      return state.parentType === 'paragraph' && state.listIndent >= 0
+        && state.sCount[line] < state.blkIndent;
+    }, { alt: ['blockquote', 'paragraph'] });
+
     // Empty layout spans indent explicit breaks without changing copied text.
     for (const type of ['softbreak', 'hardbreak']) {
       const defaultBreak = parser.renderer.rules[type];

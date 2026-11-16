@@ -19,6 +19,7 @@ if str(_visitor_lounge_src) not in sys.path:
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
+import mimetypes
 
 # 过滤高频轮询路径的 access log，避免淹没有用的日志
 class _QuietCamFilter(logging.Filter):
@@ -36,6 +37,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from config import BASE_DIR, DATA_DIR, PUBLIC_DIR, UPLOADS_DIR, ALBUM_IMAGES_DIR, IMAGE_ANCHORS_DIR, SONGS_DIR, CODEX_UPLOADS_DIR, SCREENSHOTS_DIR, load_cam_config
 from database import init_db, get_db
 from active_window_state import restore_active_windows
+from agy_usage import UsageMonitor, monitor as agy_usage_monitor
+from codex_app_server import query_codex_quota
 from ws import manager
 from system_logs import router as system_logs_router
 from security_access import SecurityAccessMiddleware, SecurityAccessService
@@ -55,6 +58,7 @@ from routes import music_station as music_station_routes
 from routes import taobao as taobao_routes
 from routes import album as album_routes
 from routes import schedule as schedule_routes
+from routes import routines as routines_routes
 from routes import private_memos as private_memos_routes
 from routes import widget_control as widget_control_routes
 from routes import location as location_routes
@@ -72,6 +76,7 @@ from routes import wallpaper as wallpaper_routes
 from routes import playground as playground_routes
 from routes import chatroom as chatroom_routes
 from capabilities import pat_router
+from chat_ambience import router as chat_ambience_router
 from rps import router as rps_router
 from routes import doudizhu as doudizhu_routes
 from routes import table_games as table_games_routes
@@ -104,7 +109,7 @@ from activity import pc_tracker, pc_display_tracker
 from memory import auto_digest, close_embedding_client
 from memory_compression import migrate_legacy_daily_capsules
 from memory_compression_scheduler import auto_calendar_compression_loop
-from chatroom import _connor_1v1_auto_digest_loop
+from chatroom import _connor_1v1_auto_digest_loop, get_chatroom_names
 from fund import fund_scheduler
 from music_station import init_music_station
 from autonomy import idle_autonomy_mgr
@@ -119,6 +124,7 @@ from routes import qq_social as qq_social_routes
 
 
 security_access_service = SecurityAccessService(DATA_DIR / "security_access")
+codex_usage_monitor = UsageMonitor(query_codex_quota, "Codex")
 
 
 # ── 自动记忆总结定时任务 ──────────────────────────
@@ -165,6 +171,8 @@ async def _auto_digest_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    from routine_schedule import init_routine_storage
+    await init_routine_storage()
     from image_anchors import migrate_anchor_images
     await migrate_anchor_images()
     from expressive_voice import archive_legacy_audio
@@ -229,6 +237,8 @@ async def lifespan(app: FastAPI):
     wechat_mode_dispatcher.start()
     openclaw_weixin_runtime.start()
     qq_social_task = asyncio.create_task(supervise_qq_social())
+    agy_usage_task = asyncio.create_task(agy_usage_monitor.run())
+    codex_usage_task = asyncio.create_task(codex_usage_monitor.run())
     security_access_service.start(manager.broadcast)
     try:
         from billiards.service import get_service as billiards_service
@@ -238,8 +248,10 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        agy_usage_task.cancel()
+        codex_usage_task.cancel()
         qq_social_task.cancel()
-        await asyncio.gather(qq_social_task, return_exceptions=True)
+        await asyncio.gather(agy_usage_task, codex_usage_task, qq_social_task, return_exceptions=True)
         from sentinel_dispatch import stop as stop_sentinel_dispatch
         await stop_sentinel_dispatch()
         await kitchen_sentinel.stop()
@@ -319,6 +331,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=5)
 app.add_middleware(SecurityAccessMiddleware, service=security_access_service)
 
 # 静态文件
+mimetypes.add_type("application/vnd.android.package-archive", ".apk")
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.mount("/entertainment-assets", StaticFiles(directory=str(BASE_DIR / "entertainment"), check_dir=False), name="entertainment-assets")
 # 更具体的相册挂载必须在 /uploads 之前；URL 兼容聊天附件，磁盘目录独立。
@@ -357,6 +370,7 @@ app.include_router(music_station_routes.router)
 app.include_router(taobao_routes.router)
 app.include_router(album_routes.router)
 app.include_router(schedule_routes.router)
+app.include_router(routines_routes.router)
 app.include_router(private_memos_routes.router)
 app.include_router(widget_control_routes.router)
 app.include_router(location_routes.router)
@@ -374,6 +388,7 @@ app.include_router(wallpaper_routes.router)
 app.include_router(playground_routes.router)
 app.include_router(chatroom_routes.router)
 app.include_router(pat_router)
+app.include_router(chat_ambience_router)
 app.include_router(rps_router)
 app.include_router(doudizhu_routes.router)
 app.include_router(table_games_routes.router)
@@ -401,6 +416,8 @@ app.include_router(xhs_lite_routes.router)
 app.include_router(capabilities_routes.router)
 from routes import compositions as composition_routes
 app.include_router(composition_routes.router)
+from routes import web_cards as web_card_routes
+app.include_router(web_card_routes.router)
 app.include_router(english_corner_routes.router)
 app.include_router(wechat_routes.router)
 app.include_router(qq_social_routes.router)
@@ -480,6 +497,22 @@ async def taobao_page():
 @app.get("/settings")
 async def settings_page():
     return FileResponse(BASE_DIR / "static" / "settings.html", headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+@app.get("/usage")
+async def usage_page():
+    return FileResponse(BASE_DIR / "static" / "usage.html", headers={"Cache-Control": "no-store"})
+
+@app.get("/api/usage/agy")
+async def get_agy_usage():
+    return JSONResponse(agy_usage_monitor.snapshot, headers={"Cache-Control": "no-store"})
+
+@app.get("/api/usage")
+async def get_usage():
+    _, ai_name, companion_name = get_chatroom_names()
+    return JSONResponse({
+        "agy": {**agy_usage_monitor.snapshot, "display_name": ai_name},
+        "codex": {**codex_usage_monitor.snapshot, "display_name": companion_name},
+    }, headers={"Cache-Control": "no-store"})
 
 @app.get("/tts-test")
 async def tts_test_page():

@@ -1,6 +1,6 @@
 'use strict';
 let state=null, selected=null, settingsDirty=false, busy=false, connectionError=false;
-let pollTimer=null, pollingPaused=false, statusFailures=0, refreshing=false;
+let pollTimer=null, pollingPaused=false, statusFailures=0, refreshing=false, refreshQueued=false;
 let settingsActor='aion';
 const actorDrafts={};
 const $=id=>document.getElementById(id);
@@ -60,8 +60,16 @@ function renderActorSettings(){
  if(!settingsDirty){for(const key of settingFields)$('settings').elements[key].value=cfg[key];}
  $('settings').querySelector('button[type="submit"]').textContent='保存'+(actor?.name||'这位 AI')+'的参数';
 }
-async function refresh(){
- if(busy||refreshing||pollingPaused)return;
+function actorModelSelect(actor,a){
+ const models=state.models, selected=a.settings?.model||'';
+ if(!Array.isArray(models))return `<p class="model" title="重启小家与 QQ 后可单独选择模型">${esc(a.model||'未选择模型')}</p>`;
+ const inherited=a.home_model||'未选择模型';
+ const missing=selected&&!models.includes(selected)?`<option value="${esc(selected)}" selected disabled>${esc(selected)}（不可用）</option>`:'';
+ return `<select class="model-select" data-actor-model="${actor}" aria-label="${esc(a.name)}的 QQ 模型" title="${esc(a.model||inherited)}"><option value="" ${selected?'':'selected'}>跟随聊天室 · ${esc(inherited)}</option>${missing}${models.map(key=>`<option value="${esc(key)}" ${key===selected?'selected':''}>${esc(key)}</option>`).join('')}</select>`;
+}
+async function refresh(force=false){
+ if(busy||(pollingPaused&&!force))return;
+ if(refreshing){if(force)refreshQueued=true;return;}
  refreshing=true;
  try{
   state=await api('status');
@@ -69,7 +77,7 @@ async function refresh(){
   if(connectionError){notice('');connectionError=false;}
   $('power').disabled=false;$('power').textContent=state.settings.enabled?'已开启 · 关闭':'已关闭 · 开启';$('power').classList.toggle('off',!state.settings.enabled);
   const actorOpen=[...$('actors').querySelectorAll('details[open]')].map(d=>d.dataset.actor);
-  $('actors').innerHTML=Object.entries(state.actors).map(([actor,a])=>`<article class="actor"><h2>${esc(a.name)}<span class="badge">${esc(a.state)}</span></h2><p class="model" title="${esc(a.model)}">${esc(a.model||'未选择模型')}</p><label class="actor-participation"><input type="checkbox" data-actor-switch="${actor}" ${a.settings?.enabled?'checked':''} ${a.settings?'':'disabled'}>参与群聊</label><details data-actor="${actor}" ${actorOpen.includes(actor)?'open':''}><summary>连接详情</summary><p class="muted">收到：${date(a.last_event?.at)}<br>发送：${date(a.last_send)}</p>${a.context?.home_messages!==undefined?`<p class="muted">上次参考 ${a.context.home_messages} 条上下文、${a.context.recalled_memories} 条自身记忆</p>`:''}</details>${a.error||a.reply_error?`<p class="error">${esc(a.error||a.reply_error)}</p>`:''}</article>`).join('');
+  if(force||!document.activeElement?.matches('[data-actor-model]'))$('actors').innerHTML=Object.entries(state.actors).map(([actor,a])=>`<article class="actor"><h2>${esc(a.name)}<span class="badge">${esc(a.state)}</span></h2>${actorModelSelect(actor,a)}<label class="actor-participation"><input type="checkbox" data-actor-switch="${actor}" ${a.settings?.enabled?'checked':''} ${a.settings?'':'disabled'}>参与群聊</label><details data-actor="${actor}" ${actorOpen.includes(actor)?'open':''}><summary>连接详情</summary><p class="muted">收到：${date(a.last_event?.at)}<br>发送：${date(a.last_send)}</p>${a.context?.home_messages!==undefined?`<p class="muted">上次参考 ${a.context.home_messages} 条上下文、${a.context.recalled_memories} 条自身记忆</p>`:''}</details>${a.error||a.reply_error?`<p class="error">${esc(a.error||a.reply_error)}</p>`:''}</article>`).join('');
   renderActorSettings();
   const configured=Object.values(state.actors).filter(a=>a.state!=='未配置');
   if(configured.length&&configured.every(a=>a.retry_stopped)){stopPolling();notice('QQ连接已停止，请点击手动连接。');}
@@ -86,7 +94,7 @@ async function refresh(){
   notice(pollingPaused?e.message+'；已停止自动查询，点击手动连接后重新尝试。':e.message,true);
   $('power').disabled=true;$('power').textContent='服务未连接';$('modeLabel').textContent='服务未连接';
   for(const b of $('modeControls').querySelectorAll('button'))b.disabled=true;
- }finally{refreshing=false;}
+ }finally{refreshing=false;if(refreshQueued){refreshQueued=false;await refresh(true);}}
 }
 async function manualConnect(){
  if(busy||refreshing)return;
@@ -113,9 +121,9 @@ async function detail(id){
  if($('memories').dataset.version!==memoryMarkup){$('memories').innerHTML=memoryMarkup;$('memories').dataset.version=memoryMarkup;}
  if($('messages').dataset.version!==messageMarkup){$('messages').innerHTML=messageMarkup;$('messages').dataset.version=messageMarkup;}
 }
-async function action(fn){if(busy)return;busy=true;$('power').disabled=true;for(const b of $('modeControls').querySelectorAll('button'))b.disabled=true;try{await fn();notice('已保存');}catch(e){notice(e.message,true);}finally{busy=false;await refresh();}}
+async function action(fn){if(busy)return;busy=true;$('power').disabled=true;for(const b of $('modeControls').querySelectorAll('button'))b.disabled=true;for(const select of $('actors').querySelectorAll('select'))select.disabled=true;try{await fn();notice('已保存');}catch(e){notice(e.message,true);}finally{busy=false;await refresh(true);}}
 $('power').onclick=()=>action(()=>api('settings','PATCH',{enabled:!state.settings.enabled}));
-$('actors').onchange=e=>{const actor=e.target.dataset.actorSwitch;if(actor)action(()=>api('actors/'+actor+'/settings','PATCH',{enabled:e.target.checked}));};
+$('actors').onchange=e=>{const target=e.target,actor=target.dataset.actorModel||target.dataset.actorSwitch;if(actor)action(()=>api('actors/'+actor+'/settings','PATCH',target.dataset.actorModel?{model:target.value}:{enabled:target.checked}));};
 $('actorTabs').onclick=e=>{
  const actor=e.target.closest('[data-settings-actor]')?.dataset.settingsActor;
  if(!actor||actor===settingsActor||busy)return;

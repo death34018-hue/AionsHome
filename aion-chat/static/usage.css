@@ -1,0 +1,133 @@
+.usage-page {
+  --ink: #142e29;
+  --muted: #294c40;
+  --signal: #087a57;
+  --glass: rgb(236 251 243 / 64%);
+  --edge: rgb(249 255 252 / 83%);
+  --rule: rgb(27 85 63 / 22%);
+  --wall: url('/public/BackGround.png');
+  color: var(--ink);
+}
+.usage-page[data-theme="dark"] {
+  --ink: #ecfbf4;
+  --muted: #cbe4d8;
+  --signal: #79efb5;
+  --glass: rgb(7 28 23 / 63%);
+  --edge: rgb(165 244 202 / 40%);
+  --rule: rgb(158 221 188 / 27%);
+  --wall: url('/public/BackGroundN.png');
+}
+.usage-page .usage-screen {
+  position: relative;
+  max-width: none;
+  isolation: isolate;
+  background: var(--wall) center / cover no-repeat;
+  padding-top: env(safe-area-inset-top, 0px);
+}
+html.aion-app .usage-page .usage-screen {
+  padding-top: max(34px, env(safe-area-inset-top, 0px));
+}
+html.aion-app:not(.aion-iframe) .usage-screen::before {
+  content: none;
+}
+.usage-page .top-bar, .usage-page[data-theme="dark"] .top-bar {
+  align-self: flex-start;
+  margin: 16px clamp(16px, 4vw, 48px) 0;
+  padding: 0 16px 0 2px;
+  gap: 3px;
+  background: var(--glass);
+  border: 1px solid var(--edge);
+  border-radius: 24px;
+  color: var(--ink);
+}
+.usage-page .top-bar .back-btn {
+  width: 42px;
+  height: 42px;
+  justify-content: center;
+  color: var(--ink);
+  font: 32px/1 system-ui, sans-serif;
+}
+.usage-page .top-bar h2 { color: var(--ink); font-size: 15px; }
+.usage-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.console {
+  width: min(100%, 470px);
+  padding: 0 16px max(24px, env(safe-area-inset-bottom));
+  margin: 44dvh auto 0;
+}
+.glass, .switcher {
+  background: var(--glass);
+  border: 1px solid var(--edge);
+  box-shadow: 0 8px 32px rgb(3 28 17 / 14%), inset 0 0 0 1px rgb(154 210 184 / 13%);
+  backdrop-filter: blur(9px) saturate(1.15);
+  -webkit-backdrop-filter: blur(9px) saturate(1.15);
+}
+.switcher {
+  display: inline-flex;
+  max-width: 100%;
+  border-radius: 10px;
+  padding: 3px;
+  margin-bottom: 10px;
+}
+.switcher button {
+  display: block;
+  min-height: 38px;
+  min-width: 72px;
+  max-width: 50vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: transparent;
+  color: var(--ink);
+  border: 0;
+  border-radius: 7px;
+  padding: 4px 17px;
+  font: 600 14px/1.4 system-ui, sans-serif;
+  cursor: pointer;
+}
+.switcher button[aria-pressed="true"] { background: var(--ink); color: var(--glass-text, #f2fff8); }
+.usage-page[data-theme="dark"] { --glass-text: #15372a; }
+.usage-page :is(button, summary):focus-visible { outline: 3px solid var(--signal); outline-offset: 2px; }
+.panel, .more { border-radius: 15px; color: var(--ink); }
+.panel { padding: 20px 22px 13px; }
+.panel h1 { font-size: clamp(20px, 4vw, 25px); line-height: 1.25; font-weight: 650; }
+.quota { margin-top: 14px; }
+.readout { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.readout span { font-size: 13px; color: var(--muted); }
+.number { font: 600 clamp(37px, 8vw, 50px)/1.1 Consolas, 'Roboto Mono', monospace; letter-spacing: -.065em; }
+.number small { font-size: .46em; margin-left: .12em; }
+.meter {
+  height: 8px;
+  position: relative;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--rule);
+  margin: 5px 0 8px;
+}
+.meter i { display: block; height: 100%; background: var(--signal); }
+.meter::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(to right, transparent 0 calc(5% - 1px), var(--glass) calc(5% - 1px) 5%);
+}
+.recovery { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; color: var(--muted); font-size: 12px; }
+.panel footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px 8px; border-top: 1px solid var(--rule); margin-top: 17px; padding-top: 10px; font-size: 11px; color: var(--muted); }
+#usageStatus:not(:empty) { margin-top: 14px; font-size: 14px; }
+.more { margin-top: 10px; }
+.more summary { cursor: pointer; padding: 13px 20px; font-size: 14px; font-weight: 600; }
+.more section { padding: 0 20px 18px; }
+.more h3 { font-size: 15px; margin-top: 4px; }
+.more .number { font-size: 23px; }
+.more .quota { margin-top: 10px; }
+.more .meter { height: 4px; }
+@media (min-aspect-ratio: 1/1) {
+  .usage-screen { background-position-y: 32% !important; }
+  .console { margin: 24dvh 0 0 clamp(16px, 6vw, 100px); }
+}
+@media (min-aspect-ratio: 1/1) and (max-height: 580px) {
+  .console { width: min(52%, 470px); margin-top: 12dvh; }
+}

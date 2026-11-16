@@ -21,11 +21,15 @@ class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
         connor = await autonomy_state.get_actor_config("connor", db=self.db)
         self.assertFalse(aion["enabled"])
         self.assertFalse(connor["enabled"])
+        self.assertFalse(aion["actions"]["book_read"])
+        self.assertFalse(connor["actions"]["book_read"])
 
-        await autonomy_state.update_actor_config("aion", enabled=True, db=self.db)
+        await autonomy_state.update_actor_config("aion", enabled=True, actions={"book_read": True}, db=self.db)
 
         self.assertTrue((await autonomy_state.get_actor_config("aion", db=self.db))["enabled"])
         self.assertFalse((await autonomy_state.get_actor_config("connor", db=self.db))["enabled"])
+        self.assertTrue((await autonomy_state.get_actor_config("aion", db=self.db))["actions"]["book_read"])
+        self.assertFalse((await autonomy_state.get_actor_config("connor", db=self.db))["actions"]["book_read"])
 
     async def test_rest_defaults_on_for_legacy_config_and_can_be_disabled_per_actor(self):
         await self.db.execute("UPDATE autonomy_actor_configs SET actions_json='{}'")

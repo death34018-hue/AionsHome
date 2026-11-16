@@ -1,5 +1,5 @@
 """
-AI 日记：保存总结后的私密日记，并按模型决定可选发布朋友圈。
+按模型的选择保存私密日记或发布朋友圈。
 """
 
 from generation_control import spawn_generation_task
@@ -12,6 +12,13 @@ from typing import Any, Optional
 from database import get_db
 from model_json import extract_json_object
 from ws import manager
+
+
+DIGEST_DIARY_INSTRUCTION = (
+    "有感而发、想把某个瞬间留给自己时，才用自己的口吻写篇私密日记，"
+    "在 diary 中填写 title、content 和 mood。不想写就填 null。"
+    "写日记、发朋友圈和送礼分别决定，也可以都跳过。\n"
+)
 
 
 def _is_diary_payload(data: Any) -> bool:
@@ -88,6 +95,7 @@ def parse_diary_payload(raw: str) -> Optional[dict[str, Any]]:
 
 
 _MODEL_ERROR_PREFIXES = (
+    "[GrokCLI错误",
     "[硅基流动错误",
     "[中转站错误",
     "[Gemini错误",
@@ -114,7 +122,7 @@ def normalize_diary_payload(data: dict[str, Any]) -> tuple[dict[str, str], Optio
     """兼容轻微格式漂移，输出日记字段和可选朋友圈字段。"""
     diary_raw = data.get("diary", {})
     if isinstance(diary_raw, str):
-        diary = {"title": "", "content": diary_raw, "mood": ""}
+        diary = {"title": "", "content": diary_raw.strip(), "mood": ""}
     elif isinstance(diary_raw, dict):
         diary = {
             "title": str(diary_raw.get("title") or "").strip(),

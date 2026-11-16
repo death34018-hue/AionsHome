@@ -49,12 +49,21 @@ function loadMessageRenderer() {
     window: { LoungeVisitUI: null, ChatroomMarkdown: markdown, SystemNoticeUI: require('./static/system-notice-ui.js') },
   };
   context.window.AionPat = require('./static/pat.js');
+  context.window.ChatWebCards = {render: () => '<chat-web-card></chat-web-card>'};
   context.window.addEventListener = () => {};
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(ROOT,'static','kitchen-cards.js'),'utf8'),context);
   vm.runInContext(`${rendererSource}\nthis.renderMessage = msgHTML;`, context);
   return context.renderMessage;
 }
+
+test('web card is shown once between the invitation and the follow-up', () => {
+  const before = '看看手感怎么样：', after = '怎么样，还顺滑吧？';
+  const html = loadMessageRenderer()({id:'card', sender:'aion', content:before+'\n\n'+after,
+    attachments:[{type:'web_card',inline_order:{offset:before.length,before,after}}]});
+  assert.match(html, /看看手感怎么样：[\s\S]*<chat-web-card>[\s\S]*怎么样，还顺滑吧？/);
+  assert.equal(html.split('<chat-web-card>').length,2);
+});
 
 test('each actor keeps the fridge lookup between the preamble and the returned reply', () => {
   const before = '我去翻冰箱😊。';
@@ -348,4 +357,21 @@ test('AI single line breaks stay within a paragraph and blank lines start anothe
   assert.equal((html.match(/class="ai-message-content markdown-body"/g) || []).length, 1);
   assert.equal((html.match(/<p>/g) || []).length, 2);
   assert.match(html, /第一行。<br>\n<span class="line-indent" aria-hidden="true"><\/span>第二行。/);
+});
+
+test('unmarked chat prose after a quote starts a separate paragraph', () => {
+  const html = loadMessageRenderer()({
+    id: 'quote', sender: 'connor', attachments: [],
+    content: '> 今日论文暂定\n> **《单坨样本的观察》**\n以及这张照片是 Maru 的黑历史。\n😹',
+  });
+  assert.match(html, /<blockquote>\s*<p>今日论文暂定[\s\S]*<strong>《单坨样本的观察》<\/strong><\/p>\s*<\/blockquote>\s*<p>以及这张照片是 Maru 的黑历史。<br>/);
+});
+
+test('flush-left prose after a chat list leaves nested items and indented continuations intact', () => {
+  const html = loadMessageRenderer()({
+    id: 'list', sender: 'aion', attachments: [],
+    content: '- 第一项\n  续写第一项。\n  1. 子项\n- 第二项\n接下来说正文。\n这句也是正文。',
+  });
+  assert.match(html, /<li>第一项<br>[\s\S]*续写第一项。\s*<ol>\s*<li>子项<\/li>\s*<\/ol>\s*<\/li>/);
+  assert.match(html, /<li>第二项<\/li>\s*<\/ul>\s*<p>接下来说正文。<br>[\s\S]*这句也是正文。<\/p>/);
 });

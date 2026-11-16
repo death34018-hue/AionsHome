@@ -13,6 +13,7 @@ from pathlib import Path
 from external_memories import ExternalReply
 
 HOME = Path(__file__).resolve().parents[1]
+QQ_PROVIDERS = ('codex_cli','antigravity_cli','grok_cli','custom_openai','gemini','vertex','siliconflow','aipro')
 
 
 @dataclass
@@ -60,12 +61,18 @@ def reply_target(visible, targets, event, direct):
     return text, reference if text else '', target
 
 
-def select_model(actor, chat_config, models):
+def available_models(models):
+    from config import is_model_deprecated
+    return [key for key,cfg in models.items()
+            if cfg.get('provider') in QQ_PROVIDERS and not is_model_deprecated(key)]
+
+
+def select_model(actor, chat_config, models, qq_model=''):
     if actor not in ('aion', 'connor'):
         raise ValueError('Unknown actor')
-    key = str(chat_config.get(f'{actor}_model') or '').strip()
+    key = str(qq_model or chat_config.get(f'{actor}_model') or '').strip()
     if not key or key not in models:
-        raise ValueError('请先在小家聊天室保存这位 AI 的有效模型配置')
+        raise ValueError('请先为这位 AI 选择有效的 QQ 群聊模型')
     return key
 
 
@@ -108,12 +115,12 @@ def _fallback_memories(actor, query):
     return rows[:6]
 
 
-async def private_context(actor, query):
+async def private_context(actor, query, qq_model=''):
     from chatroom import _read_connor_persona, recall_chatroom_memories
     from context_builder import fetch_merged_timeline
     from memory import recall_memories
     cfg, models, wb, names = home_config()
-    model = select_model(actor, cfg, models)
+    model = select_model(actor, cfg, models, qq_model)
     persona = wb.get('ai_persona', '') if actor == 'aion' else _read_connor_persona()
     timeline = await fetch_merged_timeline(actor, 20)
     try:
@@ -147,8 +154,8 @@ async def call_model(messages, model):
     from config import MODELS, is_model_deprecated
     cfg = MODELS.get(model, {})
     if not cfg or is_model_deprecated(model):
-        raise ValueError('聊天室配置的模型不存在或已停用')
-    if cfg.get('provider') not in ('codex_cli','custom_openai','gemini','siliconflow','aipro'):
+        raise ValueError('QQ 群聊配置的模型不存在或已停用')
+    if cfg.get('provider') not in QQ_PROVIDERS:
         raise ValueError('该模型线路尚未提供 QQ 无工具聊天模式')
     result = []
     async for chunk in stream_ai(messages, model, {}, max_tokens=1200, include_device_context=False, request_timeout=160):
@@ -162,7 +169,7 @@ async def generate_reply(actor, group, event, store, direct, diagnostics):
     from external_memories import MEMORY_INSTRUCTION, split_memory_command
     from external_activity import settings as activity_settings
     activity_cfg=activity_settings()
-    model, names, private, info = await private_context(actor, event['content'])
+    model, names, private, info = await private_context(actor, event['content'], store.actor_settings(actor)['model'])
     diagnostics.update(info)
     members = {r['member_id']:r for r in store.members(actor, group['group_id'])}
     history = store.history(actor, group['group_id'], store.settings(actor)['context_messages'])
@@ -268,7 +275,7 @@ async def generate_reply(actor, group, event, store, direct, diagnostics):
 
 async def summarize_group(actor, group, rows, store):
     cfg, models, _, _ = home_config()
-    model = select_model(actor, cfg, models)
+    model = select_model(actor, cfg, models, store.actor_settings(actor)['model'])
     records = [{k:r[k] for k in ('message_id','member_id','name','content','direction','is_bot')} for r in rows]
     existing = [memory for member in dict.fromkeys(r['member_id'] for r in rows if r['direction']=='in')
                 for memory in store.member_memories(actor,group['group_id'],member)]

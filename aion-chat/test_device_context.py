@@ -7,6 +7,47 @@ class DeviceContextStoreTest(unittest.TestCase):
     def setUp(self):
         self.store = DeviceContextStore()
 
+    def test_home_foreground_follows_theater_then_returns_to_home(self):
+        self.store.update_phone({
+            "screen": {"value": "on", "observed_at": 100},
+            "foreground_app": {"value": "com.aion.chat", "observed_at": 100},
+        }, 100)
+        for timestamp, page, expected in (
+            (101, "theater", "在小剧场"),
+            (102, "home", "在小家里"),
+            (103, "theater", "在小剧场"),
+            (104, "background", "在小家里"),
+        ):
+            self.store.update_phone({
+                "home_page": {"value": page, "observed_at": timestamp},
+            }, timestamp)
+            phone = self.store.snapshot({}, timestamp)["phone"]
+            self.assertEqual(expected, phone["foreground_app"]["display_value"])
+            self.assertEqual("com.aion.chat", phone["foreground_app"]["value"])
+            self.assertNotIn("home_page", phone)
+            self.assertIn(f"前台为 {expected}", self.store.prompt({}, timestamp))
+        self.store.update_phone({
+            "home_page": {"value": "theater", "observed_at": 103},
+        }, 105)
+        self.assertEqual("在小家里", self.store.snapshot({}, 105)["phone"]
+                         ["foreground_app"]["display_value"])
+
+    def test_theater_page_does_not_override_other_apps_lock_or_expired_state(self):
+        for app, screen, now, expected in (
+            ("com.tencent.mm", "on", 102, "微信"),
+            ("com.aion.chat", "off", 102, "在小家里"),
+            ("com.aion.chat", "on", 192, "在小家里"),
+        ):
+            with self.subTest(app=app, screen=screen, now=now):
+                store = DeviceContextStore()
+                store.update_phone({
+                    "screen": {"value": screen, "observed_at": 100},
+                    "foreground_app": {"value": app, "observed_at": 100},
+                    "home_page": {"value": "theater", "observed_at": 101},
+                }, 101)
+                self.assertEqual(expected, store.snapshot({}, now)["phone"]
+                                 ["foreground_app"]["display_value"])
+
     def test_new_value_overwrites_old_value_while_heartbeat_keeps_since(self):
         self.store.update_phone(
             {"posture": {"value": "portrait", "observed_at": 100}}, 100

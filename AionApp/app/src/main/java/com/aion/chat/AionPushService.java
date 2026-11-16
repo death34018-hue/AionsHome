@@ -28,7 +28,6 @@ import android.content.res.AssetFileDescriptor;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
-import android.net.NetworkRequest;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.IBinder;
@@ -56,6 +55,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -163,8 +164,18 @@ public class AionPushService extends Service {
     private final AtomicBoolean wsConnected = new AtomicBoolean(false);
     private final AtomicBoolean wsConnecting = new AtomicBoolean(false);
 
-    private volatile int reconnectDelay = 3000;
-    private static final int MAX_RECONNECT_DELAY = 30000;
+    private final SocketReconnect socketReconnect = new SocketReconnect(new SocketReconnect.Scheduler() {
+        @Override public void post(Runnable task, long delayMs) { mainHandler.postDelayed(task, delayMs); }
+        @Override public void remove(Runnable task) { mainHandler.removeCallbacks(task); }
+    }, this::connectWebSocket);
+    private volatile boolean cloudflareAuthRequired;
+    private final ScheduledExecutorService pushSyncExecutor = Executors.newSingleThreadScheduledExecutor();
+    private volatile ScheduledFuture<?> pushReplayRetry;
+    private volatile okhttp3.Call pushReplayCall;
+    private OkHttpClient pushReplayClient;
+    private PushMessageSync pushSyncState;
+    private int pushSyncGeneration;
+    private int pushReplayDelay = 3000;
     private volatile boolean shouldRun = true;
     private volatile boolean isForegroundActive = false;
     private final PhoneCameraState phoneCameraState = new PhoneCameraState();
@@ -188,6 +199,7 @@ public class AionPushService extends Service {
 
     private ConnectivityManager connectivityManager;
     private ConnectivityManager.NetworkCallback networkCallback;
+    private volatile Network pushDefaultNetwork;
 
     // ── ESP32-CAM 桥接 ──
     private volatile boolean esp32BridgeActive = false;
@@ -282,12 +294,7 @@ public class AionPushService extends Service {
         createNotificationChannels();
         mainHandler = new Handler(Looper.getMainLooper());
         backgroundTtsPlayer = new BackgroundTtsPlayer(this, mainHandler, this::onBackgroundTtsChanged);
-        backgroundTtsSettingsListener = (prefs, key) -> {
-            if ("background_tts_stop".equals(key)) { backgroundTtsPlayer.stop(); return; }
-            if (!"background_tts_updated".equals(key)) return;
-            if (!prefs.getBoolean("background_tts_enabled", false)) backgroundTtsPlayer.stop();
-            sendBackgroundTtsState();
-        };
+        backgroundTtsSettingsListener = (prefs, key) -> onBackgroundTtsPreferenceChanged(key);
         getSharedPreferences(PREFS, MODE_PRIVATE)
                 .registerOnSharedPreferenceChangeListener(backgroundTtsSettingsListener);
         phoneCameraController = new PhoneCameraController(this);
@@ -341,11 +348,13 @@ public class AionPushService extends Service {
         }
 
         client = new OkHttpClient.Builder()
-                .pingInterval(30, TimeUnit.SECONDS)
+                .pingInterval(20, TimeUnit.SECONDS)
                 .readTimeout(0, TimeUnit.SECONDS)
                 .connectTimeout(10, TimeUnit.SECONDS)
                 .cookieJar(new WebViewCookieJar())
                 .build();
+        pushReplayClient = client.newBuilder().followRedirects(false).readTimeout(15, TimeUnit.SECONDS)
+                .callTimeout(20, TimeUnit.SECONDS).build();
         phoneContextCollector = new PhoneContextCollector(this, this::postDeviceContext);
         superXNotificationMonitor = new SuperXNotificationMonitor(
                 this,
@@ -446,10 +455,11 @@ public class AionPushService extends Service {
                 Log.i(TAG, "Mi Band setting action cold-started service; continuing bootstrap");
             }
             if (ACTION_REFRESH_CLOUDFLARE_AUTH.equals(action)) {
+                cloudflareAuthRequired = false;
                 if (PushServiceStartPolicy.canReturnAfterLightweightAction(
                         action, serverUrl, isHeartbeatThreadAlive())) {
                     if (isCloudflareServer() && !wsConnected.get()) {
-                        reconnectDelay = 3000;
+                        socketReconnect.connected();
                         connectWebSocket();
                     }
                     return START_STICKY;
@@ -561,6 +571,9 @@ public class AionPushService extends Service {
     }
 
     private synchronized void resetWebSocketForEndpointChange() {
+        socketReconnect.cancel();
+        cancelMessageReplay();
+        cloudflareAuthRequired = false;
         wsGeneration.incrementAndGet();
         wsConnected.set(false);
         wsConnecting.set(false);
@@ -569,6 +582,13 @@ public class AionPushService extends Service {
         if (old != null) {
             try { old.cancel(); } catch (Exception ignored) {}
         }
+        // The old listener now fails its generation check, so it cannot finish
+        // speech waiting for a tts_done that was lost with this connection.
+        Runnable finishSpeech = () -> {
+            if (!backgroundTtsClosing && backgroundTtsPlayer != null) backgroundTtsPlayer.connectionLost();
+        };
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) finishSpeech.run();
+        else mainHandler.post(finishSpeech);
     }
 
     @Nullable @Override
@@ -582,6 +602,9 @@ public class AionPushService extends Service {
                 .unregisterOnSharedPreferenceChangeListener(backgroundTtsSettingsListener);
         if (backgroundTtsPlayer != null) backgroundTtsPlayer.stop();
         shouldRun = false;
+        socketReconnect.cancel();
+        cancelMessageReplay();
+        pushSyncExecutor.shutdownNow();
         com.aion.chat.supervision.AppSupervisionRuntime runtime =
                 com.aion.chat.supervision.AppSupervisionRuntime.get();
         if (runtime != null) runtime.setSyncListener(null);
@@ -644,23 +667,33 @@ public class AionPushService extends Service {
             @Override
             public void onAvailable(Network network) {
                 Log.i(TAG, "★ Network available, connected=" + wsConnected.get());
-                if (!wsConnected.get() && shouldRun) {
-                    reconnectDelay = 3000;
-                    connectWebSocket();
+                synchronized (AionPushService.this) {
+                    if (network.equals(pushDefaultNetwork)) return;
+                    pushDefaultNetwork = network;
+                    if (shouldRun) {
+                        boolean needsLogin = cloudflareAuthRequired;
+                        resetWebSocketForEndpointChange();
+                        cloudflareAuthRequired = needsLogin;
+                        socketReconnect.soon();
+                    }
                 }
             }
             @Override
             public void onLost(Network network) {
-                Log.w(TAG, "★ Network lost");
-                wsConnected.set(false);
-                updateKeepAlive("网络断开，等待恢复...");
+                synchronized (AionPushService.this) {
+                    if (!network.equals(pushDefaultNetwork)) return;
+                    pushDefaultNetwork = null;
+                    Log.w(TAG, "★ Default network lost");
+                    boolean needsLogin = cloudflareAuthRequired;
+                    resetWebSocketForEndpointChange();
+                    cloudflareAuthRequired = needsLogin;
+                    updateKeepAlive("网络断开，等待恢复...");
+                    if (shouldRun) socketReconnect.failed();
+                }
             }
         };
 
-        NetworkRequest req = new NetworkRequest.Builder()
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build();
-        connectivityManager.registerNetworkCallback(req, networkCallback);
+        connectivityManager.registerDefaultNetworkCallback(networkCallback);
         Log.i(TAG, "NetworkCallback registered");
     }
 
@@ -2142,19 +2175,24 @@ public class AionPushService extends Service {
     // ══════════════════════════════════════════════════════════
 
     private synchronized void connectWebSocket() {
+        if (!shouldRun || client == null || cloudflareAuthRequired) return;
         if (wsConnected.get()) return;
         if (serverUrl == null) { Log.e(TAG, "url=null"); return; }
 
         // Access authentication comes from the WebView login. Do not follow an
         // Access redirect as a WebSocket handshake and do not bypass Access.
         if (isCloudflareServer() && getCloudflareCookie() == null) {
+            socketReconnect.cancel();
             Log.i(TAG, "Cloudflare Access session not available yet");
             updateKeepAlive("等待 Cloudflare 安全登录…");
             return;
         }
         if (!wsConnecting.compareAndSet(false, true)) return;
 
+        socketReconnect.cancel();
+        cancelMessageReplay();
         final int gen = wsGeneration.incrementAndGet();
+        final String endpoint = serverUrl;
 
         WebSocket old = webSocket;
         webSocket = null;
@@ -2164,76 +2202,219 @@ public class AionPushService extends Service {
         updateKeepAlive("连接中...");
 
         try {
-            Request req = new Request.Builder().url(serverUrl).build();
-            webSocket = client.newWebSocket(req, new WebSocketListener() {
+            Request req = new Request.Builder().url(endpoint).build();
+            // Bound only the WebSocket upgrade; other background HTTP operations
+            // keep their existing timeouts. OkHttp clears idle reads after upgrade.
+            OkHttpClient socketClient = client.newBuilder().followRedirects(false)
+                    .readTimeout(20, TimeUnit.SECONDS).build();
+            webSocket = socketClient.newWebSocket(req, new WebSocketListener() {
 
                 @Override
                 public void onOpen(WebSocket ws, Response resp) {
-                    if (gen != wsGeneration.get()) { ws.cancel(); return; }
-                    Log.i(TAG, ">>> OPEN gen=" + gen);
-                    wsConnecting.set(false);
-                    wsConnected.set(true);
-                    reconnectDelay = 3000;
-                    msgReceived = 0;
-                    lastMessageTime = System.currentTimeMillis();
-                    try {
-                        JSONObject registration = new JSONObject();
-                        registration.put("type", "register_client");
-                        registration.put("client_id", getPhoneCameraClientId());
-                        ws.send(registration.toString());
-                        mainHandler.post(AionPushService.this::sendBackgroundTtsState);
-                        if (phoneCameraState.isArmed()) {
-                            postPhoneCameraArmState(true);
+                    synchronized (AionPushService.this) {
+                        if (gen != wsGeneration.get() || !shouldRun) { ws.cancel(); return; }
+                        Log.i(TAG, ">>> OPEN gen=" + gen);
+                        wsConnecting.set(false);
+                        wsConnected.set(true);
+                        socketReconnect.connected();
+                        msgReceived = 0;
+                        lastMessageTime = System.currentTimeMillis();
+                        beginMessageReplay(gen, endpoint);
+                        try {
+                            JSONObject registration = new JSONObject();
+                            registration.put("type", "register_client");
+                            registration.put("client_id", getPhoneCameraClientId());
+                            ws.send(registration.toString());
+                            mainHandler.post(AionPushService.this::sendBackgroundTtsState);
+                            if (phoneCameraState.isArmed()) {
+                                postPhoneCameraArmState(true);
+                            }
+                        } catch (Exception error) {
+                            Log.w(TAG, "phone camera registration failed", error);
                         }
-                    } catch (Exception error) {
-                        Log.w(TAG, "phone camera registration failed", error);
+                        updateKeepAlive("在线 ✨");
+                        fetchPendingMiBandCommands();
+                        syncAppSupervisionRuntimeConfig();
+                        fetchPendingAppSupervisionCommands();
+                        WidgetStateSyncClient.sync(AionPushService.this);
                     }
-                    updateKeepAlive("在线 ✨");
-                    fetchPendingMiBandCommands();
-                    syncAppSupervisionRuntimeConfig();
-                    fetchPendingAppSupervisionCommands();
-                    WidgetStateSyncClient.sync(AionPushService.this);
+                }
+
+                @Override
+                public void onClosing(WebSocket ws, int code, String reason) {
+                    ws.close(code, reason);
                 }
 
                 @Override
                 public void onMessage(WebSocket ws, String text) {
                     if (gen != wsGeneration.get()) return;
                     lastMessageTime = System.currentTimeMillis();
+                    try {
+                        JSONObject event = new JSONObject(text);
+                        if (event.optLong("sync_seq") > 0) {
+                            // A slow replay HTTP request must not delay live chat notifications.
+                            receiveSyncMessage(gen, endpoint, event);
+                            return;
+                        }
+                    } catch (Exception error) {
+                        Log.w(TAG, "Unable to process sync message", error);
+                    }
                     handleMessage(text);
                 }
 
                 @Override
                 public void onFailure(WebSocket ws, Throwable t, Response resp) {
-                    if (gen != wsGeneration.get()) return;
-                    mainHandler.post(() -> { if (!backgroundTtsClosing) backgroundTtsPlayer.connectionLost(); });
-                    String err = t != null ? t.getMessage() : "unknown";
-                    Log.w(TAG, ">>> FAIL gen=" + gen + ": " + err);
-                    wsConnecting.set(false);
-                    wsConnected.set(false);
-                    reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
-                    if (isCloudflareServer() && resp != null
-                            && (resp.code() == 302 || resp.code() == 401 || resp.code() == 403)) {
-                        updateKeepAlive("Cloudflare 登录已过期，请打开 App 重新登录");
-                    } else {
-                        updateKeepAlive("连接失败: " + err);
+                    synchronized (AionPushService.this) {
+                        if (gen != wsGeneration.get()) return;
+                        mainHandler.post(() -> { if (!backgroundTtsClosing) backgroundTtsPlayer.connectionLost(); });
+                        String err = t != null ? t.getMessage() : "unknown";
+                        Log.w(TAG, ">>> FAIL gen=" + gen + ": " + err);
+                        wsConnecting.set(false);
+                        wsConnected.set(false);
+                        cancelMessageReplay();
+                        if (isCloudflareServer() && resp != null
+                                && (resp.code() == 302 || resp.code() == 401 || resp.code() == 403)) {
+                            cloudflareAuthRequired = true;
+                            socketReconnect.cancel();
+                            updateKeepAlive("Cloudflare 登录已过期，请打开 App 重新登录");
+                        } else {
+                            updateKeepAlive("连接失败: " + err);
+                            if (shouldRun) socketReconnect.failed();
+                        }
                     }
-                    // 不在这里阻塞或重连！心跳线程会处理
                 }
 
                 @Override
                 public void onClosed(WebSocket ws, int code, String reason) {
-                    if (gen != wsGeneration.get()) return;
-                    mainHandler.post(() -> { if (!backgroundTtsClosing) backgroundTtsPlayer.connectionLost(); });
-                    Log.i(TAG, ">>> CLOSED gen=" + gen + " code=" + code);
-                    wsConnecting.set(false);
-                    wsConnected.set(false);
-                    updateKeepAlive("连接关闭(" + code + ")");
+                    synchronized (AionPushService.this) {
+                        if (gen != wsGeneration.get()) return;
+                        mainHandler.post(() -> { if (!backgroundTtsClosing) backgroundTtsPlayer.connectionLost(); });
+                        Log.i(TAG, ">>> CLOSED gen=" + gen + " code=" + code);
+                        wsConnecting.set(false);
+                        wsConnected.set(false);
+                        cancelMessageReplay();
+                        updateKeepAlive("连接关闭(" + code + ")");
+                        if (shouldRun && !cloudflareAuthRequired) socketReconnect.failed();
+                    }
                 }
             });
         } catch (Exception e) {
             wsConnecting.set(false);
             Log.e(TAG, "connect error: " + e.getMessage());
-            reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
+            if (shouldRun) socketReconnect.failed();
+        }
+    }
+
+    private boolean isCurrentPushSession(int generation, String endpoint) {
+        return shouldRun && wsConnected.get() && generation == wsGeneration.get()
+                && endpoint.equals(serverUrl);
+    }
+
+    private synchronized void cancelMessageReplay() {
+        if (pushReplayRetry != null) pushReplayRetry.cancel(false);
+        pushReplayRetry = null;
+        if (pushReplayCall != null) pushReplayCall.cancel();
+        pushReplayCall = null;
+    }
+
+    private String pushSyncKey(String endpoint) {
+        return "push-sync-v1:" + java.net.URI.create(endpoint).getAuthority();
+    }
+
+    private void savePushSync(String endpoint, PushMessageSync state) throws Exception {
+        new SharedJsonStore(this).put(pushSyncKey(endpoint), state.snapshot());
+    }
+
+    private void beginMessageReplay(int generation, String endpoint) {
+        if (!isCurrentPushSession(generation, endpoint)) return;
+        PushMessageSync state = new PushMessageSync(new SharedJsonStore(this).get(pushSyncKey(endpoint)));
+        pushSyncState = state;
+        pushSyncGeneration = generation;
+        pushReplayDelay = 3000;
+        pushSyncExecutor.execute(() -> replayMessages(generation, endpoint, state));
+    }
+
+    private void receiveSyncMessage(int generation, String endpoint, JSONObject event) {
+        synchronized (this) {
+            if (!isCurrentPushSession(generation, endpoint) || pushSyncGeneration != generation) return;
+            try {
+                pushSyncState.acceptLive(event,
+                        (message, notify) -> handleMessage(message.toString(), notify, endpoint));
+                savePushSync(endpoint, pushSyncState);
+                if (pushSyncState.needsReplay()) scheduleMessageReplay(generation, endpoint, pushSyncState, 3000);
+            } catch (Exception error) {
+                Log.w(TAG, "Unable to save push sync progress", error);
+                pushSyncState.beginReplay();
+                scheduleMessageReplay(generation, endpoint, pushSyncState, 3000);
+            }
+        }
+    }
+
+    private synchronized void scheduleMessageReplay(int generation, String endpoint, PushMessageSync state, long delay) {
+        if (!isCurrentPushSession(generation, endpoint) || pushSyncExecutor.isShutdown()) return;
+        if (pushReplayRetry != null && !pushReplayRetry.isDone()) return;
+        pushReplayRetry = pushSyncExecutor.schedule(() -> {
+            synchronized (AionPushService.this) {
+                if (!isCurrentPushSession(generation, endpoint)) return;
+                pushReplayRetry = null;
+            }
+            replayMessages(generation, endpoint, state);
+        }, delay, TimeUnit.MILLISECONDS);
+    }
+
+    private void replayMessages(int generation, String endpoint, PushMessageSync state) {
+        try {
+            for (int batch = 0; batch < 20; batch++) {
+                final okhttp3.Call call;
+                synchronized (this) {
+                    if (!isCurrentPushSession(generation, endpoint)) return;
+                    state.beginReplay();
+                    String base = (endpoint.startsWith("wss:") ? "https://" : "http://")
+                            + java.net.URI.create(endpoint).getRawAuthority();
+                    String url = base + "/api/sync/changes?after=" + state.cursor()
+                            + "&limit=" + (state.initialized() ? 200 : 1);
+                    call = pushReplayClient.newCall(new Request.Builder().url(url).build());
+                    pushReplayCall = call;
+                }
+                JSONObject page;
+                try (Response response = call.execute()) {
+                    if (!response.isSuccessful() || response.body() == null) {
+                        throw new java.io.IOException("Message sync HTTP " + response.code());
+                    }
+                    page = new JSONObject(response.body().string());
+                } finally {
+                    synchronized (this) { if (pushReplayCall == call) pushReplayCall = null; }
+                }
+                synchronized (this) {
+                    if (!isCurrentPushSession(generation, endpoint)) return;
+                    if (!state.initialized() || page.optBoolean("reset_required")) {
+                        state.resetTo(page.optLong("latest_seq"));
+                        state.finishReplay();
+                        savePushSync(endpoint, state);
+                        return;
+                    }
+                    JSONArray events = page.optJSONArray("events");
+                    if (events != null) for (int i = 0; i < events.length(); i++) {
+                        state.acceptReplay(events.getJSONObject(i),
+                                (message, notify) -> handleMessage(message.toString(), notify, endpoint));
+                    }
+                    savePushSync(endpoint, state);
+                    if (!page.optBoolean("has_more")) {
+                        state.finishReplay();
+                        pushReplayDelay = 3000;
+                        return;
+                    }
+                }
+            }
+            // Yield between batches before continuing a long backlog.
+            scheduleMessageReplay(generation, endpoint, state, 0);
+        } catch (Exception error) {
+            synchronized (this) {
+                if (!isCurrentPushSession(generation, endpoint)) return;
+                Log.w(TAG, "Message replay will retry: " + error.getClass().getSimpleName());
+                scheduleMessageReplay(generation, endpoint, state, pushReplayDelay);
+                pushReplayDelay = Math.min(pushReplayDelay * 2, 30000);
+            }
         }
     }
 
@@ -2547,6 +2728,10 @@ public class AionPushService extends Service {
     }
 
     private void handleMessage(String text) {
+        handleMessage(text, true, serverUrl);
+    }
+
+    private void handleMessage(String text, boolean allowNotification, String sourceUrl) {
         try {
             JSONObject json = new JSONObject(text);
             String type = json.optString("type", "");
@@ -2558,7 +2743,7 @@ public class AionPushService extends Service {
 
             JSONObject data = json.optJSONObject("data");
 
-            if (NativeMessageInbox.receive(this, serverUrl, json)) {
+            if (NativeMessageInbox.receive(this, sourceUrl, json)) {
                 WebViewActivity.notifyNativeMessages();
             }
 
@@ -2571,10 +2756,8 @@ public class AionPushService extends Service {
                 case "tts_cancel":
                 case "tts_done": {
                     mainHandler.post(() -> {
-                        boolean expressive = data != null && data.optBoolean("expressive", false);
-                        if (backgroundTtsClosing || (!expressive && !getSharedPreferences(PREFS, MODE_PRIVATE)
-                                .getBoolean("background_tts_enabled", false))) return;
-                        backgroundTtsPlayer.receive(type, data, getHttpBase());
+                        if (!backgroundTtsClosing) backgroundTtsPlayer.receive(type, data, getHttpBase(),
+                                getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("background_tts_enabled", false));
                     });
                     break;
                 }
@@ -2657,7 +2840,7 @@ public class AionPushService extends Service {
                     FloatingChatService.deliver("msg_created", data);
                     if (data != null) {
                         String role = data.optString("role", "");
-                        if ("assistant".equals(role)) {
+                        if (allowNotification && "assistant".equals(role)) {
                             String c = data.optString("content", "");
                             if (c.length() > 100) c = c.substring(0, 100) + "...";
                             String sender = data.optString("sender", "AI");
@@ -2672,7 +2855,7 @@ public class AionPushService extends Service {
                     FloatingChatService.deliver("chatroom_msg_created", data);
                     if (data != null) {
                         String sender = data.optString("sender", "");
-                        if (!"user".equals(sender) && !"system".equals(sender) && !sender.isEmpty()) {
+                        if (allowNotification && !"user".equals(sender) && !"system".equals(sender) && !sender.isEmpty()) {
                             String c = data.optString("content", "");
                             if (c.length() > 100) c = c.substring(0, 100) + "...";
                             sender = sender.substring(0, 1).toUpperCase() + sender.substring(1);
@@ -2973,6 +3156,12 @@ public class AionPushService extends Service {
             } catch (Exception ignored) {}
             mediaPlayer = null;
         }
+    }
+
+    void onBackgroundTtsPreferenceChanged(String key) {
+        // Focus also mirrors page settings. Only an explicit stop cancels playback.
+        if ("background_tts_stop".equals(key)) backgroundTtsPlayer.stop();
+        else if ("background_tts_updated".equals(key)) sendBackgroundTtsState();
     }
 
     private void sendBackgroundTtsState() {

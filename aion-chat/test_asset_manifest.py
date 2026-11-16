@@ -20,6 +20,7 @@ def test_client_asset_manifest_excludes_large_user_content_but_includes_app_docu
     manifest = get_client_asset_manifest()
     paths = set(manifest["files"])
     assert not any(path.startswith("/public/wallpaper/") for path in paths)
+    assert not any(path.startswith("/public/Aion登录界面/") for path in paths)
     assert "/" in paths
     assert "/memory" in paths
     assert "/app-supervision" in paths

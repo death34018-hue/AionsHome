@@ -6,6 +6,34 @@ const source = fs.readFileSync(require('node:path').join(__dirname, 'static/thea
 const follow = require('./static/theater-follow.js');
 function section(start, end) { return source.slice(source.indexOf(start), source.indexOf(end)); }
 
+test('auxiliary model settings save per novel, retain unavailable selections and recover from failed saves', async () => {
+  const elements = new Map(), calls = [];
+  const c = vm.createContext({book:{id:'one',mode:'novel',auxiliary_model:'saved-helper',outline:'keep'},
+    models:['writer','helper'],novel:()=>c.book?.mode==='novel',escHtml:s=>s,showToast(){},
+    $:id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);},
+    request:async(...args)=>{calls.push(args);return args[2];}});
+  vm.runInContext(section('  function refreshModelSettings()', '  async function manageAnchors()'),c);
+  assert.equal(typeof c.refreshModelSettings,'function');
+  c.refreshModelSettings();
+  const select=elements.get('auxiliaryModelSelect');
+  assert.equal(select.value,'saved-helper');
+  assert.match(select.innerHTML,/saved-helper/);
+  assert.equal(elements.get('auxiliaryModelSettings').hidden,false);
+  await c.setAuxiliaryModel('helper');
+  assert.equal(calls[0][0],'/books/one');
+  assert.equal(calls[0][2].auxiliary_model,'helper');
+  assert.equal(calls[0][2].outline,'keep');
+  assert.equal(c.book.auxiliary_model,'helper');
+  c.request=async()=>{throw Error('save failed');};
+  await assert.rejects(c.setAuxiliaryModel('writer'),/save failed/);
+  assert.equal(select.value,'helper');
+  assert.equal(select.disabled,false);
+  c.book={id:'two',mode:'novel'};c.refreshModelSettings();
+  assert.equal(select.value,'');
+  c.book.mode='dialogue';c.refreshModelSettings();
+  assert.equal(elements.get('auxiliaryModelSettings').hidden,true);
+});
+
 test('reading cues prefer saved source positions, support old character counts and skip unindexed legacy audio', () => {
   const player={seq:1,segments:[{chars:320},{chars:360}]};
   assert.deepEqual(follow.segmentRange(player),{start:320,end:680});
@@ -311,7 +339,7 @@ test('native chapter playback failure falls back to the same cached segment and 
   assert.equal(c.player.paused,true);assert.equal(browserPlayers.length,2);assert.equal(notices.length,1);
 });
 
-test('a completed chapter with an old review flag still reads as completed', () => {
+test('a completed chapter stays readable and shows failed illustrations in shared reading', () => {
   const elements=new Map([['messages',{querySelector:()=>({})}]]);
   const current={id:'chapter-six',number:6,title:'第六章',content:'读完的正文',status:'ready',needs_review:true,images:[]};
   const c=vm.createContext({window:{},planningView:false,book:{},chapter:()=>current,chapters:[current],
@@ -327,6 +355,37 @@ test('a completed chapter with an old review flag still reads as completed', () 
   assert.doesNotMatch(elements.get('studioDirectory').innerHTML,/待确认/);
   assert.doesNotMatch(elements.get('novelNotice').innerHTML,/确认衔接无误/);
   assert.equal(elements.get('novelCompletion').innerHTML,'');
+  current.images=[{id:'one',status:'failed',error:'生图等待超时',prompt:'窗前的雨'}];
+  c.book.illustrations=true;
+  c.window.TheaterReading={sync:()=>true};
+  c.renderNovel();
+  assert.match(elements.get('novelNotice').innerHTML,/生图等待超时/);
+  assert.match(elements.get('novelNotice').innerHTML,/编辑提示词/);
+});
+
+test('chapter editors load saved text and submit changes for the selected revision and scene', async () => {
+  const current={id:'chapter',number:14,revision:2,summary:'旧摘要',images:[{id:'pic',status:'failed',error:'超时'}]};
+  const calls=[];
+  let form, input;
+  const c=vm.createContext({chapter:()=>current,chapters:[current],escHtml:s=>s,
+    modal:(_title,html,_label,submit)=>{form={html,submit};},$:()=>({value:input}),showToast(){},refresh(){},
+    request:async(path,method,body)=>{
+      calls.push([path,method,body]);
+      return method==='PUT'?{summary:body.summary}:{prompt:'画风与场景',revision:2};
+    }});
+  vm.runInContext(section('  function editSummary()', '  function refreshModelSettings()'),c);
+  c.editSummary();
+  assert.match(form.html,/旧摘要/);
+  input='修正的事实';await form.submit();
+  assert.equal(current.summary,input);
+  await c.editImagePrompt(0);
+  assert.match(form.html,/画风与场景/);
+  input='雨中的窗';await form.submit();
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)),[
+    ['/chapters/chapter/summary','PUT',{revision:2,summary:'修正的事实'}],
+    ['/chapters/chapter/images/pic/prompt',null,null],
+    ['/chapters/chapter/images/pic/retry','POST',{revision:2,prompt:'雨中的窗'}],
+  ]);
 });
 
 test('dialogue replay checks existing recordings without requiring a selected voice',async()=>{

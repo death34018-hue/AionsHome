@@ -4,7 +4,7 @@ AI 模型调用：硅基流动 / Gemini 流式 + 多模态消息构建
 
 import json, base64, mimetypes, asyncio, shutil, subprocess, os, re, time, uuid
 from functools import lru_cache
-from contextlib import nullcontext
+from contextlib import aclosing, nullcontext
 from pathlib import Path
 from threading import Lock
 
@@ -24,6 +24,9 @@ from codex_app_server import (
 )
 from codex_chat_profile import prepare_chat_model_catalog
 import antigravity_cli
+import antigravity_acp
+import grok_cli
+from config import resolve_grok_reasoning_effort
 from config import antigravity_model_supports_audio
 from config import VERTEX_CREDENTIALS_PATH
 from stream_safety import StreamActivity
@@ -184,7 +187,7 @@ def model_chat_idle_timeout(model_key: str) -> float | None:
     if not model_key:
         return None
     cfg = MODELS.get(resolve_model_key(model_key), {})
-    return _ANTIGRAVITY_CHAT_IDLE_TIMEOUT if cfg.get('provider') == 'antigravity_cli' else None
+    return _ANTIGRAVITY_CHAT_IDLE_TIMEOUT if cfg.get('provider') in ('antigravity_cli', 'antigravity_acp') else None
 
 
 def _strip_gemini_cli_noise(text: str) -> str:
@@ -643,9 +646,13 @@ GEMINI_SAFETY_SETTINGS = [
 
 # ── Gemini ────────────────────────────────────────
 @logged_ai_call("gemini")
-async def call_gemini(messages: list, model: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, include_audio: bool = False):
+async def call_gemini(
+    messages: list, model: str, meta: dict | None = None, temperature: float | None = None,
+    max_tokens: int | None = None, include_audio: bool = False, include_thoughts: bool = False,
+    *, thinking_level: str | None = None,
+):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent?alt=sse&key={get_key('gemini')}"
-    async for chunk in _stream_gemini(messages, url, {}, meta, temperature, max_tokens, include_audio):
+    async for chunk in _stream_gemini(messages, url, {}, meta, temperature, max_tokens, include_audio, include_thoughts, thinking_level):
         yield chunk
 
 
@@ -677,17 +684,21 @@ def _vertex_endpoint(model: str):
 
 
 @logged_ai_call("vertex")
-async def call_vertex(messages: list, model: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, include_audio: bool = False):
+async def call_vertex(
+    messages: list, model: str, meta: dict | None = None, temperature: float | None = None,
+    max_tokens: int | None = None, include_audio: bool = False, include_thoughts: bool = False,
+    *, thinking_level: str | None = None,
+):
     try:
         url, headers = await asyncio.to_thread(_vertex_endpoint, model)
     except Exception as error:
         yield f"[Gemini错误] Vertex 认证失败（{type(error).__name__}），请检查本机凭证和到 Google 的网络连接。"
         return
-    async for chunk in _stream_gemini(messages, url, headers, meta, temperature, max_tokens, include_audio):
+    async for chunk in _stream_gemini(messages, url, headers, meta, temperature, max_tokens, include_audio, include_thoughts, thinking_level):
         yield chunk
 
 
-async def _stream_gemini(messages, url, headers, meta, temperature, max_tokens, include_audio):
+async def _stream_gemini(messages, url, headers, meta, temperature, max_tokens, include_audio, include_thoughts=False, thinking_level=None):
     normal_stop_seen = False
     contents = build_gemini_contents(messages, include_audio=include_audio)
     payload = {"contents": contents, "safetySettings": GEMINI_SAFETY_SETTINGS}
@@ -701,9 +712,18 @@ async def _stream_gemini(messages, url, headers, meta, temperature, max_tokens, 
     gen_config = {}
     if max_tokens is not None:
         gen_config["maxOutputTokens"] = max_tokens
+    thinking_config = {}
+    if include_thoughts:
+        # Request thought summaries when available; they are not a periodic heartbeat.
+        thinking_config["includeThoughts"] = True
+    thinking_level = (thinking_level or "").strip().upper()
+    if thinking_level:
+        thinking_config["thinkingLevel"] = thinking_level
+    if thinking_config:
+        gen_config["thinkingConfig"] = thinking_config
     if gen_config:
         payload["generationConfig"] = gen_config
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=300) as client:
         async with client.stream("POST", url, headers=headers, json=payload) as resp:
             own_stream(resp)
             if resp.status_code != 200:
@@ -1355,6 +1375,74 @@ async def call_antigravity_cli(messages: list, model: str, meta: dict | None = N
         yield f"[AntigravityCLI错误] {error}"
 
 
+@logged_ai_call("antigravity_acp")
+async def call_antigravity_acp(messages, model, meta=None):
+    image_paths = _collect_cli_image_paths(messages)
+    prompt_messages = []
+    for message in messages:
+        paths = _collect_cli_image_paths([message]) if image_paths else ()
+        if paths:
+            labels = "、".join(f"图片{image_paths.index(path) + 1}" for path in paths)
+            message = {**message, "content": f"{message.get('content') or ''}\n（图片附件：{labels}）"}
+        prompt_messages.append(message)
+    prompt = _build_cli_prompt(prompt_messages, include_image_refs=False, include_audio_refs=False)
+    await record_cli_prompt(prompt, instructions_file=antigravity_cli.PROFILE_SOURCE, images=image_paths)
+    yield f"{CLI_STATUS_PREFIX}正在回复🚀…"
+    try:
+        timeout = antigravity_cli._timeout_seconds(_antigravity_print_timeout(meta))
+        async with aclosing(antigravity_acp.stream(prompt, model, image_paths, timeout=timeout)) as events:
+            async for kind, data in events:
+                if kind == 'text':
+                    yield data
+                    continue
+                if kind == 'thought' and meta is not None:
+                    meta['reasoning_content'] = meta.get('reasoning_content', '') + data
+                elif kind == 'usage' and data:
+                    _apply_codex_usage_meta(meta, {
+                        **data, 'input_tokens': data.get('inputTokens'), 'output_tokens': data.get('outputTokens'),
+                        'total_tokens': data.get('totalTokens'), 'cached_input_tokens': data.get('cachedReadTokens'),
+                        'reasoning_output_tokens': data.get('thoughtTokens'),
+                    })
+                yield StreamActivity()
+    except (antigravity_cli.AntigravityError, OSError) as error:
+        yield f"[AntigravityCLI错误] ACP：{error}"
+
+
+@logged_ai_call("grok_cli")
+async def call_grok_cli(messages: list, model: str, meta: dict | None = None):
+    binary = grok_cli.find_binary()
+    if not binary:
+        if meta is not None:
+            meta['provider_error'] = '未找到 Grok Build，请先安装并登录官方 CLI'
+        yield '[GrokCLI错误] 未找到 Grok Build，请先安装并登录官方 CLI'
+        return
+    prompt = _build_cli_prompt(messages, include_image_refs=False, include_audio_refs=False)
+    try:
+        async for event in own_stream(grok_cli.stream_chat(
+            binary, prompt, model, reasoning_effort=resolve_grok_reasoning_effort(model),
+        )):
+            if event['kind'] == 'text':
+                yield event['text']
+            else:
+                if event['kind'] == 'thought' and meta is not None:
+                    meta['reasoning_content'] = meta.get('reasoning_content', '') + event['text']
+                elif event['kind'] == 'completed' and meta is not None:
+                    usage = event.get('usage', {})
+                    cached = _usage_int(usage.get('cache_read_input_tokens'))
+                    _apply_codex_usage_meta(meta, {
+                        **usage,
+                        'input_tokens': _usage_int(usage.get('input_tokens')) + cached
+                                        + _usage_int(usage.get('cache_creation_input_tokens')),
+                        'cached_input_tokens': cached,
+                        'reasoning_output_tokens': usage.get('reasoning_tokens', 0),
+                    })
+                yield StreamActivity()
+    except (grok_cli.GrokError, OSError) as error:
+        if meta is not None:
+            meta['provider_error'] = str(error)
+        yield f'[GrokCLI错误] {error}'
+
+
 # ── Codex CLI ─────────────────────────────────────
 def _find_codex_script() -> str | None:
     """定位 Codex CLI 脚本路径"""
@@ -1718,7 +1806,7 @@ async def call_codex_cli(messages: list, model: str, meta: dict | None = None,
 async def call_codex_sentinel(
     prompt: str,
     *,
-    model: str = "gpt-5.6-luna",
+    model: str = "gpt-6-luna",
     image_b64: str | None = None,
     mime_type: str = "image/jpeg",
     timeout: int = 60,
@@ -1726,7 +1814,7 @@ async def call_codex_sentinel(
 ) -> str:
     """Run one isolated Luna sentinel turn through the local Codex login."""
     if not _CODEX_SCRIPT:
-        raise RuntimeError("未找到 Codex CLI，无法使用 GPT-5.6 Luna 哨兵线路")
+        raise RuntimeError("未找到 Codex CLI，无法使用 GPT-6 Luna 哨兵线路")
 
     node = shutil.which("node") or "node"
     command = _build_codex_sentinel_command(node, _CODEX_SCRIPT)
@@ -1764,7 +1852,7 @@ async def call_codex_sentinel(
                 timeout=max(1, int(timeout)),
             )
         except TimeoutError as error:
-            raise RuntimeError(f"GPT-5.6 Luna 哨兵调用超过 {timeout} 秒") from error
+            raise RuntimeError(f"GPT-6 Luna 哨兵调用超过 {timeout} 秒") from error
 
 
 # ── 非流式调用（收集流式输出） ────────────────────
@@ -1996,7 +2084,7 @@ def with_current_device_context(
     return prepared
 
 
-async def stream_ai(messages: list, model_key: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, cancel_event=None, *, include_device_context: bool = True, request_timeout: float = 120):
+async def stream_ai(messages: list, model_key: str, meta: dict | None = None, temperature: float | None = None, max_tokens: int | None = None, cancel_event=None, *, include_device_context: bool = True, request_timeout: float = 120, include_thoughts: bool = False):
     # Older callers may still supply temperature; all routes use model defaults.
     temperature = None
     if include_device_context:
@@ -2037,6 +2125,8 @@ async def stream_ai(messages: list, model_key: str, meta: dict | None = None, te
             async for chunk in gemini_call(
                 normalized, cfg["model"], meta, temperature, max_tokens,
                 include_audio=bool(cfg.get("audio", False)),
+                include_thoughts=include_thoughts,
+                thinking_level=cfg.get("thinking_level"),
             ):
                 yield chunk
         elif cfg["provider"] == "aipro":
@@ -2051,8 +2141,14 @@ async def stream_ai(messages: list, model_key: str, meta: dict | None = None, te
         elif cfg["provider"] == "antigravity_cli":
             async for chunk in call_antigravity_cli(normalized, cfg["model"], meta, temperature, max_tokens):
                 yield chunk
+        elif cfg["provider"] == "antigravity_acp":
+            async for chunk in call_antigravity_acp(normalized, cfg["model"], meta):
+                yield chunk
         elif cfg["provider"] == "codex_cli":
             async for chunk in call_codex_cli(normalized, cfg["model"], meta, temperature, max_tokens):
+                yield chunk
+        elif cfg["provider"] == "grok_cli":
+            async for chunk in call_grok_cli(normalized, cfg["model"], meta):
                 yield chunk
         else:
             yield f"[閿欒] 鏈煡 provider: {cfg.get('provider')}"

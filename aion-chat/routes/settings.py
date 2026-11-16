@@ -19,6 +19,7 @@ from ws import manager
 import elevenlabs_tts
 import antigravity_cli
 from config import replace_antigravity_models
+from config import GROK_MODEL_EFFORTS, normalize_grok_reasoning_efforts, resolve_grok_reasoning_effort
 from asr import ASR_FIELDS, normalize_asr_settings
 
 router = APIRouter()
@@ -79,7 +80,7 @@ class SettingsUpdate(BaseModel):
     embedding_base_url: Optional[str] = None
     embedding_api_key: Optional[str] = None
     embedding_model: Optional[str] = None
-    image_gen_provider: Optional[Literal['existing', 'codex', 'flowai']] = None
+    image_gen_provider: Optional[Literal['existing', 'codex', 'flowai', 'grok']] = None
     flowai_image_model: Optional[Literal['gpt_image2_5_flare', 'seedream_5_0_flash', 'grok_imagine_image_2_0']] = None
     image_gen_base_url: Optional[str] = None
     image_gen_api_key: Optional[str] = None
@@ -91,6 +92,7 @@ class SettingsUpdate(BaseModel):
     luckin_default_shop_keyword: Optional[str] = None
     custom_model_routes: Optional[list[Dict[str, Any]]] = None
     model_transport_modes: Optional[Dict[str, str]] = None
+    grok_reasoning_efforts: Optional[Dict[str, str]] = None
 
 class HomeLayoutUpdate(BaseModel):
     version: Optional[int] = 2
@@ -171,6 +173,11 @@ async def get_settings():
         "luckin_default_shop_keyword": SETTINGS.get("luckin_default_shop_keyword", ""),
         "custom_model_routes": normalize_custom_model_routes(SETTINGS.get("custom_model_routes")),
         "model_transport_modes": normalize_model_transport_modes(SETTINGS.get("model_transport_modes")),
+        "grok_models": [
+            {"model": cfg["model"], "name": key, "efforts": GROK_MODEL_EFFORTS[cfg["model"]],
+             "reasoning_effort": resolve_grok_reasoning_effort(cfg["model"])}
+            for key, cfg in iter_visible_models() if cfg["provider"] == "grok_cli"
+        ],
         "gemini_key_masked": mask(SETTINGS.get("gemini_key", "")),
         "siliconflow_key_masked": mask(SETTINGS.get("siliconflow_key", "")),
         "minimax_tts_key_masked": mask(SETTINGS.get("minimax_tts_key", "")),
@@ -283,6 +290,8 @@ async def update_settings(body: SettingsUpdate):
         refresh_custom_models()
     if body.model_transport_modes is not None:
         SETTINGS["model_transport_modes"] = normalize_model_transport_modes(body.model_transport_modes)
+    if body.grok_reasoning_efforts is not None:
+        SETTINGS["grok_reasoning_efforts"] = normalize_grok_reasoning_efforts(body.grok_reasoning_efforts)
     if body.netease_music_u is not None:
         old_mu = SETTINGS.get("netease_music_u", "")
         SETTINGS["netease_music_u"] = body.netease_music_u

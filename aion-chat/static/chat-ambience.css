@@ -1,0 +1,136 @@
+/* 聊天氛围层：背景图之上、消息之下 */
+.chat-ambience {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: inherit;
+}
+.chat-ambience-tint {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity .35s ease, background-color .35s ease;
+}
+.chat-ambience-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* 设置项：三行，每行「短标签 + 控件」，窄屏下色块等比缩小不折行 */
+.chat-ambience-control {
+  display: grid;
+  gap: 8px;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text2);
+  font-size: 13px;
+}
+.chat-ambience-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+.chat-ambience-row > span { flex: 0 0 auto; }
+/* 每行七个图标，氛围排两行；窄屏下格子等比缩小 */
+.chat-ambience-effects {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 29px));
+  gap: 5px;
+}
+.chat-ambience-effect {
+  min-width: 0;
+  height: 28px;
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface2);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.chat-ambience-effect[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.chat-ambience-swatches {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.chat-ambience-swatch {
+  position: relative;
+  flex: 0 1 auto;
+  width: 22px;
+  min-width: 0;
+  aspect-ratio: 1;
+  box-sizing: border-box;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface2);
+  cursor: pointer;
+  overflow: hidden;
+  touch-action: manipulation;
+}
+.chat-ambience-swatch[data-tint=""]::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  bottom: 3px;
+  width: 1.5px;
+  margin-left: -.75px;
+  background: var(--text2);
+  transform: rotate(45deg);
+}
+.chat-ambience-custom {
+  background: conic-gradient(#ff5a5f, #ffd84a, #57c96b, #45a8ff, #a05cff, #ff5a5f);
+}
+.chat-ambience-custom input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.chat-ambience-swatch[aria-pressed="true"],
+.chat-ambience-custom.is-active {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.chat-ambience-effect:focus-visible,
+.chat-ambience-swatch:focus-visible,
+.chat-ambience-custom:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.chat-ambience-control .chat-ambience-strength {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.chat-ambience-row output {
+  min-width: 32px;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.chat-ambience-row:has(input:disabled) { opacity: .4; }

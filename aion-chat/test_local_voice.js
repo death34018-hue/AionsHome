@@ -69,6 +69,57 @@ test('hiding a persistent iframe cancels pending finish and gates sending', asyn
   assert.equal(api.isVisible(), true);
 });
 
+test('ambient clip returns native text without opening another microphone', async () => {
+  const { api, calls, host, dispatch } = fixture();
+  host.AionLocalAsr.transcribeWav = (id, wav) => {
+    calls.push(['clip', id, wav]);
+    queueMicrotask(() => dispatch({ id, type: 'final', text: '刚刚说的话' }));
+    return true;
+  };
+  const text = await api.transcribeBlob(new Blob(['wav'], { type: 'audio/wav' }));
+  assert.equal(text, '刚刚说的话');
+  assert.equal(calls.filter(c => c[0] === 'start').length, 0);
+  assert.equal(calls[0][2], 'd2F2');
+});
+
+test('stopping ambient transcription discards a delayed native result', async () => {
+  const { api, host, dispatch } = fixture();
+  let started;
+  const ready = new Promise(r => { started = r; });
+  host.AionLocalAsr.transcribeWav = id => { started(id); return true; };
+  const result = api.transcribeBlob(new Blob(['wav']));
+  const rejected = assert.rejects(result, /取消/);
+  const id = await ready;
+  api.cancelTranscriptions();
+  dispatch({ id, type: 'final', text: 'TTS 回声' });
+  await rejected;
+});
+
+test('ambient ASR follows this device; native failure never silently uploads', async () => {
+  const source = fs.readFileSync(`${__dirname}/static/chatroom.js`, 'utf8').replace(/\r\n/g, '\n');
+  const start = source.indexOf('async function crAmbientTranscribe(');
+  let local = true, fail = false, uploads = 0;
+  const context = vm.createContext({
+    console, FormData, window: { AionLocalVoice: {
+      enabled: () => local,
+      transcribeBlob: async () => { if (fail) throw new Error('native failed'); return '手机本地'; }
+    } },
+    fetch: async () => { uploads++; return { json: async () => ({ text: '云端结果' }) }; }
+  });
+  vm.runInContext(source.slice(start, source.indexOf('\nfunction crAmbientTextHasPhrase', start)), context);
+  context.clip = new Blob(['audio'], { type: 'audio/wav' });
+  assert.equal(await vm.runInContext('crAmbientTranscribe(clip)', context), '手机本地');
+  assert.equal(uploads, 0);
+  fail = true;
+  await assert.rejects(vm.runInContext('crAmbientTranscribe(clip)', context), /native failed/);
+  assert.equal(uploads, 0);
+  local = false;
+  assert.equal(await vm.runInContext('crAmbientTranscribe(clip)', context), '云端结果');
+  assert.equal(uploads, 1);
+  context.window = {};
+  assert.equal(await vm.runInContext('crAmbientTranscribe(clip)', context), '云端结果');
+});
+
 // Exercise the actual two composer functions without loading the rest of the chat UI.
 const fs = require('node:fs');
 const vm = require('node:vm');

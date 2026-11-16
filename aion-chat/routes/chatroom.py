@@ -12,6 +12,7 @@ from datetime import date
 
 import aiosqlite, httpx
 import chatroom_image_retry as image_retry
+from ambient_timeline import format_timeline
 from fastapi import APIRouter, HTTPException, Query, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -25,7 +26,7 @@ from generation_control import (cancellable, cancel_generation, generation_statu
 from cancelled_reply import save_cancelled_replies
 from active_window_state import record_chatroom_active
 from ai_providers import stream_ai, CLI_STATUS_PREFIX, model_chat_idle_timeout
-from kitchen_chat import chat_stream as kitchen_stream, finish_reply as finish_kitchen_reply
+from chat_web_cards import chat_stream as kitchen_stream, finish_reply as finish_kitchen_reply
 from tts import TTSStreamer, synthesize_message_tts_later
 from message_dedup import build_message_dedupe_key, reserve_message_ingress
 from sync_events import append_sync_event, attach_sync_seq, broadcast_synced
@@ -76,6 +77,7 @@ from band_commands import process_band_vibration, with_band_vibration_attachment
 from hug_pillow_commands import process_hug_pillow_commands
 from capabilities import process_pat_commands
 from game_invites import process_game_invites
+from chat_ambience import process_ambience_commands
 from compositions import process_compositions
 from rps import process_rps_commands, notification_message, attach_to_message, validate_send, reply_round_id
 from app_supervision_ai import (
@@ -326,7 +328,7 @@ def _chatroom_reply_failure_text(sender: str, reason: str | None = None) -> str:
     if not detail or lowered in {"empty", "empty_response", "no_content"}:
         return f"{label} 本次没有成功返回回复，请重试。"
     detail = {"transport": "连接中断", "quality": "返回内容异常，回复已停止",
-              "length": "回复达到 3000 字符上限", "repetition": "检测到持续重复，回复已停止"}.get(lowered, detail)
+              "length": "回复超过输出长度限制", "repetition": "检测到持续重复，回复已停止"}.get(lowered, detail)
     return f"{label} 本次回复失败：{detail}"
 
 
@@ -896,6 +898,7 @@ async def _process_chatroom_commands(
         full_text, source_type="chatroom", source_id=room_id,
         sender=who_identity, source_msg_id=msg_id, on_saved=_save_pat_event,
     )
+    full_text = await process_ambience_commands(full_text, sender=who_identity)
     full_text = await process_compositions(
         full_text, source_type="chatroom", source_id=room_id,
         sender=who_identity, source_msg_id=msg_id, on_saved=_save_pat_event,
@@ -956,33 +959,10 @@ async def _process_chatroom_commands(
             except Exception as exc:
                 print(f"[music_station] 聊天室点歌记录失败: {exc}")
 
-    # ── 日程/闹钟（先检测指令生成系统消息，再交给 schedule 模块处理） ──
-    for match in ALARM_CMD.finditer(full_text):
-        try:
-            raw_dt, content = match.group(1), match.group(2)
-            dt = _parse_dt(raw_dt)
-            if dt and content.strip() and not _is_schedule_time_stale(dt):
-                await _chatroom_sys_msg(room_id, f"⏰ 【{who_label}】设定了闹铃：{dt.replace('T', ' ')}，内容：{content.strip()}", _q, after_msg_id=msg_id)
-        except Exception:
-            pass
-    for match in REMINDER_CMD.finditer(full_text):
-        try:
-            raw_dt, content = match.group(1), match.group(2)
-            dt = _parse_dt(raw_dt)
-            if dt and content.strip() and not _is_schedule_time_stale(dt):
-                await _chatroom_sys_msg(room_id, f"📅 【{who_label}】设定了日程：{dt.replace('T', ' ')}，内容：{content.strip()}", _q, after_msg_id=msg_id)
-        except Exception:
-            pass
-    for match in MONITOR_CMD.finditer(full_text):
-        try:
-            raw_dt, content = match.group(1), match.group(2)
-            dt = _parse_dt(raw_dt)
-            if dt and content.strip() and not _is_schedule_time_stale(dt):
-                await _chatroom_sys_msg(room_id, f"👀 【{who_label}】设定了监督：{dt.replace('T', ' ')}，内容：{content.strip()}", _q, after_msg_id=msg_id)
-        except Exception:
-            pass
+    # 日程通知在持久化/查重之后生成，避免群聊把重复请求说成新建成功。
     _origin = "connor" if who.lower() == "connor" else "aion"
-    full_text = await process_schedule_commands(full_text, None, origin=_origin, origin_room_id=room_id)
+    full_text = await process_schedule_commands(full_text, None, origin=_origin, origin_room_id=room_id,
+        notify=lambda content: _chatroom_sys_msg(room_id, content, _q, after_msg_id=msg_id))
 
     # ── 智能家居 ──
     from routes.chat import _process_home_commands
@@ -2399,7 +2379,7 @@ def _ambient_excerpt(text: str, max_chars: int = 2400) -> str:
     return cleaned[-max_chars:]
 
 
-async def _judge_ambient_voice(transcript: str) -> dict:
+async def _judge_ambient_voice(transcript: str, timeline: str = "") -> dict:
     from memory import _call_sentinel_text
 
     scfg = get_sentinel_config()
@@ -2414,18 +2394,20 @@ async def _judge_ambient_voice(transcript: str) -> dict:
 
     user_name, ai_name, connor_name = get_chatroom_names()
     prompt = (
-        "你是 AionsHome 的环境语音哨兵。输入来自当前认领前端麦克风的 ASR 转写，可能包含误识别、歌词、叹气、宠物/客人背景声、"
+        "你是 AionsHome 的环境语音哨兵。输入是麦克风的声音分类时间线和 ASR 转写，可能包含误识别、歌词、叹气、宠物/客人背景声、"
         "用户自言自语、朋友聊天，或电脑外放的 AI/TTS 回声。\n"
         "你的任务是判断是否值得让群聊里的一位 AI 自然插一句。请非常克制，避免把无意义碎片交给大模型。\n\n"
         "判定规则：\n"
         "1. 明确话题、有情绪、有决策、有分享欲、在讨论计划/作品/宠物/家庭动态/关系/烦恼/灵感时，可以 should_wake=true。\n"
         "2. 纯噪声、重复歌词、无上下文感叹、很短的嗯啊、明显电视/电脑外放/AI 回复回声、无法判断主题时 should_wake=false。\n"
         "3. 如果适合唤醒，请只提炼去噪后的摘要，不要保留无关口癖，不要把 ASR 错字当成事实。\n"
-        f"4. 当前群聊参与者是：{user_name}、{ai_name}、{connor_name}。摘要应描述“{user_name}刚刚在谈论什么”。\n\n"
+        "4. 结合时间线判断活动与变化。普通哼歌、唱歌、鼾声通常保持安静；持续咳嗽等明显变化可简短关心。描述实际声音，不做情绪或健康诊断。\n"
+        f"5. 当前群聊参与者是：{user_name}、{ai_name}、{connor_name}。摘要描述刚刚听到的活动和谈话。\n\n"
         "严格只输出 JSON，不要加解释。格式：\n"
         "{\"should_wake\": boolean, \"topic\": \"短话题\", \"summary\": \"给大模型看的去噪摘要\", "
         "\"reason\": \"短原因\", \"importance\": 0到1}\n\n"
-        f"ASR 转写：\n{_ambient_excerpt(transcript)}"
+        f"本轮新增谈话：\n{_ambient_excerpt(transcript) or '无'}\n\n"
+        f"最近五分钟（时间顺序）：\n{timeline or '无声音分类记录'}"
     )
     try:
         raw = await _call_sentinel_text(scfg, prompt, timeout=25)
@@ -2466,12 +2448,15 @@ def _ambient_voice_prompt(decision: dict, *, forced: bool) -> str:
     topic = (decision.get("topic") or "").strip()
     source_label = (decision.get("source_label") or "当前设备麦克风").strip()
     source = "唤醒词触发的即时侦听" if forced else "环境语音哨兵筛选"
+    timeline = str(decision.get("timeline") or "").strip()
     return (
         "[环境语音]\n"
         f"这是刚刚通过{source_label}听到的现场谈话摘要，来源：{source}。\n"
         f"群聊参与者：{user_name}、{ai_name}、{connor_name}。\n"
         f"话题：{topic or '未命名话题'}\n"
         f"摘要：{summary or topic}\n\n"
+        + (f"最近五分钟（时间顺序）：\n{timeline}\n\n" if timeline else "")
+        +
         "请把它当作刚刚发生的生活上下文，自然插一句。不要说明你收到了系统提示，不要复述“环境语音”这个来源。"
     )
 
@@ -2585,7 +2570,9 @@ class ReplyOnceTrigger(BaseModel):
 
 
 class AmbientVoiceEvaluate(BaseModel):
-    transcript: str
+    transcript: str = ""
+    events: List[Dict] = Field(default_factory=list, max_length=300)
+    utc_offset_minutes: int = Field(default=480, ge=-720, le=840)
     forced: bool = False
     listener_client_id: str = ""
     listener_source: str = ""
@@ -3309,6 +3296,7 @@ async def _save_msg(
     dedupe_target_type: str = "chatroom",
     dedupe_target_id: str = "",
     retry_inputs: bytes | None = None,
+    reading_notice: str = "",
 ) -> dict:
     """保存消息到数据库"""
     now = time.time()
@@ -3324,6 +3312,7 @@ async def _save_msg(
     att_list = await with_band_vibration_attachment(msg_id, att_list)
     att_json = json.dumps(att_list, ensure_ascii=False) if att_list else "[]"
     duplicate_msg = None
+    notice_event = None
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         if dedupe_key:
@@ -3352,6 +3341,9 @@ async def _save_msg(
                         now=now,
                     )
         if not duplicate_msg:
+            if reading_notice:
+                from autonomy_reading import insert_reading_notice
+                notice_event = await insert_reading_notice(db, reading_notice, msg_id, now, room_id=room_id)
             await db.execute(
                 "INSERT INTO chatroom_messages (id, room_id, sender, content, attachments, reasoning_content, created_at) VALUES (?,?,?,?,?,?,?)",
                 (msg_id, room_id, sender, content, att_json, reasoning_content, now),
@@ -3363,6 +3355,8 @@ async def _save_msg(
         await db.commit()
     if duplicate_msg:
         return duplicate_msg
+    if notice_event:
+        await manager.broadcast(notice_event)
     scope = current_generation()
     if scope and msg_id in scope.partials:
         scope.partials[msg_id]["saved"] = True
@@ -3664,7 +3658,8 @@ async def ambient_voice_evaluate(room_id: str, body: AmbientVoiceEvaluate):
         return {"ok": True, "triggered": False, "skipped": "disabled"}
 
     transcript = _ambient_excerpt(body.transcript, 3000)
-    if len(transcript) < 4:
+    timeline = format_timeline(body.events, utc_offset_minutes=body.utc_offset_minutes)
+    if len(transcript) < 4 and not timeline:
         return {"ok": True, "triggered": False, "skipped": "too_short"}
 
     listener = _ambient_listener_state()
@@ -3732,7 +3727,8 @@ async def ambient_voice_evaluate(room_id: str, body: AmbientVoiceEvaluate):
             "importance": 1.0,
         }
     else:
-        decision = await _judge_ambient_voice(transcript)
+        decision = await _judge_ambient_voice(transcript, timeline)
+    decision["timeline"] = timeline
     decision["source_label"] = source_label
     decision["source"] = (body.listener_source or "").strip()[:40]
     if not forced:
@@ -3986,7 +3982,7 @@ async def _generate_connor_reply(room_id, room, msgs, _q, context_limit, *, conn
         _mark_first_text = model_started()
         async for chunk in kitchen_stream(connor_messages,
                 lambda prompts: _stream_connor_model(prompts, connor_model_key, usage_meta),
-                actor='connor', scope='chatroom', parent_id=room_id, query=query_text, queue=_q, state=kitchen_state):
+                actor='connor', scope='chatroom', parent_id=room_id, query=query_text, queue=_q, state=kitchen_state, model_key=connor_model_key):
             if usage_meta.get("provider_error"):
                 raise RuntimeError(usage_meta["provider_error"])
             if chunk.startswith(CLI_STATUS_PREFIX):
@@ -4164,7 +4160,7 @@ async def _generate_group_replies(room_id, room, msgs, model_key, connor_model_k
 
 
 @_chatroom_reply_guard("aion")
-async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *, tts_enabled=False, tts_voice="", digest_result=None, whisper_mode=False, ambient_context: str = ""):
+async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *, tts_enabled=False, tts_voice="", digest_result=None, whisper_mode=False, ambient_context: str = "", reading_context: str = ""):
     ai_label = _name_for_identity("aion")
     await _q.put({"type": "preparing", "sender": "aion"})
     aion_history, digest_out = await build_aion_group_context(
@@ -4176,6 +4172,8 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
     )
     if ambient_context:
         aion_history.append({"role": "user", "content": append_message_meta(ambient_context, time.time(), "环境语音")})
+    if reading_context:
+        aion_history.append({"role": "user", "content": append_message_meta(reading_context, time.time(), "读书摘录")})
     _process_voice_attachments(aion_history)
     aion_msg_id = f"cm_{int(time.time() * 1000)}_a"
     await _q.put({"type": "aion_start", "id": aion_msg_id})
@@ -4202,7 +4200,7 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
         _mark_first_text = model_started()
         async for chunk in kitchen_stream(aion_history,
                 lambda prompts: stream_ai(prompts, model_key, usage_meta),
-                actor='aion', scope='chatroom', parent_id=room_id, query=query_text, queue=_q, state=kitchen_state):
+                actor='aion', scope='chatroom', parent_id=room_id, query=query_text, queue=_q, state=kitchen_state, model_key=model_key):
             if usage_meta.get("provider_error"):
                 raise RuntimeError(usage_meta["provider_error"])
             if chunk.startswith(CLI_STATUS_PREFIX):
@@ -4309,7 +4307,7 @@ async def _reply_aion(room_id, msgs, context_limit, query_text, model_key, _q, *
 
 
 @_chatroom_reply_guard("connor")
-async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_model_key="Codex", tts_enabled=False, tts_voice="", digest_result=None, whisper_mode=False, ambient_context: str = ""):
+async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_model_key="Codex", tts_enabled=False, tts_voice="", digest_result=None, whisper_mode=False, ambient_context: str = "", reading_context: str = ""):
     connor_label = _name_for_identity("connor")
     await _q.put({"type": "preparing", "sender": "connor"})
     connor_history, digest_out = await build_connor_group_context(
@@ -4321,6 +4319,8 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
     )
     if ambient_context:
         connor_history.append({"role": "user", "content": append_message_meta(ambient_context, time.time(), "环境语音")})
+    if reading_context:
+        connor_history.append({"role": "user", "content": append_message_meta(reading_context, time.time(), "读书摘录")})
     _process_voice_attachments(connor_history)
     connor_msg_id = f"cm_{int(time.time() * 1000)}_c"
     await _q.put({"type": "connor_start", "id": connor_msg_id})
@@ -4347,7 +4347,7 @@ async def _reply_connor(room_id, msgs, context_limit, query_text, _q, *, connor_
         _mark_first_text = model_started()
         async for chunk in kitchen_stream(connor_history,
                 lambda prompts: _stream_connor_model(prompts, connor_model_key, usage_meta),
-                actor='connor', scope='chatroom', parent_id=room_id, query=query_text, queue=_q, state=kitchen_state):
+                actor='connor', scope='chatroom', parent_id=room_id, query=query_text, queue=_q, state=kitchen_state, model_key=connor_model_key):
             if usage_meta.get("provider_error"):
                 raise RuntimeError(usage_meta["provider_error"])
             if chunk.startswith(CLI_STATUS_PREFIX):

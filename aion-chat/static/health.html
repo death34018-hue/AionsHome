@@ -11,8 +11,33 @@
 <style>
 :root {
   --health: #ff6f7d;
+  --health-soft: rgba(255,111,125,.12);
+  --health-line: rgba(255,111,125,.35);
   --health2: #41a67a;
   --health3: #4f7dd9;
+  --sleep-deep: #4f6fd0;
+  --sleep-light: #9db4f0;
+  --sleep-rem: #b08ae6;
+  --surface-solid: #ffffff;
+  --tile-bg: var(--bg);
+  --card-shadow: 0 1px 2px rgba(74,59,50,.04), 0 6px 20px rgba(74,59,50,.06);
+  --danger-soft: rgba(194,65,61,.1);
+  --danger: #c2413d;
+}
+body[data-theme="dark"] {
+  --health: #ff7d8f;
+  --health-soft: rgba(255,125,143,.16);
+  --health-line: rgba(255,125,143,.42);
+  --health2: #5fd39c;
+  --health3: #7d9cff;
+  --sleep-deep: #6f8cff;
+  --sleep-light: #a9bcff;
+  --sleep-rem: #c3a2ff;
+  --surface-solid: #0b1033;
+  --tile-bg: rgba(5, 9, 35, 0.54);
+  --card-shadow: none;
+  --danger-soft: rgba(255,92,138,.16);
+  --danger: #ff7aa0;
 }
 .top-bar { background: rgba(255,246,247,.9); }
 .health-top-bar { padding-right: 12px; }
@@ -21,59 +46,230 @@
 .health-share-inline .toggle-slider { border-radius: 10px; }
 .health-share-inline .toggle-slider:before { width: 14px; height: 14px; top: 2px; left: 2px; }
 .health-share-inline .toggle-switch input:checked + .toggle-slider:before { transform: translateX(16px); }
-.page-content { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 12px; }
-.section { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 13px; }
+.health-share-inline .toggle-switch input:checked + .toggle-slider,
+.health-tab-panel .toggle-switch input:checked + .toggle-slider { background: var(--health); border-color: var(--health); }
+.page-content { padding: 12px 14px calc(24px + env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 12px; }
+.section { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 14px; box-shadow: var(--card-shadow); }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .section-title { font-size: 15px; font-weight: 700; color: var(--text); }
 .muted { color: var(--text3); font-size: 12px; }
-.health-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; flex-shrink: 0; margin: 14px 14px 0; padding: 4px; background: var(--surface2); border: 1px solid var(--border); border-radius: 9px; }
-.health-tab { border: 0; border-radius: 7px; background: transparent; color: var(--text2); padding: 9px 8px; font-size: 14px; font-weight: 700; cursor: pointer; }
-.health-tab.active { background: var(--surface); color: var(--health); box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.num { font-variant-numeric: tabular-nums; }
+.health-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; flex-shrink: 0; margin: 10px 14px 0; padding: 3px; background: var(--surface2); border: 1px solid var(--border); border-radius: 12px; }
+.health-tab { border: 0; border-radius: 9px; background: transparent; color: var(--text2); min-height: 36px; padding: 8px; font-size: 14px; font-weight: 700; cursor: pointer; }
+.health-tab.active { background: var(--surface-solid); color: var(--health); box-shadow: 0 1px 4px rgba(0,0,0,.08); }
 .health-tab-panel { display: none; flex-direction: column; gap: 12px; }
 .health-tab-panel.active { display: flex; }
-.body-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-.body-summary-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; min-height: 82px; }
-.body-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
-.body-summary-label { color: var(--text2); font-size: 12px; margin-bottom: 7px; }
-.body-card-head .body-summary-label { margin-bottom: 0; }
-.body-summary-value { color: var(--text); font-size: 22px; line-height: 1.1; font-weight: 800; overflow-wrap: anywhere; }
-.body-summary-meta { color: var(--text3); font-size: 11px; margin-top: 6px; line-height: 1.4; }
-.card-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex-shrink: 0; border: 1px solid var(--border); border-radius: 50%; background: var(--surface); color: var(--health); font-size: 17px; line-height: 1; font-weight: 800; cursor: pointer; }
-.card-icon-btn.sync { font-size: 16px; font-weight: 700; }
+.eyebrow { color: var(--text2); font-size: 12px; font-weight: 600; }
+
+/* 体重主卡片 */
+.weight-hero { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.weight-hero-main { min-width: 0; }
+.weight-big { display: flex; align-items: baseline; gap: 4px; margin-top: 4px; color: var(--text); }
+.weight-big strong { font-size: 38px; line-height: 1.05; font-weight: 800; letter-spacing: -.5px; font-variant-numeric: tabular-nums; }
+.weight-big small { color: var(--text2); font-size: 14px; font-weight: 600; }
+.weight-meta { margin-top: 5px; color: var(--text3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.weight-deltas { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex-shrink: 0; padding-top: 2px; }
+.delta-chip { display: inline-flex; align-items: center; gap: 3px; padding: 4px 10px; border-radius: 999px; background: var(--surface2); color: var(--text2); font-size: 12px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.delta-sub { color: var(--text3); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.range-seg { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 2px; margin: 14px 0 8px; padding: 3px; background: var(--surface2); border-radius: 10px; }
+.range-seg button { border: 0; background: transparent; color: var(--text2); border-radius: 8px; min-height: 32px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.range-seg button.active { background: var(--surface-solid); color: var(--health); font-weight: 700; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.weight-chart { position: relative; min-height: 188px; margin: 0 -4px; }
+.weight-legend { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 4px; color: var(--text3); font-size: 11px; }
+.legend-band { display: inline-flex; align-items: center; gap: 5px; }
+.legend-band i { width: 10px; height: 10px; border-radius: 3px; background: var(--health-soft); border: 1px solid var(--health-line); }
+.legend-band[hidden] { display: none; }
+.weight-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); text-align: center; }
+.weight-stat span { display: block; color: var(--text3); font-size: 11px; }
+.weight-stat strong { display: block; margin-top: 2px; color: var(--text); font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.weight-stat + .weight-stat { border-left: 1px solid var(--border); }
+.primary-btn { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 46px; margin-top: 12px; border: 0; border-radius: 12px; background: var(--health); color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; }
+.primary-btn:active, .step-btn:active, .chip:active { transform: scale(.97); }
+
+/* 体重曲线 */
+.wc-root { position: relative; touch-action: pan-y; user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent; }
+.wc-svg { display: block; overflow: visible; }
+.wc-grid { stroke: var(--border); stroke-width: 1; }
+.wc-ylabel, .wc-xlabel { fill: var(--text3); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.wc-band { fill: var(--health-soft); }
+.wc-stop-top { stop-color: var(--health); stop-opacity: .24; }
+.wc-stop-bottom { stop-color: var(--health); stop-opacity: 0; }
+.wc-line { fill: none; stroke: var(--health); stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round; }
+.wc-dot { fill: var(--health); }
+.wc-last { fill: var(--health); stroke: var(--surface-solid); stroke-width: 2.5; }
+.wc-cross { stroke: var(--text3); stroke-width: 1; stroke-dasharray: 3 3; }
+.wc-sel-dot { fill: var(--health); stroke: var(--surface-solid); stroke-width: 3; }
+.wc-hit { fill: transparent; cursor: crosshair; }
+.wc-tip { position: absolute; z-index: 2; min-width: 116px; max-width: 200px; padding: 7px 9px; border-radius: 10px; background: var(--surface-solid); border: 1px solid var(--border); box-shadow: 0 6px 18px rgba(0,0,0,.14); color: var(--text2); font-size: 12px; }
+.wc-tip[hidden] { display: none; }
+.wc-tip-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; white-space: nowrap; }
+.wc-tip-head strong { color: var(--text); font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.wc-tip-note { margin-top: 3px; color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wc-tip-edit { width: 100%; margin-top: 6px; padding: 6px 0; border: 0; border-radius: 7px; background: var(--health-soft); color: var(--health); font-size: 12px; font-weight: 700; cursor: pointer; }
+.wc-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; border: 1px dashed var(--border); border-radius: 12px; color: var(--text3); font-size: 13px; text-align: center; }
+.wc-empty-hint { font-size: 12px; }
+
+/* 姨妈期、步数小卡 */
+.mini-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.mini-card { min-width: 0; padding: 12px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.mini-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 34px; }
+.mini-value { margin-top: 2px; color: var(--text); font-size: 22px; line-height: 1.15; font-weight: 800; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.mini-value.on { color: var(--health); }
+.mini-meta { margin-top: 4px; color: var(--text3); font-size: 11.5px; line-height: 1.4; }
+.card-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; flex-shrink: 0; border: 1px solid var(--border); border-radius: 50%; background: var(--surface-solid); color: var(--health); font-size: 19px; line-height: 1; font-weight: 700; cursor: pointer; }
+.card-icon-btn.sync { font-size: 17px; }
 .card-icon-btn:disabled { opacity: .55; cursor: default; }
-.ring-head-actions { display: flex; align-items: center; gap: 8px; }
-.ring-feature-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; padding: 9px 10px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; }
-.ring-feature-row .toggle-switch { flex-shrink: 0; }
-.legacy-ring-section { display: none !important; }
+
+/* 日历 */
+.calendar-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; }
+.calendar-toggle { flex-shrink: 0; min-height: 34px; border: 1px solid var(--border); background: var(--surface2); color: var(--text); border-radius: 10px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+.calendar-panel { display: none; margin-top: 12px; }
+.calendar-panel.show { display: block; }
+.calendar-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.calendar-nav button { min-width: 40px; min-height: 34px; border: 0; background: var(--surface2); color: var(--text); border-radius: 10px; font-size: 18px; cursor: pointer; }
+.calendar-title { font-size: 14px; font-weight: 700; }
+.calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.weekday { text-align: center; color: var(--text3); font-size: 11px; padding: 3px 0; }
+.day-cell { position: relative; display: flex; flex-direction: column; align-items: flex-start; min-width: 0; min-height: 48px; padding: 5px 4px; border: 1px solid transparent; border-radius: 10px; background: var(--tile-bg); color: inherit; font: inherit; font-size: 11px; text-align: left; overflow: hidden; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.day-cell.out { opacity: .35; }
+.day-cell.period { background: var(--health-soft); }
+.day-cell.today { border-color: var(--health); }
+body[data-theme="dark"] .day-cell { border-color: transparent; }
+body[data-theme="dark"] .day-cell.period { background: var(--health-soft); }
+body[data-theme="dark"] .day-cell.today { border-color: var(--health); }
+.day-num { color: var(--text2); font-size: 11px; }
+.day-cell.today .day-num { color: var(--health); font-weight: 800; }
+.day-weight { margin-top: auto; color: var(--health2); font-size: 10.5px; font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.day-period { position: absolute; top: 6px; right: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--health); }
+.calendar-legend { display: flex; gap: 14px; margin-top: 8px; color: var(--text3); font-size: 11px; }
+.calendar-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.calendar-legend i { width: 8px; height: 8px; border-radius: 50%; }
+.calendar-legend .lg-weight { background: var(--health2); }
+.calendar-legend .lg-period { background: var(--health); }
+
+/* 底部记录面板 */
+.health-modal { position: fixed; inset: 0; z-index: 60; display: none; align-items: center; justify-content: center; padding: 18px; background: rgba(43, 31, 35, .38); }
+.health-modal.show { display: flex; }
+.health-dialog { width: min(420px, 100%); background: var(--surface-solid); border: 1px solid var(--border); border-radius: 14px; padding: 14px; box-shadow: 0 18px 42px rgba(0,0,0,.16); }
+.health-modal.sheet { align-items: flex-end; padding: 0; }
+.health-modal.sheet .health-dialog { width: min(600px, 100%); max-height: calc(100dvh - 48px); overflow: auto; border-bottom: 0; border-radius: 20px 20px 0 0; padding: 8px 16px calc(16px + env(safe-area-inset-bottom)); animation: sheetUp .22s ease-out; }
+@keyframes sheetUp { from { transform: translateY(28px); opacity: .5; } to { transform: none; opacity: 1; } }
+.sheet-handle { width: 38px; height: 4px; margin: 0 auto 10px; border-radius: 2px; background: var(--border); }
+.health-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.health-dialog-title { color: var(--text); font-size: 16px; font-weight: 800; }
+.dialog-close { border: 0; background: var(--surface2); color: var(--text2); border-radius: 50%; width: 32px; height: 32px; font-size: 18px; line-height: 1; cursor: pointer; }
+.dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+.dialog-actions button { border: 0; border-radius: 10px; padding: 10px 12px; font-weight: 700; cursor: pointer; }
+.stepper { display: grid; grid-template-columns: 52px minmax(0, 1fr) 52px; align-items: center; gap: 10px; }
+.step-btn { width: 52px; height: 52px; border: 1px solid var(--border); border-radius: 50%; background: var(--surface2); color: var(--text); font-size: 26px; line-height: 1; cursor: pointer; touch-action: manipulation; user-select: none; -webkit-user-select: none; }
+.stepper-value { display: flex; align-items: baseline; justify-content: center; gap: 4px; min-width: 0; }
+.stepper-value input { width: 4.4ch; max-width: 100%; padding: 0; border: 0; background: transparent; color: var(--text); font-size: 42px; font-weight: 800; text-align: center; font-variant-numeric: tabular-nums; outline: none; -moz-appearance: textfield; }
+@supports (field-sizing: content) {
+  .stepper-value input { width: auto; min-width: 1.5ch; field-sizing: content; }
+}
+body[data-theme="dark"] .stepper-value input { background: transparent; }
+.stepper-value input::-webkit-outer-spin-button,
+.stepper-value input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.stepper-value small { color: var(--text2); font-size: 15px; font-weight: 600; }
+.stepper-hint { min-height: 17px; margin: 4px 0 14px; color: var(--text3); font-size: 12px; text-align: center; }
+.field-label { margin-bottom: 6px; color: var(--text2); font-size: 12px; }
+.chip-row { display: flex; align-items: center; gap: 8px; }
+.chip { flex-shrink: 0; min-height: 36px; padding: 7px 14px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-solid); color: var(--text2); font-size: 13px; cursor: pointer; }
+.chip.active { border-color: transparent; background: var(--health-soft); color: var(--health); font-weight: 700; }
+.chip-date { flex: 1; min-width: 0; font-family: inherit; outline: none; }
+body[data-theme="dark"] .chip-date { background: var(--surface2); }
+.sheet-actions { display: flex; gap: 8px; margin-top: 18px; }
+.sheet-actions button { min-height: 46px; border: 0; border-radius: 12px; font-size: 15px; font-weight: 700; cursor: pointer; }
+.sheet-actions .btn-cancel { flex: 1; }
+.sheet-actions .btn-save { flex: 2; background: var(--health); color: #fff; }
+.sheet-actions .btn-delete { flex: 1; background: var(--danger-soft); color: var(--danger); }
+.sheet-actions .btn-delete.confirm { background: var(--danger); color: #fff; }
+.sheet-actions .btn-delete[hidden] { display: none; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.form-grid.full { grid-template-columns: 1fr; }
+.inline-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
+.input-wrap label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 4px; }
+.input-wrap input, .input-wrap select, .input-wrap textarea {
+  width: 100%; min-height: 42px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg);
+  color: var(--text); padding: 9px 10px; font-size: 15px; font-family: inherit; outline: none;
+}
+.input-wrap input:focus, .input-wrap select:focus { border-color: var(--health); }
+.input-wrap textarea { min-height: 62px; resize: vertical; }
+.save-btn { min-height: 42px; border: 0; border-radius: 10px; background: var(--health); color: #fff; padding: 10px 14px; font-weight: 700; cursor: pointer; }
+
+/* 手环 */
+.status-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; color: var(--text2); }
+.status-dot { width: 10px; height: 10px; flex-shrink: 0; border-radius: 50%; background: var(--text3); }
+.status-dot.on { background: var(--health2); box-shadow: 0 0 0 4px rgba(65,166,122,.16); }
+.band-status { display: flex; align-items: center; gap: 10px; }
+.band-status-text { flex: 1; min-width: 0; }
+.band-status-title { display: flex; align-items: baseline; gap: 8px; color: var(--text); font-size: 15px; font-weight: 700; }
+.band-state { color: var(--text2); font-size: 13px; font-weight: 600; }
+.battery-chip { flex-shrink: 0; padding: 4px 10px; border-radius: 999px; background: var(--surface2); color: var(--text2); font-size: 12px; font-weight: 700; white-space: nowrap; }
 .mi-band-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.band-status-card .mi-band-actions { margin-top: 12px; }
+.action-btn { min-height: 40px; border: 0; border-radius: 10px; padding: 9px 8px; background: var(--surface2); color: var(--text); font-size: 13px; cursor: pointer; }
+.action-btn.primary { background: var(--health); color: #fff; font-weight: 700; }
+.action-btn.warn { background: #fff1f0; color: #c2413d; }
+.action-btn:disabled { opacity: .55; cursor: default; }
+.heart-hero { display: flex; align-items: baseline; gap: 6px; }
+.heart-hero strong { color: var(--health); font-size: 40px; line-height: 1; font-weight: 800; font-variant-numeric: tabular-nums; }
+.heart-hero small { color: var(--text2); font-size: 14px; font-weight: 600; }
+.realtime-pill { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 10px 12px; border-radius: 12px; background: var(--tile-bg); }
+.realtime-pill b { color: var(--text); font-size: 15px; font-variant-numeric: tabular-nums; }
+.stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.stat-tile { min-width: 0; padding: 10px; border-radius: 12px; background: var(--tile-bg); }
+.stat-value { margin-top: 3px; color: var(--text); font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.activity-rows { display: grid; gap: 6px; margin-top: 8px; }
+.activity-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border-radius: 10px; background: var(--tile-bg); color: var(--text2); font-size: 12px; }
+.activity-row strong { color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums; }
+.band-settings { padding-top: 2px; padding-bottom: 2px; }
+.settings-group + .settings-group { border-top: 1px solid var(--border); }
+.settings-group > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 0; cursor: pointer; list-style: none; }
+.settings-group > summary::-webkit-details-marker { display: none; }
+.settings-group > summary::after { content: '›'; color: var(--text3); font-size: 22px; transition: transform .15s; }
+.settings-group[open] > summary::after { transform: rotate(90deg); }
+.settings-body { display: grid; gap: 9px; padding-bottom: 14px; }
 .mi-band-schedule { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.mi-band-schedule-toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; list-style: none; }
-.mi-band-schedule-toggle::-webkit-details-marker { display: none; }
-.mi-band-schedule-toggle::after { content: '›'; color: var(--text3); font-size: 22px; }
-.mi-band-schedule-details[open] > summary { margin-bottom: 12px; }
-.mi-band-schedule-details[open] > summary::after { transform: rotate(90deg); }
-.mi-band-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.mi-band-summary-item { padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
-.mi-band-summary-value { color: var(--text); font-size: 18px; font-weight: 800; margin-top: 4px; overflow-wrap: anywhere; }
-.mi-band-inline { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.mi-band-advanced { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 10px; }
-.mi-band-advanced summary { color: var(--text2); font-size: 12px; cursor: pointer; user-select: none; }
-.mi-band-advanced-body { display: grid; gap: 9px; margin-top: 10px; }
 .mi-band-log { min-height: 48px; max-height: 120px; }
 .mi-band-scan-status { color: var(--text3); font-size: 12px; line-height: 1.45; }
 .mi-band-scan-results { display: grid; gap: 6px; }
-.mi-band-scan-result { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); padding: 10px; text-align: left; cursor: pointer; }
+.mi-band-scan-result { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text); padding: 10px; text-align: left; cursor: pointer; }
 .mi-band-scan-result strong { display: block; font-size: 13px; }
 .mi-band-scan-result small { display: block; margin-top: 3px; color: var(--text3); font-size: 11px; }
 .mi-band-scan-result span { flex-shrink: 0; color: var(--health); font-size: 12px; font-weight: 700; }
 .hidden-control { display: none !important; }
-.step-diag-box { display: none; margin-top: 8px; font-size: 11px; color: var(--text3); background: var(--surface2); padding: 7px 8px; border-radius: 7px; word-break: break-all; }
+.step-diag-box { display: none; font-size: 11px; color: var(--text3); background: var(--surface2); padding: 7px 8px; border-radius: 8px; word-break: break-all; }
 .step-diag-box.show { display: block; }
+.vital-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.vital-card { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px; min-height: 72px; }
+.vital-label { color: var(--text2); font-size: 12px; }
+.vital-card .vital-label { margin-bottom: 6px; }
+.vital-value { color: var(--text); font-size: 24px; line-height: 1.1; font-weight: 800; overflow-wrap: anywhere; }
+.vital-unit { color: var(--text3); font-size: 11px; margin-left: 2px; }
+.sleep-box { margin-top: 10px; background: rgba(79,125,217,.06); border: 1px solid rgba(79,125,217,.14); border-radius: 12px; padding: 12px; }
+.sleep-main { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+.sleep-range { text-align: right; }
+.sleep-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.sleep-actions .action-btn { padding: 7px 10px; font-size: 12px; }
+.sleep-total { font-size: 24px; font-weight: 800; color: var(--health3); font-variant-numeric: tabular-nums; }
+.sleep-bar { display: flex; gap: 2px; height: 10px; margin: 10px 0 8px; border-radius: 6px; overflow: hidden; background: var(--surface2); }
+.sleep-bar[hidden] { display: none; }
+.sleep-bar span { display: block; height: 100%; }
+.sleep-meta { margin-top: 7px; color: var(--text2); font-size: 12px; line-height: 1.6; }
+.sleep-legend { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.sleep-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.sleep-legend i { width: 8px; height: 8px; border-radius: 2px; }
+.sleep-session-list { display: grid; gap: 5px; margin-top: 8px; }
+.sleep-session-item { display: flex; justify-content: space-between; gap: 10px; padding: 7px 9px; border-radius: 8px; background: var(--surface-solid); color: var(--text2); font-size: 12px; }
+body[data-theme="dark"] .sleep-session-item { background: rgba(31, 39, 101, 0.4); }
+.sleep-session-item strong { color: var(--text); flex-shrink: 0; }
+.ring-feature-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; padding: 9px 10px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; }
+.ring-feature-row .toggle-switch { flex-shrink: 0; }
+.ring-head-actions { display: flex; align-items: center; gap: 8px; }
+.legacy-ring-section { display: none !important; }
 .ring-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-.action-btn { border: 0; border-radius: 8px; padding: 9px 8px; background: var(--surface2); color: var(--text); font-size: 13px; cursor: pointer; }
-.action-btn.primary { background: var(--health); color: #fff; font-weight: 700; }
-.action-btn.warn { background: #fff1f0; color: #c2413d; }
-.action-btn:disabled { opacity: .55; cursor: default; }
 .candidate-panel { display: none; margin-top: 10px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .candidate-panel.show { display: block; }
 .candidate-head { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; background: var(--surface2); color: var(--text2); font-size: 12px; }
@@ -82,33 +278,22 @@
 .candidate-btn strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .candidate-btn span { flex-shrink: 0; color: var(--text3); font-size: 11px; }
 .candidate-btn.likely strong { color: var(--health); }
-.status-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; color: var(--text2); }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text3); }
-.status-dot.on { background: var(--health2); box-shadow: 0 0 0 4px rgba(65,166,122,.12); }
-.vital-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.vital-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; min-height: 72px; }
-.vital-label { color: var(--text2); font-size: 12px; margin-bottom: 6px; }
-.vital-value { color: var(--text); font-size: 24px; line-height: 1.1; font-weight: 800; overflow-wrap: anywhere; }
-.vital-unit { color: var(--text3); font-size: 11px; margin-left: 2px; }
-.sleep-box { margin-top: 8px; background: #f6f8ff; border: 1px solid #e3e8fb; border-radius: 8px; padding: 10px; }
-.sleep-main { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
-.sleep-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
-.sleep-actions .action-btn { padding: 7px 10px; font-size: 12px; }
-.sleep-total { font-size: 22px; font-weight: 800; color: var(--health3); }
-.sleep-meta { margin-top: 7px; color: var(--text2); font-size: 12px; line-height: 1.6; }
-.sleep-session-list { display: grid; gap: 5px; margin-top: 8px; }
-.sleep-session-item { display: flex; justify-content: space-between; gap: 10px; padding: 6px 8px; border-radius: 7px; background: var(--surface); color: var(--text2); font-size: 12px; }
-.sleep-session-item strong { color: var(--text); }
 .heart-auto-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; padding: 9px 10px; background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; }
 .heart-auto-row .action-btn { flex-shrink: 0; min-width: 86px; }
-.heart-history { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.heart-history { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
 .heart-history-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 .heart-history-list { display: grid; gap: 6px; max-height: 226px; overflow: auto; }
-.heart-history-empty { color: var(--text3); font-size: 12px; padding: 10px; background: var(--bg); border: 1px dashed var(--border); border-radius: 8px; text-align: center; }
-.heart-history-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
-.heart-history-time { color: var(--text); font-size: 13px; font-weight: 700; overflow-wrap: anywhere; }
+.heart-history-fold > summary { min-height: 32px; margin-bottom: 0; cursor: pointer; list-style: none; -webkit-tap-highlight-color: transparent; }
+.heart-history-fold > summary::-webkit-details-marker { display: none; }
+.heart-history-fold > summary > .muted { margin-left: auto; }
+.heart-history-fold > summary::after { content: '›'; color: var(--text3); font-size: 22px; line-height: 1; transition: transform .15s; }
+.heart-history-fold[open] > summary { margin-bottom: 8px; }
+.heart-history-fold[open] > summary::after { transform: rotate(90deg); }
+.heart-history-empty { color: var(--text3); font-size: 12px; padding: 10px; background: var(--tile-bg); border: 1px dashed var(--border); border-radius: 10px; text-align: center; }
+.heart-history-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 8px 10px; background: var(--tile-bg); border-radius: 10px; }
+.heart-history-time { color: var(--text); font-size: 13px; font-weight: 700; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .heart-history-meta { color: var(--text3); font-size: 11px; margin-top: 3px; }
-.heart-history-bpm { color: var(--health); font-size: 19px; line-height: 1; font-weight: 800; white-space: nowrap; }
+.heart-history-bpm { color: var(--health); font-size: 18px; line-height: 1; font-weight: 800; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .heart-config-dialog { width: min(520px, 100%); max-height: min(760px, calc(100vh - 36px)); overflow: auto; }
 .heart-config-note { margin-top: 8px; line-height: 1.5; }
 .heart-event-box { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -121,45 +306,17 @@
 .heart-event-time { color: var(--text3); font-size: 11px; white-space: nowrap; }
 .heart-event-summary { color: var(--text2); font-size: 12px; line-height: 1.45; margin-top: 4px; }
 .heart-event-empty { color: var(--text3); font-size: 12px; padding: 10px; border: 1px dashed var(--border); border-radius: 8px; text-align: center; }
-.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.form-grid.full { grid-template-columns: 1fr; }
-.inline-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
-.input-wrap label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 4px; }
-.input-wrap input, .input-wrap select, .input-wrap textarea {
-  width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
-  color: var(--text); padding: 9px 10px; font-size: 14px; font-family: inherit; outline: none;
-}
-.input-wrap textarea { min-height: 62px; resize: vertical; }
-.save-btn { border: 0; border-radius: 8px; background: var(--health); color: #fff; padding: 10px 14px; font-weight: 700; cursor: pointer; }
-.calendar-toggle { border: 1px solid var(--border); background: var(--surface2); color: var(--text); border-radius: 8px; padding: 7px 10px; font-size: 13px; cursor: pointer; }
-.calendar-panel { display: none; }
-.calendar-panel.show { display: block; }
-.calendar-nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.calendar-nav button { border: 0; background: var(--surface2); color: var(--text); border-radius: 7px; padding: 6px 10px; cursor: pointer; }
-.calendar-title { font-size: 14px; font-weight: 700; }
-.calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
-.weekday { text-align: center; color: var(--text3); font-size: 11px; padding: 3px 0; }
-.day-cell { position: relative; min-height: 52px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 5px; font-size: 11px; overflow: hidden; }
-.day-cell.out { opacity: .35; }
-.day-num { color: var(--text2); font-size: 11px; }
-.day-weight { margin-top: 4px; color: var(--health2); font-weight: 700; white-space: nowrap; }
-.day-period { position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--health); box-shadow: 0 0 0 3px rgba(255,111,125,.12); }
 .log-box { max-height: 110px; overflow: auto; background: #2d2530; color: #f6eef8; border-radius: 8px; padding: 8px; font-family: Consolas, monospace; font-size: 11px; line-height: 1.5; }
-.health-modal { position: fixed; inset: 0; z-index: 60; display: none; align-items: center; justify-content: center; padding: 18px; background: rgba(43, 31, 35, .34); }
-.health-modal.show { display: flex; }
-.health-dialog { width: min(420px, 100%); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; box-shadow: 0 18px 42px rgba(0,0,0,.16); }
-.health-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
-.health-dialog-title { color: var(--text); font-size: 15px; font-weight: 800; }
-.dialog-close { border: 0; background: var(--surface2); color: var(--text2); border-radius: 50%; width: 28px; height: 28px; font-size: 18px; line-height: 1; cursor: pointer; }
-.dialog-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
-.dialog-actions button { border: 0; border-radius: 8px; padding: 10px 12px; font-weight: 700; cursor: pointer; }
+@media (max-width: 360px) {
+  .mini-grid { gap: 8px; }
+  .mini-value { font-size: 19px; }
+  .weight-big strong { font-size: 34px; }
+  .stat-value { font-size: 16px; }
+}
 @media (max-width: 460px) {
-  .ring-actions, .inline-form, .body-summary-grid, .mi-band-actions { grid-template-columns: 1fr; }
+  .ring-actions, .inline-form { grid-template-columns: 1fr 1fr; }
   .heart-auto-row { align-items: stretch; flex-direction: column; }
-  .sleep-main { align-items: stretch; }
-  .sleep-actions { align-items: flex-start; }
   .vital-value { font-size: 21px; }
-  .day-cell { min-height: 48px; padding: 4px; }
 }
 </style>
 </head>
@@ -182,164 +339,183 @@
   </div>
   <div class="page-content">
     <div class="health-tab-panel active" id="healthTabBody" role="tabpanel" aria-labelledby="tabBody">
-      <section class="section">
-        <div class="section-head">
-          <div>
-            <div class="section-title">身体情况</div>
-            <div class="muted">体重、姨妈期与今日步数</div>
+      <section class="section weight-card" id="weightCard">
+        <div class="weight-hero">
+          <div class="weight-hero-main">
+            <div class="eyebrow">最近体重</div>
+            <div class="weight-big"><strong id="latestWeightValue">--</strong><small>kg</small></div>
+            <div class="weight-meta" id="latestWeightMeta">暂无记录</div>
           </div>
-          <span class="muted" id="bodyUpdatedAt"></span>
-        </div>
-        <div class="body-summary-grid">
-          <div class="body-summary-card">
-            <div class="body-card-head">
-              <div class="body-summary-label">最近体重</div>
-              <button class="card-icon-btn" type="button" aria-label="记录体重" title="记录体重" onclick="openWeightModal()">+</button>
-            </div>
-            <div class="body-summary-value" id="latestWeightValue">--</div>
-            <div class="body-summary-meta" id="latestWeightMeta">暂无记录</div>
-          </div>
-          <div class="body-summary-card">
-            <div class="body-card-head">
-              <div class="body-summary-label">上一次姨妈期</div>
-              <button class="card-icon-btn" type="button" aria-label="记录姨妈期" title="记录姨妈期" onclick="openPeriodModal()">+</button>
-            </div>
-            <div class="body-summary-value" id="latestPeriodValue">--</div>
-            <div class="body-summary-meta" id="latestPeriodMeta">暂无记录</div>
-          </div>
-          <div class="body-summary-card">
-            <div class="body-card-head">
-              <div class="body-summary-label">今日运动步数</div>
-              <button id="btnPhoneSync" class="card-icon-btn sync" type="button" aria-label="同步手机步数" title="同步手机步数" onclick="phoneSync()">↻</button>
-            </div>
-            <div class="body-summary-value" id="todayStepsValue">--</div>
-            <div class="body-summary-meta" id="todayStepsMeta">等待手机同步</div>
+          <div class="weight-deltas">
+            <span class="delta-chip" id="weightDeltaPrev">较上次 --</span>
+            <span class="delta-sub" id="weightDeltaRange"></span>
           </div>
         </div>
-        <button class="hidden-control" type="button" onclick="stepDiag()">步数诊断</button>
-        <div id="stepDiagInfo" class="step-diag-box"></div>
+        <div class="range-seg" id="weightRangeSeg" role="group" aria-label="体重曲线时间范围">
+          <button type="button" data-range="7" onclick="setWeightRange('7')">7天</button>
+          <button type="button" data-range="30" class="active" onclick="setWeightRange('30')">30天</button>
+          <button type="button" data-range="90" onclick="setWeightRange('90')">90天</button>
+          <button type="button" data-range="all" onclick="setWeightRange('all')">全部</button>
+        </div>
+        <div class="weight-chart" id="weightChart"></div>
+        <div class="weight-legend">
+          <span>按住曲线左右滑动看每天体重</span>
+          <span class="legend-band" id="weightLegendBand" hidden><i></i>姨妈期</span>
+        </div>
+        <div class="weight-stats">
+          <div class="weight-stat"><span>最低</span><strong id="weightStatMin">--</strong></div>
+          <div class="weight-stat"><span>平均</span><strong id="weightStatAvg">--</strong></div>
+          <div class="weight-stat"><span>最高</span><strong id="weightStatMax">--</strong></div>
+        </div>
+        <button class="primary-btn" type="button" onclick="openWeightModal()"><span aria-hidden="true">＋</span>记录体重</button>
       </section>
 
-      <section class="section">
-        <div class="section-head">
+      <div class="mini-grid">
+        <section class="section mini-card" id="periodCard" onclick="openPeriodModal(latestPeriodId())">
+          <div class="mini-head">
+            <div class="eyebrow">姨妈期</div>
+            <button class="card-icon-btn" type="button" aria-label="记录新的姨妈期" title="记录新的姨妈期" onclick="event.stopPropagation(); openPeriodModal()">+</button>
+          </div>
+          <div class="mini-value" id="latestPeriodValue">--</div>
+          <div class="mini-meta" id="latestPeriodMeta">暂无记录</div>
+        </section>
+        <section class="section mini-card" id="stepsCard">
+          <div class="mini-head">
+            <div class="eyebrow">今日步数</div>
+            <button id="btnPhoneSync" class="card-icon-btn sync" type="button" aria-label="同步手机步数" title="同步手机步数" onclick="phoneSync()">↻</button>
+          </div>
+          <div class="mini-value" id="todayStepsValue">--</div>
+          <div class="mini-meta" id="todayStepsMeta">等待手机同步</div>
+        </section>
+      </div>
+      <button class="hidden-control" type="button" onclick="stepDiag()">步数诊断</button>
+      <div id="stepDiagInfo" class="step-diag-box"></div>
+
+      <section class="section calendar-section">
+        <div class="calendar-head" onclick="toggleCalendar()">
           <div>
             <div class="section-title">健康日历</div>
-            <div class="muted">体重数字与姨妈期小红点</div>
+            <div class="muted">点日期可记录或修改当天体重</div>
           </div>
-          <button class="calendar-toggle" onclick="toggleCalendar()">展开日历</button>
+          <button class="calendar-toggle" type="button" aria-expanded="false" aria-controls="calendarPanel">展开</button>
         </div>
         <div class="calendar-panel" id="calendarPanel">
           <div class="calendar-nav">
-            <button onclick="shiftMonth(-1)">‹</button>
+            <button type="button" aria-label="上个月" onclick="shiftMonth(-1)">‹</button>
             <div class="calendar-title" id="calendarTitle"></div>
-            <button onclick="shiftMonth(1)">›</button>
+            <button type="button" aria-label="下个月" onclick="shiftMonth(1)">›</button>
           </div>
           <div class="calendar-grid" id="calendarGrid"></div>
+          <div class="calendar-legend"><span><i class="lg-weight"></i>体重</span><span><i class="lg-period"></i>姨妈期</span></div>
         </div>
       </section>
-
-      <div class="health-modal" id="weightModal" aria-hidden="true">
-        <div class="health-dialog" role="dialog" aria-modal="true" aria-labelledby="weightModalTitle">
-          <div class="health-dialog-head">
-            <div class="health-dialog-title" id="weightModalTitle">记录体重</div>
-            <button class="dialog-close" type="button" aria-label="关闭" onclick="closeHealthModal('weightModal')">×</button>
-          </div>
-          <div class="form-grid">
-            <div class="input-wrap">
-              <label>日期</label>
-              <input type="date" id="weightDate">
-            </div>
-            <div class="input-wrap">
-              <label>体重 kg</label>
-              <input type="number" id="weightValue" step="0.1" min="1" placeholder="例如 58.6">
-            </div>
-          </div>
-          <div class="input-wrap" style="margin-top:8px">
-            <label>备注</label>
-            <input id="weightNote" maxlength="80" placeholder="可记录饮食、运动、水肿等">
-          </div>
-          <div class="dialog-actions">
-            <button class="btn-cancel" type="button" onclick="closeHealthModal('weightModal')">取消</button>
-            <button class="btn-save" type="button" onclick="saveWeight()">保存</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="health-modal" id="periodModal" aria-hidden="true">
-        <div class="health-dialog" role="dialog" aria-modal="true" aria-labelledby="periodModalTitle">
-          <div class="health-dialog-head">
-            <div class="health-dialog-title" id="periodModalTitle">记录姨妈期</div>
-            <button class="dialog-close" type="button" aria-label="关闭" onclick="closeHealthModal('periodModal')">×</button>
-          </div>
-          <div class="form-grid">
-            <div class="input-wrap">
-              <label>开始日期</label>
-              <input type="date" id="periodStart">
-            </div>
-            <div class="input-wrap">
-              <label>结束日期</label>
-              <input type="date" id="periodEnd">
-            </div>
-          </div>
-          <div class="form-grid" style="margin-top:8px">
-            <div class="input-wrap">
-              <label>量</label>
-              <select id="periodFlow">
-                <option value="">不填</option>
-                <option value="少">少</option>
-                <option value="中">中</option>
-                <option value="多">多</option>
-              </select>
-            </div>
-            <div class="input-wrap">
-              <label>症状</label>
-              <input id="periodSymptoms" maxlength="80" placeholder="痛经、嗜睡、情绪等">
-            </div>
-          </div>
-          <div class="input-wrap" style="margin-top:8px">
-            <label>备注</label>
-            <input id="periodNote" maxlength="120" placeholder="可不填">
-          </div>
-          <div class="dialog-actions">
-            <button class="btn-cancel" type="button" onclick="closeHealthModal('periodModal')">取消</button>
-            <button class="btn-save" type="button" onclick="savePeriod()">保存</button>
-          </div>
-        </div>
-      </div>
     </div>
 
     <div class="health-tab-panel" id="healthTabRing" role="tabpanel" aria-labelledby="tabRing">
+      <section class="section band-status-card" id="miBandConnectionSection">
+        <div class="band-status">
+          <span class="status-dot" id="miBandDot"></span>
+          <div class="band-status-text">
+            <div class="band-status-title"><span>小米手环 7</span><span class="band-state" id="miBandStatus">未连接</span></div>
+            <div class="muted ellipsis" id="miBandConnectionMeta">等待手机连接</div>
+          </div>
+          <span class="battery-chip" id="miBandBattery">电量 --</span>
+        </div>
+        <div class="mi-band-actions">
+          <button class="action-btn primary" id="miBandConnectButton" type="button" onclick="miBandConnect()">连接</button>
+          <button class="action-btn" id="miBandReconnectButton" type="button" onclick="miBandReconnect()">手动重连</button>
+          <button class="action-btn" id="miBandDisconnectButton" type="button" onclick="miBandDisconnect()">断开</button>
+        </div>
+      </section>
+
+      <section class="section" id="miBandRealtimeSection">
+        <div class="section-head">
+          <div class="section-title">心率</div>
+          <span class="muted" id="miBandLatestHeartMeta"></span>
+        </div>
+        <div class="heart-hero"><strong id="miBandLatestHeart">--</strong><small>bpm</small></div>
+        <div class="realtime-pill">
+          <div>
+            <div class="vital-label">实时心率 <b id="miBandRealtimeValue">--</b> bpm</div>
+            <div class="muted" id="miBandRealtimeMeta">需要时开启，关闭后立即停止测量</div>
+          </div>
+          <label class="toggle-switch" title="开启或关闭实时心率">
+            <input type="checkbox" id="miBandRealtimeToggle" onchange="miBandToggleRealtime(this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <details class="heart-history heart-history-fold" id="miBandHistoryFold">
+          <summary class="heart-history-head"><div class="section-title">最近心率</div><span class="muted" id="miBandHistoryCount">0/20</span></summary>
+          <div class="heart-history-list" id="miBandRecentList"><div class="heart-history-empty">暂无心率记录</div></div>
+        </details>
+      </section>
+
       <section class="section" id="miBandDataSection">
         <div class="section-head">
           <div>
-            <div class="section-title">同步数据</div>
+            <div class="section-title">活动与睡眠</div>
             <div class="muted" id="miBandSyncResult">还没有同步</div>
           </div>
           <button class="action-btn primary" id="miBandSyncButton" type="button" onclick="miBandSyncNow()">立即同步</button>
         </div>
-        <div class="mi-band-summary">
-          <div class="mi-band-summary-item"><div class="vital-label">最新心率</div><div class="mi-band-summary-value" id="miBandLatestHeart">-- bpm</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">下次同步</div><div class="mi-band-summary-value" id="miBandNextSync">--</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">今日步数</div><div class="mi-band-summary-value" id="miBandTodaySteps">--</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">活动分钟</div><div class="mi-band-summary-value" id="miBandActivityMinutes">--</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">最近30分钟</div><div class="mi-band-summary-value" id="miBandRecent30">--</div></div>
-          <div class="mi-band-summary-item"><div class="vital-label">最近60分钟</div><div class="mi-band-summary-value" id="miBandRecent60">--</div></div>
+        <div class="stat-grid">
+          <div class="stat-tile"><div class="vital-label">今日步数</div><div class="stat-value" id="miBandTodaySteps">--</div></div>
+          <div class="stat-tile"><div class="vital-label">活动</div><div class="stat-value" id="miBandActivityMinutes">--</div></div>
+          <div class="stat-tile"><div class="vital-label">下次同步</div><div class="stat-value" id="miBandNextSync">--</div></div>
+        </div>
+        <div class="activity-rows">
+          <div class="activity-row"><span>最近30分钟</span><strong id="miBandRecent30">--</strong></div>
+          <div class="activity-row"><span>最近60分钟</span><strong id="miBandRecent60">--</strong></div>
         </div>
         <div class="sleep-box">
           <div class="sleep-main">
             <div><div class="vital-label">最近睡眠</div><div class="sleep-total" id="miBandSleepTotal">--</div></div>
-            <div class="muted" id="miBandSleepRange">暂无手环睡眠</div>
+            <div class="muted sleep-range" id="miBandSleepRange">暂无手环睡眠</div>
           </div>
-          <div class="sleep-meta" id="miBandSleepMeta">深睡 -- · 浅睡 -- · REM --</div>
+          <div class="sleep-bar" id="miBandSleepBar" hidden></div>
+          <div class="sleep-meta sleep-legend" id="miBandSleepMeta">深睡 -- · 浅睡 -- · REM --</div>
           <div class="sleep-session-list" id="miBandSleepSessions"></div>
         </div>
-        <div class="heart-history">
-          <div class="heart-history-head"><div class="section-title">最近心率</div><span class="muted" id="miBandHistoryCount">0/20</span></div>
-          <div class="heart-history-list" id="miBandRecentList"><div class="heart-history-empty">暂无心率记录</div></div>
-        </div>
-        <details id="miBandAdvanced" class="mi-band-advanced">
-          <summary>手环设置</summary>
-          <div class="mi-band-advanced-body">
+      </section>
+
+      <section class="section band-settings" id="miBandSettingsSection">
+        <details class="settings-group" id="miBandScheduleSection">
+          <summary>
+            <div>
+              <div class="section-title">同步设置</div>
+              <div class="muted" id="miBandScheduleMeta">白天 1 分钟 · 02:00–08:00 每 20 分钟</div>
+            </div>
+          </summary>
+          <div class="settings-body">
+            <div class="mi-band-schedule">
+              <div class="input-wrap">
+                <label>白天同步</label>
+                <select id="miBandDayInterval">
+                  <option value="1" selected>1 分钟</option><option value="5">5 分钟</option><option value="10">10 分钟</option>
+                  <option value="20">20 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option><option value="-1">暂停</option>
+                </select>
+              </div>
+              <div class="input-wrap">
+                <label>夜间同步</label>
+                <select id="miBandNightInterval">
+                  <option value="1">1 分钟</option><option value="5">5 分钟</option><option value="10">10 分钟</option>
+                  <option value="20" selected>20 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option><option value="-1">暂停</option>
+                </select>
+              </div>
+              <div class="input-wrap"><label>夜间开始</label><input id="miBandNightStart" type="time" value="02:00"></div>
+              <div class="input-wrap"><label>夜间结束</label><input id="miBandNightEnd" type="time" value="08:00"></div>
+            </div>
+            <button class="save-btn" type="button" onclick="miBandSaveSchedule()">保存同步设置</button>
+          </div>
+        </details>
+        <details id="miBandAdvanced" class="settings-group">
+          <summary>
+            <div>
+              <div class="section-title">手环设置</div>
+              <div class="muted">绑定密钥、扫描设备、震动测试</div>
+            </div>
+          </summary>
+          <div class="settings-body">
             <div class="input-wrap"><label>16 字节绑定密钥（32 位十六进制）</label><input id="miBandAuthKey" type="password" autocomplete="new-password" maxlength="32" placeholder="只保存在手机私有配置中"></div>
             <div class="mi-band-actions">
               <button class="save-btn" id="miBandScanButton" type="button" onclick="miBandToggleScan()">扫描附近手环</button>
@@ -355,67 +531,6 @@
           </div>
         </details>
       </section>
-
-      <section class="section" id="miBandConnectionSection">
-        <div class="section-head">
-          <div>
-            <div class="section-title">小米手环 7</div>
-            <div class="muted" id="miBandConnectionMeta">等待手机连接</div>
-          </div>
-          <span class="muted" id="miBandBattery">电量 --</span>
-        </div>
-        <div class="status-row">
-          <span class="status-dot" id="miBandDot"></span>
-          <span id="miBandStatus">未连接</span>
-        </div>
-        <div class="mi-band-actions">
-          <button class="action-btn primary" id="miBandConnectButton" type="button" onclick="miBandConnect()">连接</button>
-          <button class="action-btn" id="miBandReconnectButton" type="button" onclick="miBandReconnect()">手动重连</button>
-          <button class="action-btn" id="miBandDisconnectButton" type="button" onclick="miBandDisconnect()">断开</button>
-        </div>
-      </section>
-
-      <section class="section" id="miBandRealtimeSection">
-        <div class="mi-band-inline">
-          <div>
-            <div class="section-title">实时心率</div>
-            <div class="muted" id="miBandRealtimeMeta">需要时开启，关闭后立即停止测量</div>
-          </div>
-          <label class="toggle-switch" title="开启或关闭实时心率">
-            <input type="checkbox" id="miBandRealtimeToggle" onchange="miBandToggleRealtime(this.checked)">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-        <div style="margin-top:10px"><span class="vital-value" id="miBandRealtimeValue">--</span><span class="vital-unit">bpm</span></div>
-      </section>
-
-      <details class="section mi-band-schedule-details" id="miBandScheduleSection">
-        <summary class="mi-band-schedule-toggle">
-          <div>
-            <div class="section-title">同步设置</div>
-            <div class="muted" id="miBandScheduleMeta">白天 1 分钟 · 02:00–08:00 每 20 分钟</div>
-          </div>
-        </summary>
-        <div class="mi-band-schedule">
-          <div class="input-wrap">
-            <label>白天同步</label>
-            <select id="miBandDayInterval">
-              <option value="1" selected>1 分钟</option><option value="5">5 分钟</option><option value="10">10 分钟</option>
-              <option value="20">20 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option><option value="-1">暂停</option>
-            </select>
-          </div>
-          <div class="input-wrap">
-            <label>夜间同步</label>
-            <select id="miBandNightInterval">
-              <option value="1">1 分钟</option><option value="5">5 分钟</option><option value="10">10 分钟</option>
-              <option value="20" selected>20 分钟</option><option value="30">30 分钟</option><option value="60">60 分钟</option><option value="-1">暂停</option>
-            </select>
-          </div>
-          <div class="input-wrap"><label>夜间开始</label><input id="miBandNightStart" type="time" value="02:00"></div>
-          <div class="input-wrap"><label>夜间结束</label><input id="miBandNightEnd" type="time" value="08:00"></div>
-        </div>
-        <button class="save-btn" type="button" style="width:100%;margin-top:9px" onclick="miBandSaveSchedule()">保存同步设置</button>
-      </details>
 
       <section class="section legacy-ring-section">
         <div class="section-head">
@@ -563,9 +678,84 @@
       </div>
     </div>
   </div>
+  <div class="health-modal sheet" id="weightModal" aria-hidden="true" onclick="if (event.target === this) closeHealthModal('weightModal')">
+    <div class="health-dialog" role="dialog" aria-modal="true" aria-labelledby="weightModalTitle">
+      <div class="sheet-handle"></div>
+      <div class="health-dialog-head">
+        <div class="health-dialog-title" id="weightModalTitle">记录体重</div>
+        <button class="dialog-close" type="button" aria-label="关闭" onclick="closeHealthModal('weightModal')">×</button>
+      </div>
+      <div class="stepper">
+        <button class="step-btn" type="button" aria-label="减 0.1 kg" data-weight-step="-0.1">−</button>
+        <label class="stepper-value"><input type="number" id="weightValue" step="0.1" min="1" max="500" inputmode="decimal" placeholder="--" aria-label="体重 kg"><small>kg</small></label>
+        <button class="step-btn" type="button" aria-label="加 0.1 kg" data-weight-step="0.1">+</button>
+      </div>
+      <div class="stepper-hint" id="weightLastHint"></div>
+      <div class="field-label">日期</div>
+      <div class="chip-row">
+        <button class="chip" type="button" data-day-offset="0" onclick="setWeightDateOffset(0)">今天</button>
+        <button class="chip" type="button" data-day-offset="1" onclick="setWeightDateOffset(1)">昨天</button>
+        <input class="chip chip-date" type="date" id="weightDate" aria-label="选择日期" onchange="onWeightDateChange()">
+      </div>
+      <div class="input-wrap" style="margin-top:12px">
+        <label for="weightNote">备注</label>
+        <input id="weightNote" maxlength="80" placeholder="饮食、运动、水肿等，可不填">
+      </div>
+      <div class="sheet-actions">
+        <button class="btn-delete" id="weightDeleteBtn" type="button" hidden onclick="deleteWeight()">删除</button>
+        <button class="btn-cancel" type="button" onclick="closeHealthModal('weightModal')">取消</button>
+        <button class="btn-save" type="button" onclick="saveWeight()">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="health-modal sheet" id="periodModal" aria-hidden="true" onclick="if (event.target === this) closeHealthModal('periodModal')">
+    <div class="health-dialog" role="dialog" aria-modal="true" aria-labelledby="periodModalTitle">
+      <div class="sheet-handle"></div>
+      <div class="health-dialog-head">
+        <div class="health-dialog-title" id="periodModalTitle">记录姨妈期</div>
+        <button class="dialog-close" type="button" aria-label="关闭" onclick="closeHealthModal('periodModal')">×</button>
+      </div>
+      <div class="form-grid">
+        <div class="input-wrap">
+          <label for="periodStart">开始日期</label>
+          <input type="date" id="periodStart">
+        </div>
+        <div class="input-wrap">
+          <label for="periodEnd">结束日期</label>
+          <input type="date" id="periodEnd">
+        </div>
+      </div>
+      <div class="form-grid" style="margin-top:8px">
+        <div class="input-wrap">
+          <label for="periodFlow">量</label>
+          <select id="periodFlow">
+            <option value="">不填</option>
+            <option value="少">少</option>
+            <option value="中">中</option>
+            <option value="多">多</option>
+          </select>
+        </div>
+        <div class="input-wrap">
+          <label for="periodSymptoms">症状</label>
+          <input id="periodSymptoms" maxlength="80" placeholder="痛经、嗜睡、情绪等">
+        </div>
+      </div>
+      <div class="input-wrap" style="margin-top:8px">
+        <label for="periodNote">备注</label>
+        <input id="periodNote" maxlength="120" placeholder="可不填">
+      </div>
+      <div class="sheet-actions">
+        <button class="btn-delete" id="periodDeleteBtn" type="button" hidden onclick="deletePeriodFromSheet()">删除</button>
+        <button class="btn-cancel" type="button" onclick="closeHealthModal('periodModal')">取消</button>
+        <button class="btn-save" type="button" onclick="savePeriod()">保存</button>
+      </div>
+    </div>
+  </div>
 </div>
 <script src="/static/theme.js?v=theme-20260606"></script>
 <script src="/static/common.js"></script>
+<script src="/static/health-weight-chart.js?v=20261110"></script>
 <script>
 const DT_HEALTH_HEART = 0x0506;
 const DT_HEALTH_BLOOD = 0x0508;
@@ -698,7 +888,7 @@ function renderMiBandStatus(status) {
   $('miBandRealtimeValue').textContent = Number(status.latest_heart_rate) > 0 ? status.latest_heart_rate : '--';
   const storedHeart = healthState.miBand && Number(healthState.miBand.latestHeartRate);
   const latestHeart = Number(status.latest_heart_rate) > 0 ? Number(status.latest_heart_rate) : storedHeart;
-  $('miBandLatestHeart').textContent = Number(latestHeart) > 0 ? `${latestHeart} bpm` : '-- bpm';
+  $('miBandLatestHeart').textContent = Number(latestHeart) > 0 ? String(latestHeart) : '--';
   $('miBandSyncResult').textContent = status.error
     ? status.error
     : status.last_sync_at > 0
@@ -723,6 +913,7 @@ function miBandConnect() {
   if (!window.AionMiBand) return showToast('请先安装包含手环模块的新 APK');
   if (!miBandState || !miBandState.configured) {
     $('miBandAdvanced').open = true;
+    $('miBandAdvanced').scrollIntoView({ behavior: 'smooth', block: 'start' });
     $('miBandAuthKey').focus();
     return showToast('首次请填写绑定密钥，然后扫描并选择手环');
   }
@@ -782,6 +973,7 @@ function miBandToggleScan() {
 function miBandReselect() {
   if (!window.AionMiBand) return showToast('当前 APK 没有手环模块');
   $('miBandAdvanced').open = true;
+  $('miBandAdvanced').scrollIntoView({ behavior: 'smooth', block: 'start' });
   miBandScanItems = [];
   renderMiBandScanResults();
   window.AionMiBand.reselectDevice();
@@ -854,6 +1046,7 @@ function renderMiBandSamples(items) {
     .sort((a, b) => Number(b.measured_at) - Number(a.measured_at))
     .slice(0, 20);
   $('miBandHistoryCount').textContent = `${rows.length}/20`;
+  $('miBandLatestHeartMeta').textContent = rows.length ? `最近一次 ${fmtTime(Number(rows[0].measured_at))}` : '';
   const list = $('miBandRecentList');
   if (!rows.length) {
     list.innerHTML = '<div class="heart-history-empty">暂无心率记录</div>';
@@ -874,13 +1067,13 @@ function renderMiBandSummary(summary) {
   $('miBandRecent30').textContent = `${Number(value.recent30ActivityMinutes || 0)} 分钟 · ${Number(value.recent30Steps || 0)} 步`;
   $('miBandRecent60').textContent = `${Number(value.recent60ActivityMinutes || 0)} 分钟 · ${Number(value.recent60Steps || 0)} 步`;
   $('miBandLatestHeart').textContent = Number(value.latestHeartRate) > 0
-    ? `${value.latestHeartRate} bpm` : '-- bpm';
+    ? String(value.latestHeartRate) : '--';
   const sleep = value.sleep;
   if (sleep) {
     $('miBandSleepTotal').textContent = fmtMin(Number(sleep.totalMin || 0));
     const primaryLabel = sleep.kind === 'nap' ? '小睡' : '主睡眠';
     $('miBandSleepRange').textContent = `${primaryLabel} ${fmtTime(sleep.startAt)} - ${fmtTime(sleep.endAt)}`;
-    $('miBandSleepMeta').textContent = `深睡 ${sleep.deepMin || 0}m · 浅睡 ${sleep.lightMin || 0}m · REM ${sleep.remMin || 0}m`;
+    renderSleepStages(sleep);
     $('miBandSleepSessions').innerHTML = (sleep.sessions || []).map(session => {
       const label = session.kind === 'nap' ? '小睡' : '主睡眠';
       return `<div class="sleep-session-item"><strong>${label}</strong><span>${fmtTime(session.startAt)} - ${fmtTime(session.endAt)} · ${fmtMin(Number(session.totalMin || 0))}</span></div>`;
@@ -889,6 +1082,7 @@ function renderMiBandSummary(summary) {
     $('miBandSleepTotal').textContent = '--';
     $('miBandSleepRange').textContent = '暂无手环睡眠';
     $('miBandSleepMeta').textContent = '深睡 -- · 浅睡 -- · REM --';
+    $('miBandSleepBar').hidden = true;
     $('miBandSleepSessions').innerHTML = '';
   }
   const recent = (value.recentHeartRates || []).map(item => {
@@ -903,7 +1097,8 @@ function todayStr() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
-function switchHealthTab(tab) {
+const HEALTH_TAB_KEY = 'aion_health_tab';
+function switchHealthTab(tab, persist = true) {
   const isRing = tab === 'ring';
   $('tabBody').classList.toggle('active', !isRing);
   $('tabRing').classList.toggle('active', isRing);
@@ -911,14 +1106,136 @@ function switchHealthTab(tab) {
   $('tabRing').setAttribute('aria-selected', String(isRing));
   $('healthTabBody').classList.toggle('active', !isRing);
   $('healthTabRing').classList.toggle('active', isRing);
+  if (persist) {
+    try { localStorage.setItem(HEALTH_TAB_KEY, isRing ? 'ring' : 'body'); } catch (e) {}
+  }
 }
-function openWeightModal() {
-  $('weightDate').value = $('weightDate').value || todayStr();
+function restoreHealthTab() {
+  let tab = 'body';
+  try { tab = localStorage.getItem(HEALTH_TAB_KEY) || 'body'; } catch (e) {}
+  if (tab === 'ring') switchHealthTab('ring', false);
+}
+
+function sortedWeights() {
+  return [...(healthState.weights || [])].sort((a, b) => b.date.localeCompare(a.date));
+}
+function weightForDate(ds) {
+  return (healthState.weights || []).find(w => w.date === ds) || null;
+}
+function previousWeightBefore(ds) {
+  return sortedWeights().find(w => w.date < ds) || null;
+}
+function shiftDateStr(ds, days) {
+  const [y, m, d] = ds.split('-').map(Number);
+  return dateToStr(new Date(y, m - 1, d + days));
+}
+
+let weightSheetExisting = null;
+function openWeightModal(date) {
+  weightSheetExisting = null;
+  $('weightValue').value = '';
+  fillWeightSheet(date || todayStr());
   openHealthModal('weightModal');
-  setTimeout(() => $('weightValue')?.focus(), 50);
 }
-function openPeriodModal() {
-  $('periodStart').value = $('periodStart').value || todayStr();
+function fillWeightSheet(ds, keepInput = false) {
+  const existing = weightForDate(ds);
+  const keep = keepInput && !existing && !weightSheetExisting && $('weightValue').value;
+  weightSheetExisting = existing;
+  $('weightDate').value = ds;
+  if (existing) {
+    $('weightValue').value = Number(existing.weight_kg).toFixed(1);
+    $('weightNote').value = existing.note || '';
+  } else if (!keep) {
+    const ref = previousWeightBefore(ds) || sortedWeights()[0];
+    $('weightValue').value = ref ? Number(ref.weight_kg).toFixed(1) : '';
+    $('weightNote').value = '';
+  }
+  $('weightModalTitle').textContent = existing ? '修改体重' : '记录体重';
+  const del = $('weightDeleteBtn');
+  del.hidden = !existing;
+  resetDeleteConfirm(del);
+  const prev = previousWeightBefore(ds);
+  $('weightLastHint').textContent = existing
+    ? `${fmtDate(ds)} 已记录 ${Number(existing.weight_kg).toFixed(1)} kg`
+    : prev ? `上次 ${Number(prev.weight_kg).toFixed(1)} kg · ${fmtDate(prev.date)}` : '第一次记录，直接输入体重';
+  const today = todayStr();
+  document.querySelectorAll('#weightModal [data-day-offset]').forEach(chip => {
+    chip.classList.toggle('active', shiftDateStr(today, -Number(chip.dataset.dayOffset)) === ds);
+  });
+}
+function setWeightDateOffset(offset) {
+  fillWeightSheet(shiftDateStr(todayStr(), -offset), true);
+}
+function onWeightDateChange() {
+  const ds = $('weightDate').value;
+  if (ds) fillWeightSheet(ds, true);
+}
+function stepWeight(delta) {
+  const input = $('weightValue');
+  const current = parseFloat(input.value);
+  const latest = sortedWeights()[0];
+  const base = Number.isFinite(current) ? current : (latest ? Number(latest.weight_kg) : 60);
+  const next = Math.min(500, Math.max(1, Math.round((base + delta) * 10) / 10));
+  input.value = next.toFixed(1);
+}
+function bindWeightStepper() {
+  document.querySelectorAll('[data-weight-step]').forEach(btn => {
+    const delta = Number(btn.dataset.weightStep);
+    let holdTimer = null;
+    let repeatTimer = null;
+    const stop = () => {
+      clearTimeout(holdTimer);
+      clearInterval(repeatTimer);
+      holdTimer = repeatTimer = null;
+    };
+    btn.addEventListener('pointerdown', ev => {
+      ev.preventDefault();
+      stepWeight(delta);
+      holdTimer = setTimeout(() => { repeatTimer = setInterval(() => stepWeight(delta), 90); }, 450);
+    });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(type => btn.addEventListener(type, stop));
+    btn.addEventListener('click', ev => {
+      if (ev.detail === 0) stepWeight(delta);
+    });
+  });
+}
+function armDelete(btn) {
+  if (btn.classList.contains('confirm')) {
+    resetDeleteConfirm(btn);
+    return true;
+  }
+  btn.classList.add('confirm');
+  btn.textContent = '确认删除';
+  clearTimeout(btn._confirmTimer);
+  btn._confirmTimer = setTimeout(() => resetDeleteConfirm(btn), 3000);
+  return false;
+}
+function resetDeleteConfirm(btn) {
+  clearTimeout(btn._confirmTimer);
+  btn.classList.remove('confirm');
+  btn.textContent = '删除';
+}
+
+let editingPeriodId = '';
+function latestPeriod() {
+  return [...(healthState.periods || [])].sort((a, b) => b.start_date.localeCompare(a.start_date))[0] || null;
+}
+function latestPeriodId() {
+  const item = latestPeriod();
+  return item ? item.id : '';
+}
+function openPeriodModal(id) {
+  const item = id ? (healthState.periods || []).find(p => p.id === id) : null;
+  editingPeriodId = item ? item.id : '';
+  $('periodModalTitle').textContent = item ? '修改姨妈期' : '记录姨妈期';
+  $('periodStart').value = item ? item.start_date : todayStr();
+  $('periodEnd').value = item ? (item.end_date || '') : '';
+  $('periodFlow').value = item ? (item.flow || '') : '';
+  $('periodSymptoms').value = item ? (item.symptoms || '') : '';
+  $('periodNote').value = item ? (item.note || '') : '';
+  const del = $('periodDeleteBtn');
+  del.hidden = !item;
+  resetDeleteConfirm(del);
   openHealthModal('periodModal');
 }
 function openHealthModal(id) {
@@ -931,6 +1248,10 @@ function closeHealthModal(id) {
   modal.classList.remove('show');
   modal.setAttribute('aria-hidden', 'true');
 }
+document.addEventListener('keydown', ev => {
+  if (ev.key !== 'Escape') return;
+  document.querySelectorAll('.health-modal.show').forEach(modal => closeHealthModal(modal.id));
+});
 async function openHeartConfigModal() {
   openHealthModal('heartConfigModal');
   if (!healthState.heartConfig) await loadHeartConfig();
@@ -1988,26 +2309,105 @@ function fmtHeartTime(ts) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+function fmtDelta(value) {
+  if (!Number.isFinite(value)) return '--';
+  if (Math.abs(value) < 0.05) return '持平';
+  return `${value > 0 ? '+' : '−'}${Math.abs(value).toFixed(1)} kg`;
+}
+
+function daysBetween(fromDs, toDs) {
+  const a = fromDs.split('-').map(Number);
+  const b = toDs.split('-').map(Number);
+  return Math.round((Date.UTC(b[0], b[1] - 1, b[2]) - Date.UTC(a[0], a[1] - 1, a[2])) / 86400000);
+}
+
+const WEIGHT_RANGE_KEY = 'aion_health_weight_range';
+const WEIGHT_RANGE_LABELS = { '7': '7天', '30': '30天', '90': '90天', all: '全部' };
+let weightRange = '30';
+let weightChart = null;
+
+function initWeightChart() {
+  try {
+    const saved = localStorage.getItem(WEIGHT_RANGE_KEY);
+    if (WEIGHT_RANGE_LABELS[saved]) weightRange = saved;
+  } catch (e) {}
+  syncWeightRangeButtons();
+  if (window.HealthWeightChart) {
+    weightChart = window.HealthWeightChart.create($('weightChart'), { onEdit: date => openWeightModal(date) });
+  }
+}
+
+function setWeightRange(range) {
+  if (!WEIGHT_RANGE_LABELS[range]) return;
+  weightRange = range;
+  try { localStorage.setItem(WEIGHT_RANGE_KEY, range); } catch (e) {}
+  syncWeightRangeButtons();
+  renderWeightChart();
+}
+
+function syncWeightRangeButtons() {
+  document.querySelectorAll('#weightRangeSeg [data-range]').forEach(btn => {
+    const on = btn.dataset.range === weightRange;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-pressed', String(on));
+  });
+}
+
+function renderWeightChart() {
+  const input = { weights: healthState.weights || [], periods: healthState.periods || [], range: weightRange, today: todayStr() };
+  let view = null;
+  if (weightChart) view = weightChart.update(input);
+  else if (window.HealthWeightChart) view = window.HealthWeightChart.computeView(input.weights, input.periods, input.range, input.today);
+  const stats = view && view.stats;
+  $('weightStatMin').textContent = stats ? stats.min.toFixed(1) : '--';
+  $('weightStatAvg').textContent = stats ? stats.avg.toFixed(1) : '--';
+  $('weightStatMax').textContent = stats ? stats.max.toFixed(1) : '--';
+  $('weightDeltaRange').textContent = stats && stats.change !== null
+    ? `${WEIGHT_RANGE_LABELS[weightRange]} ${fmtDelta(stats.change)}`
+    : '';
+  $('weightLegendBand').hidden = !(view && view.visible.length && view.bands.length);
+}
+
 function renderBodySummary() {
-  const latestWeight = [...(healthState.weights || [])].sort((a, b) => b.date.localeCompare(a.date))[0];
-  if (latestWeight) {
-    $('latestWeightValue').textContent = `${Number(latestWeight.weight_kg).toFixed(1)}kg`;
-    $('latestWeightMeta').textContent = `${fmtDate(latestWeight.date)}${latestWeight.note ? ' · ' + latestWeight.note : ''}`;
+  const weights = sortedWeights();
+  const latest = weights[0];
+  if (latest) {
+    $('latestWeightValue').textContent = Number(latest.weight_kg).toFixed(1);
+    $('latestWeightMeta').textContent = `${fmtDate(latest.date)}${latest.note ? ' · ' + latest.note : ''}`;
+    const prev = weights[1];
+    $('weightDeltaPrev').textContent = prev
+      ? `较上次 ${fmtDelta(Number(latest.weight_kg) - Number(prev.weight_kg))}`
+      : '第一条记录';
   } else {
     $('latestWeightValue').textContent = '--';
     $('latestWeightMeta').textContent = '暂无记录';
+    $('weightDeltaPrev').textContent = '较上次 --';
   }
+  renderWeightChart();
+  renderPeriodSummary();
+}
 
-  const latestPeriod = [...(healthState.periods || [])].sort((a, b) => b.start_date.localeCompare(a.start_date))[0];
-  if (latestPeriod) {
-    const end = latestPeriod.end_date || latestPeriod.start_date;
-    const days = Math.max(1, Math.round((new Date(end) - new Date(latestPeriod.start_date)) / 86400000) + 1);
-    $('latestPeriodValue').textContent = latestPeriod.end_date ? `${fmtShortDate(latestPeriod.start_date)}-${fmtShortDate(latestPeriod.end_date)}` : fmtShortDate(latestPeriod.start_date);
-    $('latestPeriodMeta').textContent = [`${days}天`, latestPeriod.flow && `量${latestPeriod.flow}`, latestPeriod.symptoms].filter(Boolean).join(' · ') || '无备注';
-  } else {
-    $('latestPeriodValue').textContent = '--';
-    $('latestPeriodMeta').textContent = '暂无记录';
+function renderPeriodSummary() {
+  const item = latestPeriod();
+  const value = $('latestPeriodValue');
+  if (!item) {
+    value.textContent = '--';
+    value.classList.remove('on');
+    $('latestPeriodMeta').textContent = '暂无记录，点 + 记录';
+    return;
   }
+  const today = todayStr();
+  const end = item.end_date || item.start_date;
+  const length = Math.max(1, daysBetween(item.start_date, end) + 1);
+  const ongoing = today >= item.start_date && today <= end;
+  value.classList.toggle('on', ongoing);
+  if (ongoing) value.textContent = `第 ${daysBetween(item.start_date, today) + 1} 天`;
+  else if (today < item.start_date) value.textContent = fmtShortDate(item.start_date);
+  else value.textContent = `${daysBetween(item.start_date, today)} 天前`;
+  const range = item.end_date
+    ? `${fmtShortDate(item.start_date)}–${fmtShortDate(item.end_date)}`
+    : `${fmtShortDate(item.start_date)} 起`;
+  $('latestPeriodMeta').textContent = [range, `${length}天`, item.flow && `量${item.flow}`, item.symptoms].filter(Boolean).join(' · ');
 }
 
 function renderStepStatus(status) {
@@ -2021,7 +2421,6 @@ function renderStepStatus(status) {
   if (status && status.updated_at) {
     const t = new Date(status.updated_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     meta.push(`更新 ${t}`);
-    $('bodyUpdatedAt').textContent = t;
   }
   $('todayStepsMeta').textContent = meta.join(' · ') || '等待手机同步';
 }
@@ -2103,30 +2502,26 @@ function handleHealthWs(msg) {
   if (msg.type === 'health_ring_diag' && msg.data) {
     renderRingDiag(msg.data);
   }
-  if (msg.type === 'health_weight_updated' && msg.data) {
-    healthState.weights = (healthState.weights || []).filter(w => w.date !== msg.data.date);
-    healthState.weights.unshift(msg.data);
-    renderBodySummary();
-    renderCalendar();
-  }
-  if (msg.type === 'health_period_updated' && msg.data) {
-    healthState.periods = (healthState.periods || []).filter(p => p.id !== msg.data.id);
-    healthState.periods.unshift(msg.data);
-    renderBodySummary();
-    renderCalendar();
-  }
+  if (msg.type === 'health_weight_updated' && msg.data) upsertWeightLocal(msg.data);
+  if (msg.type === 'health_weight_deleted' && msg.data) removeWeightLocal(msg.data.date);
+  if (msg.type === 'health_period_updated' && msg.data) upsertPeriodLocal(msg.data);
+  if (msg.type === 'health_period_deleted' && msg.data) removePeriodLocal(msg.data.id);
 }
 
 async function loadHealth() {
-  const data = await api('GET', '/api/health/summary');
+  const [data, weightList, periodList] = await Promise.all([
+    api('GET', '/api/health/summary'),
+    api('GET', '/api/health/weights?limit=1000').catch(() => null),
+    api('GET', '/api/health/periods?limit=200').catch(() => null)
+  ]);
   healthState = {
     ring: data.ring,
     miBand: data.miBand || null,
     heartRates: data.heartRates || [],
     heartConfig: data.heartConfig || healthState.heartConfig,
     heartEvents: data.heartEvents || [],
-    weights: data.weights || [],
-    periods: data.periods || [],
+    weights: (weightList && weightList.items) || data.weights || [],
+    periods: (periodList && periodList.items) || data.periods || [],
     location: healthState.location
   };
   renderRing(healthState.ring);
@@ -2139,25 +2534,69 @@ async function loadHealth() {
   await loadStepStatus();
 }
 
+function upsertWeightLocal(item) {
+  healthState.weights = (healthState.weights || []).filter(w => w.date !== item.date);
+  healthState.weights.unshift(item);
+  renderBodySummary();
+  renderCalendar();
+}
+
+function removeWeightLocal(date) {
+  healthState.weights = (healthState.weights || []).filter(w => w.date !== date);
+  renderBodySummary();
+  renderCalendar();
+}
+
+function upsertPeriodLocal(item) {
+  healthState.periods = (healthState.periods || []).filter(p => p.id !== item.id);
+  healthState.periods.unshift(item);
+  renderBodySummary();
+  renderCalendar();
+}
+
+function removePeriodLocal(id) {
+  healthState.periods = (healthState.periods || []).filter(p => p.id !== id);
+  renderBodySummary();
+  renderCalendar();
+}
+
 async function saveWeight() {
   const date = $('weightDate').value;
   const weight = parseFloat($('weightValue').value);
-  if (!date || !weight) return showToast('请填写日期和体重');
-  const item = await api('POST', '/api/health/weights', { date, weight_kg: weight, note: $('weightNote').value.trim() });
-  if (item.error) return showToast(item.error);
-  healthState.weights = healthState.weights.filter(w => w.date !== item.date);
-  healthState.weights.unshift(item);
-  $('weightNote').value = '';
-  renderBodySummary();
-  renderCalendar();
-  closeHealthModal('weightModal');
-  showToast('体重已保存');
+  if (!date || !Number.isFinite(weight) || weight <= 0) return showToast('请填写日期和体重');
+  const wasExisting = !!weightForDate(date);
+  try {
+    const item = await api('POST', '/api/health/weights', { date, weight_kg: weight, note: $('weightNote').value.trim() });
+    if (item.error) return showToast(item.error);
+    upsertWeightLocal(item);
+    closeHealthModal('weightModal');
+    showToast(wasExisting ? '体重已更新' : '体重已保存');
+  } catch (e) {
+    showToast(e.message || '保存失败');
+  }
+}
+
+async function deleteWeight() {
+  const date = $('weightDate').value;
+  if (!date || !weightForDate(date)) return;
+  if (!armDelete($('weightDeleteBtn'))) return;
+  try {
+    const r = await api('DELETE', `/api/health/weights/${encodeURIComponent(date)}`);
+    if (r && r.error) return showToast(r.error);
+    removeWeightLocal(date);
+    closeHealthModal('weightModal');
+    showToast('已删除这天的体重');
+  } catch (e) {
+    showToast(e.message || '删除失败');
+  }
 }
 
 function toggleCalendar() {
   const panel = $('calendarPanel');
-  panel.classList.toggle('show');
-  document.querySelector('.calendar-toggle').textContent = panel.classList.contains('show') ? '收起日历' : '展开日历';
+  const open = panel.classList.toggle('show');
+  const btn = document.querySelector('.calendar-toggle');
+  btn.textContent = open ? '收起' : '展开';
+  btn.setAttribute('aria-expanded', String(open));
 }
 
 function shiftMonth(delta) {
@@ -2170,7 +2609,8 @@ function renderCalendar() {
   const y = calendarDate.getFullYear();
   const m = calendarDate.getMonth();
   $('calendarTitle').textContent = `${y}年${m + 1}月`;
-  const weightMap = new Map(healthState.weights.map(w => [w.date, w]));
+  const weightMap = new Map((healthState.weights || []).map(w => [w.date, w]));
+  const today = todayStr();
   const weekdays = ['一','二','三','四','五','六','日'];
   let html = weekdays.map(d => `<div class="weekday">${d}</div>`).join('');
   const first = new Date(y, m, 1);
@@ -2180,19 +2620,29 @@ function renderCalendar() {
     const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
     const ds = dateToStr(d);
     const w = weightMap.get(ds);
-    const out = d.getMonth() !== m;
     const period = isPeriodDate(ds);
-    html += `<div class="day-cell ${out ? 'out' : ''}">
-      <div class="day-num">${d.getDate()}</div>
-      ${w ? `<div class="day-weight">${Number(w.weight_kg).toFixed(1)}kg</div>` : ''}
-      ${period ? '<div class="day-period"></div>' : ''}
-    </div>`;
+    const classes = ['day-cell', d.getMonth() !== m && 'out', period && 'period', ds === today && 'today'].filter(Boolean).join(' ');
+    const kg = w ? Number(w.weight_kg).toFixed(1) : '';
+    const label = `${ds}${kg ? ` 体重 ${kg} 公斤` : ''}${period ? ' 姨妈期' : ''}`;
+    html += `<button type="button" class="${classes}" data-date="${ds}" aria-label="${label}">
+      <span class="day-num">${d.getDate()}</span>
+      ${kg ? `<span class="day-weight">${kg}</span>` : ''}
+      ${period ? '<span class="day-period"></span>' : ''}
+    </button>`;
   }
   grid.innerHTML = html;
 }
 
+function onCalendarClick(ev) {
+  const cell = ev.target.closest('[data-date]');
+  if (!cell) return;
+  if (cell.dataset.date > todayStr()) return showToast('还没到这一天');
+  openWeightModal(cell.dataset.date);
+}
+
 async function savePeriod() {
   const body = {
+    id: editingPeriodId,
     start_date: $('periodStart').value,
     end_date: $('periodEnd').value,
     flow: $('periodFlow').value,
@@ -2200,26 +2650,58 @@ async function savePeriod() {
     note: $('periodNote').value.trim()
   };
   if (!body.start_date) return showToast('请选择开始日期');
-  const item = await api('POST', '/api/health/periods', body);
-  if (item.error) return showToast(item.error);
-  healthState.periods.unshift(item);
-  ['periodStart','periodEnd','periodSymptoms','periodNote'].forEach(id => $(id).value = '');
-  $('periodFlow').value = '';
-  renderBodySummary();
-  renderCalendar();
-  closeHealthModal('periodModal');
-  showToast('姨妈期已保存');
+  try {
+    const item = await api('POST', '/api/health/periods', body);
+    if (item.error) return showToast(item.error);
+    upsertPeriodLocal(item);
+    closeHealthModal('periodModal');
+    showToast(body.id ? '姨妈期已更新' : '姨妈期已保存');
+  } catch (e) {
+    showToast(e.message || '保存失败');
+  }
 }
 
 async function deletePeriod(id) {
-  await api('DELETE', `/api/health/periods/${id}`);
-  healthState.periods = healthState.periods.filter(p => p.id !== id);
-  renderBodySummary();
-  renderCalendar();
+  try {
+    const r = await api('DELETE', `/api/health/periods/${encodeURIComponent(id)}`);
+    if (r && r.error) {
+      showToast(r.error);
+      return false;
+    }
+    removePeriodLocal(id);
+    return true;
+  } catch (e) {
+    showToast(e.message || '删除失败');
+    return false;
+  }
+}
+
+async function deletePeriodFromSheet() {
+  if (!editingPeriodId) return;
+  if (!armDelete($('periodDeleteBtn'))) return;
+  if (await deletePeriod(editingPeriodId)) {
+    closeHealthModal('periodModal');
+    showToast('已删除这条姨妈期');
+  }
 }
 
 function isPeriodDate(ds) {
-  return healthState.periods.some(p => ds >= p.start_date && ds <= (p.end_date || p.start_date));
+  return (healthState.periods || []).some(p => ds >= p.start_date && ds <= (p.end_date || p.start_date));
+}
+
+function renderSleepStages(sleep) {
+  const stages = [
+    ['深睡', Number(sleep.deepMin || 0), 'var(--sleep-deep)'],
+    ['浅睡', Number(sleep.lightMin || 0), 'var(--sleep-light)'],
+    ['REM', Number(sleep.remMin || 0), 'var(--sleep-rem)']
+  ];
+  const total = stages.reduce((sum, stage) => sum + stage[1], 0);
+  const bar = $('miBandSleepBar');
+  bar.hidden = total <= 0;
+  bar.innerHTML = stages.filter(stage => stage[1] > 0)
+    .map(stage => `<span style="flex:${stage[1]};background:${stage[2]}" title="${stage[0]} ${fmtMin(stage[1])}"></span>`).join('');
+  $('miBandSleepMeta').innerHTML = stages
+    .map(stage => `<span><i style="background:${stage[2]}"></i>${stage[0]} ${fmtMin(stage[1])}</span>`).join('');
 }
 
 async function sendPacket(dataType, payload) {
@@ -2305,8 +2787,10 @@ async function refreshHealthShareSetting() {
 }
 
 (async function init() {
-  $('weightDate').value = todayStr();
-  $('periodStart').value = todayStr();
+  restoreHealthTab();
+  initWeightChart();
+  bindWeightStepper();
+  $('calendarGrid').addEventListener('click', onCalendarClick);
   await refreshHealthShareSetting();
   connectCommonWS(handleHealthWs);
   await loadHealth();

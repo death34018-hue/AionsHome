@@ -3,8 +3,17 @@ package com.aion.chat;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
 
 public class AttentionCallTest {
+    @Test public void warmCallOnlyReusesTheLoadedChatShellOnTheSameServer() {
+        String target = "https://home.test/chatroom?room=group";
+        assertTrue(WebViewLaunchPolicy.canReuseChatShell("https://home.test/chat?conv=first", target));
+        assertFalse(WebViewLaunchPolicy.canReuseChatShell("https://home.test/login", target));
+        assertFalse(WebViewLaunchPolicy.canReuseChatShell("https://other.test/chat", target));
+        assertFalse(WebViewLaunchPolicy.canReuseChatShell("http://home.test/chat", target));
+    }
     @Test
     public void routesBothLiveAndBackgroundCommandsToTheirSourceConversation() {
         assertEquals("/chat?conv=private-1", AttentionCall.conversationPath("private", "private-1"));

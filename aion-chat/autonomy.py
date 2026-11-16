@@ -43,6 +43,7 @@ ACTION_DEFS = {
     "home_dynamics": "查看近期家庭动态",
     "memory_browse": "按需翻看一段旧记忆",
     "album_browse": "翻看家庭相册（随机两张未看过的照片）",
+    "book_read": "自主阅读（从陪伴阅读选一本书，读一个小段）",
     "web_roam": "上网冲浪搜索感兴趣的内容",
     "wish_pool": "查看许愿池并尝试实现用户的愿望",
     "xhs_roam": "去小红书查看指定账号最新帖子并按人设评论或回复",
@@ -76,7 +77,7 @@ SEEKY_EVENT_PHRASES = {
 def get_idle_config() -> dict[str, Any]:
     actions = SETTINGS.get("idle_autonomy_actions")
     if not isinstance(actions, dict):
-        actions = {key: key != "album_browse" for key in ACTION_DEFS}
+        actions = {key: key not in {"album_browse", "book_read"} for key in ACTION_DEFS}
     old_interval = max(5, int(SETTINGS.get("idle_autonomy_interval_minutes", 120) or 120))
     min_minutes = max(5, int(SETTINGS.get("idle_autonomy_interval_min_minutes", old_interval) or old_interval))
     max_minutes = max(5, int(SETTINGS.get("idle_autonomy_interval_max_minutes", old_interval) or old_interval))
@@ -91,7 +92,7 @@ def get_idle_config() -> dict[str, Any]:
         "interval_min_minutes": min_minutes,
         "interval_max_minutes": max_minutes,
         "next_delay_minutes": next_delay,
-        "actions": {key: bool(actions.get(key, key != "album_browse")) for key in ACTION_DEFS},
+        "actions": {key: bool(actions.get(key, key not in {"album_browse", "book_read"})) for key in ACTION_DEFS},
     }
 
 
@@ -354,9 +355,16 @@ async def _latest_connor_room_id() -> str | None:
     return row["id"] if row else None
 
 
-async def _latest_conversation() -> tuple[str, str] | tuple[None, str]:
+async def _latest_conversation(*, prefer_user: bool = False) -> tuple[str, str] | tuple[None, str]:
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
+        if prefer_user:
+            row = await (await db.execute("""
+                SELECT c.id, c.model FROM messages m JOIN conversations c ON c.id=m.conv_id
+                WHERE m.role='user' ORDER BY m.created_at DESC LIMIT 1
+            """)).fetchone()
+            if row:
+                return row["id"], row["model"] or DEFAULT_MODEL
         cur = await db.execute("SELECT id, model FROM conversations ORDER BY updated_at DESC LIMIT 1")
         row = await cur.fetchone()
     if row:
@@ -601,6 +609,12 @@ async def _select_action(actor: str, *, manual: bool = False, idle_minutes: int 
     if "album_browse" in enabled:
         if not await asyncio.to_thread(get_album_store().has_unseen_photos, actor):
             enabled.remove("album_browse")
+    reading_choices = []
+    if "book_read" in enabled:
+        from autonomy_reading import shelf, shelf_prompt
+        reading_choices = await shelf(actor)
+        if not reading_choices:
+            enabled.remove("book_read")
     if "billiards_play" in enabled:
         try:
             from billiards.companionship import available_for_autonomy
@@ -647,6 +661,13 @@ async def _select_action(actor: str, *, manual: bool = False, idle_minutes: int 
     if not enabled:
         return {"action": "rest", "reason": "当前没有可执行的已启用事件，本次休息。", "message": ""}
     options = "\n".join(f"- {key}: {ACTION_DEFS[key]}" for key in enabled)
+    if reading_choices:
+        options += "\n" + shelf_prompt(reading_choices)
+    reading_field = ',"book":"选择 book_read 时填写书架编号"' if reading_choices else ''
+    from capabilities import is_capability_enabled
+    from chat_web_cards import PROMPT as WEB_CARD_PROMPT
+    if 'private_chat' in enabled and is_capability_enabled('web_cards'):
+        options += '\nprivate_chat 的 message ' + WEB_CARD_PROMPT
     try:
         niche_index = await recent_niche_index(actor, limit=6)
     except Exception:
@@ -675,7 +696,8 @@ async def _select_action(actor: str, *, manual: bool = False, idle_minutes: int 
         "请直接以你自身人格像平时聊天一样自然完整地表达，由你决定篇幅、段落和表达形式；"
         "可以有符合平时习惯的内心活动，但不要机械套模板，不要写成行动说明，也不要刻意压短。"
         "其他动作的 message 留空。\n"
-        '格式：{"action":"上面的key之一","reason":"选择这个动作的理由","message":"聊天动作要实际发送的完整正文，其他动作为空"}'
+        '格式：{"action":"上面的key之一","reason":"选择这个动作的理由","message":"聊天动作要实际发送的完整正文，其他动作为空"'
+        + reading_field + '}'
     )
     try:
         data = await _ask_actor_json(actor, instruction)
@@ -688,6 +710,13 @@ async def _select_action(actor: str, *, manual: bool = False, idle_minutes: int 
     action = raw_action
     if action not in enabled:
         return fallback
+    if action == "book_read":
+        number = data.get("book")
+        if isinstance(number, str) and number in {str(i) for i in range(1, len(reading_choices) + 1)}:
+            number = int(number)
+        if type(number) is not int or not 1 <= number <= len(reading_choices):
+            return fallback
+        return {"action": action, "reason": str(data.get("reason") or ""), "reading": reading_choices[number - 1]}
     message = data.get("message")
     message = message.strip() if isinstance(message, str) else ""
     if action in {"private_chat", "role_chat"} and not message:
@@ -720,13 +749,17 @@ async def _save_aion_private_message(
     attachments: list | None = None,
     *,
     auto_tts: bool = True,
+    reading_notice: str = "",
 ) -> dict | None:
     content = (content or "").strip()
     if not content:
         return None
     now = time.time()
-    conv_id, model = await _latest_conversation()
-    att_list = await _with_link_previews(content, attachments or [])
+    conv_id, model = await _latest_conversation(prefer_user=bool(reading_notice))
+    from chat_web_cards import split_reply
+    from capabilities import is_capability_enabled
+    content, web_card = split_reply(content, enabled=is_capability_enabled('web_cards'))
+    att_list = await _with_link_previews(content, list(attachments or []) + ([web_card] if web_card else []))
     content = strip_urls_for_message(content)
     async with get_db() as db:
         if not conv_id:
@@ -736,7 +769,7 @@ async def _save_aion_private_message(
                 (conv_id, "空闲消息", model or DEFAULT_MODEL, now, now),
             )
         await db.commit()
-    msg_id = f"msg_{int(now * 1000)}_idle"
+    msg_id = f"msg_{time.time_ns()}_idle"
     from capabilities import process_pat_commands
     content = await process_pat_commands(
         content, source_type="private", source_id=conv_id,
@@ -747,7 +780,11 @@ async def _save_aion_private_message(
         content, source_type="private", source_id=conv_id,
         sender="aion", source_msg_id=msg_id,
     )
+    notice_event = None
     async with get_db() as db:
+        if reading_notice:
+            from autonomy_reading import insert_reading_notice
+            notice_event = await insert_reading_notice(db, reading_notice, msg_id, now, conv_id=conv_id)
         await db.execute(
             "INSERT INTO messages (id, conv_id, role, content, created_at, attachments) VALUES (?,?,?,?,?,?)",
             (msg_id, conv_id, "assistant", content, now, json.dumps(att_list, ensure_ascii=False)),
@@ -755,6 +792,8 @@ async def _save_aion_private_message(
         await db.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now, conv_id))
         await db.commit()
     msg = {"id": msg_id, "conv_id": conv_id, "role": "assistant", "content": content, "created_at": now, "attachments": att_list}
+    if notice_event:
+        await manager.broadcast(notice_event)
     await manager.broadcast({"type": "msg_created", "data": msg})
     if auto_tts and manager.any_tts_enabled():
         voice = manager.get_tts_voice()
@@ -847,10 +886,13 @@ async def _run_web_roam(actor: str) -> dict:
 
 async def _run_web_journey(actor: str, session_id: str):
     from autonomy_journey import run_web_journey
+    from image_anchors import family_image_prompt, resolve_chat_references
     from image_gen import generate_image
 
+    portrait_hint = await family_image_prompt(actor) if SETTINGS.get("image_gen_enabled", False) else ""
+
     async def ask_json(prompt: str) -> dict:
-        return await _ask_actor_json(actor, prompt)
+        return await _ask_actor_json(actor, prompt + portrait_hint)
 
     async def search(query: str) -> list[str]:
         return await run_web_commands([query], [])
@@ -861,11 +903,9 @@ async def _run_web_journey(actor: str, session_id: str):
     async def make_image(prompt: str) -> str | None:
         if not SETTINGS.get("image_gen_enabled", False):
             return None
-        return await generate_image(
-            prompt,
-            is_selfie="自拍" in prompt,
-            source_identity=actor,
-        )
+        is_selfie = "自拍" in prompt
+        scene, references = await resolve_chat_references(prompt, is_selfie, actor, family_only=True)
+        return await generate_image(scene, is_selfie=is_selfie, source_identity=actor, references=references)
 
     return await run_web_journey(
         actor=actor,
@@ -886,6 +926,11 @@ async def _save_autonomy_chatroom_message(room_id, sender, content, **kwargs):
     from compositions import COMPOSE_CMD_PATTERN, process_compositions
     from routes.chatroom import _save_msg
 
+    from chat_web_cards import split_reply
+    from capabilities import is_capability_enabled
+    content, web_card = split_reply(content, enabled=is_capability_enabled('web_cards'))
+    if web_card:
+        kwargs['attachments'] = list(kwargs.get('attachments') or []) + [web_card]
     if PAT_COMMAND_PATTERN.search(content or ""):
         msg_id = kwargs.setdefault("msg_id", f"cm_{time.time_ns()}_{sender[:1]}")
         content = await process_pat_commands(
@@ -908,7 +953,9 @@ async def _save_private_message(
     *,
     force_private: bool = False,
     auto_tts: bool = True,
+    reading_notice: str = "",
 ) -> dict | None:
+    notice_args = {"reading_notice": reading_notice} if reading_notice else {}
     if actor == "aion":
         if not force_private:
             target = manager.get_aion_last_active()
@@ -921,17 +968,22 @@ async def _save_private_message(
                         content,
                         attachments=attachments or [],
                         auto_tts=auto_tts,
+                        **notice_args,
                     )
         return await _save_aion_private_message(
             content,
             attachments,
             auto_tts=auto_tts,
+            **notice_args,
         )
     if force_private:
         from routes.chatroom import _get_or_create_connor_private_room
         room_id = await _get_or_create_connor_private_room()
     else:
         room_id = manager.get_connor_last_active() or await _latest_connor_room_id()
+        if not room_id and reading_notice:
+            from routes.chatroom import _get_or_create_connor_private_room
+            room_id = await _get_or_create_connor_private_room()
     if not room_id:
         return None
     return await _save_autonomy_chatroom_message(
@@ -940,6 +992,7 @@ async def _save_private_message(
         content,
         attachments=attachments or [],
         auto_tts=auto_tts,
+        **notice_args,
     )
 
 
@@ -1238,7 +1291,8 @@ async def _run_seeky_interaction(actor: str) -> dict:
 async def _run_role_chat(actor: str, selected: dict | None = None) -> dict:
     from routes.chatroom import _load_room_and_messages, _reply_aion, _reply_connor, _save_msg
 
-    room_id = await _latest_group_room_id()
+    selected = selected or {}
+    room_id = selected.get("room_id") or await _latest_group_room_id()
     if not room_id:
         raise RuntimeError("没有可用的群聊房间")
     target = "connor" if actor == "aion" else "aion"
@@ -1247,14 +1301,18 @@ async def _run_role_chat(actor: str, selected: dict | None = None) -> dict:
     message = str((selected or {}).get("message") or "").strip()
     if not message:
         raise RuntimeError("role_chat 动作没有生成可发送的消息")
-    await _save_autonomy_chatroom_message(room_id, actor, message)
+    notice_args = {"reading_notice": selected["reading_notice"]} if selected.get("reading_notice") else {}
+    await _save_autonomy_chatroom_message(room_id, actor, message, **notice_args)
+    from chat_web_cards import BLOCK
+    message = BLOCK.sub('', message).strip()
     room, msgs = await _load_room_and_messages(room_id, 50)
     queue: asyncio.Queue = asyncio.Queue()
     context_limit = room.get("context_minutes", 30) if room else 30
+    context_args = {"reading_context": selected["reading_context"]} if selected.get("reading_context") else {}
     if target == "aion":
-        await _reply_aion(room_id, msgs, context_limit, message, await _aion_model(), queue)
+        await _reply_aion(room_id, msgs, context_limit, message, await _aion_model(), queue, **context_args)
     else:
-        await _reply_connor(room_id, msgs, context_limit, message, queue, connor_model_key=_connor_model())
+        await _reply_connor(room_id, msgs, context_limit, message, queue, connor_model_key=_connor_model(), **context_args)
     event = await append_idle_event(
         actor, "role_chat", f"{actor_name}在群聊里找{target_name}主动聊了起来",
         message, target_type="chatroom", target_id=room_id,
@@ -2208,6 +2266,12 @@ async def _run_actor_once(actor: str, *, manual: bool = False, idle_minutes: int
             result = await _run_memory_browse(actor)
         elif action == "album_browse":
             result = await _run_album_browse(actor)
+        elif action == "book_read":
+            from autonomy_reading import read_one
+            if (await get_actor_config(actor))['actions'].get('book_read'):
+                result = await read_one(actor, selected['reading'])
+            else:
+                result = {'skipped': '自主阅读已关闭'}
         elif action == "home_dynamics":
             result = await _run_home_dynamics(actor)
         elif action == "web_roam":
@@ -2265,6 +2329,14 @@ async def _run_actor_once(actor: str, *, manual: bool = False, idle_minutes: int
     if outcome in {"round_limit", "failed", "no_direction", "tool_failed"}:
         title = f"{actor_name}的这次旅行没有完成"
     detail_parts = trace or [selected.get("reason", "")]
+    if action == "book_read":
+        title = f"{actor_name}这次没有读书"
+        if result.get('title'):
+            title = f"{actor_name}读了《{result['title']}》的《{result['chapter']}》第{result['index'] + 1}段"
+            shared = result.get('shared', False)
+            detail_parts = [f"本章已读 {result['done']}/{result['total']} 段", result['summary'], result.get('share_error', '')]
+        elif result.get('skipped'):
+            detail_parts = [result['skipped']]
     if action == "taobao_roam" and ok:
         detail_parts = [result.get("message", "")]
         if not result.get("keyword"):

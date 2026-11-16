@@ -322,18 +322,53 @@ def _compute_segments(paragraphs: List[str]) -> list:
         segments.append(dict(start_p=start, end_p=end - 1,
                              char_count=offsets[end] - offsets[start], status='not_sent'))
         start = end
-    return segments
+    return [part for segment in segments for part in split_long_paragraphs(paragraphs, segment)]
 
 
-def build_annotate_text(paragraphs: List[str], start_p: int, end_p: int) -> str:
+def split_long_paragraphs(paragraphs, segment):
+    """Keep paragraph IDs used by highlights, images and annotations stable."""
+    start, end = segment['start_p'], segment['end_p']
+    if 'start_offset' in segment or not any(len(p) > SEGMENT_MAX_CHARS for p in paragraphs[start:end + 1]):
+        return [segment]
+    pieces = []
+    for index in range(start, end + 1):
+        text = paragraphs[index]
+        if len(text) <= SEGMENT_MAX_CHARS:
+            continue
+        if start < index:
+            pieces.append(dict(segment, start_p=start, end_p=index-1, char_count=sum(map(len, paragraphs[start:index]))))
+        offset = 0
+        while offset < len(text):
+            remaining = len(text) - offset
+            count = (remaining + SEGMENT_MAX_CHARS - 1) // SEGMENT_MAX_CHARS
+            cut = offset + (remaining + count - 1) // count
+            if count > 1:
+                low = max(offset, len(text) - (count - 1) * SEGMENT_MAX_CHARS - 1, cut - 201)
+                boundary = max(text.rfind(stop, low, cut) for stop in '。！？.!?')
+                if boundary >= low:
+                    cut = boundary + 1
+            pieces.append(dict(segment, start_p=index, end_p=index, start_offset=offset,
+                               end_offset=cut, char_count=cut-offset))
+            offset = cut
+        start = index + 1
+    if start <= end:
+        pieces.append(dict(segment, start_p=start, end_p=end, char_count=sum(map(len, paragraphs[start:end+1]))))
+    return pieces
+
+
+def segment_paragraphs(paragraphs, segment):
+    pieces = paragraphs[segment['start_p']:segment['end_p'] + 1]
+    if 'start_offset' in segment:
+        return [pieces[0][segment['start_offset']:segment['end_offset']]]
+    return pieces
+
+
+def build_annotate_text(paragraphs: List[str], start_p: int, end_p: int, segment=None) -> str:
     """
     构建发送给 AI 批注的段落文本，每段带 【P{n}】 编号标记。
     """
-    lines = []
-    for i in range(start_p, end_p + 1):
-        if i < len(paragraphs):
-            lines.append(f"【P{i}】{paragraphs[i]}")
-    return '\n\n'.join(lines)
+    pieces = segment_paragraphs(paragraphs, segment or {'start_p': start_p, 'end_p': end_p})
+    return '\n\n'.join(f"【P{i}】{text}" for i, text in enumerate(pieces, start_p))
 
 
 def delete_book_files(book_id: str):

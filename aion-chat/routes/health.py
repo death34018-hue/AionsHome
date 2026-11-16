@@ -691,6 +691,7 @@ async def delete_weight(entry_date: str):
     async with get_db() as db:
         await db.execute("DELETE FROM health_weight_entries WHERE date=?", (entry_date,))
         await db.commit()
+    await manager.broadcast({"type": "health_weight_deleted", "data": {"date": entry_date}})
     return {"ok": True}
 
 
@@ -759,4 +760,5 @@ async def delete_period(entry_id: str):
     async with get_db() as db:
         await db.execute("DELETE FROM health_period_entries WHERE id=?", (entry_id,))
         await db.commit()
+    await manager.broadcast({"type": "health_period_deleted", "data": {"id": entry_id}})
     return {"ok": True}

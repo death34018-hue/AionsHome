@@ -36,6 +36,8 @@ const CR_SYNC_SEQ_KEY = 'aion_sync_seq_v1:chatroom';
 let crSettingsDirtyAt = 0;
 let crSettingsLoadingRoomId = null;
 let crSyncReplayPromise = null;
+let crSyncRetryTimer = null;
+let crSyncRetryDelay = 1000;
 let crRoomMessageLoad = null;
 let crRoomMessageGeneration = 0;
 let crRenderedRoomId = null;
@@ -105,7 +107,17 @@ let crAmbientBufferExpanded = false;
 let crAmbientLastCheckAt = 0;
 let crAmbientWakePendingUntil = 0;
 let crAmbientEvaluating = false;
+let crAmbientPendingWake = null;
 let crAmbientDiscardSegment = false;
+let crAmbientCaptureEpoch = 0;
+let crAmbientSoundBridge = null;
+let crAmbientSoundSession = '';
+let crAmbientSpeechSegments = null;
+let crAmbientTimeline = null;
+let crAmbientTimelineRoom = '';
+let crAmbientTimelineTimer = null;
+let crAmbientTranscriptionQueue = Promise.resolve();
+let crAmbientTranscribeController = null;
 let crAmbientPausedForTts = false;
 let crAmbientTtsResumeTimer = null;
 let crAmbientLastUserToggleAt = 0;
@@ -168,6 +180,15 @@ window.AionPat?.bind({
     if (message.room_id !== currentRoom?.id) return;
     if (!messagesEl.querySelector(`[data-msg-id="${message.id}"]`)) appendMessage(message);
   },
+});
+window.FamilyDynamicsInline?.attach({
+  container: document.getElementById('messages'),
+  rowClass: 'system-event-msg',
+  lineClass: 'system-event-line',
+  getTimestamp: id => crMessagesById[id]?.created_at,
+  getQuery: () => currentRoom
+    ? `who=${currentRoom.type === 'connor_1v1' ? 'connor' : 'group'}&limit=${currentRoom.context_limit || currentRoom.context_minutes || 30}`
+    : '',
 });
 
 function applyChatroomNames(cfg = {}) {
@@ -468,7 +489,10 @@ function crTtsPlaybackAllowed() {
   return window.AionTtsAudio?.isForeground?.() !== false;
 }
 
-window.onAionAppForegroundChanged = () => crSendTTSState();
+window.onAionAppForegroundChanged = active => {
+  crSendTTSState();
+  if (active) crAmbientSyncRunning().catch(() => {});
+};
 
 function crCurrentTTSVoice() {
   return crTtsAionVoice || crTtsConnorVoice || '';
@@ -804,6 +828,7 @@ let crReplayChunks = [];
 let crReplayIdx = 0;
 let crReplayToken = 0;
 let crReplayDiscoverPromise = null;
+let crReplayActive = false;
 
 async function crReplayTTS(msgId, triggerBtn = null) {
   const btn = triggerBtn || document.querySelector(`[data-msg-id="${msgId}"] .tts-replay-btn`);
@@ -813,16 +838,21 @@ async function crReplayTTS(msgId, triggerBtn = null) {
     btn.classList.remove('playing');
     crReplayToken++;
     crReplayDiscoverPromise = null;
+    crReplayActive = false;
+    crReplayAudio.endSpeech?.();
     crAmbientResumeAfterTts(500);
     return;
   }
   crReplayAudio.pause(); crReplayChunks = [];
+  crReplayAudio.endSpeech?.();
   document.querySelectorAll('.tts-replay-btn.playing').forEach(b => b.classList.remove('playing'));
 
   const token = ++crReplayToken;
   crReplayChunks = [`/api/tts/audio/${msgId}_s0`];
   crReplayIdx = 0;
   if (btn) btn.classList.add('playing');
+  crReplayActive = true;
+  crReplayAudio.beginSpeech?.();
   crAmbientPauseForTts();
 
   // 先在用户点击同步链路里立刻播放 s0，避免多次 HEAD 后丢失浏览器播放许可。
@@ -855,6 +885,8 @@ async function crDiscoverLegacyReplayChunks(msgId) {
 function crFinishReplay(btn) {
   if (btn) btn.classList.remove('playing');
   crReplayDiscoverPromise = null;
+  crReplayActive = false;
+  crReplayAudio.endSpeech?.();
   crAmbientResumeAfterTts();
 }
 
@@ -868,7 +900,7 @@ function _crPlayReplayChunk(btn, token = crReplayToken) {
         if (token !== crReplayToken) return;
         if (crReplayIdx < crReplayChunks.length) _crPlayReplayChunk(btn, token);
         else crFinishReplay(btn);
-      }).catch(() => crFinishReplay(btn));
+      }).catch(() => { if (token === crReplayToken) crFinishReplay(btn); });
       return;
     }
     crFinishReplay(btn);
@@ -879,9 +911,9 @@ function _crPlayReplayChunk(btn, token = crReplayToken) {
   crReplayAudio.onended = () => { crReplayIdx++; _crPlayReplayChunk(btn, token); };
   crReplayAudio.onerror = () => { crReplayIdx++; _crPlayReplayChunk(btn, token); };
   crReplayAudio.play().catch((err) => {
+    if (token !== crReplayToken) return;
     crReportAudioPlayFailure('replay chunk', err, crReplayAudio);
-    if (btn) btn.classList.remove('playing');
-    crAmbientResumeAfterTts(500);
+    crFinishReplay(btn);
   });
 }
 
@@ -1095,6 +1127,104 @@ function crAmbientNativeBridge() {
   return null;
 }
 
+function crAmbientSoundNativeBridge() {
+  try { return _getNativeBridge('AionAmbientSound'); } catch { return null; }
+}
+
+function crAmbientTtsIsPlaying() {
+  if (_ttsEngine?.playing || _ttsEngine?.playOrder?.length) return true;
+  if (typeof crReplayActive !== 'undefined' && crReplayActive) return true;
+  if (typeof crReplayAudio !== 'undefined' && crReplayAudio && !crReplayAudio.paused && !crReplayAudio.ended) return true;
+  try { return !!crAmbientSoundNativeBridge()?.isTtsPlaying(); } catch { return false; }
+}
+
+window._ambientTtsChanged = speaking => {
+  if (speaking) crAmbientPauseForTts();
+  else crAmbientResumeAfterTts();
+};
+try { if (window.top !== window) window.top._ambientTtsChanged = window._ambientTtsChanged; } catch {}
+
+function crAmbientGetTimeline() {
+  const room = currentRoom?.id || '';
+  if (!crAmbientTimeline || room !== crAmbientTimelineRoom) {
+    let saved = [];
+    try { saved = JSON.parse(sessionStorage.getItem(`ambient-timeline:${room}`) || '[]'); } catch {}
+    crAmbientTimeline = AionAmbientTimeline.createTimeline(Date.now, Array.isArray(saved) ? saved : []);
+    crAmbientTimelineRoom = room;
+    crAmbientLastCheckAt = Date.now();
+  }
+  return crAmbientTimeline;
+}
+
+function crAmbientRecordEvent(event) {
+  const log = crAmbientGetTimeline();
+  log.add(event);
+  crAmbientUpdateBufferView();
+}
+
+function crAmbientStartTimelineTimer() {
+  if (crAmbientTimelineTimer) return;
+  crAmbientGetTimeline();
+  crAmbientTimelineTimer = setInterval(() => {
+    crAmbientUpdateBufferView();
+    if (crAmbientCanRun() && crAmbientIsCapturing()) crAmbientMaybeEvaluate();
+  }, 1000);
+}
+
+async function crAmbientMaybeEvaluate() {
+  if (!crAmbientCanRun() || crAmbientEvaluating || crAmbientWakePendingUntil > Date.now()) return;
+  const pending = crAmbientGetTimeline().events().filter(e => (e.recordedAt || e.end) > crAmbientLastCheckAt);
+  crAmbientTranscriptBuffer = pending.filter(e => e.kind === 'speech').map(e => e.text);
+  const chars = crAmbientTranscriptBuffer.join('').length;
+  const dueByTime = pending.length && Date.now() - crAmbientLastCheckAt >= crAmbientIntervalSec * 1000;
+  if (chars >= crAmbientMinChars || dueByTime) {
+    await crAmbientEvaluate(crAmbientTranscriptBuffer.join('\n'), false);
+  }
+}
+
+function crAmbientStartSoundCapture(bridge) {
+  crAmbientUseNative = true;
+  crAmbientSoundBridge = bridge;
+  const session = `${crAmbientClientId}:${++crAmbientCaptureEpoch}`;
+  crAmbientSoundSession = session;
+  crAmbientSpeechSegments = AionAmbientTimeline.createSpeechSegments(clip => {
+    crAmbientQueueBlob(_crBuildWav(clip.chunks), (clip.end - clip.start) / 1000, clip.start, clip.end);
+  });
+  window._ambientSoundOnFrame = event => {
+    if (event.id !== crAmbientSoundSession || !crAmbientCanRun()) return;
+    if (event.type === 'error') {
+      crAmbientStop(false);
+      crAmbientSetStatus(event.message || '声音识别失败', 'err');
+      return;
+    }
+    if (event.type === 'ready') { crAmbientSetStatus('手机侦听中', 'on'); return; }
+    if (event.type !== 'frame') return;
+    if (AionAmbientTimeline.labels[event.kind] && event.kind !== 'speech') crAmbientRecordEvent(event);
+    crAmbientSpeechSegments.push(event);
+    crAmbientSetStatus(AionAmbientTimeline.labels[event.kind] || '手机侦听中', 'on');
+  };
+  try { if (window.top !== window) window.top._ambientSoundOnFrame = window._ambientSoundOnFrame; } catch {}
+  if (!bridge.start(session)) {
+    crAmbientSoundSession = '';
+    crAmbientSoundBridge = null;
+    crAmbientUseNative = false;
+    crAmbientSetStatus(crAmbientTtsIsPlaying() ? 'TTS播放中' : '麦克风被占用', 'warn');
+    return false;
+  }
+  crAmbientStartTimelineTimer();
+  crAmbientSetStatus('声音模型准备中', 'on');
+  return true;
+}
+
+function crAmbientQueueBlob(blob, duration, start, end) {
+  const epoch = crAmbientCaptureEpoch;
+  const room = currentRoom?.id;
+  crAmbientTranscriptionQueue = crAmbientTranscriptionQueue.catch(() => {}).then(() => {
+    if (epoch !== crAmbientCaptureEpoch || room !== currentRoom?.id || !crAmbientCanRun() || end < Date.now() - 300000) return;
+    return crAmbientHandleBlob(blob, duration, start, end);
+  });
+}
+
 function crAmbientIsMobileLike() {
   return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '');
 }
@@ -1115,6 +1245,9 @@ function crAmbientDesired() {
 }
 
 function crAmbientIsCapturing() {
+  if (crAmbientSoundBridge) {
+    try { return crAmbientSoundBridge.isRunning(); } catch { return false; }
+  }
   return !!crAmbientStream || !!crAmbientUseNative;
 }
 
@@ -1261,7 +1394,7 @@ function crAmbientScheduleResumeRetry(attempt = 1) {
   }
   crAmbientResumeRetryTimer = setTimeout(async () => {
     crAmbientResumeRetryTimer = null;
-    if (crAmbientPausedForTts || _ttsEngine?.playing) return;
+  if (crAmbientPausedForTts || crAmbientTtsIsPlaying()) return;
     if (!crAmbientDesired() || !crAmbientOwned || crAmbientIsCapturing()) return;
     crAmbientSetStatus('恢复侦听中', 'warn');
     await crAmbientSyncRunning({ resumeAfterTts: true });
@@ -1273,12 +1406,12 @@ function crAmbientScheduleResumeRetry(attempt = 1) {
 
 function crAmbientResumeAfterTts(delayMs = 1200) {
   if (!crAmbientPausedForTts) return;
-  if (_ttsEngine?.playing) return;
+  if (crAmbientTtsIsPlaying()) return;
   if (typeof crReplayAudio !== 'undefined' && crReplayAudio && !crReplayAudio.paused && !crReplayAudio.ended) return;
   if (crAmbientTtsResumeTimer) clearTimeout(crAmbientTtsResumeTimer);
   crAmbientTtsResumeTimer = setTimeout(async () => {
     crAmbientTtsResumeTimer = null;
-    if (!crAmbientPausedForTts) return;
+    if (!crAmbientPausedForTts || crAmbientTtsIsPlaying()) return;
     crAmbientPausedForTts = false;
     if (crAmbientDesired() && crAmbientOwned) {
       crAmbientSetStatus('恢复侦听中', 'warn');
@@ -1296,7 +1429,7 @@ function crAmbientSetStatus(text, cls = '') {
 }
 
 function crAmbientBufferText() {
-  return crAmbientTranscriptBuffer.join('\n').trim();
+  return crAmbientGetTimeline().text();
 }
 
 function crAmbientUpdateBufferView() {
@@ -1304,14 +1437,14 @@ function crAmbientUpdateBufferView() {
   const previewEl = document.getElementById('crAmbientBufferPreview');
   const toggleEl = document.getElementById('crAmbientBufferToggle');
   const text = crAmbientBufferText();
-  const chars = crAmbientTranscriptBuffer.join('').length;
-  const count = crAmbientTranscriptBuffer.length;
-  if (metaEl) metaEl.textContent = `${chars} 字 / ${count} 段`;
+  const events = crAmbientGetTimeline().events();
+  try { sessionStorage.setItem(`ambient-timeline:${crAmbientTimelineRoom}`, JSON.stringify(events)); } catch {}
+  if (metaEl) metaEl.textContent = `${events.length} 条`;
   if (toggleEl) toggleEl.textContent = crAmbientBufferExpanded ? '收起' : '查看';
   if (!previewEl) return;
   previewEl.classList.toggle('show', crAmbientBufferExpanded);
   previewEl.classList.toggle('empty', !text);
-  previewEl.textContent = text || '暂无待检查片段';
+  previewEl.textContent = text || '暂无声音记录';
 }
 
 function crToggleAmbientBufferView() {
@@ -1320,11 +1453,13 @@ function crToggleAmbientBufferView() {
 }
 
 function crClearAmbientBuffer() {
+  crAmbientGetTimeline().clear();
+  crAmbientLastCheckAt = Date.now();
   crAmbientTranscriptBuffer = [];
   crAmbientWakePendingUntil = 0;
   crAmbientUpdateBufferView();
   if (crAmbientCanRun()) crAmbientSetStatus('侦听中', 'on');
-  toast('待检查片段已清空');
+  toast('声音记录已清空');
 }
 
 function crAmbientReadInputs(options = {}) {
@@ -1403,7 +1538,7 @@ async function crOnAmbientVoiceToggle() {
 }
 
 function crAmbientCanRun() {
-  return crAmbientDesired() && crAmbientOwned;
+  return crAmbientDesired() && crAmbientOwned && !crAmbientPausedForTts && !crAmbientTtsIsPlaying();
 }
 
 async function crAmbientSyncRunning(options = {}) {
@@ -1432,7 +1567,8 @@ async function crAmbientSyncRunning(options = {}) {
     crAmbientUpdateToggleView();
     return;
   }
-  if (crAmbientPausedForTts || _ttsEngine?.playing) {
+  if (crAmbientPausedForTts || crAmbientTtsIsPlaying()) {
+    crAmbientPausedForTts = true;
     crAmbientSetStatus('TTS播放中', 'warn');
     return;
   }
@@ -1446,6 +1582,8 @@ async function crAmbientSyncRunning(options = {}) {
 async function crAmbientStart() {
   if (_crVoiceRecording || _crVoiceFinishing) return;
   if (crAmbientIsCapturing() || !crAmbientCanRun()) return;
+  const soundBridge = crAmbientSoundNativeBridge();
+  if (soundBridge) { crAmbientStartSoundCapture(soundBridge); return; }
   const bridge = crAmbientNativeBridge();
   if (bridge) {
     if (crAmbientStartNative(bridge)) return;
@@ -1459,7 +1597,7 @@ async function crAmbientStart() {
     crAmbientStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
-    if (_crVoiceRecording || _crVoiceFinishing) {
+    if (_crVoiceRecording || _crVoiceFinishing || !crAmbientCanRun()) {
       crAmbientStream.getTracks().forEach(track => track.stop());
       crAmbientStream = null;
       return;
@@ -1476,6 +1614,7 @@ async function crAmbientStart() {
     crAmbientSetStatus('侦听中', 'on');
     crAmbientUpdateToggleView();
     crAmbientMonitor();
+    crAmbientStartTimelineTimer();
   } catch (e) {
     console.warn('[AmbientVoice] start failed:', e);
     crAmbientStop(false);
@@ -1505,6 +1644,7 @@ function crAmbientStartNative(bridge) {
   crAmbientUpdateBufferView();
   crAmbientSetStatus('手机侦听中', 'on');
   crAmbientUpdateToggleView();
+  crAmbientStartTimelineTimer();
   return true;
 }
 
@@ -1569,12 +1709,25 @@ function crAmbientStopNativeSegment(updateStatus = true) {
   crAmbientNativeRecording = false;
   crAmbientNativeSegmentChunks = [];
   if (!discard && chunks.length) {
-    crAmbientHandleBlob(_crBuildWav(chunks), duration);
+    crAmbientQueueBlob(_crBuildWav(chunks), duration, crAmbientSegmentStartedAt, Date.now());
   }
   if (updateStatus) crAmbientSetStatus(crAmbientWakePendingUntil > Date.now() ? '即时侦听' : '侦听中', 'on');
 }
 
 function crAmbientStop(updateStatus = true) {
+  crAmbientCaptureEpoch++;
+  crAmbientPendingWake = null;
+  crAmbientTranscribeController?.abort();
+  crAmbientTranscribeController = null;
+  crAmbientSoundSession = '';
+  crAmbientSpeechSegments?.reset();
+  if (crAmbientSoundBridge) {
+    try { crAmbientSoundBridge.stop(); } catch {}
+    crAmbientSoundBridge = null;
+    crAmbientUseNative = false;
+  }
+  if (crAmbientTimelineTimer) { clearInterval(crAmbientTimelineTimer); crAmbientTimelineTimer = null; }
+  window.AionLocalVoice?.cancelTranscriptions?.();
   if (crAmbientVadTimer) {
     clearTimeout(crAmbientVadTimer);
     crAmbientVadTimer = null;
@@ -1675,7 +1828,7 @@ function crAmbientStartSegment() {
       const discard = crAmbientDiscardSegment;
       crAmbientChunks = [];
       crAmbientMediaRecorder = null;
-      if (!discard) crAmbientHandleBlob(blob, duration);
+      if (!discard) crAmbientQueueBlob(blob, duration, crAmbientSegmentStartedAt, Date.now());
     };
     crAmbientSegmentStartedAt = Date.now();
     crAmbientSilenceStartedAt = 0;
@@ -1697,28 +1850,44 @@ function crAmbientStopSegment() {
   crAmbientSetStatus(crAmbientWakePendingUntil > Date.now() ? '即时侦听' : '侦听中', 'on');
 }
 
-async function crAmbientHandleBlob(blob, duration) {
+async function crAmbientHandleBlob(blob, duration, start = Date.now() - duration * 1000, end = Date.now()) {
   if (!crAmbientCanRun() || duration < 0.55 || !blob || blob.size < 800) return;
+  const epoch = crAmbientCaptureEpoch;
+  const room = currentRoom?.id;
+  const controller = new AbortController();
+  crAmbientTranscribeController = controller;
   crAmbientSetStatus('识别中', 'on');
-  const text = await crAmbientTranscribe(blob);
-  if (!text) {
-    crAmbientSetStatus('侦听中', 'on');
-    return;
+  try {
+    const text = await crAmbientTranscribe(blob, controller.signal);
+    if (epoch !== crAmbientCaptureEpoch || room !== currentRoom?.id || !crAmbientCanRun()) return;
+    if (!text) {
+      crAmbientSetStatus('侦听中', 'on');
+      return;
+    }
+    await crAmbientHandleTranscript(text, start, end);
+  } catch (error) {
+    if (epoch === crAmbientCaptureEpoch && crAmbientCanRun()) {
+      crAmbientSetStatus(error.message || '转写失败', 'err');
+    }
+  } finally {
+    if (crAmbientTranscribeController === controller) crAmbientTranscribeController = null;
   }
-  await crAmbientHandleTranscript(text);
 }
 
-async function crAmbientTranscribe(blob) {
+async function crAmbientTranscribe(blob, signal) {
+  if (window.AionLocalVoice?.enabled()) return window.AionLocalVoice.transcribeBlob(blob);
   const ext = blob.type.includes('wav') ? 'wav' : (blob.type.includes('mp4') ? 'mp4' : 'webm');
   for (let i = 0; i < 2; i++) {
+    signal?.throwIfAborted();
     try {
       const fd = new FormData();
       fd.append('file', blob, `ambient.${ext}`);
-      const resp = await fetch('/api/voice/transcribe', { method: 'POST', body: fd });
+      const resp = await fetch('/api/voice/transcribe', { method: 'POST', body: fd, signal });
       const data = await resp.json();
       const text = (data.text || '').trim();
       if (text) return text;
     } catch (e) {
+      if (signal?.aborted) throw e;
       console.warn(`[AmbientVoice] ASR attempt ${i + 1} failed:`, e);
     }
   }
@@ -1747,10 +1916,18 @@ function crAmbientRemoveWakeWord(text) {
   return text.replaceAll(wake, '').replace(/\s+/g, ' ').trim();
 }
 
-async function crAmbientHandleTranscript(text) {
+async function crAmbientHandleTranscript(text, start = Date.now(), end = start) {
   const cleaned = text.replace(/\s+/g, ' ').trim();
   if (!cleaned || !crAmbientCanRun()) return;
-  if (crAmbientTextHasStopWord(cleaned)) {
+  const isWakeWord = crAmbientTextHasWakeWord(cleaned);
+  const isStopWord = crAmbientTextHasStopWord(cleaned);
+  const spoken = cleaned.replace(/[\s\p{P}\p{S}]/gu, '');
+  if (!isWakeWord && !isStopWord && (!spoken || /^[嗯恩唔哦噢喔呃额啊呀哎诶欸唉]+$/.test(spoken))) {
+    crAmbientSetStatus(crAmbientWakePendingUntil > Date.now() ? '即时侦听' : '侦听中', 'on');
+    return;
+  }
+  crAmbientRecordEvent({ kind: 'speech', text: cleaned, start, end });
+  if (isStopWord) {
     const wasPending = crAmbientWakePendingUntil > Date.now();
     crAmbientWakePendingUntil = 0;
     crAmbientTranscriptBuffer = [];
@@ -1762,7 +1939,7 @@ async function crAmbientHandleTranscript(text) {
     }
     return;
   }
-  if (crAmbientTextHasWakeWord(cleaned)) {
+  if (isWakeWord) {
     const rest = crAmbientRemoveWakeWord(cleaned);
     crAmbientTranscriptBuffer = [];
     crAmbientUpdateBufferView();
@@ -1780,28 +1957,21 @@ async function crAmbientHandleTranscript(text) {
     return;
   }
 
-  crAmbientTranscriptBuffer.push(cleaned);
-  while (crAmbientTranscriptBuffer.join('').length > 2200) crAmbientTranscriptBuffer.shift();
-  crAmbientUpdateBufferView();
-  const total = crAmbientTranscriptBuffer.join('').length;
-  const dueByChars = total >= crAmbientMinChars;
-  const dueByTime = total >= 80 && Date.now() - crAmbientLastCheckAt >= crAmbientIntervalSec * 1000;
-  crAmbientSetStatus(`累计 ${total}`, 'on');
-  if (dueByChars || dueByTime) {
-    const transcript = crAmbientTranscriptBuffer.join('\n');
-    crAmbientTranscriptBuffer = [];
-    crAmbientUpdateBufferView();
-    await crAmbientEvaluate(transcript, false);
-  }
+  await crAmbientMaybeEvaluate();
 }
 
 async function crAmbientEvaluate(transcript, forced) {
-  if (!currentRoom || currentRoom.type !== 'group' || crAmbientEvaluating) return;
+  if (!currentRoom || currentRoom.type !== 'group') return;
+  if (crAmbientEvaluating) {
+    if (forced) crAmbientPendingWake = { transcript, room: currentRoom.id, epoch: crAmbientCaptureEpoch };
+    return;
+  }
   if (!crAmbientOwned) {
     crAmbientSetStatus('等待接管', 'warn');
     return;
   }
   crAmbientEvaluating = true;
+  const room = currentRoom.id;
   crAmbientLastCheckAt = Date.now();
   crAmbientSetStatus(forced ? '唤醒中' : '筛选中', forced ? 'warn' : 'on');
   const src = crAmbientSourceInfo();
@@ -1812,6 +1982,8 @@ async function crAmbientEvaluate(transcript, forced) {
       body: JSON.stringify({
         transcript,
         forced,
+        events: crAmbientGetTimeline().events(),
+        utc_offset_minutes: -new Date().getTimezoneOffset(),
         listener_client_id: crAmbientClientId,
         listener_source: src.source,
         listener_label: src.label,
@@ -1823,6 +1995,7 @@ async function crAmbientEvaluate(transcript, forced) {
       }),
     });
     const result = await resp.json();
+    if (currentRoom?.id !== room) return;
     if (result.debug) crHandleDebug(result.debug);
     if (result.triggered) {
       const speakerName = crName(result.speaker);
@@ -1841,6 +2014,11 @@ async function crAmbientEvaluate(transcript, forced) {
     crAmbientSetStatus('筛选失败', 'err');
   } finally {
     crAmbientEvaluating = false;
+    const pending = crAmbientPendingWake;
+    crAmbientPendingWake = null;
+    if (pending && pending.room === currentRoom?.id && pending.epoch === crAmbientCaptureEpoch && crAmbientCanRun()) {
+      await crAmbientEvaluate(pending.transcript, true);
+    }
   }
 }
 
@@ -1911,12 +2089,13 @@ function crBuildTokenHtml(u) {
       parts.push(`<span class="tok-label">输出:</span><span class="tok-value">${raw.candidatesTokenCount || 0}</span>`);
       if (raw.toolUsePromptTokenCount) parts.push(`<span class="tok-label">工具:</span><span class="tok-value">${raw.toolUsePromptTokenCount}</span>`);
       parts.push(`<span class="tok-label">总计:</span><span class="tok-value">${raw.totalTokenCount || 0}</span>`);
-    } else if ('prompt_tokens' in raw) {
-      parts.push(`<span class="tok-label">输入:</span><span class="tok-value">${raw.prompt_tokens || 0}</span>`);
+    } else if ('prompt_tokens' in raw || 'completion_tokens_details' in raw) {
+      parts.push(`<span class="tok-label">输入:</span><span class="tok-value">${raw.prompt_tokens ?? u.prompt_tokens ?? 0}</span>`);
       if (raw.prompt_tokens_details?.cached_tokens) parts.push(`<span class="tok-label">缓存:</span><span class="tok-value tok-cached">${raw.prompt_tokens_details.cached_tokens}</span>`);
-      parts.push(`<span class="tok-label">输出:</span><span class="tok-value">${raw.completion_tokens || 0}</span>`);
-      if (raw.completion_tokens_details?.reasoning_tokens) parts.push(`<span class="tok-label">推理:</span><span class="tok-value tok-thinking">${raw.completion_tokens_details.reasoning_tokens}</span>`);
-      parts.push(`<span class="tok-label">总计:</span><span class="tok-value">${raw.total_tokens || 0}</span>`);
+      parts.push(`<span class="tok-label">输出:</span><span class="tok-value">${raw.completion_tokens ?? u.completion_tokens ?? 0}</span>`);
+      const reasoning = raw.completion_tokens_details?.reasoning_tokens;
+      if (reasoning > 0) parts.push(`<span class="tok-label">推理:</span><span class="tok-value tok-thinking">${reasoning}</span>`);
+      parts.push(`<span class="tok-label">总计:</span><span class="tok-value">${raw.total_tokens ?? u.total_tokens ?? 0}</span>`);
     } else if ('input_tokens' in raw || 'output_tokens' in raw) {
       const input = raw.input_tokens || 0;
       const output = raw.output_tokens || 0;
@@ -2464,11 +2643,18 @@ async function crRerollIntimacyPreview() {
   }
 }
 
+function openAttentionRoom(roomId) {
+  if (!currentRoom || (roomId && !rooms.some(room => room.id === roomId))) return false;
+  if (roomId && currentRoom.id !== roomId) selectRoom(roomId);
+  return true;
+}
+
 async function selectRoom(roomId) {
   document.getElementById('chatroomReplyPreparation')?.remove();
   const room = rooms.find(r => r.id === roomId);
   if (!room) return;
   if (currentRoom?.id !== roomId) {
+    crAmbientStop(false);
     crSystemLogs = [];
     ++crLogLoadVersion;
     crCloseSystemLog();
@@ -3048,7 +3234,7 @@ function crMessageContentItemsWithInlinePats(raw, isUser, notices, attachments) 
   const parts = window.KitchenCards?.contentParts(raw,notices,attachments)
     || window.AionPat?.interleaveContent(raw,notices) || [{type:'text',text:raw}];
   for (const part of parts) {
-    if (part.type === 'kitchen_lookup') items.push(part);
+    if (part.type === 'kitchen_lookup' || part.type === 'web_card') items.push(part);
     else if (part.type === 'notice') items.push({type: 'pat_notice', message: part.message});
     else items.push(...crMessageContentItems(part.text, isUser));
   }
@@ -3122,7 +3308,7 @@ const CR_MESSAGE_SPECIAL_TOKEN_RE = /(\[\[image:\S+?\]\]|\[转账(?:给[^\uff1a:
 function crMarkdownMessageHtml(raw, isUser = false) {
   const text = String(raw || '');
   const renderMarkdown = value => window.ChatroomMarkdown
-    ? window.ChatroomMarkdown.render(value, { indentLineBreaks: !isUser })
+    ? window.ChatroomMarkdown.render(value, { chatParagraphs: true, indentLineBreaks: !isUser })
     : `<p>${isUser ? escWithTransfer(value) : escWithImages(value)}</p>`;
   let html = '';
   let lastIndex = 0;
@@ -3151,6 +3337,7 @@ function crRenderMessageItems(items, { sender, name, avatar, msgId, msg, fmt, is
   });
   const contentHtml = items.map(item => item.type === 'kitchen_lookup'
     ? window.KitchenCards.lookupHTML(item.lookup,name)
+    : item.type === 'web_card' ? window.ChatWebCards.render([item.card])
     : item.type === 'pat_notice'
     ? msgHTML(item.message)
     : item.type === 'monologue'
@@ -3873,8 +4060,14 @@ function appendTyping(who) {
   if (existing) existing.remove();
   const div = document.createElement('div');
   div.className = 'typing-indicator';
-  div.textContent = `${who} 回复中...`;
+  div.innerHTML = '<span class="typing-status"></span> <span class="typing-elapsed">0秒</span>';
+  div.querySelector('.typing-status').textContent = `${who} 回复中...`;
   messagesEl.appendChild(div);
+  const startedAt = Date.now();
+  const timer = setInterval(() => {
+    if (!div.isConnected) { clearInterval(timer); return; }
+    div.querySelector('.typing-elapsed').textContent = `${Math.floor((Date.now() - startedAt) / 1000)}秒`;
+  }, 1000);
   scrollToBottom();
 }
 
@@ -3885,14 +4078,15 @@ function updateTypingStatus(who, statusText, lookup) {
       pendingStreamSender = null;
       pendingStreamId = null;
     }
-    streamingLookup = lookup;
+    if (lookup.type === 'web_card_pending') streamingWebCard = lookup;
+    else streamingLookup = lookup;
     renderStreamingLookup();
     scrollToBottom();
     return;
   }
-  if (streamingLookup) return;
+  if (streamingLookup || streamingWebCard) return;
   if (!messagesEl.querySelector('.typing-indicator')) appendTyping(who);
-  messagesEl.querySelector('.typing-indicator').textContent =
+  messagesEl.querySelector('.typing-indicator .typing-status').textContent =
     statusText.startsWith(who) ? statusText : `${who} ${statusText}`;
 }
 
@@ -3962,12 +4156,14 @@ function crHandleSongGenStart(data) {
 let streamingBubble = null;
 let streamingText = '';
 let streamingLookup = null;
+let streamingWebCard = null;
 let pendingStreamSender = null;
 let pendingStreamId = null;
 
 function startStreamingBubble(sender, id) {
   streamingText = '';
   streamingLookup = null;
+  streamingWebCard = null;
   const name = crName(sender);
   const avatar = AVATARS[sender] || AVATARS.user;
   const liveContentClass = sender === 'user' ? 'bubble markdown-body' : 'ai-message-content markdown-body';
@@ -4011,16 +4207,17 @@ function feedStreamingChunk(text) {
   if (!streamingBubble) return;
   messagesEl.querySelector('.typing-indicator')?.remove();
   streamingText += text;
-  if (streamingLookup) renderStreamingLookup();
+  if (streamingLookup || streamingWebCard) renderStreamingLookup();
   else streamingBubble.textContent = crStripScheduleCommands(streamingText);
   scrollToBottom();
 }
 
 function renderStreamingLookup() {
   if (!streamingBubble) return;
-  const parts = window.KitchenCards.contentParts(crStripScheduleCommands(streamingText),[],[streamingLookup]);
+  const parts = window.KitchenCards.contentParts(crStripScheduleCommands(streamingText),[],[streamingLookup,streamingWebCard]);
   streamingBubble.innerHTML = parts.map(part => part.type === 'kitchen_lookup'
     ? window.KitchenCards.lookupHTML(part.lookup,crName(part.lookup.actor))
+    : part.type === 'web_card' ? window.ChatWebCards.render([part.card])
     : `<span style="white-space:pre-wrap">${esc(part.text)}</span>`).join('');
 }
 
@@ -4033,6 +4230,7 @@ function resetStreamingBubble(sender) {
   streamingBubble = null;
   streamingText = '';
   streamingLookup = null;
+  streamingWebCard = null;
   pendingStreamSender = sender;
   pendingStreamId = streamId;
   appendTyping(crName(sender));
@@ -4041,6 +4239,7 @@ function resetStreamingBubble(sender) {
 function endStreamingBubble(messageOrAttachments) {
   const lookup = streamingLookup;
   streamingLookup = null;
+  streamingWebCard = null;
   messagesEl.querySelector('.typing-indicator')?.remove();
   crMessageRevision++;
   // 先获取流式行的引用（后面 replaceChild 可能破坏 streamingBubble 的 DOM 位置）
@@ -4253,7 +4452,7 @@ function handleSSE(data) {
       pendingStreamId = data.id;
       break;
     case 'aion_status':
-      updateTypingStatus(crName('aion'), data.text, data.kitchen_lookup);
+      updateTypingStatus(crName('aion'), data.text, data.kitchen_lookup || data.web_card);
       break;
     case 'aion_chunk':
       if (pendingStreamSender && !streamingBubble) {
@@ -4282,7 +4481,7 @@ function handleSSE(data) {
       pendingStreamId = data.id;
       break;
     case 'connor_status':
-      updateTypingStatus(crName('connor'), data.text, data.kitchen_lookup);
+      updateTypingStatus(crName('connor'), data.text, data.kitchen_lookup || data.web_card);
       break;
     case 'connor_chunk':
       if (pendingStreamSender && !streamingBubble) {
@@ -5776,25 +5975,38 @@ function crApplyReplayedSyncEvent(event) {
     || event.type === 'chatroom_msg_updated';
 }
 
+function crScheduleSyncRetry(delay = crSyncRetryDelay) {
+  if (crSyncRetryTimer != null) return;
+  crSyncRetryTimer = setTimeout(() => {
+    crSyncRetryTimer = null;
+    crReconcileSyncEvents();
+  }, delay);
+  crSyncRetryDelay = Math.min(crSyncRetryDelay * 2, 30000);
+}
+
 async function crReconcileSyncEvents() {
   if (crSyncReplayPromise) return crSyncReplayPromise;
+  clearTimeout(crSyncRetryTimer);
+  crSyncRetryTimer = null;
   crSyncReplayPromise = (async () => {
     let after = Number(localStorage.getItem(CR_SYNC_SEQ_KEY) || 0);
     let refreshMessages = false;
+    let more = false;
     for (let batch = 0; batch < 20; batch++) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10000);
-      let response;
+      let result;
       try {
-        response = await fetch(`/api/sync/changes?after=${after}&limit=200`, { signal: controller.signal, cache: 'no-store' });
+        const response = await fetch(`/api/sync/changes?after=${after}&limit=200`, { signal: controller.signal, cache: 'no-store' });
+        if (!response.ok) throw new Error(`sync HTTP ${response.status}`);
+        result = await response.json();
       } finally {
         clearTimeout(timer);
       }
-      if (!response.ok) throw new Error(`sync HTTP ${response.status}`);
-      const result = await response.json();
       if (result.reset_required) {
         refreshMessages = true;
         after = Number(result.latest_seq || 0);
+        more = false;
         break;
       }
       const events = Array.isArray(result.events) ? result.events : [];
@@ -5802,18 +6014,24 @@ async function crReconcileSyncEvents() {
         refreshMessages = crApplyReplayedSyncEvent(event) || refreshMessages;
         after = Math.max(after, Number(event.sync_seq || 0));
       });
-      if (!result.has_more || !events.length) break;
+      more = !!result.has_more && events.length > 0;
+      if (!more) break;
     }
     if (refreshMessages && currentRoom) {
       // Start after replay: an earlier foreground request may have captured
       // the database before the events we just received.
       const refreshed = await refreshCurrentChatroomFromServer({ force: true });
-      if (!refreshed) return;
+      if (!refreshed) throw new Error('sync refresh incomplete');
     }
     // Only advance the replay cursor after the missing changes are reconciled.
     // Live WS events cannot advance it past an offline gap.
     localStorage.setItem(CR_SYNC_SEQ_KEY, String(after));
-  })().catch(e => console.warn('[chatroom sync] reconcile failed:', e))
+    crSyncRetryDelay = 1000;
+    if (more) crScheduleSyncRetry(0);
+  })().catch(e => {
+    console.warn('[chatroom sync] reconcile failed:', e);
+    crScheduleSyncRetry();
+  })
     .finally(() => { crSyncReplayPromise = null; });
   return crSyncReplayPromise;
 }
@@ -5823,8 +6041,11 @@ function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${proto}//${location.host}/ws`);
   crWs = ws;
+  crSocketRecovery.connecting(ws);
 
   ws.onopen = () => {
+    if (crWs !== ws) return;
+    crSocketRecovery.opened(ws);
     ws.send(JSON.stringify({ type: 'register_client', client_id: crAmbientClientId }));
     crSendTTSState();
     ws.send(JSON.stringify({ type: 'ping' }));
@@ -5832,10 +6053,11 @@ function connectWS() {
   };
 
   ws.onmessage = (e) => {
-    if (crWs !== ws) return;
+    if (crWs !== ws || crSocketRecovery.received(ws) === false) return;
     try {
       const data = JSON.parse(e.data);
       if (crNativeMessages?.observe(data) === false) return;
+      if (data.type === 'chat_ambience') { window.AionChatAmbience?.applyRemote(data.data); return; }
       if (data.type === 'generation_stopped') { _crControl.remoteStop(data.data); return; }
       if (!_crControl.accepts(data)) return;
       if (data.data?.room_id === currentRoom?.id
@@ -5974,15 +6196,22 @@ function connectWS() {
 
   ws.onclose = () => {
     if (crWs !== ws) return;
-    _ttsEngine.connectionLost();
+    crSocketRecovery.closed(ws);
     crWs = null;
-    setTimeout(connectWS, 3000);
   };
-  ws.onerror = () => ws.close();
+  ws.onerror = () => { try { ws.close(); } finally { crSocketRecovery.closed(ws); } };
 }
 
+const crSocketRecovery = createSocketRecovery({ getSocket: () => crWs, connect: connectWS,
+  onDisconnect: () => _ttsEngine.connectionLost() });
+window.aionCheckSocket = () => crSocketRecovery.check();
+window.addEventListener('online', window.aionCheckSocket);
+
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') crReconcileSyncEvents();
+  if (document.visibilityState === 'visible') {
+    window.aionCheckSocket();
+    crReconcileSyncEvents();
+  }
 });
 
 // ══════════════════════════════════════════════════
@@ -6392,85 +6621,9 @@ function cancelImageLongPress() {
   imageLongPressState = null;
 }
 
-function closeImageSaveMenu() {
-  document.querySelector('.image-save-menu-overlay')?.remove();
-}
-
 function showImageSaveMenu(url) {
-  if (!url) return;
   cancelImageLongPress();
-  closeImageSaveMenu();
-  const overlay = document.createElement('div');
-  overlay.className = 'image-save-menu-overlay';
-  const sheet = document.createElement('div');
-  sheet.className = 'image-save-menu';
-
-  const saveBtn = document.createElement('button');
-  saveBtn.type = 'button';
-  saveBtn.className = 'primary';
-  saveBtn.textContent = '保存图片';
-  saveBtn.addEventListener('click', () => {
-    closeImageSaveMenu();
-    saveImage(url);
-  });
-
-  const viewBtn = document.createElement('button');
-  viewBtn.type = 'button';
-  viewBtn.textContent = '查看大图';
-  viewBtn.addEventListener('click', () => {
-    closeImageSaveMenu();
-    openImageViewer(url);
-  });
-
-  const cancelBtn = document.createElement('button');
-  cancelBtn.type = 'button';
-  cancelBtn.textContent = '取消';
-  cancelBtn.addEventListener('click', closeImageSaveMenu);
-
-  sheet.append(saveBtn, viewBtn, window.ChatImageAlbum.createButton(url), cancelBtn);
-  overlay.appendChild(sheet);
-  overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) closeImageSaveMenu();
-  });
-  document.body.appendChild(overlay);
-  requestAnimationFrame(() => overlay.classList.add('active'));
-}
-
-function getImageSaverBridge() {
-  try {
-    if (typeof _getNativeBridge === 'function') return _getNativeBridge('AionImageSaver');
-  } catch (e) {}
-  try { if (window.AionImageSaver) return window.AionImageSaver; } catch (e) {}
-  try { if (window.parent && window.parent.AionImageSaver) return window.parent.AionImageSaver; } catch (e) {}
-  try { if (window.top && window.top.AionImageSaver) return window.top.AionImageSaver; } catch (e) {}
-  return null;
-}
-
-function saveImage(url) {
-  fetch(url)
-    .then(r => r.blob())
-    .then(blob => {
-      const saver = getImageSaverBridge();
-      if (saver) {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64 = reader.result.split(',')[1];
-          const filename = url.split('/').pop() || 'image.png';
-          saver.save(base64, filename);
-        };
-        reader.readAsDataURL(blob);
-        return;
-      }
-      const blobUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = blobUrl;
-      a.download = url.split('/').pop() || 'image.png';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-    })
-    .catch(() => window.open(url, '_blank'));
+  ChatImagePreview.showSaveMenu(url, openImageViewer);
 }
 
 function crSafeHttpUrl(value) {
@@ -6636,7 +6789,7 @@ function openImageViewer(src, img) {
   const group = img?.closest('.chat-image-group');
   const images = group ? [...group.querySelectorAll('img')] : [];
   window.AionImageViewer.open(images.length ? images.map(ChatImagePreview.original) : [src], Math.max(0, images.indexOf(img)), {
-    onSave: saveImage, onLongPress: showImageSaveMenu,
+    onLongPress: showImageSaveMenu,
   });
 }
 

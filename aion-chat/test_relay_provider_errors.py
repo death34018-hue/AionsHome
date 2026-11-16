@@ -127,6 +127,49 @@ class RelayProviderErrorPassthroughTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(''.join(chunks), 'last')
         self.assertEqual(meta['total_tokens'], 7)
 
+    async def test_gemini_thought_summaries_flow_through_both_routes(self):
+        import ai_providers
+
+        frames = [
+            {'candidates': [{'content': {'parts': [{'thought': True, 'text': '先整理场景。'}]}}]},
+            {'candidates': [{'content': {'parts': [{'thought': True, 'text': '再衔接对白。'}, {'text': '小说正文'}]},
+                             'finishReason': 'STOP'}], 'usageMetadata': {'totalTokenCount': 20}},
+        ]
+        for provider in ('gemini', 'vertex'):
+            for level in (None, 'low', 'medium', 'high'):
+                with self.subTest(provider=provider, level=level):
+                    route = {'provider': provider, 'model': 'gemini-4-argon'}
+                    if level is not None:
+                        route['thinking_level'] = level
+                    factory = fake_client_factory(FakeStreamResponse(
+                        lines=['data: ' + json.dumps(frame) for frame in frames]))
+                    raw_call = getattr(ai_providers, 'call_' + provider).__wrapped__
+                    meta = {}
+                    with (
+                        patch.dict(ai_providers.MODELS, {'test-thinking': route}),
+                        patch.object(ai_providers, 'call_' + provider, raw_call),
+                        patch('ai_providers._vertex_endpoint', return_value=('https://vertex.example/stream', {})),
+                        patch('ai_providers.httpx.AsyncClient', new=factory),
+                    ):
+                        chunks = [chunk async for chunk in ai_providers.stream_ai(
+                            [{'role': 'user', 'content': '写一章'}], 'test-thinking', meta,
+                            max_tokens=24000, include_device_context=False, include_thoughts=True)]
+                    self.assertEqual(sum(isinstance(chunk, StreamActivity) for chunk in chunks), 2)
+                    self.assertEqual(''.join(chunks), '小说正文')
+                    self.assertEqual(meta['reasoning_content'], '先整理场景。再衔接对白。')
+                    config = factory.clients[0].calls[0][1]['json']['generationConfig']
+                    expected = {'includeThoughts': True}
+                    if level is not None:
+                        expected['thinkingLevel'] = level.upper()
+                    self.assertEqual(config, {'maxOutputTokens': 24000, 'thinkingConfig': expected})
+
+    async def test_gemini_low_thinking_without_summary_request(self):
+        factory = fake_client_factory(FakeStreamResponse())
+        with patch('ai_providers.httpx.AsyncClient', new=factory):
+            _ = [chunk async for chunk in call_gemini.__wrapped__([], 'unit-model', thinking_level='low')]
+        payload = factory.clients[0].calls[0][1]['json']
+        self.assertEqual(payload['generationConfig']['thinkingConfig'], {'thinkingLevel': 'LOW'})
+
     async def test_vertex_stream_uses_project_endpoint_and_refreshes_only_when_needed(self):
         from unittest.mock import Mock
         from ai_providers import call_vertex
@@ -151,6 +194,25 @@ class RelayProviderErrorPassthroughTests(unittest.IsolatedAsyncioTestCase):
                                  f"locations/global/publishers/google/models/{model}:streamGenerateContent?alt=sse")
                 self.assertEqual(kwargs["headers"], {"Authorization": "Bearer test-token"})
         credentials.refresh.assert_called_once()
+
+    async def test_gemini_thought_summaries_stay_off_unless_requested(self):
+        import ai_providers
+        factory = fake_client_factory(FakeStreamResponse())
+        messages = [{'role': 'user', 'content': 'hello'}]
+        with patch('ai_providers.httpx.AsyncClient', new=factory):
+            _ = [chunk async for chunk in call_gemini.__wrapped__(messages, 'gemini-4-argon', {}, None, 100)]
+        self.assertEqual(factory.clients[0].calls[0][1]['json']['generationConfig'], {'maxOutputTokens': 100})
+
+        seen = []
+        async def provider(messages, model, *args, **kwargs):
+            seen.append(kwargs.get('include_thoughts', False))
+            yield 'OK'
+        with patch.dict(ai_providers.MODELS, {'unit-gemini': {'provider': 'gemini', 'model': 'unit'}}), \
+             patch('ai_providers.call_gemini', new=provider):
+            for wanted in (False, True):
+                _ = [chunk async for chunk in ai_providers.stream_ai(
+                    messages, 'unit-gemini', {}, include_device_context=False, include_thoughts=wanted)]
+        self.assertEqual(seen, [False, True])
 
     async def test_custom_openai_uses_requested_wait(self):
         response = FakeStreamResponse(lines=['data: [DONE]'])

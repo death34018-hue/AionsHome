@@ -99,7 +99,7 @@ class StreamSafetyGuardTest(unittest.TestCase):
         self.assertNotIn('"choices"', visible)
         self.assertEqual(result.stop_reason, "quality")
 
-    def test_chat_length_limit_stops_before_oversized_suffix(self):
+    def test_chat_keeps_long_replies(self):
         guard = StreamSafetyGuard(CHAT_STREAM_POLICY)
 
         committed = guard.feed("a" * 5900)
@@ -107,11 +107,10 @@ class StreamSafetyGuardTest(unittest.TestCase):
         result = guard.finish()
         visible = committed + overflow_commit + result.committed_text
 
-        self.assertLessEqual(len(visible), 6000)
-        self.assertNotIn("b" * 700, visible)
-        self.assertEqual(result.stop_reason, "length")
+        self.assertEqual(visible, "a" * 5900 + "b" * 1000)
+        self.assertIsNone(result.stop_reason)
 
-    def test_theater_policy_accepts_more_than_chat_limit(self):
+    def test_theater_policy_accepts_long_scenes(self):
         guard = StreamSafetyGuard(THEATER_STREAM_POLICY)
         text = "".join(
             f"Scene {index}: The story continues with detail {index * 7}. 😏\n"

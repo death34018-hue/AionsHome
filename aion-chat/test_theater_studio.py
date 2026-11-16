@@ -33,13 +33,13 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         for task in list(studio._speech.values())+list(studio._writing.values()):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        studio._speech.clear(); studio._writing.clear(); studio._live.clear()
+        studio._speech.clear(); studio._writing.clear(); studio._live.clear(); studio._progress.clear()
         for p in self.patches: p.stop()
         self.tmp.cleanup()
 
     async def test_copy_outline_creates_independent_empty_story_with_selected_model(self):
         await studio.change('book', anchors=['anchor-one'], min_chars=5000, max_chars=15000,
-                            outline_versions=[{'outline':'旧大纲'}])
+                            auxiliary_model='helper', outline_versions=[{'outline':'旧大纲'}])
         await studio.change('chapter', content='原故事正文', summary='原剧情摘要', status='ready',
                             images=[{'url':'old.png'}], audio='old-audio', versions=[{'content':'更早正文'}],
                             min_chars=6000, max_chars=18000, needs_review=True)
@@ -55,6 +55,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         book = await studio.load(copied['id'])
         self.assertEqual((book['outline'],book['consensus'],book['anchors']), ('相遇相知','雨夜初遇',['anchor-one']))
         self.assertEqual((book['min_chars'],book['max_chars'],book['phase'],book['outline_versions']), (5000,15000,'writing',[]))
+        self.assertEqual(book['auxiliary_model'], 'helper')
         chapters = sorted(await studio.rows(copied['id'],'chapter'), key=lambda c:c['number'])
         self.assertEqual([(c['title'],c['plan']) for c in chapters], [('Test','Plan'),('第二章','后续计划')])
         self.assertEqual(chapters[0]['max_chars'],18000)
@@ -217,7 +218,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved['error'],'')
         self.assertEqual(saved['versions'][-1]['content'],original)
         self.assertEqual((await studio.load('book'))['phase'],'writing')
-        async def generate(cid,prompt,on_chunk=None):
+        async def generate(cid,prompt,on_chunk=None,**kwargs):
             if on_chunk:
                 self.assertTrue(prompt.endswith(retained))
                 self.assertNotIn('第二遍重复正文',prompt)
@@ -262,7 +263,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         await studio.change('chapter',content='旧正文',status='interrupted')
         await studio.save(dict(id='next',kind='chapter',conv_id='book',number=2,title='后台',plan='后台见面',content='',status='planned'))
         prompts=[]
-        async def generate(cid,prompt,on_chunk=None):
+        async def generate(cid,prompt,on_chunk=None,**kwargs):
             prompts.append(prompt)
             if on_chunk: await on_chunk('继续正文')
             return '继续正文'
@@ -481,7 +482,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         doc = await planning.discussion('book')
         await studio.change(doc['id'], messages=[dict(id='1',role='user',content='不要发送的旧讨论原文')])
         prompts = []
-        async def generate(cid,prompt,on_chunk=None):
+        async def generate(cid,prompt,on_chunk=None,**kwargs):
             prompts.append(prompt)
             if on_chunk: await on_chunk('新的正文。')
             return '本章事实'
@@ -533,6 +534,8 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
     async def test_novel_provider_wait_and_errors_are_visible(self):
         async def slow_reply(messages, model, **kwargs):
             self.assertEqual(kwargs['request_timeout'], 300)
+            self.assertIs(kwargs.get('include_thoughts'), True)
+            yield studio.StreamActivity()
             await asyncio.sleep(.02)
             yield '小说正文'
 
@@ -795,7 +798,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
             await studio.save(dict(id=f'chapter-{number}',kind='chapter',conv_id='book',number=number,
                                    title=f'第{number}章',plan=f'第{number}章计划',content=f'第{number}章原文',
                                    summary=f'第{number}章摘要',status='ready',revision=1,images=[],versions=[]))
-        async def generate(cid, prompt, on_chunk=None):
+        async def generate(cid, prompt, on_chunk=None, **kwargs):
             if on_chunk:
                 await on_chunk('本章重写正文')
             return '本章新摘要'
@@ -824,7 +827,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_writing_stream_saves_draft_without_starting_audio(self):
         first=asyncio.Event(); proceed=asyncio.Event()
-        async def generate(cid,prompt,on_chunk=None):
+        async def generate(cid,prompt,on_chunk=None,**kwargs):
             if on_chunk:
                 await on_chunk('故事的开头。');first.set();await proceed.wait();await on_chunk('故事的结尾。')
             return '剧情摘要'
@@ -837,6 +840,58 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await studio.load('chapter'))['status'],'draft')
         self.assertEqual((await studio.load('chapter'))['content'],'故事的开头。故事的结尾。')
 
+    async def test_writing_progress_reports_wait_and_received_data(self):
+        sent=asyncio.Event(); think=asyncio.Event(); write=asyncio.Event(); finish=asyncio.Event()
+        async def reply(messages, model, **kwargs):
+            self.assertIs(kwargs.get('include_thoughts'), True)
+            if not sent.is_set():  # The chapter request; the later call is its summary.
+                sent.set()
+                await think.wait(); yield studio.StreamActivity()
+                await write.wait(); yield '夜雨落在旧楼的窗沿上。'
+                await finish.wait()
+            yield '她推开了门。'
+        async def progress():
+            return (await studio.get_book('book'))['chapters'][0]['progress']
+        async def until(ready):
+            for _ in range(400):
+                if ready(): return
+                await asyncio.sleep(.005)
+            self.fail('写作进度没有更新')
+        with patch.object(studio,'stream_ai',reply):
+            await studio.start_writing('chapter',studio.WriteRequest())
+            task=studio._writing['chapter']; await sent.wait()
+            waiting=await progress()
+            self.assertGreaterEqual(waiting['waited'],0)
+            self.assertEqual((waiting['idle'],waiting['first_after'],waiting['chars'],waiting['thinking']),(None,None,0,False))
+            think.set(); await until(lambda: studio._progress['chapter']['thinking'])
+            thinking=await progress()
+            self.assertGreaterEqual(thinking['idle'],0)
+            self.assertEqual((thinking['chars'],thinking['thinking']),(0,True))
+            write.set(); await until(lambda: studio._progress['chapter']['chars'])
+            self.assertEqual((await progress())['chars'],len('夜雨落在旧楼的窗沿上。'))
+            finish.set(); await task
+        self.assertIsNone(await progress())
+        self.assertEqual(studio._progress,{})
+
+    async def test_silent_request_shows_no_data_and_can_be_stopped(self):
+        sent=asyncio.Event()
+        async def silent(messages, model, **kwargs):
+            sent.set(); await asyncio.Event().wait()
+            yield ''
+        with patch.object(studio,'stream_ai',silent):
+            await studio.start_writing('chapter',studio.WriteRequest())
+            await sent.wait()
+            waiting=(await studio.get_book('book'))['chapters'][0]['progress']
+            self.assertGreaterEqual(waiting['waited'],0)
+            self.assertIsNone(waiting['idle'])
+            await studio.stop_writing('chapter')
+        saved=await studio.load('chapter')
+        self.assertEqual((saved['status'],saved['error'],saved['content']),('interrupted','已停止写作，可续写',''))
+        stopped=(await studio.get_book('book'))['chapters'][0]
+        self.assertFalse(stopped['writing'])
+        self.assertIsNone(stopped['progress'])
+        self.assertEqual(studio._progress,{})
+
     async def test_user_controls_completion_and_can_resume_old_completed_chapter(self):
         with self.assertRaises(studio.HTTPException):
             await studio.set_chapter_completion('chapter', studio.ChapterCompletion(completed=True))
@@ -848,7 +903,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(studio.HTTPException):
             await studio.start_writing('later', studio.WriteRequest())
         started, proceed = asyncio.Event(), asyncio.Event()
-        async def generate(cid, prompt, on_chunk=None):
+        async def generate(cid, prompt, on_chunk=None, **kwargs):
             if on_chunk:
                 self.assertTrue(prompt.endswith('旧版误判完成的半句'))
                 started.set()
@@ -901,6 +956,111 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(ref['name'],content[1+i*2]['text'])
             self.assertEqual(content[2+i*2]['image_url']['url'],'data:image/png;base64,'+base64.b64encode(ref['name'].encode()).decode())
 
+    async def test_writing_uses_one_auxiliary_request_for_summary_and_image_plan(self):
+        import image_gen
+        book = await studio.load('book')
+        await studio.put_book('book', studio.BookPatch(**{**book, 'auxiliary_model':'helper', 'illustrations':True}))
+        requests = []
+        async def stream(messages, model, **kwargs):
+            requests.append(model)
+            if len(requests) == 1:
+                yield '两人在窗边喝茶。'
+            else:
+                yield json.dumps({'summary':'两人一起喝茶，尚未交换姓名。', 'scenes':[
+                    {'quote':'两人在窗边喝茶。', 'prompt':'窗边喝茶', 'characters':[]}]})
+        with patch.object(studio, 'stream_ai', stream), \
+                patch.object(image_gen, 'generate_image', AsyncMock(return_value='album/tea.png')):
+            await studio.start_writing('chapter', studio.WriteRequest())
+            await studio._writing['chapter']
+        chapter = await studio.load('chapter')
+        self.assertEqual(requests, ['test', 'helper'])
+        self.assertEqual(chapter['content'], '两人在窗边喝茶。')
+        self.assertEqual(chapter['summary'], '两人一起喝茶，尚未交换姓名。')
+        self.assertEqual(chapter['images'][0]['url'], '/uploads/album/tea.png')
+
+    async def test_summary_backfill_and_discussion_compaction_use_auxiliary_or_legacy_model(self):
+        import theater_planning as planning
+        for selected, expected in [('helper', 'helper'), ('', 'test')]:
+            with self.subTest(model=selected):
+                await studio.change('book', auxiliary_model=selected)
+                chapter = await studio.change('chapter', content='已写正文。', summary='', status='ready')
+                requests = []
+                async def stream(messages, model, **kwargs):
+                    requests.append(model)
+                    yield '保留的事实。'
+                with patch.object(studio, 'stream_ai', stream):
+                    await studio.summarize(chapter)
+                    doc = await planning.discussion('book')
+                    doc = await studio.change(doc['id'], notes='', summarized=0,
+                        messages=[dict(role='user', content=f'设定{i}') for i in range(21)])
+                    await planning.compact('book', doc)
+                self.assertEqual(requests, [expected, expected])
+                self.assertEqual((await studio.load('chapter'))['summary'], '保留的事实。')
+                self.assertEqual((await planning.discussion('book'))['notes'], '保留的事实。')
+
+    async def test_empty_image_plan_and_concurrent_summary_backfill_reuse_one_request(self):
+        await studio.change('book', illustrations=True, auxiliary_model='helper')
+        chapter = await studio.change('chapter', content='平静的一天。', status='draft')
+        requests = []
+        started, release = asyncio.Event(), asyncio.Event()
+        async def stream(messages, model, **kwargs):
+            requests.append(model)
+            started.set()
+            await release.wait()
+            yield json.dumps({'summary':'两人平静地度过一天。', 'scenes':[]})
+        with patch.object(studio, 'stream_ai', stream), \
+                patch('image_gen.generate_image', new=AsyncMock(return_value='album/day.png')):
+            preparing = asyncio.create_task(studio.summarize(chapter, include_images=True))
+            try:
+                await asyncio.wait_for(started.wait(), 2)
+                backfill = asyncio.create_task(studio.summarize(chapter))
+                release.set()
+                await asyncio.gather(preparing, backfill)
+                await studio.illustrate('chapter', retry=True)
+            finally:
+                release.set()
+                await asyncio.gather(preparing, return_exceptions=True)
+        self.assertEqual(requests, ['helper'])
+        saved = await studio.load('chapter')
+        self.assertEqual(saved['summary'], '两人平静地度过一天。')
+        self.assertEqual([im['url'] for im in saved['images']], ['/uploads/album/day.png'])
+        self.assertIn('平静的一天。', saved['images'][0]['prompt'])
+
+    async def test_old_empty_plan_fills_four_distinct_scenes_and_keeps_manual_summary(self):
+        await studio.change('book', illustrations=True)
+        chapter = await studio.change('chapter', content='甲。乙。丙。丁。戊。', status='ready', image_plan_revision=1)
+        scenes = [{'quote': q, 'prompt': q, 'characters': []} for q in ['缺。','甲。','甲。','乙。','丙。','丁。','戊。']]
+        async def plan(*args, **kwargs):
+            await studio.put_chapter_summary('chapter', studio.ChapterSummary(revision=1, summary='  手改事实。  '))
+            return json.dumps({'summary':'自动摘要', 'scenes':scenes})
+        with patch.object(studio, 'generate_text', side_effect=plan):
+            summary = await studio.summarize(chapter, include_images=True)
+        saved = await studio.load('chapter')
+        self.assertEqual((saved['summary'], summary), ('手改事实。','手改事实。'))
+        self.assertEqual([im['after'] for im in saved['images']], [2,4,6,8])
+        self.assertEqual((saved['revision'], saved['status'], saved['content']), (1,'ready',chapter['content']))
+        with self.assertRaises(studio.HTTPException) as conflict:
+            await studio.put_chapter_summary('chapter', studio.ChapterSummary(revision=2, summary='过期修改'))
+        self.assertEqual(conflict.exception.status_code, 409)
+
+    async def test_invalid_postprocessing_keeps_prose_and_retries_only_the_auxiliary_request(self):
+        await studio.change('book', illustrations=True, auxiliary_model='helper')
+        requests = []
+        async def stream(messages, model, **kwargs):
+            requests.append(model)
+            yield ['正文保留。', '不是JSON', json.dumps({'summary':'故事事实。', 'scenes':[]})][len(requests)-1]
+        with patch.object(studio, 'stream_ai', stream), \
+                patch('image_gen.generate_image', new=AsyncMock(return_value='album/story.png')):
+            await studio.start_writing('chapter', studio.WriteRequest())
+            await studio._writing['chapter']
+            chapter = await studio.load('chapter')
+            self.assertEqual(requests, ['test', 'helper'])
+            self.assertEqual((chapter['content'], chapter['status']), ('正文保留。', 'draft'))
+            self.assertTrue(chapter.get('image_error'))
+            await studio.illustrate('chapter', retry=True)
+        self.assertEqual(requests, ['test', 'helper', 'helper'])
+        self.assertEqual((await studio.load('chapter'))['summary'], '故事事实。')
+
     async def test_illustration_selects_photos_by_scene_name_and_alias(self):
         import image_gen
         await studio.change('book', illustrations=True, anchors=['anchor_a', 'anchor_b', 'anchor_c'])
@@ -908,7 +1068,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         for key, name, alias in [('a', '甲', ''), ('b', '乙', '小乙'), ('c', '丙', '')]:
             await studio.save(dict(id='anchor_'+key, kind='anchor', conv_id='', name=name,
                                   aliases=alias, appearance='', image='/uploads/'+key+'.png'))
-        plan = json.dumps({'scenes': [{'quote': '两人在窗边喝茶。', 'prompt': '甲和小乙喝茶', 'characters': ['甲', '小乙']}]})
+        plan = json.dumps({'summary':'甲和小乙一起喝茶。', 'scenes': [{'quote': '两人在窗边喝茶。', 'prompt': '甲和小乙喝茶', 'characters': ['甲', '小乙']}]})
         with patch.object(studio, 'generate_text', new=AsyncMock(return_value=plan)), \
                 patch.object(studio, 'reference_path', side_effect=lambda url: self.root / Path(url).name), \
                 patch.object(image_gen, 'generate_image', new=AsyncMock(return_value='album/picture.png')) as generate:
@@ -936,6 +1096,25 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chapter['images'][1]['id'], 'retry')
         self.assertIn('超时', chapter['images'][1]['error'])
 
+    async def test_edit_failed_prompt_retries_only_that_scene(self):
+        await studio.change('book', illustrations=True)
+        scenes = [dict(id=k, after=i, prompt=k, characters=[], status='failed', error='超时', url='')
+                  for i, k in enumerate(('one', 'two'), 1)]
+        await studio.change('chapter', content='雨夜', status='ready', images=scenes)
+        original = await studio.get_scene_prompt('chapter', 'two')
+        self.assertIn('统一画风', original['prompt'])
+        self.assertTrue(original['prompt'].endswith('two'))
+        with patch('image_gen.generate_image', new=AsyncMock(return_value='album/rain.png')) as generate:
+            await studio.retry_scene('chapter', 'two', studio.SceneRetry(revision=1, prompt='雨落在窗上'))
+            async with asyncio.timeout(3):
+                while 'chapter' in studio._pictures:
+                    await asyncio.sleep(.01)
+        saved = await studio.load('chapter')
+        self.assertEqual(saved['images'][0], scenes[0])
+        self.assertEqual((saved['images'][1]['render_prompt'],saved['images'][1]['url']), ('雨落在窗上','/uploads/album/rain.png'))
+        self.assertEqual(generate.await_count, 1)
+        self.assertEqual(generate.await_args.args[0], '雨落在窗上')
+
     async def test_new_revision_waits_for_old_image_job_and_gets_its_own_picture(self):
         import image_gen
         await studio.change('book', illustrations=True)
@@ -947,9 +1126,9 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
                 await release.wait()
                 return 'old.png'
             return 'new.png'
-        async def plan(*args):
+        async def plan(*args, **kwargs):
             quote = '新版正文。' if '新版正文。' in args[1] else '旧版正文。'
-            return json.dumps({'scenes': [{'quote': quote, 'prompt': quote, 'characters': []}]})
+            return json.dumps({'summary':quote, 'scenes': [{'quote': quote, 'prompt': quote, 'characters': []}]})
         with patch.object(studio, 'generate_text', new=AsyncMock(side_effect=plan)), \
                 patch.object(image_gen, 'generate_image', new=AsyncMock(side_effect=generate)):
             old = asyncio.create_task(studio.illustrate('chapter'))

@@ -5,7 +5,7 @@ const Studio = (() => {
   let refreshBusy = false, selectionToken = 0, outlineBusy = false;
   let outlineFeedback = null;
   let outlineDraft = null;
-  let lastBookPoll = -Infinity, lastAudioPoll = -Infinity;
+  let lastBookPoll = -Infinity, lastAudioPoll = -Infinity, progressAt = 0;
   let subPageVisible = window.frameElement?.dataset.aionSubPageVisible !== '0';
   let discussion={messages:[],status:'idle'}, planningView=true, talkBusy=false;
   let readerComposerOpen=false;
@@ -130,6 +130,9 @@ const Studio = (() => {
   function mount() {
     document.body.classList.add('studio-shell');
     $('messages').insertAdjacentHTML('beforebegin','<section id="studioOutlineStatus" class="studio-outline-status" role="status" aria-live="polite" aria-atomic="true" hidden></section>');
+    // Static children: the stop button must survive the once-a-second text update.
+    $('messages').insertAdjacentHTML('beforebegin','<section id="studioWriteStatus" class="studio-outline-status studio-write-status" data-state="running" aria-label="写作进度" hidden><span class="studio-outline-indicator" aria-hidden="true"></span><div><strong id="studioWriteTitle"></strong><p id="studioWriteDetail"></p></div><button type="button" class="studio-btn" id="studioWriteStop" onclick="Studio.stopWriting(this.dataset.chapter)">终止生成</button></section>');
+    setInterval(renderWriteStatus, 1000);
     document.querySelector('.chat-header').insertAdjacentHTML('beforeend','<div class="studio-reading-header" id="studioReadingHeader" aria-label="当前章节" hidden><span id="novelNumber"></span><h1 id="novelTitle"></h1><span id="novelMeta"></span></div>');
     $('sidebar').querySelector('.sidebar-header').insertAdjacentHTML('beforeend','<div class="library-brand" style="text-align:right"><strong>小剧场</strong></div>');
     document.body.insertAdjacentHTML('beforeend','<dialog class="studio-dialog studio-chapters" id="studioChapterDialog"><header><h2>章节目录</h2><button class="studio-btn" onclick="document.getElementById(\'studioChapterDialog\').close()" aria-label="关闭目录">✕</button></header><p id="studioDirectoryTitle" class="field-help"></p><nav class="studio-directory" id="studioDirectory" aria-label="当前小剧场的章节"></nav></dialog>');
@@ -210,8 +213,34 @@ const Studio = (() => {
     $('sendBtn').setAttribute('aria-label',sendLabel);
     $('sendBtn').title=sendLabel;
     $('sendBtn').disabled=novel() ? (outlineBusy || talkBusy || discussion.status==='running' || !!chapter()?.writing) : isStreaming;
-    renderDirectory(); toolbar(); renderOutlineStatus();
+    renderDirectory(); toolbar(); renderOutlineStatus(); renderWriteStatus();
     readingFollow?.update();
+  }
+  // `ahead` is the time since the last poll, so the clock ticks between polls.
+  function writeProgressText(p, ahead=0) {
+    const secs=v=>Math.max(0,Math.floor(v+ahead));
+    const span=v=>{const s=secs(v);return s<60?`${s} 秒`:`${Math.floor(s/60)} 分 ${s%60} 秒`;};
+    if(!p)return {clock:'',detail:'',stalled:false};
+    if(p.waited==null)return {clock:`已用时 ${span(p.elapsed)}`,detail:'正在整理前文，还没有向模型发出本章请求。',stalled:false};
+    if(p.idle==null) {
+      const stalled=secs(p.waited)>=60;
+      return {clock:`已等待 ${span(p.waited)}`,detail:'请求已发出，尚未收到任何数据。'+(stalled?'已超过 1 分钟，可能卡住了，可以终止后重试。':''),stalled};
+    }
+    const stalled=secs(p.idle)>=60;
+    const got=p.chars?`已收到 ${p.chars.toLocaleString()} 字`:'模型正在思考，尚无正文';
+    return {clock:`已用时 ${span(p.waited)}`,detail:`${got}，最近一次数据在 ${span(p.idle)}前。`+(stalled?'数据已中断超过 1 分钟，可能卡住了，可以终止。':''),stalled};
+  }
+  function renderWriteStatus() {
+    const el=$('studioWriteStatus'),c=novel()?chapters.find(c=>c.writing):null;
+    if(!el)return;
+    el.hidden=!c;
+    if(!c)return;
+    const view=writeProgressText(c.progress,(performance.now()-progressAt)/1000);
+    el.dataset.stalled=view.stalled;
+    $('studioWriteTitle').textContent=`正在写第${c.number}章`+(view.clock?' · '+view.clock:'');
+    $('studioWriteDetail').textContent=view.detail;
+    $('studioWriteStop').dataset.chapter=c.id;
+    $('studioWriteStop').classList.toggle('primary',view.stalled);
   }
   function renderOutlineStatus() {
     const el=$('studioOutlineStatus');
@@ -245,7 +274,7 @@ const Studio = (() => {
     $('studioToolbar').innerHTML=writer+button('创作设置','Studio.settings()')+copy+reading+exporting+button('商量剧情','Studio.discussionMode()')+(c ?
       button(c.audio?'收听本章':'开始朗读',`Studio.speak('${c.id}')`,'primary')+
       (c.writing?button('停止写作',`Studio.stopWriting()`):button('重写本章','Studio.write(true)'))+
-      (!c.writing && c.content ? button('编辑正文','Studio.editChapter(true)'):'')+
+      (!c.writing && c.content ? button('本章摘要','Studio.editSummary()')+button('编辑正文','Studio.editChapter(true)'):'')+
       (!c.writing && c.content ? button(c.status==='ready'?'本章还没写完':'本章已写完',`Studio.completeChapter(${c.status!=='ready'})`):'')+
       (c.versions?.length && !c.writing ? button('恢复上一版','Studio.restore()'):'') : '');
   }
@@ -285,7 +314,8 @@ const Studio = (() => {
     $('novelTitle').title=c.title;
     const count=c.content.replace(/\s/g,'').length;
     $('novelMeta').textContent=`${count.toLocaleString()} 字 · ${statusNames[c.status]||c.status}`;
-    $('novelNotice').innerHTML=escHtml(c.error||'')+(c.image_error?` ${escHtml(c.image_error)} ${button('重试配图','Studio.illustrate()')}`:'');
+    const notice=escHtml(c.error||'')+imageNotice(c);
+    if($('novelNotice').innerHTML!==notice)$('novelNotice').innerHTML=notice;
     const completion=!c.writing && c.content && c.status!=='ready'?`<p>本轮生成已停止，你可以续写，或确认本章结束。</p><div>${button('续写本章','Studio.write(false)')}${button('本章已写完','Studio.completeChapter(true)','primary')}</div>`:'';
     if($('novelCompletion').innerHTML!==completion)$('novelCompletion').innerHTML=completion;
     if (window.TheaterReading?.sync()) { readingFollow?.update(); return; }
@@ -295,12 +325,31 @@ const Studio = (() => {
     for (const im of images) {
       html+=paras(c.content.slice(pos, im.after)); pos=im.after;
       if (im.status==='ready') html+=`<figure><img src="${escHtml(im.url)}" loading="lazy" alt="${escHtml(im.prompt)}" tabindex="0" role="button" aria-label="查看并保存故事插画"><figcaption>故事插画 · 点击查看与保存</figcaption></figure>`;
-      else html+=`<div class="studio-notice">${im.status==='failed'?escHtml(im.error||'插画暂未完成'):'正在描绘这一幕…'} ${im.status==='failed'?button('重试失败配图','Studio.illustrate()'):''}</div>`;
+      else if(im.status==='failed')html+=`<div class="studio-notice">${escHtml(im.error||'配图未完成')} ${!c.processing && book.illustrations?button('编辑提示词',`Studio.editImagePrompt(${c.images.indexOf(im)})`):''}</div>`;
+      else if(c.processing)html+='<div class="studio-notice">正在描绘这一幕…</div>';
     }
     html+=paras(c.content.slice(pos));
     if (!c.content) html='<p class="studio-notice">'+(c.writing?'正在构思这一章，正文会逐渐出现在这里。':'本章尚未开始。你可以先看章节计划，再点下方「开始写」。')+'</p>';
     if ($('novelBody').innerHTML!==html) $('novelBody').innerHTML=html;
     readingFollow?.update();
+  }
+
+  function imageNotice(c) {
+    if(!book.illustrations || !c.content || !['draft','ready'].includes(c.status))return '';
+    const images=c.images||[];
+    const notices=[];
+    if(c.image_error)notices.push(escHtml(c.image_error));
+    images.forEach((im,i)=>{
+      if(im.status==='ready' || (im.status==='pending' && c.processing))return;
+      const reason=im.error || '配图未完成';
+      const edit=c.processing?'':button('编辑提示词',`Studio.editImagePrompt(${i})`);
+      notices.push(`第 ${i+1} 张 · ${escHtml(reason)} ${edit}`);
+    });
+    if(c.processing && images.some(im=>im.status==='pending'))notices.push('正在配图…');
+    if(!c.processing && (c.image_error || images.some(im=>im.status!=='ready') || !images.length)){
+      notices.push(button(images.length || c.image_error?'重试未完成配图':'补本章配图','Studio.illustrate()'));
+    }
+    return notices.map(line=>`<div>${line}</div>`).join('');
   }
 
   function backgroundPoll() {
@@ -321,6 +370,7 @@ const Studio = (() => {
       const data=await request('/books/'+cid+(selected?'?chapter='+encodeURIComponent(selected):''));
       if (cid!==currentConvId) return;
       book=data.book; outlineDraft=data.outline_draft; discussion=data.discussion||discussion; chapters=data.chapters.map(c=>({...chapters.find(old=>old.id===c.id),...c}));
+      progressAt=performance.now();
       if (!chapters.some(c=>c.id===selected) && chapters.length) selected=chapters.find(c=>!c.content)?.id||chapters[0].id;
       modeUI(); renderNovel();
     } catch(e) { /* A later poll restores connectivity; user actions report errors. */ }
@@ -333,7 +383,7 @@ const Studio = (() => {
       if (token!==selectionToken) return;
       moveConversationToFront(id);
       localStorage.setItem('theater_last_conv', id);
-      lastBookPoll=performance.now();
+      lastBookPoll=progressAt=performance.now();
       book=data.book; chapters=data.chapters; outlineDraft=data.outline_draft; discussion=data.discussion||{messages:[],status:'idle'};currentConvId=id;
       readerComposerOpen=false;
       const savedView=localStorage.getItem('studio_view_'+id);
@@ -624,6 +674,52 @@ const Studio = (() => {
       await refresh();
     });
   }
+  function editSummary() {
+    const c=chapter();
+    if(!c || c.writing)return;
+    modal(`第 ${c.number} 章 · 本章摘要`,`<label for="chapterSummary">后续章节写作时使用的剧情摘要</label><textarea id="chapterSummary" class="long-text" placeholder="暂无摘要，可在这里填写。">${escHtml(c.summary||'')}</textarea>`,'保存',async()=>{
+      const summary=$('chapterSummary').value.trim();
+      if(!summary)throw Error('请填写本章摘要');
+      const saved=await request('/chapters/'+c.id+'/summary','PUT',{revision:c.revision,summary});
+      const current=chapters.find(item=>item.id===c.id);
+      if(current?.revision===c.revision)current.summary=saved.summary;
+      showToast('本章摘要已保存');
+    });
+  }
+  async function editImagePrompt(index) {
+    const c=chapter(), im=c?.images?.[index];
+    if(!im || im.status==='ready')return;
+    const path='/chapters/'+c.id+'/images/'+encodeURIComponent(im.id);
+    const source=await request(path+'/prompt');
+    if(chapter()?.id!==c.id)return;
+    if(source.revision!==c.revision)throw Error('正文已变化，请重新打开配图');
+    modal(`第 ${c.number} 章 · 配图 ${index+1}`,`<p class="field-help">${escHtml(im.error||'配图未完成')}</p><label for="chapterImagePrompt">本次生图提示词</label><textarea id="chapterImagePrompt" class="long-text">${escHtml(source.prompt)}</textarea>`,'保存并重试这张',async()=>{
+      const prompt=$('chapterImagePrompt').value.trim();
+      if(!prompt)throw Error('请填写配图提示词');
+      await request(path+'/retry','POST',{revision:c.revision,prompt});
+      await refresh();
+    });
+  }
+  function refreshModelSettings() {
+    $('creationModelLabel').textContent=novel()?'创作模型':'模型';
+    $('auxiliaryModelSettings').hidden=!novel();
+    const selected=book?.auxiliary_model||'', select=$('auxiliaryModelSelect');
+    const choices=selected && !models.includes(selected)?[...models,selected]:models;
+    select.innerHTML='<option value="">跟随创作模型</option>'+choices.map(m=>`<option value="${escHtml(m)}">${escHtml(m)}</option>`).join('');
+    select.value=selected;
+  }
+  async function setAuxiliaryModel(model) {
+    if(!novel())return;
+    const cid=book.id, select=$('auxiliaryModelSelect');
+    select.disabled=true;
+    try {
+      const saved=await request('/books/'+cid,'PUT',{...book,auxiliary_model:model});
+      if(book?.id===cid)book=saved;
+    } finally {
+      select.disabled=false;
+      refreshModelSettings();
+    }
+  }
   async function manageAnchors() {
     return window.ImageAnchors.open();
   }
@@ -774,12 +870,16 @@ const Studio = (() => {
     returnToReader(){if(chapters.length)selectChapter(chapter()?.id||chapters[0].id);},
     readTogether:()=>action(readTogether),discussionMode:()=>action(discussionMode),confirmOutline:()=>action(confirmOutline),restoreOutline:()=>action(restoreOutline),
     modelSettings:openModelSettings,
+    refreshModelSettings,changeAuxiliaryModel:model=>action(()=>setAuxiliaryModel(model)),
     persona:()=>openPersonaModal(),
     directory(){if(!novel())return showToast('小说模式会显示章节目录');renderDirectory();$('studioChapterDialog').showModal();},
     switchMode(mode){action(async()=>{if(!book)return newConversation();book=await request('/books/'+book.id,'PUT',{...book,mode});await selectConv(book.id);});},
     settings:()=>action(settings),anchors:()=>action(manageAnchors),outline:()=>action(outline),write:r=>action(()=>write(r)),
-    editChapter:b=>action(()=>editChapter(b)),speak:key=>action(()=>speak(key)),
-    stopWriting:()=>action(async()=>{await request('/chapters/'+selected+'/stop','POST');await refresh();}),
+    editChapter:b=>action(()=>editChapter(b)),editSummary,editImagePrompt:i=>action(()=>editImagePrompt(i)),speak:key=>action(()=>speak(key)),
+    stopWriting:id=>action(async()=>{
+      const stop=$('studioWriteStop');stop.disabled=true;
+      try{await request('/chapters/'+(id||selected)+'/stop','POST');await refresh();}finally{stop.disabled=false;}
+    }),
     restore:()=>action(async()=>{if(player?.source===selected)stopPlayer();await request('/chapters/'+selected+'/restore','POST');await refresh();}),
     illustrate:()=>action(async()=>{await request('/chapters/'+selected+'/illustrate','POST');await refresh();}),
     cancelAudio:()=>action(async()=>{if(player){await request('/speech/'+player.source+'/stop','POST');await pollAudio();}}),

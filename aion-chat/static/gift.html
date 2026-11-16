@@ -107,9 +107,98 @@ body { background: #1a1412; color: #e8ddd4; overflow: hidden; }
   text-align: center;
   font-size: 10px;
   color: rgba(255,203,164,0.6);
-  padding: 5px 0;
+  padding: 6px 0;
   letter-spacing: 0.5px;
+  line-height: 1.5;
   background: rgba(0,0,0,0.3);
+}
+.gift-thumb-from {
+  display: block;
+  color: #ff8359;
+  letter-spacing: 0.3px;
+}
+
+/* 多选模式 */
+.gift-thumb-check {
+  display: none;
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.85);
+  background: rgba(0,0,0,0.35);
+  color: #fff;
+  font-size: 13px;
+  line-height: 18px;
+  text-align: center;
+}
+.selecting .gift-thumb-check { display: block; }
+.selecting .gift-thumb:hover { transform: none; box-shadow: none; }
+.gift-thumb.selected { border-color: #ff8359; }
+.gift-thumb.selected .gift-thumb-img { opacity: 0.55; }
+.gift-thumb.selected .gift-thumb-check { background: #ff8359; border-color: #ff8359; }
+.gift-thumb.selected .gift-thumb-check::after { content: '✓'; }
+
+.select-bar {
+  display: none;
+  position: fixed;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 640px;
+  box-sizing: border-box;
+  padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+  background: rgba(42,34,32,0.96);
+  border-top: 1px solid rgba(255,131,89,0.2);
+  z-index: 40;
+  align-items: center;
+  gap: 10px;
+}
+.selecting .select-bar { display: flex; }
+.selecting .page-content { padding-bottom: 96px; }
+.select-count { flex: 1; font-size: 13px; color: rgba(232,221,212,0.75); }
+.select-bar button {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-select-all { background: rgba(255,255,255,0.1); color: #e8ddd4; }
+.btn-select-del { background: #cf222e; color: #fff; }
+.btn-select-del:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* 日间模式（其余日间配色在 theme.css） */
+body.gift-page[data-theme="light"] .gallery-list .gift-thumb {
+  background: #fffdfb;
+  border-color: rgba(255, 131, 89, 0.18);
+  box-shadow: 0 6px 18px rgba(115, 87, 68, 0.12);
+}
+body.gift-page[data-theme="light"] .gallery-list .gift-thumb:hover {
+  box-shadow: 0 10px 24px rgba(115, 87, 68, 0.20);
+}
+body.gift-page[data-theme="light"] .gallery-list .gift-thumb.selected {
+  border-color: #ff8359;
+}
+body.gift-page[data-theme="light"] .gift-thumb-date {
+  background: transparent;
+  color: #7a5540;
+  font-weight: 500;
+  border-top: 1px solid rgba(255, 131, 89, 0.14);
+}
+body.gift-page[data-theme="light"] .gift-thumb-from { color: #c2552f; }
+body.gift-page[data-theme="light"] .select-bar {
+  background: rgba(255, 250, 245, 0.96);
+  border-top-color: rgba(255, 131, 89, 0.24);
+  box-shadow: 0 -8px 24px rgba(115, 87, 68, 0.10);
+}
+body.gift-page[data-theme="light"] .select-count { color: rgba(80, 64, 52, 0.78); }
+body.gift-page[data-theme="light"] .btn-select-all {
+  background: rgba(120, 103, 255, 0.10);
+  color: #394370;
 }
 
 /* 展开详情弹窗 */
@@ -221,7 +310,8 @@ body { background: #1a1412; color: #e8ddd4; overflow: hidden; }
   <div class="top-bar">
     <button class="back-btn" onclick="location.href='/'">‹</button>
     <h2>爱的印记</h2>
-    <button class="test-gift-btn" id="testGiftBtn" onclick="testGift()">🎁 测试送礼</button>
+    <button class="test-gift-btn" id="selectModeBtn" onclick="toggleSelectMode()">选择</button>
+    <button class="test-gift-btn" id="testGiftBtn" onclick="document.getElementById('testOverlay').classList.add('show')">🎁 测试送礼</button>
   </div>
   <div class="page-content" id="pageContent">
     <div class="gallery-header">
@@ -229,6 +319,11 @@ body { background: #1a1412; color: #e8ddd4; overflow: hidden; }
       <div class="gallery-subtitle">LOVE MARKS</div>
     </div>
     <div class="gallery-list" id="galleryList"></div>
+  </div>
+  <div class="select-bar">
+    <button class="btn-select-all" id="selectAllBtn" onclick="toggleSelectAll()">全选</button>
+    <span class="select-count" id="selectCount">已选 0 份</span>
+    <button class="btn-select-del" id="batchDelBtn" onclick="askBatchDelete()" disabled>删除</button>
   </div>
 </div>
 
@@ -240,10 +335,21 @@ body { background: #1a1412; color: #e8ddd4; overflow: hidden; }
 <!-- 删除确认 -->
 <div class="confirm-overlay" id="confirmOverlay">
   <div class="confirm-box">
-    <p>确定要删除这份礼物吗？</p>
+    <p id="confirmText">确定要删除这份礼物吗？</p>
     <div class="confirm-btns">
       <button class="btn-confirm-cancel" onclick="cancelDelete()">取消</button>
       <button class="btn-confirm-del" id="confirmDelBtn" onclick="confirmDelete()">删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 测试送礼：选择送礼人 -->
+<div class="confirm-overlay" id="testOverlay" onclick="if(event.target===this)this.classList.remove('show')">
+  <div class="confirm-box">
+    <p>让谁来送这份测试礼物？</p>
+    <div class="confirm-btns">
+      <button class="btn-confirm-cancel" onclick="testGift('aion')">Aion</button>
+      <button class="btn-confirm-cancel" onclick="testGift('connor')">Connor</button>
     </div>
   </div>
 </div>
@@ -252,6 +358,9 @@ body { background: #1a1412; color: #e8ddd4; overflow: hidden; }
 <script src="/static/common.js"></script>
 <script>
 let _deleteId = null;
+let _batchDeleteIds = null;
+let _selecting = false;
+const _selected = new Set();
 let _allGifts = [];
 const GIFT_LIST_SNAPSHOT_KEY = 'gift_list_snapshot_v1';
 
@@ -287,11 +396,7 @@ async function loadGifts() {
     }
     _allGifts = data.gifts;
     renderGrid();
-    try {
-      const payload = JSON.stringify({ savedAt: Date.now(), gifts: _allGifts });
-      localStorage.setItem(GIFT_LIST_SNAPSHOT_KEY, payload);
-      giftSharedDataBridge()?.put?.(GIFT_LIST_SNAPSHOT_KEY, payload);
-    } catch(e) {}
+    saveSnapshot();
   } catch(e) {
     if (!snapshotShown) {
       list.innerHTML = '<div class="gallery-empty" style="grid-column:1/-1"><div class="gallery-empty-text">加载失败</div></div>';
@@ -299,8 +404,19 @@ async function loadGifts() {
   }
 }
 
+function saveSnapshot() {
+  try {
+    const payload = JSON.stringify({ savedAt: Date.now(), gifts: _allGifts });
+    localStorage.setItem(GIFT_LIST_SNAPSHOT_KEY, payload);
+    giftSharedDataBridge()?.put?.(GIFT_LIST_SNAPSHOT_KEY, payload);
+  } catch(e) {}
+}
+
 function renderGrid() {
   const list = document.getElementById('galleryList');
+  const alive = new Set(_allGifts.map(g => g.id));
+  _selected.forEach(id => { if (!alive.has(id)) _selected.delete(id); });
+  updateSelectBar();
   if (!_allGifts.length) {
     list.innerHTML = `
       <div class="gallery-empty" style="grid-column:1/-1">
@@ -313,9 +429,10 @@ function renderGrid() {
     const d = new Date(g.created_at * 1000);
     const dateStr = `${d.getFullYear()}.${String(d.getMonth()+1).padStart(2,'0')}.${String(d.getDate()).padStart(2,'0')}`;
     return `
-      <div class="gift-thumb" id="thumb_${g.id}" onclick="openDetail(${i})">
+      <div class="gift-thumb${_selected.has(g.id) ? ' selected' : ''}" id="thumb_${g.id}" onclick="onThumbClick(${i})">
         <img class="gift-thumb-img" src="/api/gift/thumbnail/${encodeURIComponent(g.id)}" alt="礼物" loading="lazy" />
-        <div class="gift-thumb-date">${dateStr}${g.sender ? ' · from ' + escHtml(g.sender === 'connor' ? 'Connor' : 'Aion') : ''}</div>
+        <div class="gift-thumb-check"></div>
+        <div class="gift-thumb-date">${dateStr}${g.sender ? '<span class="gift-thumb-from">from ' + escHtml(g.sender === 'connor' ? 'Connor' : 'Aion') + '</span>' : ''}</div>
       </div>`;
   }).join('');
 }
@@ -349,14 +466,18 @@ function closeDetail() {
 
 function askDelete(id) {
   _deleteId = id;
+  _batchDeleteIds = null;
   closeDetail();
+  document.getElementById('confirmText').textContent = '确定要删除这份礼物吗？';
   setTimeout(() => document.getElementById('confirmOverlay').classList.add('show'), 200);
 }
 function cancelDelete() {
   _deleteId = null;
+  _batchDeleteIds = null;
   document.getElementById('confirmOverlay').classList.remove('show');
 }
 async function confirmDelete() {
+  if (_batchDeleteIds) return confirmBatchDelete();
   if (!_deleteId) return;
   const id = _deleteId;
   cancelDelete();
@@ -364,18 +485,79 @@ async function confirmDelete() {
     await fetch(`/api/gift/${id}`, { method: 'DELETE' });
     _allGifts = _allGifts.filter(g => g.id !== id);
     renderGrid();
+    saveSnapshot();
   } catch(e) {
     showToast('删除失败');
   }
 }
 
+// 多选与批量删除
+function onThumbClick(idx) {
+  if (!_selecting) return openDetail(idx);
+  const g = _allGifts[idx];
+  if (!g) return;
+  if (_selected.has(g.id)) _selected.delete(g.id); else _selected.add(g.id);
+  document.getElementById('thumb_' + g.id)?.classList.toggle('selected', _selected.has(g.id));
+  updateSelectBar();
+}
+function toggleSelectMode() {
+  _selecting = !_selecting;
+  _selected.clear();
+  document.body.classList.toggle('selecting', _selecting);
+  document.getElementById('selectModeBtn').textContent = _selecting ? '取消' : '选择';
+  renderGrid();
+}
+function toggleSelectAll() {
+  if (_selected.size === _allGifts.length) _selected.clear();
+  else _allGifts.forEach(g => _selected.add(g.id));
+  renderGrid();
+}
+function updateSelectBar() {
+  document.getElementById('selectCount').textContent = `已选 ${_selected.size} 份`;
+  document.getElementById('batchDelBtn').disabled = _selected.size === 0;
+  document.getElementById('selectAllBtn').textContent =
+    _allGifts.length && _selected.size === _allGifts.length ? '取消全选' : '全选';
+}
+function askBatchDelete() {
+  if (!_selected.size) return;
+  _batchDeleteIds = [..._selected];
+  _deleteId = null;
+  document.getElementById('confirmText').textContent =
+    `确定要删除选中的 ${_batchDeleteIds.length} 份礼物吗？图片文件会一并删除，无法恢复。`;
+  document.getElementById('confirmOverlay').classList.add('show');
+}
+async function confirmBatchDelete() {
+  const ids = _batchDeleteIds;
+  cancelDelete();
+  const btn = document.getElementById('batchDelBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/gift/batch-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error('failed');
+    const gone = new Set(data.deleted_ids);
+    _allGifts = _allGifts.filter(g => !gone.has(g.id));
+    saveSnapshot();
+    toggleSelectMode();
+    showToast(`已删除 ${gone.size} 份，释放 ${(data.freed_bytes / 1048576).toFixed(1)} MB`);
+  } catch(e) {
+    showToast('删除失败');
+    updateSelectBar();
+  }
+}
+
 // 测试送礼
-async function testGift() {
+async function testGift(sender) {
+  document.getElementById('testOverlay').classList.remove('show');
   const btn = document.getElementById('testGiftBtn');
   btn.disabled = true;
   btn.textContent = '⏳ 生成中...';
   try {
-    const res = await fetch('/api/gift/test', { method: 'POST' });
+    const res = await fetch('/api/gift/test?sender=' + sender, { method: 'POST' });
     const data = await res.json();
     showToast(data.message || '已触发');
   } catch(e) {

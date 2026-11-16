@@ -17,8 +17,7 @@ SAFE_LIVE_QUARANTINE_CHARS = 16
 SAFE_LIVE_MAX_PENDING_COMMAND_CHARS = 512
 SAFE_LIVE_MAX_LONG_COMMAND_CHARS = 4_096
 # Control blocks (e.g. song lyrics) retain their existing separate budget.
-SAFE_LIVE_MAX_CHARS = 6_000
-SAFE_LIVE_MAX_VISIBLE_CHARS = 3_000
+SAFE_LIVE_MAX_SCORE_CHARS = 6_000
 SAFE_LIVE_TOTAL_TIMEOUT = 900.0
 SAFE_LIVE_IDLE_TIMEOUT = 300.0
 
@@ -37,7 +36,7 @@ _RAW_OPENAI_ENVELOPE = re.compile(
 _UNKNOWN_ANGLE_TAG = re.compile(r"(?is)<\s*/?\s*([a-z][a-z0-9_-]*)\b[^>]{0,160}>")
 _ALLOWED_CONTROL_TAGS = {"meta", "autonomy_state"}
 _PROVIDER_ERROR_MARKER = re.compile(
-    r"\[(?:CodexCLI|AntigravityCLI|Gemini|硅基流动|中转站|自定义中转站)?错误(?:[^\]]*)\]",
+    r"\[(?:CodexCLI|AntigravityCLI|GrokCLI|Gemini|硅基流动|中转站|自定义中转站)?错误(?:[^\]]*)\]",
     re.IGNORECASE,
 )
 _BASE64_TOKEN = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{320,}={0,2}(?![A-Za-z0-9+/])")
@@ -46,7 +45,6 @@ _BASE64_TOKEN = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{320,}={0,2}(?![A-Za
 # Laughter, emoji, and a few repeated sentences are normal conversation.
 _PARAGRAPH_LOOP = re.compile(r"(.{32,200}?)\1{5,}", re.DOTALL)
 _STOP_NOTICES = {
-    "length": "回复达到 3000 字符上限，已停止生成。",
     "repetition": "检测到持续重复，已停止生成。",
     "quality": "回复内容异常，已停止生成。",
     "transport": "回复连接中断，可重试。",
@@ -62,7 +60,7 @@ def _is_paragraph_loop(text: str) -> bool:
                for match in _PARAGRAPH_LOOP.finditer(text))
 
 _BRACKET_COMMAND_PREFIXES = tuple(value.upper() for value in (
-    "[语音", "[猜拳", "[小游戏",
+    "[语音", "[猜拳", "[小游戏", "[小家氛围",
     "[WEB_SEARCH", "[WEB_EXTRACT", "[LOUNGE_VISIT", "[MUSIC", "[MOMENT",
     "[MEMORY", "[许愿", "[查看动态", "[SELFIE", "[DRAW", "[SONG", "[COMPOSE",
     "[POI_SEARCH", "[TOY", "[SVAKOM", "[ANKNI", "[PET", "[HOME", "[BAND_VIBRATE", "[BAND_NOTE",
@@ -94,6 +92,16 @@ def _mask_composition_angles(text: str) -> str:
                   lambda match: ' ' * len(match[0]), text, flags=re.I)
 
 
+def _composition_prefix(text: str) -> str:
+    # Carry only the open score and a possible partial delimiter across chunks.
+    upper = text.upper()
+    opening, closing = '[COMPOSE]', '[/COMPOSE]'
+    active = upper.rfind(opening) > upper.rfind(closing)
+    tail = upper[upper.rfind('['):] if '[' in upper[-len(closing):] else ''
+    partial = tail if tail not in (opening, closing) and (opening.startswith(tail) or closing.startswith(tail)) else ''
+    return (opening if active else '') + partial
+
+
 def _looks_unsafe_protocol(text: str, *, angle_text: str | None = None) -> bool:
     if not text:
         return False
@@ -122,8 +130,7 @@ class SafeLiveStreamGuard:
 
     def __init__(self):
         self._buffer = ""
-        self._committed_chars = 0
-        self._committed_raw = ""
+        self._composition_prefix = ""
         self._stop_reason: str | None = None
 
     @property
@@ -141,17 +148,11 @@ class SafeLiveStreamGuard:
         if has_provider_error_marker(candidate):
             self._stop("transport")
             return ""
-        remaining = SAFE_LIVE_MAX_CHARS - self._committed_chars
-        over_limit = len(candidate) > remaining
-        candidate = candidate[:remaining]
-        angle_candidate = _mask_composition_angles(self._committed_raw + candidate)[self._committed_chars:]
+        prefix = self._composition_prefix
+        angle_candidate = _mask_composition_angles(prefix + candidate)[len(prefix):]
         if _looks_unsafe_protocol(candidate, angle_text=angle_candidate):
             self._stop("quality")
             return ""
-        if over_limit:
-            self._committed_chars += len(candidate)
-            self._stop("length")
-            return candidate
         self._buffer = candidate
         release_chars = len(candidate) - SAFE_LIVE_QUARANTINE_CHARS
         last_angle_open = angle_candidate.rfind("<")
@@ -165,8 +166,7 @@ class SafeLiveStreamGuard:
             return ""
         released = candidate[:release_chars]
         self._buffer = candidate[release_chars:]
-        self._committed_chars += len(released)
-        self._committed_raw += released
+        self._composition_prefix = _composition_prefix(prefix + released)
         return released
 
     def finish(self) -> StreamSafetyResult:
@@ -178,7 +178,8 @@ class SafeLiveStreamGuard:
             )
         tail = self._buffer
         self._buffer = ""
-        angle_tail = _mask_composition_angles(self._committed_raw + tail)[self._committed_chars:]
+        prefix = self._composition_prefix
+        angle_tail = _mask_composition_angles(prefix + tail)[len(prefix):]
         if _looks_unsafe_protocol(tail, angle_text=angle_tail):
             self._stop_reason = "quality"
             return StreamSafetyResult(
@@ -186,7 +187,6 @@ class SafeLiveStreamGuard:
                 stop_reason="quality",
                 notice="回复连接异常，可重试",
             )
-        self._committed_chars += len(tail)
         return StreamSafetyResult(committed_text=tail)
 
 
@@ -263,7 +263,7 @@ class KnownCommandStreamFilter:
             else:
                 self._close_token = "]"
             if matched_prefix in ("[SONG", "[COMPOSE"):
-                self._active_limit = SAFE_LIVE_MAX_CHARS
+                self._active_limit = SAFE_LIVE_MAX_SCORE_CHARS
             elif (
                 matched_prefix in _LONG_FORM_BRACKET_PREFIXES
                 or matched_prefix in _FULLWIDTH_COMMAND_PREFIXES
@@ -381,26 +381,26 @@ async def consume_safe_live_stream(
     iterator = source.__aiter__()
     started_at = clock()
     raw_parts: list[str] = []
-    visible_history = ""
-    last_repeat_check = 0
+    visible_parts: list[str] = []
+    repeat_window = ""
+    unchecked = 0
     diagnostic_error: str | None = None
 
     async def deliver_checked(text: str) -> None:
-        nonlocal visible_history, last_repeat_check
-        remaining = SAFE_LIVE_MAX_VISIBLE_CHARS - len(visible_history)
-        over_limit = len(text) > remaining
-        text = text[:remaining]
-        candidate = visible_history + text
+        nonlocal repeat_window, unchecked
+        if not text:
+            return
+        candidate = repeat_window + text
+        unchecked += len(text)
         # Check across provider chunk boundaries without delaying ordinary text.
-        if len(candidate) - last_repeat_check >= 64:
-            last_repeat_check = len(candidate)
+        if unchecked >= 64:
+            unchecked = 0
             if _is_paragraph_loop(candidate):
                 guard._stop("repetition")
                 return
-        visible_history = candidate
+        repeat_window = candidate[-1400:]
+        visible_parts.append(text)
         await _deliver(on_commit, text)
-        if over_limit:
-            guard._stop("length")
 
     while guard.stop_reason is None and command_filter.stop_reason is None:
         remaining = SAFE_LIVE_TOTAL_TIMEOUT - (clock() - started_at)
@@ -446,7 +446,7 @@ async def consume_safe_live_stream(
 
     return StreamSafetyResult(
         # Stopped output must never execute any commands from the partial reply.
-        committed_text=visible_history if stop_reason else "".join(raw_parts),
+        committed_text="".join(visible_parts if stop_reason else raw_parts),
         stop_reason=stop_reason,
         notice=_STOP_NOTICES.get(stop_reason, "回复已停止，可重试。") if stop_reason else "",
         diagnostic_error=diagnostic_error,

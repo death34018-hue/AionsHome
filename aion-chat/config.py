@@ -122,7 +122,7 @@ def get_sentinel_config() -> dict:
             "provider": "codex",
             "base_url": "",
             "api_key": "",
-            "model": "gpt-5.6-luna",
+            "model": "gpt-6-luna",
             "reasoning_effort": "none",
             "use_openai": False,
             "ready": True,
@@ -264,28 +264,19 @@ ANTIGRAVITY_MODELS_PATH = DATA_DIR / "antigravity_models.json"
 # AGY 模型开关：只展示未注释的官方 slug。取消注释后重启服务器、刷新页面。
 # antigravity_models.json 是自动生成的缓存，不要在那里修改开关。
 ANTIGRAVITY_ENABLED_MODELS = (
-    "gemini-4-argon-medium",
-    "gemini-4-argon-high",
+    "gemini-4-hydrogen-high",
+    "gemini-4-hydrogen-low",
     "gemini-4-argon-low",
+    "gemini-4-argon-medium",
     "gemini-3.8-flash-high",
-    # "gemini-3.8-flash-medium",
-    # "gemini-3.8-flash-low",
-    # "gemini-3.7-flash-high",
-    # "gemini-3.7-flash-medium",
-    # "gemini-3.7-flash-low",
-    # "gemini-3.6-flash-high",
-    # "gemini-3.6-flash-medium",
-    # "gemini-3.6-flash-low",
-    # "gemini-3.1-pro-high",
-    # "gemini-3.1-pro-low",
-    # "claude-opus-5-5-low",
     "claude-opus-5-5-medium",
-    # "claude-opus-5-5-high",
-    # "claude-sonnet-5-5-low",
-    # "claude-sonnet-5-5-medium",
-    # "claude-sonnet-5-5-high",
-    # "gpt-oss-120b-medium",
 )
+ANTIGRAVITY_ACP_ENABLED_MODELS = (
+    "gemini-4-hydrogen-low", "gemini-4-hydrogen-high",
+    "gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high",
+    "gemini-3.8-flash-high", "claude-opus-5-5-medium",
+)
+ANTIGRAVITY_CATALOG_MODELS = set(ANTIGRAVITY_ENABLED_MODELS) | set(ANTIGRAVITY_ACP_ENABLED_MODELS)
 
 
 def antigravity_model_supports_vision(model: str) -> bool:
@@ -309,7 +300,7 @@ def _read_antigravity_models() -> dict:
         for key, value in rows.items()
         if isinstance(key, str) and key.startswith("AGY · ")
         and isinstance(value, dict) and value.get("provider") == "antigravity_cli"
-        and value.get("model") in ANTIGRAVITY_ENABLED_MODELS
+        and value.get("model") in ANTIGRAVITY_CATALOG_MODELS
     }
 
 
@@ -319,16 +310,29 @@ VERTEX_CREDENTIALS_PATH = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "
 
 BUILTIN_MODELS = {
     "硅基GLM-5.2":      {"provider": "siliconflow", "model": "zai-org/GLM-5.2", "vision": False},
-    "官Gem3.8flash":  {"provider": "gemini", "model": "gemini-3.8-flash", "vision": True, "audio": True},
-    "官4-Argon":  {"provider": "gemini", "model": "gemini-4-argon", "vision": True, "audio": True},
+    # Gemini 和 Vertex 的 thinking_level 可填 low、medium 或 high，省略或留空时使用模型默认档位。
+    "官4-Argon":  {"provider": "gemini", "model": "gemini-4-argon", "vision": True, "audio": True, "thinking_level": "low"},
+    "官4-Carbon":  {"provider": "gemini", "model": "gemini-4-carbon", "vision": True, "audio": True, "thinking_level": "low"},
     # Vertex 在这里添加模型；vision 表示看图，audio 表示接收音频。
     "Vertex · 3.8 Flash": {"provider": "vertex", "model": "gemini-3.8-flash", "vision": True, "audio": True},
     "Vertex · 4 Argon": {"provider": "vertex", "model": "gemini-4-argon", "vision": True, "audio": True},
+    "Vertex · 4 Carbon": {"provider": "vertex", "model": "gemini-4-carbon", "vision": True, "audio": True, "thinking_level": "low"},
     "Codex-5.6-Sol":      {"provider": "codex_cli",  "model": "gpt-5.6-sol", "vision": True, "transport_mode": "safe_live"},
     "Codex-6.1-Sol":   {"provider": "codex_cli",  "model": "gpt-6.1-sol", "vision": True, "transport_mode": "safe_live"},
-    "Codex-6.1-Terra": {"provider": "codex_cli", "model": "gpt-6.1-terra","vision": True, "transport_mode": "safe_live",},
-    
 }
+
+GROK_MODEL_EFFORTS = {
+    'grok-4.7': ('low', 'medium', 'high', 'xhigh'),
+    'grok-4.7-build-fast': ('low', 'medium', 'high', 'xhigh'),
+    'grok-4.6': ('low', 'medium', 'high', 'xhigh'),
+    'grok-4.5': ('low', 'medium', 'high'),
+}
+BUILTIN_MODELS.update({
+    'Grok · 4.7': {'provider': 'grok_cli', 'model': 'grok-4.7', 'vision': False},
+    'Grok · 4.7 Fast': {'provider': 'grok_cli', 'model': 'grok-4.7-build-fast', 'vision': False},
+    'Grok · 4.6': {'provider': 'grok_cli', 'model': 'grok-4.6', 'vision': False},
+    'Grok · 4.5': {'provider': 'grok_cli', 'model': 'grok-4.5', 'vision': False},
+})
 
 # 本机配置好凭证后启用 Vertex 线路。
 if not VERTEX_CREDENTIALS_PATH.is_file():
@@ -340,6 +344,17 @@ if not VERTEX_CREDENTIALS_PATH.is_file():
 
 def _clean_text(value) -> str:
     return str(value or "").strip()
+
+
+def normalize_grok_reasoning_efforts(value) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {model: str(effort).strip().lower() for model, effort in value.items()
+            if str(effort).strip().lower() in GROK_MODEL_EFFORTS.get(model, ())}
+
+
+def resolve_grok_reasoning_effort(model: str) -> str:
+    return normalize_grok_reasoning_efforts(SETTINGS.get('grok_reasoning_efforts')).get(model, 'high')
 
 
 def normalize_model_transport_modes(value) -> dict[str, str]:
@@ -425,11 +440,24 @@ def normalize_custom_model_routes(value) -> list[dict]:
     return routes
 
 
+def _antigravity_routes() -> dict:
+    acp_routes = {}
+    cli_routes = {}
+    for key, cfg in ANTIGRAVITY_MODELS.items():
+        if cfg["model"] in ANTIGRAVITY_ENABLED_MODELS:
+            cli_routes[key] = cfg
+        if cfg["model"] in ANTIGRAVITY_ACP_ENABLED_MODELS:
+            acp_routes[key.replace("AGY · ", "AGY ACP · ", 1)] = {
+                **cfg, "provider": "antigravity_acp", "audio": False,
+            }
+    return acp_routes | cli_routes
+
+
 def refresh_custom_models() -> None:
     """根据 settings.json 里的自定义线路刷新运行时模型列表。"""
     MODELS.clear()
     MODELS.update(BUILTIN_MODELS)
-    MODELS.update(ANTIGRAVITY_MODELS)
+    MODELS.update(_antigravity_routes())
     for route in normalize_custom_model_routes(SETTINGS.get("custom_model_routes")):
         for item in route.get("models", []):
             key = item["key"]
@@ -453,12 +481,12 @@ def replace_antigravity_models(models: dict, *, persist: bool = False) -> None:
     models = {key: {**value, "vision": antigravity_model_supports_vision(value.get("model", "")),
                    "audio": antigravity_model_supports_audio(value.get("model", ""))}
               for key, value in models.items()
-              if value.get("model") in ANTIGRAVITY_ENABLED_MODELS}
-    for key in ANTIGRAVITY_MODELS:
+              if value.get("model") in ANTIGRAVITY_CATALOG_MODELS}
+    for key in _antigravity_routes():
         MODELS.pop(key, None)
     ANTIGRAVITY_MODELS.clear()
     ANTIGRAVITY_MODELS.update(models)
-    MODELS.update(ANTIGRAVITY_MODELS)
+    MODELS.update(_antigravity_routes())
     if persist:
         temporary = ANTIGRAVITY_MODELS_PATH.with_suffix(".tmp")
         temporary.write_text(json.dumps(models, ensure_ascii=False, indent=2), encoding="utf-8")

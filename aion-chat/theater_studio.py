@@ -4,6 +4,7 @@ import json
 import re
 import time
 import uuid
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Literal
 
@@ -14,7 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 from config import THEATER_TTS_CACHE_DIR, UPLOADS_DIR
 from database import get_db
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
-from stream_safety import consume_safe_stream, THEATER_STREAM_POLICY
+from stream_safety import consume_safe_stream, StreamActivity, THEATER_STREAM_POLICY
 from tts import _request_tts_audio, _find_cut_position_for_text, _strip_tags
 
 router = APIRouter(prefix="/studio")
@@ -24,6 +25,9 @@ _speech = {}
 _pictures = {}
 _finishing = set()
 _live = {}
+_progress = {}
+# Lets the chapter writer observe raw provider chunks of its own request only.
+_upstream = ContextVar('theater_studio_upstream', default=None)
 
 
 def uid(prefix):
@@ -92,6 +96,7 @@ class BookPatch(BaseModel):
     max_chars: int | None = Field(None, ge=1000, le=30000)
     anchors: list[str] = Field(default_factory=list)
     illustrations: bool = True
+    auxiliary_model: str = ''
     consensus: str | None = None
 
 
@@ -145,6 +150,8 @@ async def get_book(cid: str, chapter: str = ''):
             c = await change(c['id'], status='interrupted', error='写作已中断，可续写本章')
             chapters[i] = c
         c['writing'] = c['id'] in _writing
+        # Always present so a finished chapter clears the client's last value.
+        c['progress'] = write_progress(c['id']) if c['writing'] else None
         c['processing'] = c['id'] in _finishing or c['id'] in _pictures
         c['word_count'] = prose_length(c.get('content', ''))
         if chapter and c['id'] != chapter:
@@ -317,8 +324,10 @@ def _provider_error_detail(raw):
     return (prefix + ('：' if prefix and text else '') + ' '.join(text.split()))[:400]
 
 
-async def generate_text(cid, prompt, on_chunk=None, *, max_tokens=None, messages=None):
+async def generate_text(cid, prompt, on_chunk=None, *, max_tokens=None, messages=None, auxiliary=False):
     conv = await conversation(cid)
+    book = await load(cid) if auxiliary else None
+    model = (book or {}).get('auxiliary_model', '').strip() or conv[1]
     from routes.theater import _load_personas
     persona = next((p.get('persona', '') for p in _load_personas() if p['id'] == conv[2]), '')
     history = [{'role': 'user', 'content': (f'你以以下人设陪用户讨论和创作，保留自己的性格、情感与说话方式。故事角色的身份和关系遵守平行宇宙设定，不把现实关系强加给初识剧情。\n{persona}\n\n' if persona else '') + prompt}]
@@ -327,9 +336,12 @@ async def generate_text(cid, prompt, on_chunk=None, *, max_tokens=None, messages
         history.extend({'role': m['role'], 'content': m['content']} for m in messages)
     provider_error = None
     provider_meta = {}
+    heard = _upstream.get()
     async def source():
         nonlocal provider_error
-        async for chunk in stream_ai(history, conv[1], meta=provider_meta, max_tokens=max_tokens if max_tokens is not None else (24000 if on_chunk else 6000), include_device_context=False, request_timeout=300):
+        async for chunk in stream_ai(history, model, meta=provider_meta, max_tokens=max_tokens if max_tokens is not None else (24000 if on_chunk else 6000), include_device_context=False, request_timeout=300, include_thoughts=True):
+            if heard:
+                heard(chunk)
             if provider_meta.get('provider_error'):
                 provider_error = ModelRequestError(_provider_error_detail(provider_meta['provider_error']), str(chunk))
                 raise provider_error
@@ -411,14 +423,14 @@ async def edit_chapter(key: str, body: ChapterPatch):
             await stop_audio(key)
             _live.pop(key, None)
             # Editing a partial draft must not silently mark the chapter finished.
-            fields.update(revision=c['revision']+1, summary='', images=[], audio=None,
+            fields.update(revision=c['revision']+1, summary='', images=[], image_error='', audio=None,
                           status='draft' if c['status'] == 'ready' else 'interrupted', error='',
                           versions=(c.get('versions', [])+[snapshot(c)])[-3:])
         return await change(key, **fields)
 
 
 def snapshot(c):
-    return {k: c.get(k) for k in ('content', 'summary', 'images', 'audio', 'revision', 'status')}
+    return {k: c.get(k) for k in ('content', 'summary', 'images', 'image_plan_revision', 'audio', 'revision', 'status')}
 
 
 @router.post('/chapters/{key}/restore')
@@ -433,6 +445,8 @@ async def restore_chapter(key: str):
         _live.pop(key, None)
         old = c['versions'][-1]
         # New revision prevents late illustration/audio jobs from attaching.
+        if old.get('image_plan_revision') == old.get('revision'):
+            old['image_plan_revision'] = c['revision']+1
         old.update(revision=c['revision']+1, audio=None, versions=c['versions'][:-1]+[snapshot(c)])
         return await change(key, **old)
 
@@ -442,18 +456,134 @@ class WriteRequest(BaseModel):
     rewrite: bool = False
 
 
-async def summarize(c):
-    text = await generate_text(c['conv_id'], '仅根据以下已写正文，记录已发生事件、人物当前关系/位置/知情范围、未解伏笔；不要把未来计划当事实。600字以内。\n'+c['content'])
-    current = await load(c['id'])
-    if current and current['revision'] == c['revision']:
-        await change(c['id'], summary=text)
-    return text
+class ChapterSummary(BaseModel):
+    revision: int
+    summary: str
+
+
+@router.put('/chapters/{key}/summary')
+async def put_chapter_summary(key: str, body: ChapterSummary):
+    summary = body.summary.strip()
+    if not summary:
+        raise HTTPException(422, '请填写本章摘要')
+    async with lock('operation_'+key), lock(key):
+        c = await load(key)
+        if not c or c.get('kind') != 'chapter':
+            raise HTTPException(404, '章节不存在')
+        if c['revision'] != body.revision or key in _writing:
+            raise HTTPException(409, '正文已变化，请重新打开本章摘要')
+        if not c.get('content', '').strip():
+            raise HTTPException(409, '本章还没有正文')
+        c['summary'] = summary
+        await save(c)
+        return {'summary': summary}
+
+
+def chapter_image_plan(content, scenes, cast):
+    images = []
+    positions = set()
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        quote, prompt = scene.get('quote'), scene.get('prompt')
+        if not isinstance(quote, str) or not quote.strip() or not isinstance(prompt, str) or not prompt.strip():
+            continue
+        start = content.find(quote)
+        after = start + len(quote)
+        if start < 0 or after in positions or content.find(quote, start+1) >= 0:
+            continue
+        characters = scene.get('characters')
+        images.append(dict(id=uid('pic_'), after=after, prompt=prompt.strip(),
+                           characters=characters if isinstance(characters, list) else [], status='pending', url=''))
+        positions.add(after)
+        if len(images) == 4:
+            break
+    if not images:
+        # An empty list or a paraphrased quote still gets a scene grounded in the prose.
+        paragraph = max((p.strip() for p in content.splitlines()), key=len, default='')
+        if not paragraph:
+            raise ValueError('本章还没有正文可配图')
+        excerpt = paragraph[:600]
+        characters = [a['name'] for a in cast if any(name.strip() and name.strip() in excerpt
+                      for name in [a['name'], *a.get('aliases', '').split(',')])]
+        images.append(dict(id=uid('pic_'), after=content.index(paragraph)+len(paragraph),
+                           prompt='为这段正文画一幅场景插画：'+excerpt, characters=characters, status='pending', url=''))
+    return images
+
+
+async def summarize(c, *, include_images=False):
+    # Backfilling for the next chapter shares the in-flight postprocessing result.
+    async with lock('summary_'+c['id']):
+        current = await load(c['id'])
+        if not current or current['revision'] != c['revision']:
+            return ''
+        c = current
+        book = await load(c['conv_id'])
+        plan_images = include_images and book.get('illustrations') and not c.get('images')
+        if c.get('summary') and not plan_images:
+            return c['summary']
+        prompt = '仅根据已写正文，记录已发生事件、人物当前关系/位置/知情范围、未解伏笔，600字以内。'
+        if plan_images:
+            cast, names = await cast_text(book)
+            prompt += (f'同时按正文顺序选择1至4个不同场景配图。人物：{names}\n'
+                       '只返回JSON：{"summary":"剧情摘要","scenes":[{"quote":"正文中连续且唯一的一句原文",'
+                       '"prompt":"场景、服饰、人物位置与动作，明确名字","characters":["人物名字"]}]}。')
+        else:
+            prompt += '只输出摘要。'
+        text = await generate_text(c['conv_id'], prompt+'\n正文：'+c['content'], auxiliary=True)
+        fields = {}
+        if plan_images:
+            result = parse_json(text)
+            text = result.get('summary')
+            scenes = result.get('scenes')
+            images = chapter_image_plan(c['content'], scenes if isinstance(scenes, list) else [], cast)
+            fields.update(images=images, image_plan_revision=c['revision'], image_error='')
+        async with lock(c['id']):
+            current = await load(c['id'])
+            if not current or current['revision'] != c['revision']:
+                return ''
+            summary = current.get('summary') or (text.strip() if isinstance(text, str) else '')
+            if not summary:
+                raise ValueError('没有生成剧情摘要')
+            current.update(summary=summary, **fields)
+            await save(current)
+        return summary
+
+
+def new_progress():
+    return dict(started=time.monotonic(), requested=None, first=None, last=None, chars=0, thinking=False)
+
+
+def write_progress(key):
+    """Seconds waited and upstream data seen for a chapter being written."""
+    p = _progress.get(key)
+    if not p:
+        return None
+    now = time.monotonic()
+    since = lambda moment: None if moment is None else round(now-moment, 1)
+    return dict(elapsed=since(p['started']), waited=since(p['requested']), idle=since(p['last']),
+                first_after=None if p['first'] is None else round(p['first']-p['requested'], 1),
+                chars=p['chars'], thinking=p['thinking'])
 
 
 async def write_chapter(key, instruction):
     c = await load(key)
     text = c['content']
     last_save = 0
+    progress = _progress.setdefault(key, new_progress())
+
+    def heard(chunk):
+        # Status lines can be produced locally before the provider answers.
+        if chunk.startswith(CLI_STATUS_PREFIX):
+            return
+        progress['last'] = time.monotonic()
+        if progress['first'] is None:
+            progress['first'] = progress['last']
+        if isinstance(chunk, StreamActivity):
+            progress['thinking'] = True
+        else:
+            progress['chars'] += len(chunk)
+
     try:
         book = await load(c['conv_id'])
         all_chapters = sorted(await rows(c['conv_id'], 'chapter'), key=lambda p: p['number'])
@@ -489,7 +619,12 @@ async def write_chapter(key, instruction):
             if time.monotonic()-last_save > .5:
                 await change(key, content=text)
                 last_save = time.monotonic()
-        await generate_text(c['conv_id'], prompt, commit)
+        progress['requested'] = time.monotonic()
+        listening = _upstream.set(heard)
+        try:
+            await generate_text(c['conv_id'], prompt, commit)
+        finally:
+            _upstream.reset(listening)
         if not text.strip():
             raise RuntimeError('未生成正文，请重试')
         # A clean transport end does not establish that the story chapter is complete.
@@ -502,14 +637,19 @@ async def write_chapter(key, instruction):
         _live[key] = {'content': text, 'done': True, 'revision': c['revision'], 'conv_id': c['conv_id']}
         _finishing.add(key)
         _writing.pop(key, None)
+        _progress.pop(key, None)
     try:
         current = await load(key)
         if current and current['status'] in ('draft', 'ready'):
             try:
-                await summarize(current)
+                await summarize(current, include_images=True)
             except Exception:
-                pass  # Rebuilt before the next chapter if unavailable.
-            await illustrate(key)
+                book = await load(c['conv_id'])
+                if book and book.get('illustrations'):
+                    await save_chapter_images(key, current['revision'], image_error='摘要与配图规划未完成，可重试')
+                # Missing summaries are rebuilt before writing the next chapter.
+            else:
+                await illustrate(key)
     finally:
         _finishing.discard(key)
 
@@ -538,7 +678,7 @@ async def start_writing(key: str, body: WriteRequest):
         if not body.rewrite and prose_length(c['content']) >= chapter_limits(book, c)[1]:
             raise HTTPException(409, '本章已达到字数上限；请在菜单「章节计划」中调高本章上限后再续写')
         await stop_audio(key)
-        updates = dict(status='writing', error='')
+        updates = dict(status='writing', error='', image_error='')
         if body.instruction.strip():
             updates['plan'] = c['plan']+'\n本次创作指导：'+body.instruction.strip()
         if body.rewrite:
@@ -551,6 +691,7 @@ async def start_writing(key: str, body: WriteRequest):
         updates['audio'] = None
         c = await change(key, **updates)
         _live[key] = dict(content=c['content'], done=False, revision=c['revision'], conv_id=c['conv_id'])
+        _progress[key] = new_progress()
         _writing[key] = asyncio.create_task(write_chapter(key, body.instruction))
         return c
 
@@ -562,6 +703,7 @@ async def stop_writing(key: str):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         _writing.pop(key, None)
+        _progress.pop(key, None)
         c = await load(key)
         if c and c['status'] == 'writing':
             await change(key, status='interrupted', error='已停止写作，可续写')
@@ -639,13 +781,18 @@ async def set_chapter_completion(key: str, body: ChapterCompletion):
         if not c.get('content', '').strip():
             raise HTTPException(409, '本章还没有正文')
         from theater_reading import complete
-        return await complete(key, body.completed)
+        completed = await complete(key, body.completed)
+        if body.completed and c['status'] != 'ready' and not completed.get('images') and not completed.get('image_error'):
+            book = await load(c['conv_id'])
+            if book.get('illustrations') and key not in _finishing and key not in _pictures:
+                queue_illustrations(key, completed['revision'])
+        return completed
 
 
-async def illustrate(key, *, retry=False):
+async def illustrate(key, *, retry=False, revision=None, scene_id=None):
     # A rewritten chapter must wait for, rather than be skipped by, an old job.
     async with lock('pictures_'+key):
-        await _illustrate(key, retry=retry)
+        await _illustrate(key, revision=revision, scene_id=scene_id)
 
 
 async def save_chapter_images(key, revision, **fields):
@@ -658,46 +805,58 @@ async def save_chapter_images(key, revision, **fields):
         return True
 
 
-async def _illustrate(key, *, retry=False):
+def scene_prompt(scene, book, names):
+    return scene.get('render_prompt') or f"统一画风：{book['style']}\n人物固定外貌：{names}\n{scene['prompt']}"
+
+
+@router.get('/chapters/{key}/images/{scene_id}/prompt')
+async def get_scene_prompt(key: str, scene_id: str):
+    chapter = await load(key)
+    scene = next((s for s in (chapter or {}).get('images', []) if s.get('id') == scene_id), None)
+    if not scene:
+        raise HTTPException(404, '配图不存在')
+    book = await load(chapter['conv_id'])
+    _, names = await cast_text(book)
+    return {'prompt': scene_prompt(scene, book, names), 'revision': chapter['revision']}
+
+
+async def _illustrate(key, *, revision=None, scene_id=None):
     _pictures[key] = True
     c = None
     try:
         c = await load(key)
-        if not c or c.get('status') not in ('draft', 'ready'):
+        if (not c or c.get('status') not in ('draft', 'ready')
+                or (revision is not None and c['revision'] != revision)):
             return
         book = await load(c['conv_id'])
-        if not book or not book.get('illustrations') or (c.get('images') and not retry):
+        if not book or not book.get('illustrations'):
             return
         cast, names = await cast_text(book)
         scenes = c.get('images') or []
         if not scenes:
-            plan = parse_json(await generate_text(c['conv_id'], f"为本章选择0至3个真正值得画的精彩场景，不强制配图。人物：{names}\n返回JSON {{\"scenes\":[{{\"quote\":\"正文中连续且唯一的一句原文，用来定位插图\",\"prompt\":\"场景、服饰、人物位置与动作，明确名字\",\"characters\":[\"人物名字\"]}}]}}\n正文：{c['content']}"))
-            for s in plan.get('scenes', [])[:3]:
-                quote = str(s.get('quote', ''))
-                if quote and quote in c['content']:
-                    scenes.append(dict(id=uid('pic_'), after=c['content'].index(quote)+len(quote), prompt=str(s['prompt']), characters=s.get('characters', []), status='pending', url=''))
-        for s in scenes:
-            if s.get('status') != 'ready':
-                s.update(status='pending', error='')
-        current = await load(key)
-        if not current or current['revision'] != c['revision']:
-            return
+            await summarize(c, include_images=True)
+            current = await load(key)
+            if not current or current['revision'] != c['revision']:
+                return
+            scenes = current.get('images') or []
+        targets = [s for s in scenes if s.get('status') != 'ready' and (scene_id is None or s['id'] == scene_id)]
+        for s in targets:
+            s.update(status='pending', error='')
         if not await save_chapter_images(key, c['revision'], images=scenes, image_error=''):
             return
-        for s in scenes:
-            if s.get('status') == 'ready':
-                continue
+        for s in targets:
             current = await load(key)
             if not current or current['revision'] != c['revision']:
                 return
             from image_gen import generate_image
-            refs = [{'name': a['name'], 'path': str(reference_path(a['image']))} for a in cast if a['image'] and (a['name'] in s['characters'] or any(alias.strip() in s['characters'] for alias in a['aliases'].split(',') if alias.strip()))]
             try:
-                filename = await generate_image(f"统一画风：{book['style']}\n人物固定外貌：{names}\n{s['prompt']}", references=refs, raise_errors=True)
+                s['render_prompt'] = scene_prompt(s, book, names)
+                refs = [{'name': a['name'], 'path': str(reference_path(a['image']))} for a in cast if a['image'] and (a['name'] in s['characters'] or any(alias.strip() in s['characters'] for alias in a['aliases'].split(',') if alias.strip()))]
+                filename = await generate_image(s['render_prompt'], references=refs, raise_errors=True)
                 s.update(status='ready' if filename else 'failed', url=('/uploads/'+filename.lstrip('/')) if filename else '',
                          error='' if filename else '生图未返回图片，可重试')
-            except TimeoutError:
-                s.update(status='failed', url='', error='生图等待超时，可稍后重试')
+            except TimeoutError as exc:
+                s.update(status='failed', url='', error=str(exc)[:500] or '生图等待超时，可稍后重试')
             except Exception as exc:
                 s.update(status='failed', url='', error=(str(exc) or type(exc).__name__)[:500])
             if await save_chapter_images(key, c['revision'], images=scenes):
@@ -710,14 +869,52 @@ async def _illustrate(key, *, retry=False):
         _pictures.pop(key, None)
 
 
+def queue_illustrations(key, revision, scene_id=None):
+    _pictures[key] = True
+    asyncio.create_task(illustrate(key, revision=revision, scene_id=scene_id))
+
+
+class SceneRetry(BaseModel):
+    revision: int
+    prompt: str
+
+
+async def retryable_chapter(key):
+    c = await load(key)
+    if not c or c.get('kind') != 'chapter' or c.get('status') not in ('draft', 'ready'):
+        raise HTTPException(409, '请先完成本章正文')
+    book = await load(c['conv_id'])
+    if not book.get('illustrations'):
+        raise HTTPException(409, '请先在创作设置中开启配图')
+    return c
+
+
 @router.post('/chapters/{key}/illustrate')
 async def retry_images(key: str):
-    c = await load(key)
-    if not c or c.get('status') not in ('draft', 'ready'):
-        raise HTTPException(409, '请先完成本章正文')
-    if key in _pictures:
-        return {'ok': True}
-    asyncio.create_task(illustrate(key, retry=True))
+    async with lock(key):
+        c = await retryable_chapter(key)
+        if key not in _pictures and key not in _finishing:
+            queue_illustrations(key, c['revision'])
+    return {'ok': True}
+
+
+@router.post('/chapters/{key}/images/{scene_id}/retry')
+async def retry_scene(key: str, scene_id: str, body: SceneRetry):
+    prompt = body.prompt.strip()
+    if not prompt:
+        raise HTTPException(422, '请填写配图提示词')
+    async with lock(key):
+        c = await retryable_chapter(key)
+        if c['revision'] != body.revision:
+            raise HTTPException(409, '正文已变化，请重新打开配图')
+        if key in _pictures or key in _finishing:
+            raise HTTPException(409, '本章正在配图，请等本轮完成后重试')
+        scene = next((s for s in c.get('images', []) if s['id'] == scene_id), None)
+        if not scene or scene.get('status') == 'ready':
+            raise HTTPException(409, '这张配图已变化，请刷新后查看')
+        scene.update(render_prompt=prompt, status='pending', error='')
+        await save(c)
+        queue_illustrations(key, c['revision'], scene_id)
     return {'ok': True}
 
 

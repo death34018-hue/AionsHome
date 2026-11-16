@@ -28,6 +28,13 @@ async def get_link(cid, db=None):
     return link if exists else None
 
 
+async def sync_title(db, cid, title):
+    """Caller owns the transaction. Keep the reading-library title in step with the story title."""
+    row = await (await db.execute('SELECT data FROM theater_studio WHERE id=?', ('reading_'+cid,))).fetchone()
+    if row:
+        await db.execute('UPDATE books SET title=? WHERE book_id=?', (title, json.loads(row[0])['book_id']))
+
+
 def signature(chapter):
     return hashlib.sha256(json.dumps([chapter['revision'], chapter['title'], chapter['content']],
                                     ensure_ascii=False).encode()).hexdigest()

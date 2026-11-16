@@ -21,6 +21,7 @@ PHONE_SLOT_KEYS = (
     "proximity",
     "screen",
     "foreground_app",
+    "home_page",
 )
 
 NOISE_CATEGORIES = {"service", "transport", "progress", "promo", "recommendation"}
@@ -122,6 +123,8 @@ class DeviceContextStore:
                 continue
             observed_at = _number(incoming.get("observed_at"), received_at)
             old = self.slots.get(key)
+            if key == "home_page" and old and observed_at < old["observed_at"]:
+                continue
             changed = old is None or old.get("value") != value
             slot = dict(incoming)
             slot["value"] = value
@@ -251,9 +254,17 @@ class DeviceContextStore:
 
     def snapshot(self, pc: dict, now: float) -> dict:
         phone = self._fresh_phone(now)
+        home_page = phone.pop("home_page", {})
         foreground = phone.get("foreground_app")
         if foreground:
             foreground["display_value"] = display_app_name(foreground.get("value"))
+            if (
+                foreground.get("value") == "com.aion.chat"
+                and (phone.get("screen") or {}).get("value") == "on"
+                and home_page.get("value") == "theater"
+                and now - _number(home_page.get("received_at"), 0) <= 90
+            ):
+                foreground["display_value"] = "在小剧场"
         pc = dict(pc or {})
         display = str(pc.get("display") or "unknown")
         idle_seconds = _number(pc.get("idle_seconds"), float("inf"))

@@ -88,6 +88,10 @@
 
         <!-- 地址选择页 -->
         <activity
+            android:name=".SoundTestActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".LauncherActivity"
             android:exported="false"
             android:screenOrientation="portrait" />

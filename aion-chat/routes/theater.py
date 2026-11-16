@@ -301,6 +301,8 @@ async def update_conversation(conv_id: str, body: ConvUpdate):
         if body.title is not None:
             await db.execute("UPDATE theater_conversations SET title=?, updated_at=? WHERE id=?",
                              (body.title, time.time(), conv_id))
+            from theater_reading import sync_title
+            await sync_title(db, conv_id, body.title)
         if body.persona_id is not None:
             await db.execute("UPDATE theater_conversations SET persona_id=?, updated_at=? WHERE id=?",
                              (body.persona_id, time.time(), conv_id))
@@ -503,6 +505,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                     usage_meta,
                     temperature=temperature,
                     include_device_context=False,
+                    include_thoughts=True,
                 ):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
@@ -683,6 +686,7 @@ async def regenerate_message(conv_id: str, body: TheaterRegenerateRequest,
                     usage_meta,
                     temperature=temperature,
                     include_device_context=False,
+                    include_thoughts=True,
                 ):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})

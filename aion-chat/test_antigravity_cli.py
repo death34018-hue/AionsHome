@@ -188,6 +188,60 @@ class AntigravityStreamTests(unittest.IsolatedAsyncioTestCase):
         self.permission_patch.start()
         self.addCleanup(self.permission_patch.stop)
 
+    async def test_acp_chat_uses_existing_reasoning_field_and_original_route(self):
+        import ai_providers
+        import config
+
+        original = 'AGY · Gemini 4 Hydrogen (High)'
+        key = 'AGY ACP · Gemini 4 Hydrogen (High)'
+        catalog = {original: {'provider': 'antigravity_cli', 'model': 'gemini-4-hydrogen-high'}}
+        before = dict(config.ANTIGRAVITY_MODELS)
+        self.addCleanup(config.replace_antigravity_models, before)
+        config.replace_antigravity_models(catalog)
+        self.assertIn(key, config.MODELS)
+        self.assertEqual(config.MODELS[original]['provider'], 'antigravity_cli')
+        self.assertFalse(config.MODELS[key]['audio'])
+
+        async def events(*args, **kwargs):
+            yield 'thought', '第一段'
+            yield 'thought', '第二段'
+            yield 'text', '答复'
+            yield 'usage', {'inputTokens': 509, 'outputTokens': 25, 'thoughtTokens': 22, 'totalTokens': 534}
+
+        meta = {}
+        with patch.object(ai_providers.antigravity_acp, 'stream', events):
+            chunks = [part async for part in ai_providers.stream_ai(
+                [{'role': 'user', 'content': '问题'}], key, meta, include_device_context=False)]
+        self.assertEqual(''.join(c for c in chunks if not c.startswith(ai_providers.CLI_STATUS_PREFIX)), '答复')
+        self.assertEqual(meta['reasoning_content'], '第一段第二段')
+        self.assertEqual(meta['raw']['completion_tokens_details']['reasoning_tokens'], 22)
+
+    async def test_acp_checks_companion_before_sending_chat(self):
+        from antigravity_acp import _Session
+
+        for names, allowed in [([], True), (['plan', 'learn', 'grill-me'], True), (['browser'], False)]:
+            with self.subTest(names=names):
+                options = [{'id': 'model', 'currentValue': 'gemini-4-hydrogen'},
+                           {'id': 'thought_level', 'currentValue': 'high'}]
+                process = FakeProcess([
+                    {'id': 1, 'result': {'protocolVersion': 1}},
+                    {'id': 2, 'result': {'sessionId': 's', 'configOptions': options}},
+                    {'method': 'session/update', 'params': {'sessionId': 's', 'update': {
+                        'sessionUpdate': 'available_commands_update', 'availableCommands': [{'name': n} for n in names]}}},
+                    {'method': 'session/update', 'params': {'sessionId': 's', 'update': {
+                        'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'OK'}}}},
+                    {'id': 3, 'result': {'stopReason': 'end_turn'}},
+                ])
+                session = _Session(process)
+                if allowed:
+                    await session.configure(Path.cwd(), 'gemini-4-hydrogen-high', False)
+                    self.assertIn(('text', 'OK'), [e async for e in session.reply('[User]\n/plan\n\n[Assistant]', ())])
+                else:
+                    with self.assertRaises(agy.AntigravityError):
+                        await session.configure(Path.cwd(), 'gemini-4-hydrogen-high', False)
+                methods = [json.loads(c.args[0])['method'] for c in process.stdin.write.call_args_list]
+                self.assertEqual('session/prompt' in methods, allowed)
+
     async def test_response_progress_without_text_is_forwarded(self):
         process = FakeProcess([
             {'event': 'init', 'init': {'agent': agy.AGENT_NAME}},

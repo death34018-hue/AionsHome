@@ -1,18 +1,18 @@
 """
-礼物系统：AI 判断送礼 + 硅基流动 Kolors 生图 + 礼物数据 CRUD
+礼物系统：AI 判断送礼 + 设置中的生图模型生图 + 礼物数据 CRUD
 """
 
-import json, time
+import asyncio, json, time
 from datetime import datetime
 
-import httpx, aiosqlite
+import aiosqlite
 
-from config import get_key, load_worldbook
+from config import UPLOADS_DIR
 from database import get_db
-from album import save_generated_image
+from album import get_album_store
+from image_anchors import family_image_prompt, resolve_chat_references
 from model_json import extract_json_object
 from ws import manager
-from system_logs import logged_ai_call
 
 
 # ── AI 判断是否送礼 + 生图 + 入库 ─────────────────
@@ -26,8 +26,12 @@ async def judge_and_send_gift(
     conv_id: str,
     *,
     sender: str = "aion",
-):
+    force: bool = False,
+    context_text: str = "",
+) -> str:
     """
+    返回结果：sent / declined / no_response / parse_failed / image_failed / invalid。
+    force=True 用于测试按钮：跳过“要不要送”的判断，必定送。
     在记忆总结完成后调用，让 AI 判断是否需要给用户送礼。
     如果是，则生成图片并入库，通过 WebSocket 通知前端。
     """
@@ -43,7 +47,8 @@ async def judge_and_send_gift(
         f"当前时间：{time_str}\n\n"
         f"你是{ai_name}。你刚刚整理完和{user_name}的聊天记忆，以下是今天整理出的摘要：\n"
         f"{summaries_text}\n\n"
-        f"现在你需要决定：要不要给{user_name}送一份小礼物（一张图片+一段话）。\n"
+        + (f"【最近上下文】\n{context_text}\n\n" if context_text else "")
+        + f"现在你需要决定：要不要给{user_name}送一份小礼物（一张图片+一段话）。\n"
         f"送礼的判断依据：\n"
         f"- 今天的聊天是否有特别温馨、感动、有意义的内容\n"
         f"- 今天是否是特殊日子（节日、纪念日、生日等）\n"
@@ -53,10 +58,13 @@ async def judge_and_send_gift(
         f"如果决定送礼，需要提供：\n"
         f"1. image_prompt：根据记忆和上下文，以及节日，纪念日等，提供一段英文的生图提示词。"
         f"可以是你想送给{user_name}任何礼物。\n"
+        f"{await family_image_prompt(sender)}"
         f"2. message：送礼时你想对{user_name}说的一段话，要完全符合你的人设性格，自然真挚。\n\n"
         f"请严格返回以下 JSON 格式（不要加 markdown 代码块）：\n"
         f'{{"givegift": true/false, "image_prompt": "...", "message": "..."}}'
     )
+    if force:
+        judge_prompt += f"\n\n这次{user_name}点了测试送礼：直接送，givegift 必须为 true。"
 
     messages = context_msgs + [{"role": "user", "content": judge_prompt}]
 
@@ -69,7 +77,7 @@ async def judge_and_send_gift(
             raw = await simple_connor_cli_call(prompt_text)
             if not raw:
                 print("[gift] Connor Codex CLI 无响应")
-                return
+                return "no_response"
         else:
             raw = await simple_ai_call(messages, model_key)
         result = extract_json_object(raw)
@@ -85,40 +93,51 @@ async def judge_and_send_gift(
             result = json.loads(raw)
     except Exception as e:
         print(f"[gift] AI 判断解析失败: {e}")
-        return
+        return "parse_failed"
 
-    await send_gift_from_decision(result, sender=sender)
+    if force and isinstance(result, dict):
+        result["givegift"] = True
+    return await send_gift_from_decision(result, sender=sender)
 
 
 async def send_gift_from_decision(
     decision: dict,
     *,
     sender: str = "aion",
-):
+) -> str:
     """执行模型已经做出的送礼决定，不再额外调用模型。"""
     if not isinstance(decision, dict) or not decision.get("givegift"):
         print("[gift] AI 决定不送礼")
-        return
+        return "declined"
 
     gift_data = decision.get("gift", decision)
     if not isinstance(gift_data, dict):
         print("[gift] 礼物数据格式无效，跳过")
-        return
+        return "invalid"
 
     image_prompt = str(gift_data.get("image_prompt") or "").strip()
     gift_message = str(gift_data.get("message") or "").strip()
 
     if not image_prompt or not gift_message:
         print("[gift] 缺少 image_prompt 或 message，跳过")
-        return
+        return "invalid"
 
     print(f"[gift] AI 决定送礼！生图中... prompt: {image_prompt[:80]}")
 
-    # 调用硅基流动 Kolors 生图
-    image_path = await _generate_image(image_prompt, source_identity=sender)
+    # 走设置界面配置的生图模型
+    from image_gen import generate_image
+    try:
+        scene, references = await resolve_chat_references(image_prompt, source_identity=sender, family_only=True)
+    except ValueError as exc:
+        print(f"[gift] {exc}")
+        return "image_failed"
+    image_path = await generate_image(scene, source_identity=sender, references=references)
+    if not image_path:
+        print("[gift] 生图失败，重试一次")
+        image_path = await generate_image(scene, source_identity=sender, references=references)
     if not image_path:
         print("[gift] 生图失败，跳过送礼")
-        return
+        return "image_failed"
 
     # 写入数据库
     gift_id = f"gift_{int(time.time() * 1000)}"
@@ -143,58 +162,7 @@ async def send_gift_from_decision(
         },
     })
     print(f"[gift] 礼物已创建: {gift_id}")
-
-
-# ── 硅基流动 Kolors 生图 ──────────────────────────
-@logged_ai_call("gift_image", model="Kwai-Kolors/Kolors")
-async def _generate_image(prompt: str, source_identity: str = "") -> str | None:
-    """调用硅基流动 Kwai-Kolors/Kolors 生成图片，下载保存到本地，返回相对路径"""
-    api_key = get_key("siliconflow")
-    if not api_key:
-        print("[gift] 没有硅基流动 API Key，无法生图")
-        return None
-
-    url = "https://api.siliconflow.cn/v1/images/generations"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": "Kwai-Kolors/Kolors",
-        "prompt": prompt,
-        "negative_prompt": "realistic human, real person, photo, ugly, blurry, low quality, deformed",
-        "image_size": "1024x1024",
-        "batch_size": 1,
-        "num_inference_steps": 20,
-        "guidance_scale": 7.5,
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-
-            images = data.get("images", [])
-            if not images:
-                print("[gift] 生图 API 返回空 images")
-                return None
-
-            image_url = images[0].get("url", "")
-            if not image_url:
-                print("[gift] 生图 API 返回空 URL")
-                return None
-
-            # 下载图片（URL 1 小时过期，必须立即下载）
-            img_resp = await client.get(image_url)
-            img_resp.raise_for_status()
-
-            return await save_generated_image(img_resp.content, prompt=prompt, model="Kwai-Kolors/Kolors",
-                                              actor=source_identity, kind="gift")
-
-    except Exception as e:
-        print(f"[gift] 生图异常: {e}")
-        return None
+    return "sent"
 
 
 # ── 数据查询 ──────────────────────────────────────
@@ -235,3 +203,40 @@ async def delete_gift(gift_id: str) -> bool:
         cur = await db.execute("DELETE FROM gifts WHERE id=?", (gift_id,))
         await db.commit()
         return cur.rowcount > 0
+
+
+def _purge_gift_image(image_path: str) -> int:
+    """删除礼物原图（含相册记录和相册缩略图），返回释放的字节数。"""
+    if image_path.startswith("album/"):
+        return get_album_store().purge_photo_file(image_path[len("album/"):])
+    target = (UPLOADS_DIR / image_path).resolve()
+    if UPLOADS_DIR.resolve() not in target.parents:
+        return 0
+    try:
+        size = target.stat().st_size
+        target.unlink()
+        return size
+    except OSError:
+        return 0
+
+
+async def delete_gifts_with_files(gift_ids: list[str]) -> dict:
+    """批量删除礼物记录，并删除它们的原图文件。"""
+    ids = list(dict.fromkeys(i for i in gift_ids if isinstance(i, str) and i))
+    if not ids:
+        return {"deleted_ids": [], "freed_bytes": 0}
+    marks = ",".join("?" * len(ids))
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(f"SELECT id, image_path FROM gifts WHERE id IN ({marks})", ids)
+        rows = [dict(r) for r in await cur.fetchall()]
+        await db.execute(f"DELETE FROM gifts WHERE id IN ({marks})", ids)
+        await db.commit()
+        # 仍被其他礼物引用的图片不删
+        cur = await db.execute("SELECT DISTINCT image_path FROM gifts")
+        in_use = {r["image_path"] for r in await cur.fetchall()}
+    paths = {r["image_path"] for r in rows if r["image_path"]} - in_use
+    freed = 0
+    for path in paths:
+        freed += await asyncio.to_thread(_purge_gift_image, path)
+    return {"deleted_ids": [r["id"] for r in rows], "freed_bytes": freed}

@@ -15,8 +15,10 @@ from database import get_db
 from ws import manager
 from band_commands import process_band_vibration, with_band_vibration_attachment
 from hug_pillow_commands import process_hug_pillow_commands
-from capabilities import process_pat_commands
+from capabilities import process_pat_commands, is_capability_enabled
+from chat_web_cards import PROMPT as WEB_CARD_PROMPT, BLOCK as WEB_CARD_BLOCK, prose_chunks
 from game_invites import process_game_invites
+from chat_ambience import process_ambience_commands
 from compositions import process_compositions
 from rps import process_rps_commands
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
@@ -683,6 +685,10 @@ class ScheduleManager:
 
             active_schedules = await get_active_schedules()
             schedule_text = build_schedule_prompt(active_schedules)
+            from schedule_timeline import build_routine_prompt
+            routine_text = await build_routine_prompt(db_factory=get_db)
+            if routine_text:
+                schedule_text += "\n\n" + routine_text
             ability_block += f"\n\n【当前日程列表】\n{schedule_text}"
 
             cap_idx = len(prefix) if prefix else 0
@@ -774,9 +780,17 @@ class ScheduleManager:
                         continue
                     yield chunk
 
+        web_attachments = []
+        allow_web_card = is_capability_enabled('web_cards')
+        if is_proactive and allow_web_card:
+            messages = [{'role': 'system', 'content': WEB_CARD_PROMPT}, *messages]
+
+        def reply_stream():
+            return prose_chunks(content_stream(), web_attachments, enabled=allow_web_card, model_key=debug_model_key)
+
         if use_realtime_wakeup:
             transport_outcome = await _consume_background_realtime_stream(
-                content_stream,
+                reply_stream,
                 model_key=debug_model_key,
                 tts_streamer=alarm_tts,
             )
@@ -785,7 +799,7 @@ class ScheduleManager:
             stream_result = transport_outcome.result
         else:
             stream_result = await _consume_background_stream(
-                content_stream(),
+                reply_stream(),
                 WebCommandStreamFilter(),
                 alarm_tts,
             )
@@ -830,6 +844,8 @@ class ScheduleManager:
             full_text = f"{full_text}\n\n[{safety_notice}]".strip()
 
         music_atts = [{"type": "music", "name": s["name"], "artist": s["artist"], "id": s["id"]} for s in music_cards] if music_cards else []
+        if not has_error:
+            music_atts.extend(web_attachments)
         att_json = json.dumps(music_atts, ensure_ascii=False) if music_atts else "[]"
         reasoning_content = (usage_meta.get("reasoning_content") or "").strip()
 
@@ -1050,6 +1066,10 @@ class ScheduleManager:
 
             active_schedules = await get_active_schedules()
             schedule_text = build_schedule_prompt(active_schedules)
+            from schedule_timeline import build_routine_prompt
+            routine_text = await build_routine_prompt(db_factory=get_db)
+            if routine_text:
+                schedule_text += "\n\n" + routine_text
             ability_block += f"\n\n【当前日程列表】\n{schedule_text}"
 
             cap_idx = len(prefix) if prefix else 0
@@ -1113,9 +1133,17 @@ class ScheduleManager:
                         continue
                     yield chunk
 
+        web_attachments = []
+        allow_web_card = is_capability_enabled('web_cards')
+        if is_proactive and allow_web_card:
+            messages = [{'role': 'system', 'content': WEB_CARD_PROMPT}, *messages]
+
+        def reply_stream():
+            return prose_chunks(content_stream(), web_attachments, enabled=allow_web_card, model_key=debug_model_key)
+
         if use_realtime_wakeup:
             transport_outcome = await _consume_background_realtime_stream(
-                content_stream,
+                reply_stream,
                 model_key=debug_model_key,
                 tts_streamer=monitor_tts,
             )
@@ -1124,7 +1152,7 @@ class ScheduleManager:
             stream_result = transport_outcome.result
         else:
             stream_result = await _consume_background_stream(
-                content_stream(),
+                reply_stream(),
                 WebCommandStreamFilter(),
                 monitor_tts,
             )
@@ -1169,6 +1197,8 @@ class ScheduleManager:
             full_text = f"{full_text}\n\n[{safety_notice}]".strip()
 
         music_atts = [{"type": "music", "name": s["name"], "artist": s["artist"], "id": s["id"]} for s in music_cards] if music_cards else []
+        if not has_error:
+            music_atts.extend(web_attachments)
         att_json = json.dumps(music_atts, ensure_ascii=False) if music_atts else "[]"
         reasoning_content = (usage_meta.get("reasoning_content") or "").strip()
         snapshot_attachment = monitor_context.snapshot_attachment
@@ -1230,7 +1260,7 @@ class ScheduleManager:
 
 
 # ── 指令解析（在 AI 回复完成后调用） ──────────────
-async def process_schedule_commands(full_text: str, conv_id: str = None, origin: str = "aion", origin_room_id: str = "", after_msg_id: str = None) -> str:
+async def process_schedule_commands(full_text: str, conv_id: str = None, origin: str = "aion", origin_room_id: str = "", after_msg_id: str = None, notify=None) -> str:
     """
     检测并处理 AI 回复中的日程指令，返回 strip 后的文本。
     即使 AI 格式有误也不抛异常，静默跳过。
@@ -1241,16 +1271,42 @@ async def process_schedule_commands(full_text: str, conv_id: str = None, origin:
     text = full_text
     actor_name = get_schedule_origin_name(origin)
 
+    async def emit(message):
+        if notify:
+            await notify(message)
+        elif conv_id:
+            await _sys_msg(conv_id, message, after_msg_id=after_msg_id)
+
+    async def created_notice(result, label, dt, content):
+        result = result or {"created": True}
+        verb = "设定了" if result.get("created") else "更新了" if result.get("updated") else "沿用了已有"
+        await emit(f"【{actor_name}】{verb}{label}：{dt.replace('T', ' ')}，内容：{content}")
+
+    # Apply cancellations before creation so replacements are not deduplicated into a deleted id.
+    for match in SCHEDULE_DEL_CMD.finditer(full_text):
+        try:
+            sid = match.group(1).strip()
+            if sid:
+                info = await _get_schedule_info(sid)
+                changed = await _del_schedule(sid)
+                if info and changed:
+                    type_labels = {"alarm": "闹铃", "reminder": "日程", "monitor": "定时监控"}
+                    label = type_labels.get(info["type"], "日程")
+                    await emit(f"【{actor_name}】取消了 {info['trigger_at'].replace('T', ' ')} 的{label}：{info['content']}")
+        except Exception as e:
+            log.error("SCHEDULE_DEL processing error: %s", e)
+    text = SCHEDULE_DEL_CMD.sub("", text)
+
     # [ALARM:datetime|content]
     for match in ALARM_CMD.finditer(full_text):
         try:
             raw_dt, content = match.group(1), match.group(2)
+            content, options = _split_schedule_content(content)
             dt = _parse_dt(raw_dt)
             log.info("ALARM detected: raw_dt=%s parsed=%s content=%s", raw_dt, dt, content)
             if dt and content.strip() and not _is_schedule_time_stale(dt):
-                await _add_schedule("alarm", dt, content.strip(), origin, origin_room_id)
-                if conv_id:
-                    await _sys_msg(conv_id, f"【{actor_name}】设定了闹铃：{dt.replace('T', ' ')}，内容：{content.strip()}", after_msg_id=after_msg_id)
+                result = await _add_schedule("alarm", dt, content.strip(), origin, origin_room_id, **options)
+                await created_notice(result, "闹铃", dt, content)
             elif dt and content.strip():
                 log.warning("ALARM skipped because trigger time is stale: raw_dt=%s parsed=%s content=%s", raw_dt, dt, content)
             else:
@@ -1263,12 +1319,12 @@ async def process_schedule_commands(full_text: str, conv_id: str = None, origin:
     for match in REMINDER_CMD.finditer(full_text):
         try:
             raw_dt, content = match.group(1), match.group(2)
+            content, options = _split_schedule_content(content)
             dt = _parse_dt(raw_dt)
             log.info("REMINDER detected: raw_dt=%s parsed=%s content=%s", raw_dt, dt, content)
             if dt and content.strip() and not _is_schedule_time_stale(dt):
-                await _add_schedule("reminder", dt, content.strip(), origin, origin_room_id)
-                if conv_id:
-                    await _sys_msg(conv_id, f"【{actor_name}】设定了日程：{dt.replace('T', ' ')}，内容：{content.strip()}", after_msg_id=after_msg_id)
+                result = await _add_schedule("reminder", dt, content.strip(), origin, origin_room_id, **options)
+                await created_notice(result, "日程", dt, content)
             elif dt and content.strip():
                 log.warning("REMINDER skipped because trigger time is stale: raw_dt=%s parsed=%s content=%s", raw_dt, dt, content)
             else:
@@ -1281,12 +1337,12 @@ async def process_schedule_commands(full_text: str, conv_id: str = None, origin:
     for match in MONITOR_CMD.finditer(full_text):
         try:
             raw_dt, content = match.group(1), match.group(2)
+            content, options = _split_schedule_content(content)
             dt = _parse_dt(raw_dt)
             log.info("MONITOR detected: raw_dt=%s parsed=%s content=%s", raw_dt, dt, content)
             if dt and content.strip() and not _is_schedule_time_stale(dt):
-                await _add_schedule("monitor", dt, content.strip(), origin, origin_room_id)
-                if conv_id:
-                    await _sys_msg(conv_id, f"【{actor_name}】设定了监督：{dt.replace('T', ' ')}，内容：{content.strip()}", after_msg_id=after_msg_id)
+                result = await _add_schedule("monitor", dt, content.strip(), origin, origin_room_id, **options)
+                await created_notice(result, "监督", dt, content)
             elif dt and content.strip():
                 log.warning("MONITOR skipped because trigger time is stale: raw_dt=%s parsed=%s content=%s", raw_dt, dt, content)
             else:
@@ -1294,21 +1350,6 @@ async def process_schedule_commands(full_text: str, conv_id: str = None, origin:
         except Exception as e:
             log.error("MONITOR processing error: %s", e)
     text = MONITOR_CMD.sub("", text)
-
-    # [SCHEDULE_DEL:id]
-    for match in SCHEDULE_DEL_CMD.finditer(full_text):
-        try:
-            sid = match.group(1).strip()
-            if sid:
-                info = await _get_schedule_info(sid)
-                changed = await _del_schedule(sid)
-                if conv_id and info and changed:
-                    type_labels = {"alarm": "闹铃", "reminder": "日程", "monitor": "定时监控"}
-                    label = type_labels.get(info["type"], "日程")
-                    await _sys_msg(conv_id, f"【{actor_name}】取消了 {info['trigger_at'].replace('T', ' ')} 的{label}：{info['content']}", after_msg_id=after_msg_id)
-        except Exception as e:
-            log.error("SCHEDULE_DEL processing error: %s", e)
-    text = SCHEDULE_DEL_CMD.sub("", text)
 
     # [SCHEDULE_LIST] → 不需要实际操作，仅 strip
     text = SCHEDULE_LIST_CMD.sub("", text)
@@ -1419,7 +1460,7 @@ async def _process_background_reply_commands(
     target_type = "chatroom" if (target or {}).get("type") == "chatroom" else "private"
     source_id = (target or {}).get("room_id") if target_type == "chatroom" else conv_id
     scope = {"room_id": source_id} if target_type == "chatroom" else {"conv_id": conv_id}
-    full_text, image_prompt, is_selfie = extract_image_command(full_text)
+    full_text, image_prompt, is_selfie = extract_image_command(WEB_CARD_BLOCK.sub('', full_text))
     cleaned = await process_svakom_commands(full_text, ai_msg_id, **scope)
     cleaned = await _process_home_commands(cleaned)
     cleaned = await _process_background_wechat_commands(
@@ -1441,6 +1482,7 @@ async def _process_background_reply_commands(
         cleaned, source_type=target_type, source_id=source_id or "",
         sender=sender, source_msg_id=ai_msg_id,
     )
+    cleaned = await process_ambience_commands(cleaned, sender=sender)
     cleaned = await process_compositions(
         cleaned, source_type=target_type, source_id=source_id or "",
         sender=sender, source_msg_id=ai_msg_id,
@@ -1510,17 +1552,25 @@ async def _get_schedule_info(sid: str) -> dict | None:
         return dict(row) if row else None
 
 
-async def _add_schedule(stype: str, trigger_at: str, content: str, origin: str = "aion", origin_room_id: str = ""):
-    sid = f"sch_{int(time.time()*1000)}"
-    now = time.time()
-    trigger_at = trigger_at.replace("T", " ")
+def _split_schedule_content(payload):
+    parts = re.split(r"[|｜]", payload)
+    options = {}
+    while len(parts) > 1:
+        key, separator, value = parts[-1].strip().partition("=")
+        if not separator or key not in {"id", "event_key", "event_at"}:
+            break
+        options["item_id" if key == "id" else key] = value.strip()
+        parts.pop()
+    return "|".join(parts).strip(), options
+
+
+async def _add_schedule(stype: str, trigger_at: str, content: str, origin: str = "aion", origin_room_id: str = "", **options):
+    from calendar_store import write_schedule
     async with get_db() as db:
-        await db.execute(
-            "INSERT INTO schedules (id, type, trigger_at, content, created_at, status, origin, origin_room_id) VALUES (?,?,?,?,?,?,?,?)",
-            (sid, stype, trigger_at, content, now, "active", origin, origin_room_id),
-        )
+        result = await write_schedule(db, stype, trigger_at, content, origin, origin_room_id, **options)
         await db.commit()
     await manager.broadcast({"type": "schedule_changed"})
+    return result
 
 
 async def _del_schedule(sid: str):

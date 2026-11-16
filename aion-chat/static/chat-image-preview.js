@@ -41,5 +41,67 @@
     while (scroll && !/auto|scroll/.test(getComputedStyle(scroll).overflowY)) scroll = scroll.parentElement;
     if (scroll) scroll.scrollTop += group.getBoundingClientRect().top - top;
   }
-  root.ChatImagePreview = { attributes, original, group, toggle };
+  async function clipboardPng(url) {
+    const image = new Image();
+    image.crossOrigin = 'anonymous';
+    image.src = url;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    canvas.getContext('2d').drawImage(image, 0, 0);
+    return new Promise((resolve, reject) => canvas.toBlob(
+      blob => blob ? resolve(blob) : reject(new Error('无法复制图片')), 'image/png'));
+  }
+
+  function showSaveMenu(url, openViewer) {
+    if (!url) return;
+    document.querySelector('.image-save-menu-overlay')?.remove();
+    const overlay = document.createElement('div');
+    overlay.className = 'image-save-menu-overlay';
+    const sheet = document.createElement('div');
+    sheet.className = 'image-save-menu';
+    const close = () => overlay.remove();
+    function button(label, onClick) {
+      const element = document.createElement('button');
+      element.type = 'button';
+      element.textContent = label;
+      element.onclick = onClick;
+      sheet.append(element);
+      return element;
+    }
+    const save = button('保存图片', async () => {
+      save.disabled = true;
+      try {
+        await root.AionImageViewer.saveOriginal(url);
+        close();
+      } catch (_) {
+        save.textContent = '保存失败，点此重试';
+        save.disabled = false;
+      }
+    });
+    save.className = 'primary';
+    if (matchMedia('(any-pointer: fine)').matches) {
+      const copy = button('复制图片', async () => {
+        copy.disabled = true;
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ 'image/png': clipboardPng(url) })]);
+          copy.textContent = '已复制图片';
+          setTimeout(close, 650);
+        } catch (_) {
+          close();
+          root.AionImageViewer.open([url], 0, { hint: '右键点击原图，选择「复制图片」' });
+        }
+      });
+    }
+    button('查看大图', () => { close(); openViewer(url); });
+    sheet.append(root.ChatImageAlbum.createButton(url));
+    button('取消', close);
+    overlay.append(sheet);
+    overlay.onclick = event => { if (event.target === overlay) close(); };
+    document.body.append(overlay);
+    requestAnimationFrame(() => overlay.classList.add('active'));
+  }
+
+  root.ChatImagePreview = { attributes, original, group, toggle, showSaveMenu };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -3,6 +3,7 @@ import tempfile
 import unittest
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 
@@ -393,6 +394,7 @@ class IdleAutonomyFriendVisitSelectionTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value={
             "actions": {"friend_visit": True, "home_dynamics": True},
         })), \
+             patch.dict(sys.modules, {"visitor_lounge.home_board": SimpleNamespace(live_chat_enabled=lambda: True)}), \
              patch.object(autonomy, "eligible_lounge_friends", return_value=[object()], create=True), \
              patch.object(autonomy, "_ask_actor_json", new=fake_ask):
             selected = await autonomy._select_action("aion", manual=False)

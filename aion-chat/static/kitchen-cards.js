@@ -88,11 +88,16 @@
     const positioned = [...(notices || [])];
     const lookup = (attachments || []).find(a => a?.type === 'kitchen_lookup');
     if (lookup) positioned.push({message:{kitchenLookup:lookup},order:lookupOrder(text,lookup)});
+    const card = (attachments || []).find(a => ['web_card','web_card_incomplete','web_card_pending'].includes(a?.type));
+    if (card) positioned.push({message:{webCard:card},order:lookupOrder(text,card.inline_order || {offset:text.length})});
     const parts = window.AionPat?.interleaveContent
       ? window.AionPat.interleaveContent(text, positioned)
       : [{type:'text',text}];
-    return parts.map(p => p.type === 'notice' && p.message?.kitchenLookup
-      ? {type:'kitchen_lookup',lookup:p.message.kitchenLookup} : p);
+    return parts.map(p => {
+      if (p.message?.kitchenLookup) return {type:'kitchen_lookup',lookup:p.message.kitchenLookup};
+      if (p.message?.webCard) return {type:'web_card',card:p.message.webCard};
+      return p;
+    });
   }
   function lookupHTML(lookup, actorName) {
     const verb = {pending:'正在查看冰箱……',done:'查看了冰箱库存',failed:'暂时没能查看冰箱库存',stopped:'已停止查看冰箱'};

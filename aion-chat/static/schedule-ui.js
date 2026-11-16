@@ -118,12 +118,12 @@
   }
 
   function normalizeScheduleTab(tab) {
-    return tab === 'memo' || tab === 'history' ? tab : 'active';
+    return tab === 'routine' || tab === 'memo' || tab === 'history' ? tab : 'active';
   }
 
   function selectScheduleTab(tab, documentLike = document) {
     const selected = normalizeScheduleTab(tab);
-    for (const [name, suffix] of [['active', 'Active'], ['memo', 'Memo'], ['history', 'History']]) {
+    for (const [name, suffix] of [['routine', 'Routine'], ['active', 'Active'], ['memo', 'Memo'], ['history', 'History']]) {
       const isSelected = selected === name;
       const tabElement = documentLike.getElementById(`schTab${suffix}`);
       const panel = documentLike.getElementById(`schPanel${suffix}`);
@@ -147,11 +147,12 @@
 
   function handleScheduleTabKeydown(event, tab, documentLike = document) {
     const selected = normalizeScheduleTab(tab);
+    const tabs = ['routine', 'active', 'memo'];
     let next = null;
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-      next = selected === 'active' ? 'memo' : 'active';
+      next = tabs[(tabs.indexOf(selected) + (event.key === 'ArrowRight' ? 1 : 2)) % tabs.length];
     } else if (event.key === 'Home') {
-      next = 'active';
+      next = 'routine';
     } else if (event.key === 'End') {
       next = 'memo';
     }
@@ -160,7 +161,7 @@
     event.preventDefault();
     selectScheduleTab(next, documentLike);
     const nextTab = documentLike.getElementById(
-      next === 'active' ? 'schTabActive' : 'schTabMemo',
+      { routine: 'schTabRoutine', active: 'schTabActive', memo: 'schTabMemo' }[next],
     );
     nextTab?.focus();
     return next;

@@ -25,6 +25,7 @@ _DOCUMENT_ROUTES = {
     "/": "home.html",
     "/chat": "chat.html",
     "/settings": "settings.html",
+    "/usage": "usage.html",
     "/tts-test": "tts-test.html",
     "/capabilities": "capabilities.html",
     "/toys": "whisper.html",
@@ -115,7 +116,7 @@ def _iter_client_assets():
         if not path.is_file() or path.suffix.lower() in {".html", ".htm"}:
             continue
         relative = path.relative_to(PUBLIC_DIR).as_posix()
-        if relative.startswith("wallpaper/"):
+        if relative.startswith(("wallpaper/", "Aion登录界面/")):
             continue
         yield "/public/" + relative, path, "visual"
 

@@ -113,6 +113,8 @@ test('reconnect reconciles historical creates, edits and deletes with one fresh 
   let releaseRefresh;
   ctx.CR_SYNC_SEQ_KEY = 'sync';
   ctx.crSyncReplayPromise = null;
+  ctx.crSyncRetryTimer = null;
+  ctx.crSyncRetryDelay = 1000;
   ctx.AbortController = AbortController;
   ctx.fetch = async () => ({ ok: true, json: async () => ({
     events: ['created', 'updated', 'deleted'].map((kind, i) => ({
@@ -134,4 +136,34 @@ test('reconnect reconciles historical creates, edits and deletes with one fresh 
   releaseRefresh(true);
   await replay;
   assert.equal(ctx.localStorage.getItem('sync'), '3');
+});
+
+test('an unsuccessful group snapshot keeps its checkpoint and retries without another reconnect', async () => {
+  const { ctx, stored } = harness();
+  const timers = new Map(); let timerId = 0, refreshed = false, refreshes = 0;
+  stored.set('sync', '100');
+  Object.assign(ctx, {
+    CR_SYNC_SEQ_KEY: 'sync', crSyncReplayPromise: null, crSyncRetryTimer: null, crSyncRetryDelay: 1000,
+    AbortController, console: { warn() {} },
+    setTimeout(fn, delay) { timers.set(++timerId, { fn, delay }); return timerId; },
+    clearTimeout(id) { timers.delete(id); },
+    fetch: async url => {
+      assert.match(url, /after=100/);
+      return { ok: true, json: async () => ({
+        events: [{ type: 'chatroom_msg_created', sync_seq: 101, data: { id: 'missing', room_id: 'room-a' } }],
+        has_more: false,
+      }) };
+    },
+    refreshCurrentChatroomFromServer: async () => { refreshes++; return refreshed; },
+  });
+  vm.runInContext(source.slice(source.indexOf('function crApplyReplayedSyncEvent('), source.indexOf('function connectWS()')), ctx);
+  await ctx.crReconcileSyncEvents();
+  assert.equal(stored.get('sync'), '100');
+  assert.equal(timers.size, 1);
+  const retry = [...timers.values()][0]; timers.clear();
+  assert.equal(retry.delay, 1000);
+  refreshed = true; retry.fn(); await tick();
+  assert.equal(stored.get('sync'), '101');
+  assert.equal(refreshes, 2);
+  assert.equal(timers.size, 0);
 });

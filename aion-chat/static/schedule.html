@@ -5,107 +5,114 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>日程管理</title>
 <link rel="stylesheet" href="/static/common.css">
+<link rel="stylesheet" href="/static/routine.css?v=20261110-mobile">
 <link rel="manifest" href="/manifest.json">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#ff8359">
 <style>
-.schedule-page { --sch-muted:#67584f; --sch-subtle:#76665d; --sch-accent-text:#9f3c19; --sch-accent-fg:#31170f; --sch-add-bg:#f47a33; --sch-add-fg:#32180e; --sch-alarm:#7a3d00; --sch-reminder:#31598c; --sch-monitor:#26634f; --sch-completed:#3159a5; --sch-cancelled:#a12649; flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; padding:12px 16px 16px; gap:16px; padding-bottom:max(16px,env(safe-area-inset-bottom)); }
-body[data-theme="dark"] .schedule-page { --sch-muted:#c5c9ef; --sch-subtle:#aeb5e4; --sch-accent-text:#c7baff; --sch-accent-fg:#160b32; --sch-add-bg:#ff8a3d; --sch-add-fg:#2b1308; --sch-alarm:#ffbf86; --sch-reminder:#a9c9ff; --sch-monitor:#8be7c9; --sch-completed:#adc5ff; --sch-cancelled:#ff9ab7; }
-.sch-tabs { display:grid; grid-template-columns:1fr 1fr; gap:4px; padding:5px; flex-shrink:0; border:1px solid var(--border); border-radius:16px; background:var(--surface2); }
-.sch-tab { min-height:40px; border:0; border-radius:12px; background:transparent; color:var(--sch-muted); font-size:13px; font-weight:600; cursor:pointer; transition:background .18s ease,color .18s ease,box-shadow .18s ease; }
-.sch-tab.active { background:var(--surface); color:var(--sch-accent-text); box-shadow:0 4px 14px color-mix(in srgb,var(--text) 10%,transparent); }
+.schedule-page { --sch-muted:#67584f; --sch-subtle:#76665d; --sch-accent-text:#9f3c19; --sch-accent-fg:#31170f; --sch-add-bg:#f47a33; --sch-add-fg:#32180e; --sch-alarm:#7a3d00; --sch-reminder:#31598c; --sch-monitor:#26634f; --sch-completed:#3159a5; --sch-cancelled:#a12649; --sch-solid:#fff; --sch-card-shadow:0 1px 2px rgba(74,59,50,.04),0 6px 20px rgba(74,59,50,.06); flex:1; display:flex; flex-direction:column; min-height:0; overflow:hidden; padding:12px 14px 16px; gap:14px; padding-bottom:max(16px,env(safe-area-inset-bottom)); }
+body[data-theme="dark"] .schedule-page { --sch-muted:#c5c9ef; --sch-subtle:#aeb5e4; --sch-accent-text:#c7baff; --sch-accent-fg:#160b32; --sch-add-bg:#ff8a3d; --sch-add-fg:#2b1308; --sch-alarm:#ffbf86; --sch-reminder:#a9c9ff; --sch-monitor:#8be7c9; --sch-completed:#adc5ff; --sch-cancelled:#ff9ab7; --sch-solid:#0b1033; --sch-card-shadow:none; }
+.top-bar h2 { font-size:17px; }
+.sch-history-button { display:flex; align-items:center; gap:6px; min-height:36px; padding:0 12px; border:1px solid var(--border); border-radius:999px; background:var(--surface); color:var(--text2); font-size:13px; cursor:pointer; }
+.sch-history-button svg { width:16px; height:16px; }
+
+/* 顶部分类 */
+.sch-tabs { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:4px; padding:4px; flex-shrink:0; border:1px solid var(--border); border-radius:14px; background:var(--surface2); }
+.sch-tab { min-height:38px; border:0; border-radius:10px; background:transparent; color:var(--sch-muted); font-size:14px; font-weight:600; cursor:pointer; transition:background .18s ease,color .18s ease,box-shadow .18s ease; -webkit-tap-highlight-color:transparent; }
+.sch-tab.active { background:var(--sch-solid); color:var(--sch-accent-text); font-weight:700; box-shadow:0 1px 4px color-mix(in srgb,var(--text) 12%,transparent); }
 .sch-tab:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .sch-tab-panel { display:none; flex:1; min-height:0; }
-.sch-tab-panel.active { display:flex; min-height:0; flex-direction:column; gap:14px; }
+.sch-tab-panel.active { display:flex; min-height:0; flex-direction:column; gap:12px; }
 .sch-tab-panel[hidden] { display:none; }
+
+/* 提醒列表 */
 .sch-schedule-block { flex:1; min-height:0; display:flex; flex-direction:column; gap:12px; }
-.sch-list { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; border:1px solid var(--border); border-radius:18px; background:color-mix(in srgb,var(--surface) 88%,transparent); box-shadow:none; }
-.sch-item { display:flex; align-items:flex-start; gap:8px; padding:10px 12px; border-bottom:1px solid var(--border); transition:background .16s ease; }
-.sch-item:hover { background:color-mix(in srgb,var(--accent) 5%,transparent); }
+.sch-list { flex:0 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; border:1px solid var(--border); border-radius:18px; background:var(--surface); box-shadow:var(--sch-card-shadow); }
+.sch-item { display:flex; align-items:flex-start; gap:10px; padding:12px 6px 12px 12px; border-bottom:1px solid var(--border); transition:background .16s ease; }
 .sch-item:last-child { border-bottom:none; }
-.sch-icon { font-size:15px; flex-shrink:0; margin-top:1px; display:grid; place-items:center; width:28px; height:28px; border-radius:11px; background:var(--surface2); }
-.sch-body { flex:1; min-width:0; }
-.sch-origin { font-size:11px; color:var(--sch-muted); font-weight:600; margin-right:4px; white-space:nowrap; }
-.sch-content { font-size:13px; line-height:1.5; color:var(--text); word-break:break-word; }
-.sch-type,.sch-history-status { display:inline-block; margin-left:6px; padding:2px 6px; border-radius:999px; font-size:10.5px; line-height:1.35; vertical-align:1px; }
+.sch-item:active { background:color-mix(in srgb,var(--sch-add-bg) 6%,transparent); }
+.sch-icon { display:grid; place-items:center; width:36px; height:36px; flex-shrink:0; border-radius:12px; background:var(--surface2); font-size:17px; }
+.sch-body { flex:1; min-width:0; padding-top:1px; }
+.sch-origin { margin-right:2px; color:var(--sch-muted); font-size:12px; font-weight:600; white-space:nowrap; }
+.sch-content { color:var(--text); font-size:14px; line-height:1.55; word-break:break-word; }
+.sch-type,.sch-history-status { display:inline-block; margin-left:6px; padding:1px 8px; border-radius:999px; font-size:11px; font-weight:600; line-height:1.5; vertical-align:1px; }
 .sch-type.alarm { background:color-mix(in srgb,var(--accent) 16%,var(--surface)); color:var(--sch-alarm); }
 .sch-type.reminder { background:color-mix(in srgb,var(--text2) 13%,var(--surface)); color:var(--sch-reminder); }
 .sch-type.monitor { background:color-mix(in srgb,var(--ai-bg) 38%,var(--surface)); color:var(--sch-monitor); }
-.sch-time { font-size:11px; color:var(--sch-subtle); margin-top:4px; font-variant-numeric:tabular-nums; }
-.sch-history-item { padding:10px 12px; }
-.sch-history-item .sch-content { font-size:13px; color:var(--text); }
-.sch-history-item .sch-origin { font-size:10.5px; color:var(--sch-muted); }
-.sch-history-item .sch-time { font-size:10px; color:var(--sch-subtle); }
-.sch-history-item .sch-icon { font-size:15px; }
+.sch-time { display:inline-block; margin-top:6px; padding:2px 9px; border-radius:999px; background:var(--surface2); color:var(--sch-subtle); font-size:12px; font-variant-numeric:tabular-nums; }
+.sch-history-item { padding:12px; }
+.sch-history-item .sch-content { color:var(--text); font-size:14px; }
+.sch-history-item .sch-origin,.sch-history-item .sch-time { font-size:11px; }
 .sch-history-status { background:color-mix(in srgb,var(--accent) 12%,var(--surface)); color:var(--sch-completed); }
 .sch-history-status.cancelled { background:color-mix(in srgb,var(--danger) 12%,var(--surface)); color:var(--sch-cancelled); }
-.sch-del-btn { width:44px; height:44px; border:none; border-radius:50%; background:transparent; color:var(--danger); font-size:13px; cursor:pointer; opacity:1; flex-shrink:0; margin:-5px -8px 0 0; }
-.sch-del-btn:hover { opacity:1; background:color-mix(in srgb,var(--danger) 10%,transparent); }
+.sch-del-btn { width:40px; height:40px; flex-shrink:0; margin:-2px 0 0; border:none; border-radius:12px; background:transparent; color:var(--danger); font-size:14px; cursor:pointer; }
+.sch-del-btn:active { background:color-mix(in srgb,var(--danger) 12%,transparent); }
 .sch-del-btn:focus-visible { outline:2px solid var(--danger); outline-offset:1px; }
-.sch-empty { min-height:180px; display:flex; align-items:center; justify-content:center; padding:24px; text-align:center; color:var(--sch-muted); font-size:13px; line-height:1.8; }
-.sch-add-section { flex-shrink:0; padding:12px; border:1px solid var(--border); border-radius:18px; background:var(--surface); box-shadow:none; }
-.sch-add-section input[type="text"] { width:100%; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:9px 11px; font-size:14px; outline:none; margin-bottom:8px; box-sizing:border-box; min-height:44px; }
+.sch-empty { min-height:160px; display:flex; align-items:center; justify-content:center; padding:24px; text-align:center; color:var(--sch-muted); font-size:14px; line-height:1.8; }
+
+/* 新增提醒 */
+.sch-add-section { flex-shrink:0; margin-top:auto; padding:14px; border:1px solid var(--border); border-radius:18px; background:var(--surface); box-shadow:var(--sch-card-shadow); }
+.sch-add-title { margin-bottom:10px; color:var(--text); font-size:14px; font-weight:700; }
+.sch-add-section input[type="text"] { width:100%; min-height:46px; margin-bottom:8px; padding:10px 12px; border:1px solid var(--border); border-radius:12px; background:var(--surface2); color:var(--text); font-size:15px; outline:none; box-sizing:border-box; }
 .sch-add-row2 { display:flex; gap:8px; align-items:center; }
-.sch-add-row2 input { flex:1; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:7px 9px; font-size:12px; outline:none; min-width:0; }
-.sch-add-row2 select { padding:7px 9px; border:1px solid var(--border); border-radius:10px; background:var(--surface2); color:var(--text); font-size:12px; flex-shrink:0; }
-.sch-add-row2 button { padding:8px 15px; border:none; border-radius:10px; background:var(--sch-add-bg); color:var(--sch-add-fg); font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap; flex-shrink:0; box-shadow:none; min-height:44px; }
+.sch-add-row2 input { flex:1; min-width:0; min-height:46px; padding:8px 10px; border:1px solid var(--border); border-radius:12px; background:var(--surface2); color:var(--text); font-size:14px; outline:none; }
+.sch-add-row2 select { flex-shrink:0; min-height:46px; padding:8px 10px; border:1px solid var(--border); border-radius:12px; background:var(--surface2); color:var(--text); font-size:14px; }
+.sch-add-row2 button { flex-shrink:0; min-height:46px; padding:8px 18px; border:none; border-radius:12px; background:var(--sch-add-bg); color:var(--sch-add-fg); font-size:14px; font-weight:700; white-space:nowrap; cursor:pointer; box-shadow:none; }
+.sch-add-row2 button:active { filter:brightness(.95); }
 .sch-add-section input:focus,.sch-add-section select:focus { border-color:var(--accent); outline:2px solid color-mix(in srgb,var(--accent) 18%,transparent); outline-offset:1px; }
-.private-memo-section { min-height:0; display:flex; flex-direction:column; padding:0; border:0; border-radius:14px; background:transparent; box-shadow:none; flex:1; gap:14px; }
-.private-memo-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; margin:0; flex-shrink:0; }
-.private-memo-title { font-size:14px; font-weight:750; color:var(--text); }
-.private-memo-mic { width:64px; height:64px; border:0; border-radius:50%; color:var(--sch-accent-fg); font-size:14px; cursor:pointer; background:transparent; box-shadow:none; display:flex; align-items:center; justify-content:center; gap:6px; min-height:44px; padding:0; font-weight:650; margin:0 auto; }
-.private-memo-list { min-height:0; overflow-y:auto; overflow:visible; }
-.private-memo-item { display:flex; align-items:center; gap:8px; min-height:56px; border-top:1px solid var(--border); padding:6px 0; }
+
+/* 快捷备忘 */
+.private-memo-section { flex:1; min-height:0; display:flex; flex-direction:column; gap:12px; padding:0; border:0; background:transparent; box-shadow:none; }
+.private-memo-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0; flex-shrink:0; }
+.private-memo-title { margin:0; color:var(--text); font-size:16px; font-weight:700; }
+.sch-section-note { margin-top:4px; color:var(--sch-muted); font-size:12px; line-height:1.5; }
+.private-memo-scroll { flex:0 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:0 10px; border:1px solid var(--border); border-radius:18px; background:var(--surface); box-shadow:var(--sch-card-shadow); }
+.private-memo-list { min-height:0; overflow:visible; }
+.private-memo-item { display:flex; align-items:center; gap:4px; min-height:56px; padding:6px 0; border-top:1px solid var(--border); }
+.private-memo-item:first-child { border-top:0; }
 .private-memo-item.completed .private-memo-content { color:var(--sch-subtle); text-decoration:line-through; }
-.private-memo-content { flex:1; min-width:0; font-size:13px; line-height:1.5; color:var(--text); word-break:break-word; }
-.memo-check { width:44px; height:44px; border:0; border-radius:50%; background:transparent; color:var(--sch-accent-fg); padding:0; flex-shrink:0; cursor:pointer; position:relative; }
-.memo-check.completed { border:0; background:transparent; }
-.memo-action { width:44px; height:44px; border:0; border-radius:50%; background:transparent; color:var(--sch-muted); font-size:15px; flex-shrink:0; cursor:pointer; }
+.private-memo-content { flex:1; min-width:0; color:var(--text); font-size:14px; line-height:1.55; word-break:break-word; }
+.memo-check { position:relative; width:44px; height:44px; flex-shrink:0; padding:0; border:0; border-radius:50%; background:transparent; color:var(--sch-accent-fg); cursor:pointer; }
+.memo-check::before { content:''; position:absolute; inset:11px; border:2px solid var(--sch-add-bg); border-radius:50%; }
+.memo-check.completed::before { background:color-mix(in srgb,var(--sch-add-bg) 24%,transparent); }
+.memo-action { width:40px; height:40px; flex-shrink:0; border:0; border-radius:12px; background:transparent; color:var(--sch-muted); font-size:15px; cursor:pointer; }
+.memo-action:active { background:var(--surface2); }
 .memo-action.danger { color:var(--danger); }
-.private-memo-empty { padding:48px 8px; text-align:center; color:var(--sch-muted); font-size:14px; line-height:1.8; }
-.private-memo-completed-toggle { border:0; background:transparent; color:var(--sch-muted); text-align:left; padding:7px 0 2px; font-size:12px; display:flex; align-items:center; justify-content:space-between; width:100%; min-height:48px; margin-top:6px; border-top:1px solid var(--border); cursor:pointer; }
+.private-memo-empty { padding:36px 8px; text-align:center; color:var(--sch-muted); font-size:14px; line-height:1.8; }
+.private-memo-completed-toggle { display:flex; align-items:center; justify-content:space-between; width:100%; min-height:48px; margin-top:0; padding:0 4px; border:0; border-top:1px solid var(--border); background:transparent; color:var(--sch-muted); font-size:13px; text-align:left; cursor:pointer; }
+.private-memo-completed-toggle::after { content:'›'; font-size:20px; line-height:1; transform:rotate(90deg); transition:transform .15s; }
+.private-memo-completed-toggle[aria-expanded="true"]::after { transform:rotate(-90deg); }
+.private-memo-compose { flex-shrink:0; margin-top:auto; display:flex; flex-direction:column; gap:10px; }
+.private-memo-input-row { display:flex; gap:8px; }
+.private-memo-input-row input { flex:1; min-width:0; min-height:46px; padding:0 16px; border:1px solid var(--border); border-radius:999px; background:var(--surface); color:var(--text); font-size:15px; }
+.private-memo-input-row button { min-height:46px; padding:0 20px; border:0; border-radius:999px; background:var(--sch-add-bg); color:var(--sch-add-fg); font-size:15px; font-weight:700; cursor:pointer; }
+.private-memo-input-row button:disabled { opacity:.6; cursor:wait; }
+.private-memo-input-row input:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.private-memo-mic { display:flex; align-items:center; justify-content:center; width:64px; height:64px; min-height:44px; margin:0 auto; padding:0; border:0; border-radius:50%; background:transparent; box-shadow:none; color:var(--sch-accent-fg); cursor:pointer; }
+.private-memo-mic img { display:block; width:64px; height:64px; object-fit:contain; }
+.private-memo-mic:active { transform:scale(.94); }
+
+.sub-page [hidden] { display:none !important; }
+.schedule-page button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+@media (hover:hover) {
+  .sch-item:hover { background:color-mix(in srgb,var(--accent) 5%,transparent); }
+  .sch-del-btn:hover { background:color-mix(in srgb,var(--danger) 10%,transparent); }
+}
 @media (max-width:420px) {
-  .schedule-page { padding:10px 12px max(12px,env(safe-area-inset-bottom)); }
+  .schedule-page { padding:10px 12px max(12px,env(safe-area-inset-bottom)); gap:12px; }
   .sch-add-row2 { flex-wrap:wrap; }
   .sch-add-row2 input { flex-basis:0; }
-  .sch-add-row2 select { flex:0 0 100px; width:100px; }
+  .sch-add-row2 select { flex:0 0 108px; width:108px; }
   .sch-add-row2 button { flex-basis:100%; width:100%; min-height:44px; font-size:13px; border-radius:12px; }
-}
-.sub-page [hidden] { display:none !important; }
-.sch-section-note { margin-top:4px; font-size:12px; line-height:1.5; color:var(--sch-muted); }
-.sch-history-button { display:flex; align-items:center; gap:6px; min-height:36px; padding:0 10px; border:1px solid var(--border); border-radius:12px; background:transparent; color:var(--text2); font-size:12px; cursor:pointer; }
-.sch-history-button svg { width:16px; height:16px; }
-.sch-history-item .sch-origin,.sch-history-item .sch-time { font-size:11px; }
-.sch-add-title { margin-bottom:10px; font-size:13px; font-weight:650; color:var(--sch-muted); }
-.sch-add-row2 input,.sch-add-row2 select { min-height:44px; font-size:13px; }
-.private-memo-scroll { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; border:1px solid var(--border); border-radius:18px; background:var(--surface); padding:0 14px; }
-.private-memo-item:first-child { border-top:0; }
-.memo-check::before { content:''; position:absolute; inset:10px; border:2px solid var(--accent); border-radius:50%; }
-.memo-check.completed::before { background:color-mix(in srgb,var(--accent) 22%,transparent); }
-.private-memo-completed-toggle::after { content:'⌄'; }
-.private-memo-completed-toggle[aria-expanded="true"]::after { content:'⌃'; }
-.schedule-page button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-@media (max-width:420px) {
-  .schedule-page { gap:12px; }
-  .sch-item { padding:10px; gap:8px; }
-  .sch-add-section { padding:12px; }
-  .private-memo-scroll { padding:0 8px; }
-  .private-memo-item { gap:4px; }
+  .sch-item { padding:12px 4px 12px 10px; }
+  .private-memo-scroll { padding:0 6px; }
 }
 @media (max-height:640px) {
   .sch-schedule-block { overflow-y:auto; }
   .sch-schedule-block .sch-list { flex:0 0 180px; }
 }
-.top-bar h2 { font-size:16px; }
-.private-memo-compose { flex-shrink:0; display:flex; flex-direction:column; gap:10px; }
-.private-memo-input-row { display:flex; gap:8px; }
-.private-memo-input-row input { flex:1; min-width:0; min-height:42px; padding:9px 11px; border:1px solid var(--border); border-radius:12px; background:var(--surface); color:var(--text); font-size:14px; }
-.private-memo-input-row button { min-height:42px; padding:0 16px; border:0; border-radius:12px; background:var(--sch-add-bg); color:var(--sch-add-fg); font-size:13px; cursor:pointer; }
-.private-memo-input-row button:disabled { opacity:.6; cursor:wait; }
-.private-memo-input-row input:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
-.private-memo-mic img { display:block; width:64px; height:64px; object-fit:contain; }
 @media (prefers-reduced-motion:reduce) {
-  .sch-tab,.sch-item { transition:none; }
+  .sch-tab,.sch-item,.private-memo-completed-toggle::after { transition:none; }
 }
 </style>
 </head>
@@ -115,13 +122,76 @@ body[data-theme="dark"] .schedule-page { --sch-muted:#c5c9ef; --sch-subtle:#aeb5
     <button class="back-btn" id="schBackButton" data-custom-back onclick="leaveScheduleView()" aria-label="返回首页">⬅</button>
     <h2 id="schPageTitle" tabindex="-1">日程管理</h2>
     <button class="sch-history-button" id="schHistoryButton" onclick="openScheduleHistory()" aria-label="查看日程历史"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 11a9 9 0 1 1 2.5 7M3 4v7h7"/><path d="M12 7v5l3 2"/></svg>历史</button>
+    <label class="schedule-share"><span>共享作息</span><input id="scheduleShare" type="checkbox" role="switch" aria-label="向伴侣共享默认作息" disabled></label>
   </div>
   <div class="page-content schedule-page">
     <div class="sch-tabs" id="schTabs" role="tablist" aria-label="日程分类">
-      <button class="sch-tab active" id="schTabActive" role="tab" tabindex="0" aria-selected="true" aria-controls="schPanelActive" onclick="switchScheduleTab('active')" onkeydown="handleScheduleTabKeydown(event, 'active')">日程管理</button>
+      <button class="sch-tab active" id="schTabRoutine" role="tab" tabindex="0" aria-selected="true" aria-controls="schPanelRoutine" onclick="switchScheduleTab('routine')" onkeydown="handleScheduleTabKeydown(event, 'routine')">日程表</button>
+      <button class="sch-tab" id="schTabActive" role="tab" tabindex="-1" aria-selected="false" aria-controls="schPanelActive" onclick="switchScheduleTab('active')" onkeydown="handleScheduleTabKeydown(event, 'active')">提醒管理</button>
       <button class="sch-tab" id="schTabMemo" role="tab" tabindex="-1" aria-selected="false" aria-controls="schPanelMemo" onclick="switchScheduleTab('memo')" onkeydown="handleScheduleTabKeydown(event, 'memo')">快捷备忘</button>
     </div>
-    <section class="sch-tab-panel active" id="schPanelActive" role="tabpanel" aria-labelledby="schTabActive">
+    <section class="sch-tab-panel active" id="schPanelRoutine" role="tabpanel" aria-labelledby="schTabRoutine">
+      <div id="routineApp" class="routine-app">
+        <div class="routine-calendar-nav">
+          <button type="button" class="routine-control routine-arrow" data-routine-action="previous" aria-label="上一周">‹</button>
+          <input type="date" id="routineDate" class="routine-date-input" aria-label="查看日期">
+          <button type="button" class="routine-control routine-arrow" data-routine-action="next" aria-label="下一周">›</button>
+          <button type="button" class="routine-control" data-routine-action="today">今天</button>
+        </div>
+        <div id="routineWeek" class="routine-week" aria-label="选择星期"></div>
+        <div class="routine-heading-row">
+          <h3 id="routineHeading">每日作息</h3>
+          <div class="routine-tools">
+            <button type="button" class="routine-control" id="routineMode" data-routine-action="mode" aria-pressed="false">编辑每周</button>
+            <button type="button" class="routine-control routine-add" id="routineAdd" data-routine-action="add" aria-label="添加安排">＋</button>
+          </div>
+        </div>
+        <div id="routineWeeklyTools" class="routine-weekly-tools" hidden>
+          <span>每周循环</span>
+          <button type="button" class="routine-control" data-routine-action="copy">复制到其他天</button>
+        </div>
+        <div id="routineScroll" class="routine-scroll"><div id="routineList" class="routine-list" data-empty="true"><div class="routine-empty">正在读取安排…</div></div></div>
+        <div class="routine-error" hidden><span id="routineError" role="alert" hidden></span><button type="button" class="routine-control" data-routine-action="retry" id="routineRetry" hidden>重试</button></div>
+        <button type="button" class="routine-control routine-reset" id="routineReset" data-routine-action="reset" hidden>恢复这天的每周安排</button>
+        <dialog class="routine-dialog" id="routineEditor" aria-labelledby="routineEditorTitle">
+          <form id="routineForm">
+            <div class="routine-dialog-heading"><h3 id="routineEditorTitle">编辑安排</h3><button type="button" class="routine-control routine-close" data-routine-action="close-editor" aria-label="关闭编辑">×</button></div>
+            <label class="routine-field"><span>安排</span><input class="routine-input" name="content" required maxlength="500" autocomplete="off" placeholder="准备做什么？"></label>
+            <div class="routine-time-fields">
+              <label class="routine-field"><span>开始</span><input class="routine-input" type="time" name="start" required></label>
+              <label class="routine-field"><span>结束（可留空）</span><input class="routine-input" type="time" name="end"></label>
+            </div>
+            <label class="routine-field"><span>修改范围</span><select class="routine-input" name="scope"></select></label>
+            <label id="routineRemindControl" class="routine-remind-choice"><input type="checkbox" name="remind">到点主动提醒</label>
+            <label class="routine-field" id="routineRemindFields" hidden><span>提醒时间（仅这一天）</span><input class="routine-input" type="datetime-local" name="reminder_at"></label>
+            <p class="routine-form-error" id="routineFormError" role="alert" hidden></p>
+            <div class="routine-dialog-actions"><button type="submit" class="routine-control routine-save">保存</button><button type="button" class="routine-control" data-routine-action="close-editor">取消</button><button type="button" class="routine-control routine-delete" id="routineDelete" data-routine-action="delete">删除</button></div>
+          </form>
+        </dialog>
+        <dialog class="routine-dialog" id="routineScheduleEditor" aria-labelledby="routineScheduleTitle">
+          <form id="routineScheduleForm">
+            <div class="routine-dialog-heading"><h3 id="routineScheduleTitle">临时日程与提醒</h3><button type="button" class="routine-control routine-close" data-routine-action="close-schedule" aria-label="关闭临时日程">×</button></div>
+            <label class="routine-field"><span>提醒或记录</span><select name="record" class="routine-input"></select></label>
+            <label class="routine-field"><span>内容</span><input name="content" class="routine-input" required maxlength="500"></label>
+            <label class="routine-field"><span>类型</span><select name="type" class="routine-input"><option value="alarm">闹铃 · 到点主动提醒</option><option value="reminder">仅记录 · 聊天时参考</option><option value="monitor">监督 · 到点查看</option></select></label>
+            <label class="routine-field"><span>提醒／记录时间</span><input name="trigger_at" type="datetime-local" class="routine-input" required></label>
+            <label class="routine-field"><span>事情开始时间（未知可留空）</span><input name="event_at" type="datetime-local" class="routine-input"></label>
+            <p class="routine-form-error" id="routineScheduleError" role="alert" hidden></p>
+            <div class="routine-dialog-actions"><button type="submit" class="routine-control routine-save">保存</button><button type="button" class="routine-control" data-routine-action="close-schedule">取消</button><button type="button" class="routine-control routine-delete" id="routineScheduleDelete" data-routine-action="cancel-schedule">取消这条提醒</button></div>
+          </form>
+        </dialog>
+        <dialog class="routine-dialog" id="routineCopyDialog" aria-labelledby="routineCopyTitle">
+          <form id="routineCopyForm">
+            <div class="routine-dialog-heading"><h3 id="routineCopyTitle">复制每周安排</h3><button type="button" class="routine-control routine-close" data-routine-action="close-copy" aria-label="关闭复制">×</button></div>
+            <div class="routine-copy-days" id="routineCopyDays"></div>
+            <p class="routine-copy-note">将替换所选星期的每周安排；复制后仍可分别修改。</p>
+            <p class="routine-form-error" id="routineCopyError" role="alert" hidden></p>
+            <div class="routine-dialog-actions"><button type="submit" class="routine-control routine-save">确认复制</button><button type="button" class="routine-control" data-routine-action="close-copy">取消</button></div>
+          </form>
+        </dialog>
+      </div>
+    </section>
+    <section class="sch-tab-panel" id="schPanelActive" role="tabpanel" aria-labelledby="schTabActive" hidden>
         <div class="sch-schedule-block">
           <div class="sch-list" id="schList"><div class="sch-empty">暂无日程</div></div>
           <div class="sch-add-section">
@@ -165,18 +235,21 @@ body[data-theme="dark"] .schedule-page { --sch-muted:#c5c9ef; --sch-subtle:#aeb5
 </div>
 <script src="/static/theme.js?v=theme-20260606"></script>
 <script src="/static/common.js?v=20260905-schedule-back"></script>
-<script src="/static/schedule-ui.js?v=20260905-compact"></script>
+<script src="/static/schedule-ui.js?v=20261107-unified"></script>
+<script src="/static/routine-ui.js?v=20261107-routine-share"></script>
 <script>
 let scheduleRequestId = 0;
 let memoRequestId = 0;
+const routineUI = RoutineUI.mount($('routineApp'), { api, toast: showToast });
 connectCommonWS(msg => {
   if (ScheduleUI.shouldReloadSchedules(msg)) loadSchedules();
   if (ScheduleUI.shouldReloadPrivateMemos(msg)) loadPrivateMemos();
-}, { reconcile: () => Promise.all([loadSchedules(), loadPrivateMemos()]) });
+  if (msg.type === 'routine_changed' || msg.type === 'schedule_changed') routineUI.reload();
+}, { reconcile: () => Promise.all([loadSchedules(), loadPrivateMemos(), routineUI.reload()]) });
 
 (async function init() {
-  await loadSchedules();
-  await loadPrivateMemos();
+  if (location.hash !== '#history') switchScheduleTab('routine');
+  await Promise.all([loadSchedules(), loadPrivateMemos(), routineUI.reload()]);
 })();
 
 window.onAionPrivateMemosChanged = () => loadPrivateMemos();
@@ -198,10 +271,12 @@ async function loadSchedules() {
 
 function switchScheduleTab(tab) {
   ScheduleUI.selectScheduleTab(tab);
+  if (tab === 'routine') routineUI.onVisible();
 }
 
 function handleScheduleTabKeydown(event, tab) {
-  ScheduleUI.handleScheduleTabKeydown(event, tab);
+  const selected = ScheduleUI.handleScheduleTabKeydown(event, tab);
+  if (selected === 'routine') routineUI.onVisible();
 }
 
 function openScheduleHistory() {

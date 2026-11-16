@@ -23,7 +23,7 @@ from generation_control import (current_generation, cancellable, cancel_generati
 from cancelled_reply import save_cancelled_replies
 from active_window_state import record_aion_private_active
 from ai_providers import stream_ai, CLI_STATUS_PREFIX, with_current_device_context, model_chat_idle_timeout
-from kitchen_chat import chat_stream as kitchen_stream, finish_reply as finish_kitchen_reply
+from chat_web_cards import chat_stream as kitchen_stream, finish_reply as finish_kitchen_reply
 from memory import recall_memories, instant_digest, fetch_source_details, build_surfacing_memories, get_embedding, _pack_embedding, format_recalled_memories_for_prompt
 from camera import cam, CAM_CHECK_CMD, perform_cam_check, build_monitor_alert_data
 from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prompt
@@ -52,6 +52,7 @@ from band_commands import process_band_vibration, with_band_vibration_attachment
 from hug_pillow_commands import process_hug_pillow_commands
 from capabilities import process_pat_commands
 from game_invites import process_game_invites
+from chat_ambience import process_ambience_commands
 from compositions import process_compositions
 from rps import process_rps_commands, notification_message, attach_to_message, validate_send, reply_round_id
 from app_supervision_ai import (
@@ -109,7 +110,7 @@ THEATER_ITEM_PATTERN = re.compile(r'\[剧场道具[：:]([^\]]+)\]')
 # 允许进入上下文的 system 消息关键词（点歌、查看监控、查看动态）
 _SYSTEM_MSG_CONTEXT_KEYWORDS = ('查看了监控', '搜索了', '点歌', '点了一首', '推荐了', '查看了动态', '视频通话', '本条为微信消息')
 from context_builder import (
-    fetch_merged_timeline, render_merged_timeline, build_health_summary,
+    fetch_merged_timeline, render_merged_timeline, with_family_dynamics, build_health_summary,
     build_ability_block, WISH_CMD_PATTERN, _build_recall_query, strip_tool_commands,
     BAND_VIBRATE_CMD_PATTERN,
 )
@@ -453,6 +454,7 @@ async def _save_stopped_chat_reply(conv_id, msg_id, visible_text, result, queue)
 
 
 _AI_ERROR_PREFIXES = (
+    "[GrokCLI错误",
     "[CodexCLI错误",
     "[Gemini错误",
     "[AntigravityCLI错误",
@@ -1430,12 +1432,12 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
 
     # ── 合并私聊 + 群聊消息为统一时间线 ──
     merged = await fetch_merged_timeline("aion", body.context_limit, conv_id=conv_id)
-    history = render_merged_timeline(merged, "aion")
+    history = render_merged_timeline(await with_family_dynamics(merged), "aion")
 
     # 图片保留最近两轮用户上下文 + 语音消息处理
     _process_voice_attachments_in_history(history)
 
-    actual_recent = [m for m in history if m["role"] in ("user", "assistant")][-3:]
+    actual_recent = [m for m in history if m["role"] in ("user", "assistant") and not m.get("_family_dynamic")][-3:]
 
     wb = load_worldbook()
     ai_name = wb.get("ai_name") or "AI"
@@ -1493,10 +1495,10 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
         return await build_surfacing_memories(topic, recall_keywords)
     async def _do_recall():
         if recall_query:
-            return await recall_memories(recall_query, query_keywords=recall_keywords)
+            return await recall_memories(recall_query, query_keywords=recall_keywords, min_results=3)
         return [], []
 
-    (surfaced, surfaced_ids), (_, debug_top6) = await asyncio.gather(
+    (surfaced, surfaced_ids), (recalled, debug_top6) = await asyncio.gather(
         _do_surfacing(), _do_recall()
     )
 
@@ -1523,7 +1525,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     inject_offset += 2
 
     if recall_query:
-        recalled = [r for r in debug_top6 if r["score"] >= 0.45 and r["id"] not in surfaced_ids][:5]
+        recalled = [r for r in recalled if r["id"] not in surfaced_ids][:5]
         if (is_search_needed or digest_result.get("require_detail")) and recalled:
             detail_text = await fetch_source_details(recalled, recall_keywords)
 
@@ -1574,7 +1576,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 _mark_first_text = model_started()
                 async for chunk in kitchen_stream(history,
                         lambda prompts: stream_ai(prompts, model_key, usage_meta, max_tokens=body.max_tokens, cancel_event=cancel_event),
-                        actor='aion', scope='private', parent_id=conv_id, query=body.content, queue=_q, state=kitchen_state):
+                        actor='aion', scope='private', parent_id=conv_id, query=body.content, queue=_q, state=kitchen_state, model_key=model_key):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         yield StreamActivity()
@@ -1637,6 +1639,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 full_text, source_type="private", source_id=conv_id,
                 sender="aion", source_msg_id=ai_msg_id,
             )
+            full_text = await process_ambience_commands(full_text, sender="aion")
             full_text = await process_compositions(
                 full_text, source_type="private", source_id=conv_id,
                 sender="aion", source_msg_id=ai_msg_id,
@@ -2052,7 +2055,7 @@ async def send_message(conv_id: str, body: MsgCreate):
 
     # ── 合并私聊 + 群聊消息为统一时间线 ──
     merged = await fetch_merged_timeline("aion", body.context_limit, conv_id=conv_id)
-    history = render_merged_timeline(merged, "aion")
+    history = render_merged_timeline(await with_family_dynamics(merged), "aion")
 
     # 图片保留发图当轮和后续一轮用户上下文
     # 语音消息处理：历史语音消息用转写文本替代音频文件，当前消息保留音频原件
@@ -2060,7 +2063,7 @@ async def send_message(conv_id: str, body: MsgCreate):
 
     # 本地前置路由：取最近实际对话用于记忆查询
     # 语音消息此时 content 已包含转写文本，哨兵直接分析文本
-    actual_recent = [m for m in history if m["role"] in ("user", "assistant")][-3:]
+    actual_recent = [m for m in history if m["role"] in ("user", "assistant") and not m.get("_family_dynamic")][-3:]
 
     wb = load_worldbook()
     ai_name = wb.get("ai_name") or "AI"
@@ -2176,10 +2179,10 @@ async def send_message(conv_id: str, body: MsgCreate):
 
         async def _do_recall():
             if recall_query:
-                return await recall_memories(recall_query, query_keywords=recall_keywords)
+                return await recall_memories(recall_query, query_keywords=recall_keywords, min_results=3)
             return [], []
 
-        (surfaced, surfaced_ids), (_, debug_top6) = await asyncio.gather(
+        (surfaced, surfaced_ids), (recalled, debug_top6) = await asyncio.gather(
             _do_surfacing(), _do_recall()
         )
 
@@ -2208,7 +2211,7 @@ async def send_message(conv_id: str, body: MsgCreate):
 
         # 4. RAG 精确召回（与背景记忆去重，使用已并行获取的结果）
         if recall_query:
-            recalled = [r for r in debug_top6 if r["score"] >= 0.45 and r["id"] not in surfaced_ids][:5]
+            recalled = [r for r in recalled if r["id"] not in surfaced_ids][:5]
             # 如果需要补充记忆证据
             if (is_search_needed or digest_result.get("require_detail")) and recalled:
                 detail_text = await fetch_source_details(recalled, recall_keywords)
@@ -2265,7 +2268,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                 _mark_first_text = model_started()
                 async for chunk in kitchen_stream(history,
                         lambda prompts: stream_ai(prompts, model_key, usage_meta, max_tokens=body.max_tokens, cancel_event=cancel_event),
-                        actor='aion', scope='private', parent_id=conv_id, query=body.content, queue=_q, state=kitchen_state):
+                        actor='aion', scope='private', parent_id=conv_id, query=body.content, queue=_q, state=kitchen_state, model_key=model_key):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         yield StreamActivity()
@@ -2330,6 +2333,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                 full_text, source_type="private", source_id=conv_id,
                 sender="aion", source_msg_id=ai_msg_id,
             )
+            full_text = await process_ambience_commands(full_text, sender="aion")
             full_text = await process_compositions(
                 full_text, source_type="private", source_id=conv_id,
                 sender="aion", source_msg_id=ai_msg_id,
@@ -3602,7 +3606,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
 
     # ── 合并私聊 + 群聊消息为统一时间线 ──
     merged = await fetch_merged_timeline("aion", context_limit, conv_id=conv_id)
-    history = render_merged_timeline(merged, "aion")
+    history = render_merged_timeline(await with_family_dynamics(merged), "aion")
 
     # 图片保留最近两轮用户上下文 + 语音消息处理（与 send_message 一致）
     last_user_idx = -1
@@ -3616,7 +3620,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
     _process_voice_attachments_in_history(history, keep_idx=last_user_idx)
 
     # 本地前置路由：取最近实际对话用于记忆查询
-    actual_recent = [m for m in history if m["role"] in ("user", "assistant")][-3:]
+    actual_recent = [m for m in history if m["role"] in ("user", "assistant") and not m.get("_family_dynamic")][-3:]
 
     wb = load_worldbook()
     ai_name = wb.get("ai_name") or "AI"
@@ -3709,12 +3713,12 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
         )
 
         if recall_query:
-            _, debug_top6 = await recall_memories(recall_query, query_keywords=recall_keywords)
+            recalled, debug_top6 = await recall_memories(recall_query, query_keywords=recall_keywords, min_results=3)
         else:
             debug_top6 = []
 
         if recall_query:
-            recalled = [r for r in debug_top6 if r["score"] >= 0.45 and r["id"] not in surfaced_ids][:5]
+            recalled = [r for r in recalled if r["id"] not in surfaced_ids][:5]
             if (is_search_needed or digest_result.get("require_detail")) and recalled:
                 detail_text = await fetch_source_details(recalled, recall_keywords)
 
@@ -3768,7 +3772,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 _mark_first_text = model_started()
                 async for chunk in kitchen_stream(history,
                         lambda prompts: stream_ai(prompts, model_key, usage_meta, temperature, max_tokens=max_tokens, cancel_event=cancel_event),
-                        actor='aion', scope='private', parent_id=conv_id, query=lounge_request_text, queue=_q, state=kitchen_state):
+                        actor='aion', scope='private', parent_id=conv_id, query=lounge_request_text, queue=_q, state=kitchen_state, model_key=model_key):
                     if chunk.startswith(CLI_STATUS_PREFIX):
                         await _q.put({"type": "cli_status", "text": chunk[len(CLI_STATUS_PREFIX):]})
                         yield StreamActivity()
@@ -3833,6 +3837,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 full_text, source_type="private", source_id=conv_id,
                 sender="aion", source_msg_id=ai_msg_id,
             )
+            full_text = await process_ambience_commands(full_text, sender="aion")
             full_text = await process_compositions(
                 full_text, source_type="private", source_id=conv_id,
                 sender="aion", source_msg_id=ai_msg_id,

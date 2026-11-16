@@ -15,6 +15,7 @@ import weakref
 
 from config import SETTINGS, get_key, TTS_CACHE_DIR, TTS_CACHE_MAX_BYTES
 from expressive_voice_markup import VOICE_SPAN, strip_voice_blocks
+from chat_web_cards import BLOCK as WEB_CARD_BLOCK
 from link_preview import strip_urls_for_message
 
 log = logging.getLogger("tts")
@@ -121,6 +122,7 @@ _STRIP_PATTERNS = [
     re.compile(r'\[PAT\s*[：:][^\]]*\]', re.IGNORECASE),
     re.compile(r'\[\s*猜拳\s*[：:][^\]]*(?:\]|$)'),
     re.compile(r'\[\s*小游戏\s*[：:][^\]]*(?:\]|$)'),
+    re.compile(r'\[\s*小家氛围\s*[：:][^\]]*(?:\]|$)'),
     re.compile(r'[\[【]心里嘀咕\s*[：:]\s*[^\]】]*[\]】]'),
     re.compile(r'\[查看动态:\d+\]'),
     re.compile(r'\[SELFIE:[^\]]*\]'),
@@ -241,7 +243,7 @@ def _find_cut_position_for_text(buffer: str, min_chars: int, max_chars: int) -> 
 
 def split_text_for_tts(text: str, *, min_chars: int = 300, max_chars: int = 500) -> list[str]:
     """Split long text into TTS-sized chunks, preferring sentence boundaries."""
-    remaining = strip_voice_blocks(text or "").strip()
+    remaining = strip_voice_blocks(WEB_CARD_BLOCK.sub('', text or '')).strip()
     segments: list[str] = []
     min_chars = max(1, min_chars)
     max_chars = max(min_chars, max_chars)
@@ -272,7 +274,7 @@ def split_text_for_tts(text: str, *, min_chars: int = 300, max_chars: int = 500)
 async def _request_tts_audio(text: str, voice: str, *, seq: int | None = None) -> bytes | None:
     # Every ordinary entry point, including background and manual TTS, excludes
     # the complete expressive block. Only the voice attachment calls its provider directly.
-    text = strip_voice_blocks(text).strip()
+    text = strip_voice_blocks(WEB_CARD_BLOCK.sub('', text)).strip()
     text = _WIDGET_TTS_COMMAND.sub('', text).strip()
     if not text:
         return None

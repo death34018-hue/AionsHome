@@ -488,6 +488,38 @@ body[data-theme="light"] .transport-mode-btn.is-active {
   color: #087979;
   background: rgba(25,184,184,.13);
 }
+/* 模型能力胶囊：勾选后高亮 */
+.vision-toggle {
+  cursor: pointer;
+  user-select: none;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
+}
+.vision-toggle:has(input:checked) {
+  border-color: rgba(25,184,184,.55);
+  background: rgba(25,184,184,.16);
+  color: #dfffff;
+}
+body[data-theme="light"] .model-card {
+  border-color: rgba(70,92,140,.14);
+  background: rgba(255,255,255,.72);
+  box-shadow: 0 1px 2px rgba(31,42,68,.05);
+}
+body[data-theme="light"] .route-models {
+  border-top-color: rgba(70,92,140,.12);
+}
+body[data-theme="light"] .vision-toggle {
+  border-color: rgba(70,92,140,.18);
+  background: #fff;
+  color: rgba(31,42,68,.72);
+}
+body[data-theme="light"] .vision-toggle:has(input:checked) {
+  border-color: rgba(25,184,184,.5);
+  background: rgba(25,184,184,.1);
+  color: #087979;
+}
+body[data-theme="light"] .danger-btn {
+  color: #d0563e;
+}
 @media (max-width: 720px) {
   .settings-grid,
   .settings-grid.compact,
@@ -686,6 +718,14 @@ body[data-theme="light"] .transport-mode-btn.is-active {
       </div>
     </details>
 
+    <details class="settings-card">
+      <summary>
+        <div class="summary-title"><strong>Grok 思考强度</strong><span>默认高</span></div>
+        <span class="summary-chevron">›</span>
+      </summary>
+      <div class="card-body settings-grid" id="grokReasoningList"></div>
+    </details>
+
     <details class="settings-card transport-settings-card">
       <summary>
         <div class="summary-title">
@@ -714,10 +754,12 @@ body[data-theme="light"] .transport-mode-btn.is-active {
           <select class="form-input" id="imageGenProviderInput" onchange="updateImageGenProviderUi()">
             <option value="existing">API 接口（原有配置）</option>
             <option value="codex">Codex 登录额度</option>
+            <option value="grok">Grok 订阅</option>
             <option value="flowai">Flow AI 积分</option>
           </select>
         </div>
         <p class="hint" id="imageGenCodexHint" hidden>使用本机 Codex 已登录账号的额度，无需填写生图 Key。按出场人物附带锚点照片；生成失败时不会自动切换到 API 接口。</p>
+        <p class="hint" id="imageGenGrokHint" hidden>使用本机 Grok Build 已登录账号的订阅额度，最多携带 5 张人物锚点。</p>
         <div id="imageGenFlowConfig" hidden>
           <div class="field">
             <label class="form-label" for="flowaiModelInput">Flow AI 生图模型</label>
@@ -756,25 +798,25 @@ body[data-theme="light"] .transport-mode-btn.is-active {
       <summary>
         <div class="summary-title">
           <strong>🎙 语音转文字</strong>
-          <span>本机聊天识别与云端转写配置</span>
+          <span>本机识别方式与共用云端服务</span>
         </div>
         <span class="summary-chevron">›</span>
       </summary>
       <div class="card-body">
         <div class="settings-grid">
           <div class="field full">
-            <label class="form-label" for="localAsrModeInput">本机聊天语音识别</label>
+            <label class="form-label" for="localAsrModeInput">这台设备的识别方式</label>
             <select class="form-input" id="localAsrModeInput" onchange="window.AionLocalVoice.setMode(this.value); updateLocalAsrModeUi()">
               <option value="local">手机本地 · 中英流式识别</option>
               <option value="cloud">云端识别 · 使用下方配置</option>
             </select>
-            <p class="hint" id="localAsrHint">仅这台手机的主聊天和聊天室生效，选择后立即保存。本地识别支持中英文，中英混杂较弱；发送仍上传语音附件供回听。</p>
+            <p class="hint" id="localAsrHint">仅保存在这台设备，用于聊天语音消息与群聊环境侦听。选择后立即生效。</p>
           </div>
         </div>
-        <div id="cloudAsrFields" hidden>
+        <div id="cloudAsrFields">
         <div class="settings-grid">
           <div class="field full">
-            <label class="form-label" for="asrProviderInput">云端接口类型（通话、唤醒及云端语音消息）</label>
+            <label class="form-label" for="asrProviderInput">云端识别服务 · 所有设备共用</label>
             <select class="form-input" id="asrProviderInput" onchange="updateAsrProviderUi(true)">
               <option value="openai">OpenAI 兼容</option>
               <option value="dashscope">阿里云 Paraformer</option>
@@ -794,10 +836,15 @@ body[data-theme="light"] .transport-mode-btn.is-active {
           </div>
         </div>
         <p class="hint" id="asrProviderHint"></p>
-        <p class="hint">填写后点击上方“保存全部设置”，从下一次转写生效。</p>
+        <p class="hint">供选择云端的设备，以及通话、语音唤醒使用。修改后点击“保存全部设置”。</p>
         </div>
       </div>
     </details>
+
+    <div class="settings-card" style="padding:18px">
+      <button class="action-btn" type="button" onclick="if (window.AionSoundTest) window.AionSoundTest.open(); else showToast('请在新版 Android 小家中打开声音识别测试');">声音识别测试 →</button>
+      <p class="hint">试听说话、唱歌、哼唱和鼾声。</p>
+    </div>
 
     <details class="settings-card">
       <summary>
@@ -815,7 +862,7 @@ body[data-theme="light"] .transport-mode-btn.is-active {
               <label class="form-label" for="sentinelRouteInput">当前巡逻线路</label>
               <select class="form-input" id="sentinelRouteInput" onchange="updateSentinelRouteUi()">
                 <option value="original">原线路（自定义 / Qwen / Gemini）</option>
-                <option value="codex_luna">GPT-5.6 Luna（Codex 登录态）</option>
+                <option value="codex_luna">GPT-6 Luna（Codex 登录态）</option>
               </select>
             </div>
           </div>
@@ -964,7 +1011,7 @@ body[data-theme="light"] .transport-mode-btn.is-active {
 </div>
 <script src="/static/theme.js?v=theme-20260606"></script>
 <script src="/static/common.js"></script>
-<script src="/static/local-voice.js?v=20261024"></script>
+<script src="/static/local-voice.js?v=20261112-ambient"></script>
 <script src="/static/image-anchors.js?v=20261103"></script>
 <script src="/static/tts-loudness-settings.js"></script>
 <script>
@@ -973,12 +1020,13 @@ connectCommonWS();
 const localAsrSelect = document.getElementById('localAsrModeInput');
 localAsrSelect.value = window.AionLocalVoice.mode();
 function updateLocalAsrModeUi() {
-  document.getElementById('cloudAsrFields').hidden = localAsrSelect.value !== 'cloud';
+  localAsrSelect.value = window.AionLocalVoice.mode();
+  document.getElementById('cloudAsrFields').hidden = false;
 }
 updateLocalAsrModeUi();
 if (!window.AionLocalVoice.available()) {
   localAsrSelect.disabled = true;
-  document.getElementById('localAsrHint').textContent = '当前客户端未提供本地识别，聊天语音使用下方云端配置。请在新版 Android 小家中使用本地识别。';
+  document.getElementById('localAsrHint').textContent = '这台设备未安装本地模型，语音消息与环境侦听使用下方云端服务。手机的本地选择不会影响这里。';
 }
 
 var customModelRoutes = [];
@@ -995,6 +1043,28 @@ function escAttr(value) {
 
 function makeRouteId() {
   return "custom_route_" + Date.now() + "_" + Math.random().toString(16).slice(2, 8);
+}
+
+function renderGrokReasoning(models) {
+  var labels = {low: '低', medium: '中', high: '高', xhigh: '极高'};
+  $("grokReasoningList").innerHTML = models.map(function(row) {
+    var id = 'grok-effort-' + row.model;
+    return '<div class="field"><label class="form-label" for="' + escAttr(id) + '">' +
+      escHtml(row.name) + '</label><select class="form-input" id="' + escAttr(id) +
+      '" data-grok-model="' + escAttr(row.model) + '">' + row.efforts.map(function(effort) {
+        return '<option value="' + escAttr(effort) + '"' +
+          (effort === (row.reasoning_effort || 'high') ? ' selected' : '') + '>' +
+          escHtml(labels[effort] || effort) + '</option>';
+      }).join('') + '</select></div>';
+  }).join('');
+}
+
+function collectGrokReasoningEfforts() {
+  var efforts = {};
+  $("grokReasoningList").querySelectorAll('select[data-grok-model]').forEach(function(select) {
+    efforts[select.dataset.grokModel] = select.value;
+  });
+  return efforts;
 }
 
 function renderModelTransportModes() {
@@ -1233,6 +1303,7 @@ function updateImageGenProviderUi() {
   var provider = $("imageGenProviderInput").value;
   $("imageGenApiConfig").hidden = provider !== "existing";
   $("imageGenCodexHint").hidden = provider !== "codex";
+  $("imageGenGrokHint").hidden = provider !== "grok";
   $("imageGenFlowConfig").hidden = provider !== "flowai";
 }
 
@@ -1274,7 +1345,7 @@ function updateAsrProviderUi(usePreset) {
   $("embeddingBaseUrlInput").value = s.embedding_base_url || "";
   $("embeddingApiKeyInput").value = s.embedding_api_key || "";
   $("embeddingModelInput").value = s.embedding_model || "";
-  $("imageGenProviderInput").value = ["codex", "flowai"].includes(s.image_gen_provider) ? s.image_gen_provider : "existing";
+  $("imageGenProviderInput").value = ["codex", "flowai", "grok"].includes(s.image_gen_provider) ? s.image_gen_provider : "existing";
   $("flowaiModelInput").value = s.flowai_image_model || "gpt_image2_5_flare";
   updateImageGenProviderUi();
   $("imageGenBaseUrlInput").value = s.image_gen_base_url || "";
@@ -1308,6 +1379,7 @@ function updateAsrProviderUi(usePreset) {
   customModelRoutes = normalizeRoutesForUi(s.custom_model_routes || []);
   renderCustomRoutes();
   renderModelTransportModes();
+  renderGrokReasoning(s.grok_models || []);
   refreshPhoneScreenStatus();
   refreshFloatingChatStatus();
   refreshMediaCacheStatus();
@@ -1410,7 +1482,8 @@ async function saveSettings() {
     luckin_default_latitude: $("luckinLatitudeInput").value.trim(),
     luckin_default_shop_keyword: $("luckinShopKeywordInput").value.trim(),
     custom_model_routes: customRoutes,
-    model_transport_modes: collectModelTransportModes()
+    model_transport_modes: collectModelTransportModes(),
+    grok_reasoning_efforts: collectGrokReasoningEfforts()
   });
   customModelRoutes = normalizeRoutesForUi(customRoutes, collapsedState);
   renderCustomRoutes();

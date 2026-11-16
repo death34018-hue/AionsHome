@@ -101,13 +101,17 @@ class Store:
         with self.db() as db:
             row = db.execute('SELECT value FROM settings WHERE key=?',('actor:'+actor,)).fetchone()
         # Existing installations inherit their old shared values until individually edited.
-        return {**{key:base[key] for key in ACTOR_FIELDS},'enabled':True,'epoch':0,'enabled_at':0,
+        return {**{key:base[key] for key in ACTOR_FIELDS},'enabled':True,'epoch':0,'enabled_at':0,'model':'',
                 **(json.loads(row[0]) if row else {})}
 
     def configure_actor(self, actor, patch):
-        if not isinstance(patch,dict) or any(key not in ACTOR_FIELDS for key in patch):
+        if not isinstance(patch,dict) or any(key not in (*ACTOR_FIELDS,'model') for key in patch):
             raise ValueError('invalid actor settings')
         current = apply_settings(self.actor_settings(actor),patch)
+        if 'model' in patch:
+            if not isinstance(patch['model'],str):
+                raise ValueError('model must be text')
+            current['model'] = patch['model'].strip()
         with self.db() as db:
             db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',('actor:'+actor,json.dumps(current)))
         return current

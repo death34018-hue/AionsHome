@@ -5,7 +5,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, 'static', 'settings.html'), 'utf8');
 assert.match(source, /<option value="original">/);
-assert.match(source, /<option value="codex_luna">GPT-5\.6 Luna/);
+assert.match(source, /<option value="codex_luna">GPT-6 Luna/);
 assert.match(source, /sentinel_route:\s*\$\("sentinelRouteInput"\)\.value/);
 
 const functionSource = source.match(/function updateSentinelRouteUi\(\) \{[\s\S]*?\n\}/)[0];

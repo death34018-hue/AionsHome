@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
 
 import chatroom
 import context_builder
+import memory
 from routes import chat as chat_routes
 
 
@@ -34,6 +35,37 @@ async def _empty_health(*args, **kwargs):
 
 
 class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
+    async def test_main_recall_supplements_ranked_memories_within_top_k(self):
+        rows = [
+            {
+                **_memory(f"mem{i}", f"memory {i}"),
+                "created_at": 1000.0,
+                "source_conv": "conv_test",
+                "source_msg_id": None,
+                "keywords": "",
+                "embedding": memory._pack_embedding([cosine, (1 - cosine ** 2) ** 0.5]),
+            }
+            for i, cosine in enumerate((0.611, 0.9, 0.55, 0.6, 0.5, 0.4))
+        ]
+        db = AsyncMock()
+        db.execute.return_value.fetchall.return_value = rows
+        db_context = AsyncMock()
+        db_context.__aenter__.return_value = db
+        with (
+            patch("memory.get_embedding", new=AsyncMock(return_value=[1.0, 0.0])),
+            patch("memory.get_db", return_value=db_context),
+        ):
+            matched, debug = await memory.recall_memories("dog walk", min_results=3)
+            self.assertEqual([m["id"] for m in matched], ["mem1", "mem0", "mem3"])
+            self.assertEqual(matched[1]["score"], 0.4166)
+            self.assertEqual(len(debug), 6)
+            self.assertIn("COALESCE(archive_state,'active')='active'", db.execute.call_args.args[0])
+
+            matched, _ = await memory.recall_memories("dog walk", min_results=3, threshold=0)
+            self.assertEqual(len(matched), 5)
+            matched, _ = await memory.recall_memories("dog walk", min_results=3, top_k=2)
+            self.assertEqual([m["id"] for m in matched], ["mem1", "mem0"])
+
     async def test_board_experiences_are_not_automatically_injected_into_chat(self):
         with (
             patch("context_builder.build_health_summary", new=_empty_health),
@@ -145,6 +177,10 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_aion_group_context_recalls_only_main_memory(self):
         chatroom_recall_called = False
+        main_recall = AsyncMock(return_value=(
+            [_memory("main1", "main memory", score=0.4166)],
+            [_memory("main1", "main memory", score=0.4166), _memory("debug1", "debug only", score=0.3)],
+        ))
 
         async def forbidden_chatroom_recall(*args, **kwargs):
             nonlocal chatroom_recall_called
@@ -178,12 +214,7 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
             patch("context_builder.build_surfacing_memories", new=AsyncMock(return_value=([], set()))),
             patch(
                 "context_builder.recall_memories",
-                new=AsyncMock(
-                    return_value=(
-                        [_memory("main1", "main memory")],
-                        [_memory("main1", "main memory")],
-                    )
-                ),
+                new=main_recall,
             ),
         ]
         with ExitStack() as stack:
@@ -199,9 +230,11 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
         prompt_text = "\n".join(str(m.get("content", "")) for m in history)
         self.assertIn("main memory", prompt_text)
+        self.assertNotIn("debug only", prompt_text)
         self.assertNotIn("companion memory", prompt_text)
         self.assertFalse(chatroom_recall_called)
         self.assertEqual(len(debug.get("recalled_memories") or []), 1)
+        self.assertEqual(main_recall.call_args.kwargs["min_results"], 3)
 
     async def test_aion_group_context_places_device_state_after_abilities_before_memory(self):
         digest = {
@@ -335,10 +368,18 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
     async def test_private_chat_regenerate_injects_recalled_memory_without_search_signal(self):
         captured = {}
         board_context = Mock(return_value="[留言板经历] 我刚和朋友聊了水母灯。")
+        main_recall = AsyncMock(return_value=(
+            [_memory("mem1", "private memory", score=0.4166)],
+            [_memory("mem1", "private memory", score=0.4166), _memory("debug1", "debug only", score=0.3)],
+        ))
 
         async def fake_stream_ai(messages, *args, **kwargs):
             captured["messages"] = messages
             yield "regenerated"
+
+        async def fake_kitchen_stream(messages, stream_factory, **kwargs):
+            async for chunk in stream_factory(messages):
+                yield chunk
 
         rendered_history = [
             {"role": "user", "content": "older user prompt", "attachments": []},
@@ -371,8 +412,9 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
             patch("routes.chat.build_health_summary", new=AsyncMock(return_value="")),
             patch("routes.chat.board_memory_context", new=board_context, create=True),
             patch("routes.chat.build_surfacing_memories", new=AsyncMock(return_value=([], set()))),
-            patch("routes.chat.recall_memories", new=AsyncMock(return_value=([_memory("mem1", "private memory")], [_memory("mem1", "private memory")]))),
+            patch("routes.chat.recall_memories", new=main_recall),
             patch("routes.chat.stream_ai", new=fake_stream_ai),
+            patch("routes.chat.kitchen_stream", new=fake_kitchen_stream),
             patch("routes.chat.process_schedule_commands", new=AsyncMock(side_effect=lambda text, *a, **k: text)),
             patch("routes.chat._process_home_commands", new=AsyncMock(side_effect=lambda text: text)),
             patch("routes.chat.handle_luckin_commands", new=AsyncMock(side_effect=lambda text: (text, []))),
@@ -393,8 +435,10 @@ class ActiveMemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
         prompt_text = "\n".join(str(m.get("content", "")) for m in captured["messages"])
         self.assertIn("private memory", prompt_text)
+        self.assertNotIn("debug only", prompt_text)
         self.assertNotIn("[留言板经历] 我刚和朋友聊了水母灯。", prompt_text)
         board_context.assert_not_called()
+        self.assertEqual(main_recall.call_args.kwargs["min_results"], 3)
 
 
 class _FakeCursor:

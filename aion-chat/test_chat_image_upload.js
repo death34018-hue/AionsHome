@@ -55,6 +55,92 @@ test('small images, GIFs and non-images retain their original bytes', async () =
   assert.deepEqual(unchanged, [true, true, true]);
 });
 
+test('a silently skipped image draw recovers actual pixels instead of exporting a white JPEG', async () => {
+  const pixel = await page.evaluate(async () => {
+    const originalDraw = CanvasRenderingContext2D.prototype.drawImage;
+    // Reproduce the mobile failure while keeping bitmap decoding and JPEG encoding real.
+    CanvasRenderingContext2D.prototype.drawImage = function (source, ...args) {
+      if (source instanceof HTMLImageElement) return;
+      return originalDraw.call(this, source, ...args);
+    };
+    try {
+      const output = await ChatImageUpload.compress(largePhoto);
+      const bitmap = await createImageBitmap(output);
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 1;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, 1, 1);
+      bitmap.close();
+      return Array.from(ctx.getImageData(0, 0, 1, 1).data);
+    } finally {
+      CanvasRenderingContext2D.prototype.drawImage = originalDraw;
+    }
+  });
+  assert.ok(pixel.slice(0, 3).every(value => value < 220), `compression lost the image: ${pixel}`);
+  assert.equal(pixel[3], 255);
+});
+
+test('failed image drawing never uploads a blank replacement', async () => {
+  let requests = 0;
+  await page.route('**/api/broken-image/upload', route => {
+    requests++;
+    return route.fulfill({ json: { url: '/uploads/blank.jpg' } });
+  });
+  const result = await page.evaluate(async () => {
+    const originalDraw = CanvasRenderingContext2D.prototype.drawImage;
+    const list = [];
+    let error = '';
+    CanvasRenderingContext2D.prototype.drawImage = function () {};
+    try {
+      await ChatImageUpload.add('/api/broken-image/upload', largePhoto, list, () => {});
+    } catch (e) {
+      error = e.message;
+    } finally {
+      CanvasRenderingContext2D.prototype.drawImage = originalDraw;
+      list.forEach(ChatImageUpload.release);
+    }
+    return { count: list.length, error };
+  });
+  assert.equal(requests, 0, 'a failed draw must not reach the upload endpoint');
+  assert.equal(result.count, 0);
+  assert.match(result.error, /图片.*(处理|读取|解码|压缩)/);
+});
+
+test('HTML decoder fallback keeps white pictures and composites transparent backgrounds correctly', async () => {
+  const results = await page.evaluate(async () => {
+    const originalDecode = window.createImageBitmap;
+    const results = [];
+    try {
+      window.createImageBitmap = async () => { throw new Error('unsupported decoder'); };
+      for (const white of [true, false]) {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = 400;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = white ? '#fff' : '#f00';
+        if (white) ctx.fillRect(0, 0, 400, 400);
+        else ctx.fillRect(100, 100, 200, 200);
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+        const file = new File([blob, new Uint8Array(420000)], 'picture.png', { type: 'image/png' });
+        const output = await ChatImageUpload.compress(file);
+        const bitmap = await originalDecode(output);
+        ctx.clearRect(0, 0, 400, 400);
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        results.push({
+          corner: Array.from(ctx.getImageData(0, 0, 1, 1).data),
+          center: Array.from(ctx.getImageData(200, 200, 1, 1).data),
+        });
+      }
+      return results;
+    } finally {
+      window.createImageBitmap = originalDecode;
+    }
+  });
+  for (const result of results) assert.deepEqual(result.corner, [255, 255, 255, 255]);
+  assert.deepEqual(results[0].center, [255, 255, 255, 255]);
+  assert.ok(results[1].center[0] > 250 && results[1].center[1] < 5 && results[1].center[2] < 5);
+});
+
 test('preview exists before upload and request carries only the compressed file', async () => {
   let bytes = 0;
   await page.route('**/api/upload', async route => {

@@ -23,7 +23,7 @@ from ai_providers import (
     stream_ai,
     with_current_device_context,
 )
-from context_builder import build_ability_block, build_memory_blocks, fetch_merged_timeline, render_merged_timeline
+from context_builder import build_ability_block, build_memory_blocks, fetch_merged_timeline, render_merged_timeline, with_family_dynamics
 from intimacy_skill import build_play_prompt
 from ws import manager
 
@@ -725,7 +725,7 @@ async def save_chatroom_memory(
 
 async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_wishes: bool = False) -> dict:
     """对 Connor 的所有消息（1v1 + 群聊）统一进行总结，通过 Codex 生成记忆。
-    支持分组（每批 20-50 条），总结后生成日记 + 可选朋友圈 + 礼物判断。
+    支持分组（每批 20-50 条），总结后可自行决定是否写日记、发朋友圈或送礼。
     room_id 参数保留兼容性但不再用于限定数据源。"""
 
     from profile_digest import prepare as prepare_profile_digest, store_result as store_profile_result
@@ -965,7 +965,7 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
     if total_new == 0:
         return {"ok": True, "message": f"总结完成：处理了 {len(msgs)} 条消息，但没有产出新的有效记忆；锚点已保留，可稍后重试", "new_memories_count": 0, "processed_messages": len(msgs)}
 
-    # ── 总结完成后：生成日记；可选发布朋友圈 ──
+    # ── 总结后自由选择写日记、发朋友圈和送礼 ──
     target_room_id = connor_room["id"] if connor_room else (group_room["id"] if group_room else None)
     if all_summaries and not digest_incomplete:
         try:
@@ -982,21 +982,26 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
                 context_lines.append(f"[{ts}][{source_label}] {name}: {content[:300]}")
             context_text = "\n".join(context_lines)
             time_str = time.strftime("%Y年%m月%d日 %A %H:%M:%S", time.localtime())
+            from diary import (
+                DIGEST_DIARY_INSTRUCTION, normalize_diary_payload, parse_diary_payload,
+                publish_ai_moment, save_diary_entry,
+            )
+            from image_anchors import family_image_prompt
             diary_prompt = (
                 f"{persona_block}"
                 f"当前时间：{time_str}\n\n"
                 f"你是{connor_name}。你刚刚整理了和{user_name}今天的聊天记忆，以下是你整理出的摘要：\n"
                 f"{summaries_text}\n\n"
                 f"【最近上下文】\n{context_text}\n\n"
-                f"请从你自己的视角写一篇私密日记，不是写给{user_name}看的聊天消息。"
-                f"日记可以记录你对这段记忆的感想，只写值得记录或有感触的事，不用每件事都提起，不要记流水账。语气必须符合你的人设。"
+                f"{DIGEST_DIARY_INSTRUCTION}"
                 f"你可以自行决定是否发布一次朋友圈，朋友圈不用每次都发，有想吐槽或者感慨，或者搞笑的事情，或者用朋友圈隔空向对方喊话。\n"
                 f"moment.expect_reply 表示发布朋友圈后是否希望另一个角色主动评论：true=希望对方回复，false=只发布、不触发回复；请根据朋友圈内容和你当下是否想与对方互动自行决定。\n"
                 f"你可以自行决定是否给{user_name}送一份图片小礼物。送礼应是更低概率的特殊事件，只在特殊日子，或聊天中确实有特别温馨、感动、有意义、值得纪念的内容时才送；不要为了完成任务而送礼，也不要用礼物重复日记或朋友圈已经表达的普通感想。\n"
                 f"givegift 为 true 时，gift.image_prompt 填写英文生图提示词，gift.message 填写符合你人设、自然真挚的赠言；为 false 时两项留空。\n\n"
+                f"{await family_image_prompt('connor')}"
                 f"严格只输出 JSON，不要输出 Markdown，不要解释：\n"
                 f"{{\n"
-                f"  \"diary\": {{\"title\": \"日记标题\", \"content\": \"日记正文\", \"mood\": \"此刻心情\"}},\n"
+                f"  \"diary\": null,\n"
                 f"  \"post_moment\": false,\n"
                 f"  \"moment\": {{\"content\": \"朋友圈内容，post_moment 为 false 时留空\", \"expect_reply\": false}},\n"
                 f"  \"givegift\": false,\n"
@@ -1009,20 +1014,18 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
                 trace_label="chatroom_digest_diary",
             )
 
-            from diary import normalize_diary_payload, parse_diary_payload, publish_ai_moment, save_diary_entry
             diary_data = parse_diary_payload(diary_text)
             if diary_data:
                 diary_entry, moment_entry = normalize_diary_payload(diary_data)
-                await save_diary_entry(
-                    author="connor",
-                    title=diary_entry.get("title", ""),
-                    content=diary_entry.get("content", ""),
-                    mood=diary_entry.get("mood", ""),
-                    source_type="chatroom_digest",
-                    source_ref=target_room_id or anchor_key,
-                    source_start_ts=msgs[0]["created_at"],
-                    source_end_ts=msgs[-1]["created_at"],
-                )
+                if diary_entry["content"]:
+                    await save_diary_entry(
+                        author="connor",
+                        **diary_entry,
+                        source_type="chatroom_digest",
+                        source_ref=target_room_id or anchor_key,
+                        source_start_ts=msgs[0]["created_at"],
+                        source_end_ts=msgs[-1]["created_at"],
+                    )
                 if moment_entry and moment_entry.get("content"):
                     await publish_ai_moment(
                         author="connor",
@@ -1220,7 +1223,7 @@ async def build_aion_group_context(
 
     # 6. 统一时间线（合并私聊 + 群聊消息）
     timeline_history = render_merged_timeline(
-        merged,
+        await with_family_dynamics(merged),
         "aion",
         include_image_attachments=include_image_attachments,
     )
@@ -1337,7 +1340,7 @@ async def build_connor_group_context(
     # 5. 统一时间线（合并 Connor 1v1 + 群聊消息）
     # Reuse this reply's snapshot; the next speaker builds its own fresh context.
     timeline_history = render_merged_timeline(
-        merged,
+        await with_family_dynamics(merged),
         "connor",
         include_image_attachments=include_image_attachments,
     )
@@ -1442,7 +1445,7 @@ async def build_connor_1v1_context(
 
     # 统一时间线（合并 Connor 1v1 + 群聊消息，保留附件）
     timeline_history = render_merged_timeline(
-        merged,
+        await with_family_dynamics(merged),
         "connor",
         include_image_attachments=include_image_attachments,
     )

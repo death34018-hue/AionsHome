@@ -7,6 +7,9 @@ from typing import Any, Callable
 
 
 WECHAT_MESSAGE_PATTERN = re.compile(r"\[\s*微信消息\s*[：:]\s*([^\]]+?)\s*\]")
+_WECHAT_COMMAND_LINE = re.compile(
+    rf"^[ \t]*(?:{WECHAT_MESSAGE_PATTERN.pattern}[ \t]*)+(?:\r?\n|\Z)", re.MULTILINE
+)
 WECHAT_LAST_ROUTE_SETTINGS_KEY = "wechat_last_route"
 WECHAT_BINDINGS_SETTINGS_KEY = "wechat_bridge_bindings"
 WECHAT_PENDING_BINDINGS_SETTINGS_KEY = "wechat_bridge_pending_bindings"
@@ -16,24 +19,15 @@ WECHAT_BINDING_TTL_SECONDS = 10 * 60
 WECHAT_CONTEXT_STALE_SECONDS = 15 * 60
 
 
-def _clean_text_after_command_removal(text: str) -> str:
-    text = re.sub(r"[ \t]+\n", "\n", text)
-    text = re.sub(r"\n{2,}", "\n", text)
-    text = re.sub(r"[ \t]{2,}", " ", text)
-    return text.strip()
-
-
 def extract_wechat_messages(text: str) -> tuple[str, list[str]]:
-    messages: list[str] = []
+    text = text or ""
+    payloads = [match.group(1).strip() for match in WECHAT_MESSAGE_PATTERN.finditer(text)]
+    if not payloads:
+        return text, []
 
-    def _capture(match: re.Match) -> str:
-        content = (match.group(1) or "").strip()
-        if content:
-            messages.append(content)
-        return ""
-
-    cleaned = WECHAT_MESSAGE_PATTERN.sub(_capture, text or "")
-    return _clean_text_after_command_removal(cleaned), messages
+    # Remove command-only lines with their newline, keeping Markdown whitespace elsewhere.
+    cleaned = WECHAT_MESSAGE_PATTERN.sub("", _WECHAT_COMMAND_LINE.sub("", text))
+    return cleaned.rstrip("\r\n") if cleaned.strip() else "", [payload for payload in payloads if payload]
 
 
 def build_wechat_system_content(content: str) -> str:
@@ -126,7 +120,7 @@ async def process_wechat_outbound_commands(
     ):
         visible_parts = [cleaned, *messages]
         visible_text = "\n".join(part for part in visible_parts if part)
-        return _clean_text_after_command_removal(visible_text), messages
+        return visible_text, messages
 
     if record_route:
         await _maybe_await(record_route(route))

@@ -48,7 +48,7 @@ final class BackgroundTtsPlayer {
         }
     }
 
-    void receive(String type, JSONObject data, String baseUrl) {
+    void receive(String type, JSONObject data, String baseUrl, boolean autoPlaybackEnabled) {
         if (data == null) return;
         String id = data.optString("msg_id", "");
         if ("tts_cancel".equals(type)) {
@@ -60,6 +60,7 @@ final class BackgroundTtsPlayer {
             playNext();
             return;
         } else if ("tts_chunk".equals(type)) {
+            if (!autoPlaybackEnabled && !data.optBoolean("expressive") && !queue.contains(id)) return;
             String url = TtsAudioUrlResolver.resolve(baseUrl, data.optString("url", ""));
             if (url == null) return;
             queue.offer(id, data.optInt("seq", -1), url);

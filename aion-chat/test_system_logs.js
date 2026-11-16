@@ -14,6 +14,26 @@ function page(api = async () => [], storage = new Map()) {
   return context;
 }
 
+const roomSource = fs.readFileSync(`${__dirname}/static/chatroom.js`, 'utf8');
+const roomLogFunctions = roomSource.slice(roomSource.indexOf('function crHandleDebug('),
+  roomSource.indexOf('async function fetchChatroomModels()'));
+
+for (const [surface, render] of [
+  ['private', page()._buildTokenHtml],
+  ['group', vm.runInNewContext(roomLogFunctions + '\ncrBuildTokenHtml')],
+]) {
+  test(`${surface} log shows reported AGY reasoning within the output total`, () => {
+    const usage = {prompt_tokens: 100, completion_tokens: 35, total_tokens: 135,
+      raw: {completion_tokens_details: {reasoning_tokens: 21}}};
+    const labels = () => render(usage).replace(/<[^>]+>/g, '');
+    assert.equal(labels(), '🔤 输入:100 输出:35 推理:21 总计:135');
+    usage.raw.completion_tokens_details.reasoning_tokens = 0;
+    assert.equal(labels(), '🔤 输入:100 输出:35 总计:135');
+    delete usage.raw.completion_tokens_details.reasoning_tokens;
+    assert.equal(labels(), '🔤 输入:100 输出:35 总计:135');
+  });
+}
+
 test('keeps the latest 30 entries and merges the same call from two channels', () => {
   const p = page();
   for (let i = 0; i < 35; i++) p.addSystemLog({ log_id: `call${i}`, model: 'test', started_at: i + 1 });
@@ -68,7 +88,6 @@ test('network errors survive a page refresh even though they cannot reach the se
 });
 
 test('group log copies separate calls for one reply and ignores unrelated rooms', async () => {
-  const roomSource = fs.readFileSync(`${__dirname}/static/chatroom.js`, 'utf8');
   const list = {innerHTML:'',querySelectorAll:()=>[]}, count = {}, modal = {classList:{add(){},contains:()=>true}};
   const calls = [
     {log_id:'one',msg_id:'reply',room_id:'group',actor:'aion',call_number:1,started_at:1,model:'test',
@@ -82,7 +101,7 @@ test('group log copies separate calls for one reply and ignores unrelated rooms'
     fetch:async url=>{assert.equal(url,'/api/system-logs?room_id=group');return {ok:true,json:async()=>calls}},
     navigator:{clipboard:{writeText:async text=>{p.copied=text}}},toast() {}};
   vm.createContext(p);
-  vm.runInContext(roomSource.slice(roomSource.indexOf('function crHandleDebug('),roomSource.indexOf('async function fetchChatroomModels()')),p);
+  vm.runInContext(roomLogFunctions,p);
   await p.crOpenSystemLog();
   p.crHandleDebug({...calls[1],type:'debug',recall_topic:'测试'});
   p.crAddSystemLog({...calls[0],room_id:'another',log_id:'hidden'});

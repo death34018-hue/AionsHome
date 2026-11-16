@@ -6,7 +6,9 @@ import contextvars
 import json
 import logging
 import re
+import time
 from datetime import datetime
+from pathlib import Path
 
 import aiosqlite
 
@@ -18,12 +20,15 @@ _worker = None
 _wake = None
 _enqueue_tasks = set()
 _processing = asyncio.Lock()
+_PROMPT_PATH = Path(__file__).with_name('prompts') / 'kitchen_sentinel.md'
+_ANALYSIS_VERSION = 3
+_INTAKE_WORDS = re.compile(r'入库|采购|进货|补货|收货|到货|买回|生鲜|带回家')
 _KITCHEN_WORDS = re.compile(r'冰箱|食材|库存|补货|做饭|吃|喝|午餐|晚餐|早餐|午饭|晚饭|黄瓜|青椒|西兰花|肥牛|鱼丸|虾|鸡蛋|玉米|牛奶|酸奶|鸡胸|蔬菜|冷冻|解冻|剩.{0,8}(?:盒|袋|根|颗|个)|(?:半|一|两|二|三|四|\d+)\s*(?:盒|袋|根|颗)')
 
 
 def candidate(text):
     text = text or ''
-    return bool(_KITCHEN_WORDS.search(text) or
+    return bool(_KITCHEN_WORDS.search(text) or _INTAKE_WORDS.search(text) or
                 (re.search(r'买|补货|收到|拿到|领回|领到|到货|送到|用[了掉完]|消耗|下锅|[蒸煮放加]了',text) and
                  re.search(r'(?:\d+(?:\.\d+)?|[半一二两三四五六七八九十]+)\s*(?:千克|公斤|毫升|kg|ml|斤|克|包|瓶|个|棵|条|只|块|份|盒|袋|根|颗|升)',text,re.I)))
 
@@ -36,6 +41,21 @@ async def _broadcast(event):
 def wake():
     if _wake:
         _wake.set()
+
+
+async def _previous_messages(db, private, parent, source_ts, limit):
+    table, field, role = ('messages', 'conv_id', 'role') if private else ('chatroom_messages', 'room_id', 'sender')
+    rows = await (await db.execute(
+        f'SELECT content,attachments FROM {table} WHERE {field}=? AND created_at<? '
+        f"AND {role} IN ('user','assistant','aion','connor') AND created_at >= "
+        '(SELECT activated_at FROM kitchen_state WHERE id=1) ORDER BY created_at DESC, rowid DESC LIMIT ?',
+        (parent, source_ts, limit))).fetchall()
+    messages = []
+    for row in rows:
+        excluded = any(isinstance(a, dict) and a.get('type') in ('ambient_voice', 'kitchen_excluded')
+                       for a in json.loads(row['attachments'] or '[]'))
+        messages.append('' if excluded else (row['content'] or ''))
+    return messages
 
 
 async def enqueue_event(event, *, expected_generation=None, wake=True):
@@ -55,7 +75,8 @@ async def enqueue_event(event, *, expected_generation=None, wake=True):
     if not msg_id or not parent or not text.strip():
         return False
     if (re.search(r'吃(?:啥|什么)|(?:安排|推荐|换).{0,10}(?:菜单|食谱|午餐|晚餐)', text)
-            and not re.search(r'买了|买到|收到了|到货|用了|用掉|剩|吃了|吃完|做了|喝了|(?:家里|冰箱).{0,6}有', text)):
+            and not _INTAKE_WORDS.search(text)
+            and not re.search(r'买了|买到|收到了|到货|用了|用掉|用完|消耗|剩|吃了|吃完|做了|喝了|(?:家里|冰箱).{0,6}有', text)):
         return False  # A menu question alone needs a read, not another recording-model call.
     async with kitchen.get_db() as db:
         db.row_factory = aiosqlite.Row
@@ -66,11 +87,13 @@ async def enqueue_event(event, *, expected_generation=None, wake=True):
         related = candidate(text)
         if not related:
             names = await (await db.execute('SELECT name FROM kitchen_items')).fetchall()
-            related = bool(re.search(r'买|用|剩|没了|完了|到货|拿到', text) and any(r['name'] in text for r in names))
-        if not related and re.search(r'半|少量|一[点些]|\d|两|没了|完了|就这样|按这个', text):
-            table, field = ('messages','conv_id') if private else ('chatroom_messages','room_id')
-            recent = await (await db.execute(f'SELECT content FROM {table} WHERE {field}=? AND id!=? ORDER BY created_at DESC LIMIT 2', (parent, msg_id))).fetchall()
-            related = any(candidate(r['content']) for r in recent)
+            related = any(r['name'] in text for r in names)
+            if not related:
+                recent = await _previous_messages(db, private, parent, value.get('created_at', 0), 2)
+                # A reply to a named stock item can report its fate in the user's own words.
+                related = bool(recent and any(r['name'] in recent[0] for r in names))
+                if not related and re.search(r'半|少量|一[点些]|\d|两|没了|完了|就这样|按这个', text):
+                    related = any(candidate(s) for s in recent)
         if not related:
             return False
         current = await (await db.execute('SELECT enabled,epoch,activated_at FROM kitchen_state WHERE id=1')).fetchone()
@@ -114,40 +137,31 @@ async def _recent(job):
             f'WHERE m.{field}=? AND m.{role}=? AND m.created_at<? AND e.epoch=? '
             "AND json_extract(e.changes,'$.updated')=1 ORDER BY m.created_at DESC LIMIT 3",
             (job['scope'] + ':', job['parent_id'], 'user', job['source_ts'], job['epoch']))).fetchall()
-    return [r['content'][-350:] for r in rows]
+        previous = await _previous_messages(db, private, job['parent_id'], job['source_ts'], 1)
+    return {'booked': [r['content'][-350:] for r in rows], 'previous': previous[0] if previous else ''}
 
 
-def analysis_prompt(job, recent, data):
+def analysis_prompt(job, recent, data, *, intake=False):
     names = [{'name': i['name'], 'unit': i['unit']} for i in data['items'][:60]]
     return (
-        '厨房部分只负责食材记账。只提取当前这条用户消息明确报告的、已经发生的购买/收到食材、消耗或余量校正。'
-        '唯一入账依据是当前本人消息。上下文、他人台词、菜单、计划、假设、示例和引用不能提供用料或数量。'
-        '“就吃这些，等会一点我做”“按菜单做好了”“开饭啦”均返回空数组。领取和购买意向也等本人明确拿到再加。'
-        '明确开做并说出正在用的食材时，逐样记消耗；“打算今晚做”仍是计划。“青椒今天不吃”要跳过青椒。'
-        '逐句判断当前消息是否明确报告了额外用料，即使和晒菜写在一起，也只记新增量。'
-        '每项用evidence逐字摘录本条中说明实际动作及食材的完整原话，保留限定语。ingredient填本人原话里的食材称呼，name匹配库存名。'
-        '例：“给你们看看成品，刚才又多拍了一根黄瓜”只记新增黄瓜，evidence为“刚才又多拍了一根黄瓜”。'
-        '整条只是拍图分享、评价味道或复述同一顿饭时，返回{"changes":[]}。菜名、图片和菜单本身都不能证明又用了一份。'
-        '逐样判断，用库存原名。吃掉或用掉具体食材用consume，数量不明仍用consume、amount=null；买入数量不明同理用add。'
-        '例如早饭吃掉两颗鸡蛋和一小截玉米：鸡蛋consume 2颗，玉米单独判断；不要因一项含糊影响另一项。不换算袋/颗/克。'
-        '数量只取本人报出的本次实际量，没报数量用null。明确说某食材全部用光才用empty。'
-        '只输出JSON：{"changes":[{"op":"consume","name":"冷冻黑虎虾","ingredient":"黑虎虾","evidence":"刚用了六只黑虎虾","amount":6,"unit":"只"}]}。支持add/set/consume/empty。'
-        '无明确变化返回{"changes":[]}。可选category=vegetable/protein/staple/dairy/fruit/other，storage=fridge/freezer/pantry。\n'
+        f'{_PROMPT_PATH.read_text(encoding="utf-8").strip()}\n'
+        f'来源：{"小厨房入库口" if intake else "聊天消息"}\n'
         f'消息时间：{datetime.fromtimestamp(job["source_ts"]).isoformat(timespec="minutes")}\n'
-        f'当前消息：{job["content"][:2000]}\n'
-        f'之前已经记过的本人消息（仅用于排除同一顿的复述）：{json.dumps(recent, ensure_ascii=False)}\n'
-        f'食材名称（仅用于对应名称）：{json.dumps(names, ensure_ascii=False)}'
+        f'之前已经记过的本人消息（用于识别复述）：{json.dumps(recent.get("booked", []), ensure_ascii=False)}\n'
+        f'食材名称（仅用于对应名称）：{json.dumps(names, ensure_ascii=False)}\n'
+        f'同一聊天的上一句（用于辨认指代的食材）：{recent.get("previous", "")[:800]}\n'
+        f'本人现在说：{job["content"]}'
     )
 
 
 _CLAUSE_BREAK = re.compile(r'[，,。！!？?；;\n~～]')
 _NOT_A_REPORT = re.compile(r'打算|计划|准备(?:要|用|拿|买|做|蒸|煮|吃|领)|要去|等会|待会|到时候|如果|假如|要是|想(?:要|用|买|做|吃)|'
                            r'还没|没(?:有)?(?:用|吃|买|做|拿|领|收)|(?:不用|不吃|不做)|你说|你建议|(?:菜单|菜谱)(?:说|写|里|上)')
+_NOT_ACQUIRED = re.compile(r'如果|假如|要是|你说|你建议|未到货|'
+                           r'(?:没(?:有)?|尚未|不(?:打算|准备)?|打算|计划|想|准备|等会儿?|待会儿?|明天|下次)'
+                           r'(?:再|才|要|去|会)*(?:买|采购|补货|收货|收到|到货|拿|领|入库)')
 _STOCK_ACTION = {
-    'consume': re.compile(r'用[了掉光完]|消耗|[吃喝](?:的是|[了掉光完])|[煮蒸炒烤煎切放加打拍投剥下]了|'
-                          r'[已刚又正].{0,8}[用煮蒸炒烤煎加放]|下[锅肚]|[蒸煮]上|[放倒加]进|做成'),
-    'empty': re.compile(r'[用吃喝耗]光|[用吃喝]完|没了|空了|清空|见底'),
-    'add': re.compile(r'买[了到回]|补[了货]|收[到下]|[领拿带取搬][了到回]|到[了货家]|入[手库]|囤了|购入|送[到来]|盘点|录入'),
+    'add': re.compile(r'买[了到回]|采购齐|补[了货]|收[到下]|[领拿带取搬][了到回]|到[了货家]|入[手库]|囤了|购入|送[到来了]|盘点|录入'),
     'set': re.compile(r'剩|还[有余]|余量|库存|盘点|录入|[冰箱家]里?.{0,8}有|改[成为]|实际|记[下作成]'),
 }
 _NUMBER = re.compile(r'\d+(?:\.\d+)?(?:/\d+)?|[零一二两三四五六七八九十百半]+(?:分之[一二三四五六七八九十]+)?')
@@ -168,30 +182,72 @@ def _reported_number(text):
     return kitchen.amount_value(text)
 
 
-def reported_changes(message, changes):
+def _quote_clause(message, quote):
+    start = message.index(quote)
+    prefix = _CLAUSE_BREAK.split(message[:start])[-1]
+    after = message[start + len(quote):]
+    suffix = _CLAUSE_BREAK.split(after, maxsplit=1)[0]
+    question = after[len(suffix):].startswith(('?', '？')) or '?' in quote or '？' in quote
+    return prefix + quote + suffix, question
+
+
+def _reported_stock_context(message, stock_context):
+    if isinstance(stock_context, str) and stock_context.strip() and stock_context in message:
+        clause, question = _quote_clause(message, stock_context)
+        return not question and not _NOT_ACQUIRED.search(clause)
+    # Older saved analyses omit stock_context. An affirmative intake clause can cover their list.
+    clauses = re.findall(r'[^，,。！!？?；;\n~～]+[？?]?', message)
+    return any(_STOCK_ACTION['add'].search(clause) and not _NOT_ACQUIRED.search(clause)
+               and not clause.endswith(('?', '？')) for clause in clauses)
+
+
+def reported_changes(message, changes, *, stock_context=None, intake=False, stock_names=(), previous=''):
     """Only book named ingredients supported by this author's actual report."""
     result = []
+    shared_add = intake or _reported_stock_context(message, stock_context)
     for change in changes:
         if not isinstance(change, dict):
             continue
-        action = _STOCK_ACTION.get(change.get('op')) if isinstance(change.get('op'), str) else None
+        if intake and change.get('op') != 'add':
+            continue
+        op = change.get('op')
         quote = change.get('evidence')
         name = change.get('name')
         ingredient = change.get('ingredient', name)
-        if not (action and isinstance(quote, str) and quote.strip() and quote in message
-                and isinstance(name, str) and isinstance(ingredient, str) and ingredient.strip()
-                and ingredient in quote and ingredient in name):
+        if not (op in ('consume','empty','set','add') and isinstance(quote, str) and quote.strip() and quote in message
+                and isinstance(name, str) and name.strip() and isinstance(ingredient, str) and ingredient.strip()):
             continue
+        uncertain = change.get('needs_confirmation') is True
+        if ingredient not in quote or change.get('reference'):
+            reference = change.get('reference') or ingredient
+            if (op != 'empty' or not isinstance(reference, str) or ingredient not in reference
+                    or reference not in previous):
+                continue
+            if {n for n in stock_names if n in previous} != {name}:
+                change = {**change, 'needs_confirmation': True, 'note': '请确认用完的是哪份食材。'}
+                uncertain = True
+        if op in ('consume','empty') and ingredient in stock_names:
+            name = ingredient
+            change = {**change, 'name': name}
+        elif ingredient not in name and not (op in ('consume','empty') and name in stock_names):
+            if not uncertain:
+                continue
+            change = {**change, 'name': ingredient}
+            name = ingredient
         # Include the surrounding clause so cropping “准备用了…” cannot turn a plan into a fact.
-        start = message.index(quote)
-        prefix = _CLAUSE_BREAK.split(message[:start])[-1]
-        after = message[start + len(quote):]
-        suffix = _CLAUSE_BREAK.split(after, maxsplit=1)[0]
-        clause = prefix + quote + suffix
-        if (_NOT_A_REPORT.search(clause) or not action.search(quote)
-                or after[len(suffix):].startswith(('?', '？')) or '?' in quote or '？' in quote):
+        clause, question = _quote_clause(message, quote)
+        if question and not uncertain:
+            continue
+        if change['op'] == 'add':
+            if _NOT_ACQUIRED.search(clause) or not shared_add:
+                continue
+        elif _NOT_A_REPORT.search(clause) or (op == 'set' and not _STOCK_ACTION['set'].search(quote)):
             continue
         amount = kitchen.amount_value(change.get('amount'))
+        if op == 'set' and amount is None:
+            balance = change.get('balance')
+            if not isinstance(balance, str) or not balance.strip() or balance not in quote:
+                continue  # Mentioning leftovers alone does not report a new balance.
         unit = str(change.get('unit') or '')
         units = ('个', '颗', '枚') if name in ('鸡蛋', '鸭蛋', '鹌鹑蛋') and unit in ('个', '颗', '枚') else (unit,)
         counts = (_reported_number(m.group()) for m in _NUMBER.finditer(quote)
@@ -217,6 +273,34 @@ async def _call_model(prompt):
     if not isinstance(parsed, dict) or not isinstance(parsed.get('changes'), list):
         raise ValueError('厨房记录结果格式不完整')
     return parsed
+
+
+async def record_intake(request_id, text):
+    source_id = f'intake:{request_id}'
+    text = text.strip()
+    if not text:
+        raise ValueError('请填写本次入库的食材。')
+    source_ts = time.time()
+    receipt = await kitchen.intake_receipt(source_id, text)
+    if receipt is not None:
+        return receipt
+    data = await kitchen.snapshot()
+    if not data['enabled']:
+        raise ValueError('请先开启厨房 AI。')
+    prompt = analysis_prompt({'content': text, 'source_ts': source_ts}, {}, data, intake=True)
+    parsed = await _call_model(prompt)
+    changes = reported_changes(text, parsed['changes'], intake=True)
+    if not changes:
+        # A bare list can be misread as casual chat. Recheck it once before returning an empty receipt.
+        parsed = await _call_model(prompt + '\n复核小厨房入库口的本次清单：逐样核对新增食材和待确认项；只有计划时仍返回空清单。')
+        changes = reported_changes(text, parsed['changes'], intake=True)
+    result = await kitchen.apply_changes(source_id, changes, epoch=data['epoch'], source_ts=source_ts, intake_text=text)
+    receipt = await kitchen.intake_receipt(source_id, text)
+    if receipt is None:
+        raise ValueError('厨房 AI 开关已变更，请重新发送。')
+    if result['updated']:
+        await kitchen.notify()
+    return receipt
 
 
 async def prepare_joint_analysis(profile_job, db_factory):
@@ -253,7 +337,7 @@ async def save_joint_analysis(prepared, payload):
         await db.execute(
             "UPDATE kitchen_jobs SET analysis=? WHERE source_id=? AND epoch=? AND status='pending' "
             "AND epoch=(SELECT epoch FROM kitchen_state WHERE id=1 AND enabled=1)",
-            (json.dumps({**payload, 'version': 2},ensure_ascii=False) if isinstance(payload, dict) else '',
+            (json.dumps({**payload, 'version': _ANALYSIS_VERSION},ensure_ascii=False) if isinstance(payload, dict) else '',
              job['source_id'],job['epoch']))
         await db.commit()
     wake()
@@ -320,9 +404,9 @@ async def run_pending_once():
                         status = 'skipped'
                     else:
                         parsed = json.loads(job['analysis']) if job['analysis'] else None
-                        if not isinstance(parsed,dict) or parsed.get('version') != 2 or not isinstance(parsed.get('changes'),list):
+                        if not isinstance(parsed,dict) or parsed.get('version') != _ANALYSIS_VERSION or not isinstance(parsed.get('changes'),list):
                             parsed = await _call_model(analysis_prompt(job, recent, data))
-                            parsed['version'] = 2  # Reanalyze pending pre-evidence results once.
+                            parsed['version'] = _ANALYSIS_VERSION
                         if await _recent(job) != recent:
                             status = 'skipped'
                         else:
@@ -331,7 +415,8 @@ async def run_pending_once():
                                 await db.execute("UPDATE kitchen_jobs SET analysis=? WHERE source_id=? AND epoch=?",
                                                  (json.dumps(parsed,ensure_ascii=False),job['source_id'],job['epoch']))
                                 await db.commit()
-                            changes = reported_changes(job['content'], parsed['changes'])
+                            changes = reported_changes(job['content'], parsed['changes'], stock_context=parsed.get('stock_context'),
+                                                       stock_names={i['name'] for i in data['items']}, previous=recent['previous'])
                             result = await kitchen.apply_changes(job['source_id'], changes, epoch=job['epoch'], source_ts=job['source_ts'])
                 if result is not None:
                     if result['updated']:

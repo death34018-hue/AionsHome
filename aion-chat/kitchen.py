@@ -50,6 +50,7 @@ async def ensure_schema():
                 unit TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'other',
                 storage TEXT NOT NULL DEFAULT 'fridge', soon INTEGER NOT NULL DEFAULT 0,
                 uncertain INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '',
+                icon TEXT NOT NULL DEFAULT '',
                 updated_at REAL NOT NULL, manual_at REAL NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS kitchen_events (
                 source_id TEXT PRIMARY KEY, epoch INTEGER NOT NULL, source_ts REAL NOT NULL,
@@ -72,6 +73,9 @@ async def ensure_schema():
                 epoch INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
                 error TEXT NOT NULL DEFAULT '');
         ''')
+        columns = {r[1] for r in await (await db.execute('PRAGMA table_info(kitchen_items)')).fetchall()}
+        if 'icon' not in columns:
+            await db.execute("ALTER TABLE kitchen_items ADD COLUMN icon TEXT NOT NULL DEFAULT ''")
         columns = {r[1] for r in await (await db.execute('PRAGMA table_info(kitchen_state)')).fetchall()}
         if 'activated_at' not in columns:
             await db.execute('ALTER TABLE kitchen_state ADD COLUMN activated_at REAL NOT NULL DEFAULT 0')
@@ -185,6 +189,7 @@ async def _write_item(db, payload, *, manual=False):
         'storage': value.get('storage') if value.get('storage') in ('fridge','freezer','pantry') else 'fridge',
         'soon': int(bool(value.get('soon'))), 'uncertain': int(bool(value.get('uncertain', False))),
         'note': str(value.get('note', ''))[:200], 'updated_at': now,
+        'icon': str(value.get('icon') or '').strip()[:32],
         'manual_at': now if manual else previous.get('manual_at', 0),
     }
     keys = list(item)
@@ -303,8 +308,19 @@ async def recorded_result(source_id):
     return {'updated': bool(saved.get('updated')) if isinstance(saved,dict) else bool(saved), 'duplicate':True}
 
 
-async def apply_changes(source_id: str, changes: list, *, epoch: int, source_ts: float) -> dict:
+async def intake_receipt(source_id, text):
+    async with get_db() as db:
+        row = await (await db.execute('SELECT changes FROM kitchen_events WHERE source_id=?', (source_id,))).fetchone()
+    if row:
+        record = json.loads(row[0])
+        if record['intake_text'] != text:
+            raise ValueError('这次提交的内容已更改，请重新发送。')
+        return record['receipt']
+
+
+async def apply_changes(source_id: str, changes: list, *, epoch: int, source_ts: float, intake_text=None) -> dict:
     result = {'updated': False, 'duplicate': False, 'pending': 0}
+    receipt = {'added': [], 'pending': [], 'skipped': []}
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         await db.execute('BEGIN IMMEDIATE')
@@ -313,22 +329,26 @@ async def apply_changes(source_id: str, changes: list, *, epoch: int, source_ts:
             return result
         if await (await db.execute('SELECT 1 FROM kitchen_events WHERE source_id=?', (source_id,))).fetchone():
             return {**result, 'duplicate': True}
-        for change in changes[:30]:
+        for change in changes:
             if not isinstance(change, dict) or change.get('op') == 'meal':
                 # A menu only describes a plan, including on replay of older model results.
                 continue
             name = str(change.get('name') or '').strip()[:60]
             manual = await (await db.execute('SELECT edited_at FROM kitchen_manual_edits WHERE name=?',(name,))).fetchone()
             if manual and manual['edited_at'] > source_ts:
+                receipt['skipped'].append(name)
                 continue
             candidates = await _find_items(db, name)
             unit = str(change.get('unit') or '').strip()[:16]
-            matches = [r for r in candidates if (not unit or _same_unit(name, r['unit'], unit))
-                       and (not change.get('storage') or r['storage'] == change['storage'])]
+            op = change.get('op')
+            matches = [r for r in candidates if not change.get('storage') or r['storage'] == change['storage']]
+            # Finishing the entire item establishes a zero balance in its own stock unit.
+            if unit and (op != 'empty' or len(matches) != 1):
+                matches = [r for r in matches if _same_unit(name, r['unit'], unit)]
             item = matches[0] if len(matches) == 1 else None
             if item and item['manual_at'] > source_ts:
+                receipt['skipped'].append(name)
                 continue
-            op = change.get('op')
             quantity = amount_value(change.get('amount'))
             uncertain_base = item and item['uncertain']
             if uncertain_base and op == 'consume':
@@ -336,13 +356,19 @@ async def apply_changes(source_id: str, changes: list, *, epoch: int, source_ts:
                 uncertain_base = await (await db.execute(
                     "SELECT 1 FROM kitchen_pending WHERE name=? AND resolved_at IS NULL AND "
                     "COALESCE(json_extract(payload,'$.op'),'') NOT IN ('consume','add') LIMIT 1", (name,))).fetchone()
-            if (op not in ('add','set','empty','consume') or not name or
+            if (change.get('needs_confirmation') is True or op not in ('add','set','empty','consume') or not name or
                 (op != 'empty' and quantity is None) or len(matches) > 1 or
                 (candidates and not item) or (op in ('consume','empty') and not item) or
                 (op in ('add','consume') and uncertain_base) or
                 (op in ('add','consume') and item and item['quantity'] is None) or
                 (op == 'consume' and item and quantity > item['quantity'])):
-                await _pending(db, source_id, change, '请确认这次的食材和数量', matches or candidates)
+                reason = '请确认这次的食材和数量'
+                if quantity is None and op != 'empty':
+                    reason = '请补充本次变动的数量。'
+                elif candidates and not item:
+                    reason = '请核对对应的库存食材和单位。'
+                await _pending(db, source_id, change, reason, matches or candidates)
+                receipt['pending'].append(name)
                 result['pending'] += 1
                 result['updated'] = True
                 continue
@@ -356,13 +382,18 @@ async def apply_changes(source_id: str, changes: list, *, epoch: int, source_ts:
                        'unit': item['unit'] if item else unit, 'amount': amount_text(value),
                        'uncertain': bool(item and item['uncertain'] and op == 'consume')}
             await _write_item(db, payload)
+            if intake_text is not None:
+                receipt['added'].append(f'{name} {amount_text(quantity)}{unit}')
             if op in ('set','empty'):
                 await db.execute('UPDATE kitchen_pending SET resolved_at=? WHERE name=? AND resolved_at IS NULL',(time.time(),name))
             result['updated'] = True
         if result['updated']:
             await _attach_record_marker(db, source_id)
+        record = {'changes': changes, 'updated': result['updated']}
+        if intake_text is not None:
+            record.update(intake_text=intake_text, receipt=receipt)
         await db.execute('INSERT INTO kitchen_events VALUES (?,?,?,?,?)',
-                         (source_id, epoch, source_ts, json.dumps({'changes':changes,'updated':result['updated']}, ensure_ascii=False), time.time()))
+                         (source_id, epoch, source_ts, json.dumps(record, ensure_ascii=False), time.time()))
         await db.commit()
     return result
 
@@ -705,7 +736,8 @@ async def snapshot(*, as_cards=False):
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         await cleanup_menus(db)
-        items = [_item(r) for r in await (await db.execute('SELECT * FROM kitchen_items ORDER BY soon DESC,updated_at DESC')).fetchall()]
+        items = [_item(r) for r in await (await db.execute(
+            'SELECT * FROM kitchen_items ORDER BY CASE WHEN quantity=0 THEN 1 ELSE 0 END,soon DESC,updated_at DESC')).fetchall()]
         pending = [dict(r) for r in await (await db.execute('SELECT * FROM kitchen_pending WHERE resolved_at IS NULL ORDER BY created_at')).fetchall()]
         menus = [_menu(r) for r in await (await db.execute('SELECT * FROM kitchen_menus ORDER BY date DESC')).fetchall()]
         by_date = {m['date']:m for m in menus}

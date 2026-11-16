@@ -163,6 +163,31 @@ class QQContextTests(unittest.TestCase):
         self.assertIsNone(_resolve_attachment_path('/qq-media/../../secrets.jpg'))
 
 
+class QQProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_qq_calls_agy_and_vertex_through_their_existing_providers(self):
+        from unittest.mock import patch
+        import ai_providers
+        from qq_social.context import call_model
+        from stream_safety import StreamActivity
+
+        async def agy(messages, model, *args, **kwargs):
+            yield ai_providers.CLI_STATUS_PREFIX + '正在回复'
+            yield StreamActivity()
+            yield 'AGY:' + model
+
+        async def vertex(messages, model, *args, **kwargs):
+            yield 'Vertex:' + model
+
+        models = {'qq-agy':{'provider':'antigravity_cli','model':'agy-model'},
+                  'qq-vertex':{'provider':'vertex','model':'vertex-model'}}
+        with patch.dict(ai_providers.MODELS, models), \
+             patch('ai_providers.call_antigravity_cli', new=agy), \
+             patch('ai_providers.call_vertex', new=vertex):
+            for key, expected in [('qq-agy','AGY:agy-model'), ('qq-vertex','Vertex:vertex-model')]:
+                with self.subTest(model=key):
+                    self.assertEqual(await call_model([{'role':'user','content':'你好'}], key), expected)
+
+
 class QQImageTests(unittest.IsolatedAsyncioTestCase):
     async def test_actual_qq_cdn_domain_is_accepted_and_http_upgraded(self):
         from qq_social.media import image_attachments
@@ -233,6 +258,27 @@ class QQServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.service.close()
+
+    async def test_qq_model_is_used_for_reply_and_digest_without_home_model(self):
+        import json, time
+        from unittest.mock import AsyncMock, patch
+        from qq_social.context import generate_reply, summarize_group
+        self.store.configure_actor('connor', {'model':'cheap'})
+        group = self.store.discover('connor', 'g1')
+        event = dict(message_id='m1', member_id='u1', content='你好', created_at=time.time())
+        home = ({}, {'cheap':{}}, {}, {'connor':'角色乙','user':'用户'})
+        with patch('qq_social.context.home_config', return_value=home), \
+             patch('chatroom._read_connor_persona', return_value='人设'), \
+             patch('chatroom.recall_chatroom_memories', new=AsyncMock(return_value=[{'content':'记忆'}])), \
+             patch('context_builder.fetch_merged_timeline', new=AsyncMock(return_value=[])), \
+             patch('qq_social.context.call_model', new=AsyncMock(side_effect=[
+                 json.dumps({'reply':'你好','memory':'','activity_summary':''}),
+                 json.dumps({'summary':'打招呼','memories':[]})])) as model:
+            reply = await generate_reply('connor', group, event, self.store, True, {})
+            summary, _ = await summarize_group('connor', group, [], self.store)
+        self.assertEqual(reply.text, '你好')
+        self.assertEqual(summary, '打招呼')
+        self.assertEqual([call.args[1] for call in model.await_args_list], ['cheap', 'cheap'])
 
     async def test_disabled_actor_drops_mentions_while_other_actor_still_replies(self):
         import time
@@ -729,6 +775,42 @@ class QQTransportTests(unittest.IsolatedAsyncioTestCase):
 
 
 class QQManagementTests(unittest.TestCase):
+    def test_qq_model_selection_persists_independently_and_rejects_unavailable_models(self):
+        from unittest.mock import patch
+        from fastapi.testclient import TestClient
+        from qq_social.worker import create_app
+        home = {'aion_model':'home-a', 'connor_model':'home-c'}
+        models = {key:{'provider':'custom_openai'} for key in ('home-a','home-c','cheap')}
+        models.update({'agy':{'provider':'antigravity_cli'}, 'vertex':{'provider':'vertex'},
+                       'unsupported':{'provider':'unknown'}, 'CLI-3.1pro':{'provider':'codex_cli'}})
+        with tempfile.TemporaryDirectory() as tmp, \
+             patch('qq_social.context.home_config', return_value=(home, models, {}, {'aion':'甲','connor':'乙'})):
+            directory = Path(tmp)
+            (directory/'management.key').write_text('test-management')
+            client = TestClient(create_app(directory))
+            headers = {'authorization':'Bearer test-management'}
+            url = '/actors/aion/settings'
+            status = client.get('/status', headers=headers).json()
+            self.assertEqual(status.get('models'), ['home-a','home-c','cheap','agy','vertex'])
+            self.assertEqual(status['actors']['aion']['model'], 'home-a')
+            self.assertEqual(client.patch(url, json={'model':'cheap'}, headers=headers).status_code, 200)
+            client = TestClient(create_app(directory))
+            home['aion_model'] = 'home-c'
+            status = client.get('/status', headers=headers).json()
+            self.assertEqual(status['actors']['aion']['settings']['model'], 'cheap')
+            self.assertEqual(status['actors']['aion']['model'], 'cheap')
+            self.assertEqual(status['actors']['connor']['model'], 'home-c')
+            self.assertEqual(status['actors']['connor']['settings']['model'], '')
+            for invalid in ('missing', 'unsupported', 'CLI-3.1pro', None, 3):
+                self.assertEqual(client.patch(url, json={'model':invalid}, headers=headers).status_code, 400)
+            self.assertEqual(client.get('/status', headers=headers).json()['actors']['aion']['model'], 'cheap')
+            for model in ('agy', 'vertex'):
+                self.assertEqual(client.patch(url, json={'model':model}, headers=headers).status_code, 200)
+                self.assertEqual(client.get('/status', headers=headers).json()['actors']['aion']['model'], model)
+            self.assertEqual(client.patch(url, json={'model':''}, headers=headers).status_code, 200)
+            self.assertEqual(client.get('/status', headers=headers).json()['actors']['aion']['model'], 'home-c')
+            self.assertEqual(home, {'aion_model':'home-c', 'connor_model':'home-c'})
+
     def test_stopped_connection_survives_worker_restart_until_manual_connect(self):
         import json
         from unittest.mock import patch

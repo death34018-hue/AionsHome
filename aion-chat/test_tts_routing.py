@@ -46,6 +46,21 @@ class TTSRoutingTests(unittest.IsolatedAsyncioTestCase):
         await self.emit("tts_done")
         self.assertEqual(self.desktop.send_text.await_count, 2)
 
+    async def test_waking_page_does_not_split_native_message_when_it_reports_tts_off(self):
+        service = AsyncMock()
+        await self.manager.connect(service)
+        self.manager.register_client_id(service, "android-push:phone")
+        self.manager.set_tts_state(service, True, "voice", active_at=30)
+        await self.emit("tts_chunk", seq=0)
+        # The returning page mirrors its own setting while native playback is draining.
+        self.manager.set_tts_state(service, False, "", can_play=True, active_at=31)
+        await self.emit("tts_chunk", seq=1)
+        await self.emit("tts_done")
+        await self.emit("tts_chunk", msg_id="next", seq=0)
+        events = [json.loads(call.args[0]) for call in service.send_text.call_args_list]
+        self.assertEqual([e["type"] for e in events], ["tts_chunk", "tts_chunk", "tts_done"])
+        self.assertEqual(json.loads(self.phone.send_text.call_args.args[0])["data"]["msg_id"], "next")
+
     async def test_app_switch_between_speakers_keeps_the_whole_turn_on_one_queue(self):
         service = AsyncMock()
         await self.manager.connect(service)

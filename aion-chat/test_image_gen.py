@@ -151,6 +151,41 @@ class ImageGenerationModelTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(filename)
             self.assertEqual((store.images_dir / Path(filename).name).read_bytes(), sample_image())
 
+    async def test_official_openai_streams_partial_images_and_retries_dropped_connection(self):
+        final = base64.b64encode(sample_image()).decode('ascii')
+        events = (
+            'event: image_generation.partial_image\n'
+            'data: {"type": "image_generation.partial_image", "b64_json": "cGFydGlhbA==", "partial_image_index": 0}\n\n'
+            'event: image_generation.completed\n'
+            'data: ' + json.dumps({'type': 'image_generation.completed', 'b64_json': final}) + '\n\n'
+        )
+        requests = []
+
+        def respond(request):
+            requests.append(request)
+            if len(requests) == 1:
+                raise httpx.RemoteProtocolError('dropped', request=request)
+            return httpx.Response(200, headers={'content-type': 'text/event-stream; charset=utf-8'}, content=events)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = AlbumStore(Path(tmpdir))
+            client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+            with (
+                patch.dict(image_gen.SETTINGS, image_gen_provider='existing',
+                           image_gen_base_url='https://api.openai.com/v1',
+                           image_gen_api_key='test-key', image_gen_model='gpt-image-2.6-sunburst'),
+                patch('image_gen.httpx.AsyncClient', return_value=client),
+                patch('album.get_album_store', return_value=store),
+            ):
+                filename = await image_gen.generate_image('画一盏小灯')
+
+            self.assertEqual(len(requests), 2)
+            self.assertEqual(json.loads(requests[1].content), {
+                'model': 'gpt-image-2.6-sunburst', 'prompt': '画一盏小灯', 'n': 1,
+                'stream': True, 'partial_images': 2})
+            self.assertEqual(requests[1].extensions['timeout']['read'], 90)
+            self.assertEqual((store.images_dir / Path(filename).name).read_bytes(), sample_image())
+
     async def test_retry_from_codex_to_relay_edits_uploads_original_anchors_in_order(self):
         import chatroom_image_retry as retry
         requests = []
@@ -356,11 +391,15 @@ class ChatroomImageGenerationTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await chatroom_routes._chatroom_image_gen('room', 'connor', prefix + 'Blink slowly.', False)
 
+                # GIF 走普通请求等 10 分钟；静图走流式，90 秒没有数据即重试一次。
+                wait, attempts = (600, 1) if prefix else (90, 2)
                 self.assertEqual(save.call_args.args[2], '图片生成超时')
-                self.assertEqual(requests[-1].extensions['timeout']['read'], 600)
+                self.assertEqual(requests[-1].extensions['timeout']['read'], wait)
+                self.assertEqual(len(requests), attempts)
                 payload = save.call_args.kwargs['retry_inputs']
-                with self.assertRaisesRegex(TimeoutError, '600'):
+                with self.assertRaisesRegex(TimeoutError, str(wait)):
                     await retry.generate(payload)
+                requests.clear()
 
     async def test_chatroom_image_gen_forwards_internal_sender_identity(self):
         calls = []

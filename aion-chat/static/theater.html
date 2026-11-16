@@ -83,6 +83,8 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
 .config-popup label { display:block; font-size:12px; color:var(--text2); margin-bottom:4px; margin-top:10px; }
 .config-popup label:first-child { margin-top:0; }
 .config-popup select { width:100%; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:8px; font-size:13px; outline:none; }
+.config-popup .field-help { margin:7px 0 0; font-size:11px; line-height:1.6; color:var(--text3); }
+#auxiliaryModelSettings { margin-top:14px; }
 .config-popup .slider-row { display:flex; align-items:center; gap:8px; margin-top:4px; }
 .config-popup input[type="range"] { flex:1; accent-color:var(--accent); cursor:pointer; }
 .config-popup .slider-val { font-size:13px; color:var(--text); min-width:40px; text-align:right; }
@@ -264,7 +266,7 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
 </style>
 <link id="aion-theme-css" rel="stylesheet" href="/static/theme.css?v=20260905-theater-v2">
 <link rel="stylesheet" href="/static/chat-day-glass.css?v=20261102-2">
-<link rel="stylesheet" href="/static/theater-studio.css?v=20261102-dayglass1">
+<link rel="stylesheet" href="/static/theater-studio.css?v=20261112-write-status">
 <link rel="stylesheet" href="/static/image-viewer.css?v=20261024">
 <script src="/static/image-viewer.js?v=20261024"></script>
 </head>
@@ -324,8 +326,13 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
 <div class="persona-modal-overlay" id="modelSettingsOverlay" onclick="if(event.target===this)closeModelSettings()">
       <div class="config-popup" id="configPopup" role="dialog" aria-modal="true" aria-labelledby="modelSettingsTitle">
         <header class="settings-heading"><h3 id="modelSettingsTitle">模型与音色</h3><button class="settings-close" onclick="closeModelSettings()" aria-label="关闭模型与音色">✕</button></header>
-        <label>模型</label>
+        <label id="creationModelLabel" for="modelSelect">模型</label>
         <select id="modelSelect" onchange="changeModel()"></select>
+        <div id="auxiliaryModelSettings" hidden>
+          <label for="auxiliaryModelSelect">摘要与配图规划</label>
+          <select id="auxiliaryModelSelect" onchange="Studio.changeAuxiliaryModel(this.value)"></select>
+          <p class="field-help">正文、讨论和大纲使用创作模型；实际绘图使用全局生图设置。</p>
+        </div>
 
         <label>上下文条数</label>
         <div class="slider-row">
@@ -492,6 +499,7 @@ function populateModelSelects(selected = $('modelSelect').value || conversations
   $('modelSelect').innerHTML = opts;
   if (selected) $('modelSelect').value = selected;
   updateTheaterSelectionSummary();
+  if (typeof Studio !== 'undefined') Studio.refreshModelSettings();
 }
 
 /* ── TTS 音色加载 ── */
@@ -1288,6 +1296,7 @@ function toggleConfig(e) {
 }
 function openModelSettings() {
   if ($('personaModalOverlay').classList.contains('show') && !closePersonaModal()) return;
+  if (typeof Studio !== 'undefined') Studio.refreshModelSettings();
   $('modelSettingsOverlay').classList.add('show');
   loadTTSVoices();
 }
@@ -2019,6 +2028,6 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/static/reading-companion.js?v=20261028"></script>
 <script src="/static/theater-reading.js?v=20261028"></script>
 <script src="/static/theater-export.js?v=20261028"></script>
-<script src="/static/theater-studio.js?v=20261105-last-window"></script>
+<script src="/static/theater-studio.js?v=20261115-chapter-illustrations"></script>
 </body>
 </html>

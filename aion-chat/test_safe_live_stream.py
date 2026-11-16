@@ -99,6 +99,7 @@ class SafeLiveStreamGuardTest(unittest.TestCase):
             "[自定义中转站错误] upstream unavailable",
             "[硅基流动错误 503] upstream unavailable",
             "[AntigravityCLI错误] process failed",
+            "[GrokCLI错误] quota exceeded",
         ):
             with self.subTest(error_text=error_text):
                 guard = SafeLiveStreamGuard()
@@ -109,15 +110,14 @@ class SafeLiveStreamGuardTest(unittest.TestCase):
 
 
 class ConsumeSafeLiveStreamTest(unittest.IsolatedAsyncioTestCase):
-    async def test_normal_chat_is_capped_at_3000_but_theater_keeps_its_own_limit(self):
-        from stream_safety import THEATER_STREAM_POLICY
+    async def test_normal_chat_can_continue_past_both_former_limits(self):
         visible = []
-        source = _Chunks(["哈" * 3000, "再来一句还想继续说"])
+        chunks = ["哈" * 3100, "嗯" * 3100, "再来一句还想继续说"]
+        source = _Chunks(chunks)
         result = await consume_safe_live_stream(source, visible.append)
-        self.assertEqual(result.stop_reason, "length")
-        self.assertEqual(len("".join(visible)), 3000)
-        self.assertTrue(source.closed)
-        self.assertGreater(THEATER_STREAM_POLICY.max_chars, 3000)
+        self.assertIsNone(result.stop_reason)
+        self.assertEqual("".join(visible), "".join(chunks))
+        self.assertEqual(result.committed_text, "".join(chunks))
 
     async def test_laughter_emoji_and_normal_short_repetitions_are_allowed(self):
         samples = ["哈哈哈哈哈哈哈哈哈哈哈哈！😂😂😂", "好呀好呀！" * 10,

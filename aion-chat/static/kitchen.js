@@ -8,6 +8,9 @@
   const today = () => localDate(new Date());
   let data = null, selectedDate = today(), storage = '', currentTab = 'today', menuView = '';
   let editing = null, generating = false, preferencesDirty = false, loadVersion = 0, toastTimer;
+  let submittingIntake = false, intakeAttempt = null;
+  try { intakeAttempt = JSON.parse(sessionStorage.getItem('kitchen_intake_attempt')); } catch {}
+  if (intakeAttempt?.text) $('intakeText').value = intakeAttempt.text;
 
   function toast(text) {
     $('khToast').textContent = text;
@@ -29,6 +32,7 @@
     return amount + (item.unit && !amount.endsWith(item.unit) ? item.unit : '');
   }
   function icon(item) {
+    if (item.icon) return item.icon;
     const special = [['黄瓜','🥒'],['西兰花','🥦'],['青椒','🫑'],['虾','🦐'],['鱼','🐟'],['鸡蛋','🥚'],['玉米','🌽'],['蘑菇','🍄'],['胡萝卜','🥕']];
     return special.find(([word]) => item.name.includes(word))?.[1] || (categories[item.category] || categories.other)[1];
   }
@@ -85,10 +89,11 @@
     $('stockArea').innerHTML = Object.entries(categories).map(([key, [label]]) => {
       const items = list.filter(i => i.category === key);
       if (!items.length) return '';
-      return `<section class="kh-stock-group"><h3 class="kh-group-title">${label}<span>${items.length} 样</span></h3><div class="kh-item-grid">${items.map(i => `<button type="button" class="kh-item ${i.quantity === 0 ? 'is-empty' : ''}" data-edit-item="${esc(i.id)}" aria-label="修改${esc(i.name)}，剩余${esc(itemAmount(i))}"><span class="kh-item-emoji" aria-hidden="true">${icon(i)}</span><span class="kh-item-body"><span class="kh-item-name">${esc(i.name)}</span><span class="kh-item-meta">${storages[i.storage] || '冷藏'}${i.uncertain ? ' · 待确认' : i.soon ? ' · 想尽快吃' : ''}</span></span><span class="kh-item-amount">${i.quantity === 0 ? '用完啦' : esc(itemAmount(i))}</span></button>`).join('')}</div></section>`;
+      return `<section class="kh-stock-group"><h3 class="kh-group-title">${label}<span>${items.length} 样</span></h3><div class="kh-item-grid">${items.map(i => `<button type="button" class="kh-item ${i.quantity === 0 ? 'is-empty' : ''}" data-edit-item="${esc(i.id)}" aria-label="修改${esc(i.name)}，剩余${esc(itemAmount(i))}"><span class="kh-item-emoji" aria-hidden="true">${esc(icon(i))}</span><span class="kh-item-body"><span class="kh-item-name">${esc(i.name)}</span><span class="kh-item-meta">${storages[i.storage] || '冷藏'}${i.uncertain ? ' · 待确认' : i.soon ? ' · 想尽快吃' : ''}</span></span><span class="kh-item-amount">${i.quantity === 0 ? '用完啦' : esc(itemAmount(i))}</span></button>`).join('')}</div></section>`;
     }).join('');
   }
   function renderPending() {
+    renderIntakeControls();
     $('pendingDot').hidden = !data.pending.length;
     $('pendingCount').textContent = data.pending.length || '';
     if (!data.pending.length) {
@@ -143,11 +148,13 @@
   function openItem(item = null) {
     editing = item;
     const form = $('itemForm'); form.reset();
-    for (const key of ['id','name','amount','unit','category','storage','note']) {
+    for (const key of ['id','name','amount','unit','category','storage','note','icon']) {
       const field = form.elements.namedItem(key);
       field.value = item?.[key] ?? ({category:'vegetable',storage:'fridge'}[key] || '');
     }
     form.elements.namedItem('soon').checked = Boolean(item?.soon);
+    $('iconPicker').open = false;
+    renderIconChoices();
     $('itemDialogTitle').textContent = item ? '更新这份食材' : '记一样食材';
     $('itemError').textContent = '';
     $('deleteItemButton').hidden = !item;
@@ -157,6 +164,25 @@
   document.querySelectorAll('[data-tab]').forEach(b => b.addEventListener('click', () => setTab(b.dataset.tab)));
   document.querySelectorAll('[data-close-dialog]').forEach(b => b.addEventListener('click', () => b.closest('dialog').close()));
   document.querySelectorAll('dialog').forEach(d => d.addEventListener('click', event => { if (event.target === d) { const r=d.getBoundingClientRect(); if (event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom) d.close(); } }));
+  function renderIconChoices() {
+    const form = $('itemForm'), field = form.elements.namedItem('icon');
+    field.placeholder = icon({name:form.elements.namedItem('name').value, category:form.elements.namedItem('category').value});
+    const icons = '🍅 🥒 🥬 🥦 🫑 🌶️ 🥕 🥔 🧅 🧄 🍆 🍄 🫘 🌽 🍠 🥚 🥩 🍗 🐟 🦐 🦑 🦀 🧊 🍚 🍜 🥟 🍞 🥛 🧀 🧈 🍎 🍐 🍊 🍋 🍌 🍇 🍓 🫐 🍑 🍈 🍉 🥝 🥥 🥜 🫙 🧂 💧'.split(' ');
+    $('iconChoices').innerHTML = icons.map(value => `<button type="button" data-food-icon="${value}" aria-label="使用${value}图标" aria-pressed="${field.value === value}">${value}</button>`).join('');
+  }
+  $('iconChoices').addEventListener('click', event => {
+    const button = event.target.closest('[data-food-icon]');
+    if (!button) return;
+    $('itemForm').elements.namedItem('icon').value = button.dataset.foodIcon;
+    renderIconChoices();
+  });
+  $('resetIconButton').addEventListener('click', () => {
+    $('itemForm').elements.namedItem('icon').value = '';
+    renderIconChoices();
+  });
+  $('itemForm').addEventListener('input', event => {
+    if (['name','category','icon'].includes(event.target.name)) renderIconChoices();
+  });
   $('backButton').addEventListener('click', () => { if (typeof goBack === 'function') goBack(); else location.href='/'; });
   $('addButton').addEventListener('click', () => openItem());
   $('batchButton').addEventListener('click', () => { $('batchForm').reset(); $('batchError').textContent=''; $('batchDialog').showModal(); });
@@ -212,6 +238,44 @@
     event.preventDefault(); const form=event.target, button=form.querySelector('[type="submit"]'); button.disabled=true;
     try { await request('/batch', {method:'POST',body:JSON.stringify({text:new FormData(form).get('text')})}); $('batchDialog').close(); await refresh(); toast('这批食材记好啦'); }
     catch (error) { $('batchError').textContent=error.message; } finally { button.disabled=false; }
+  });
+  function renderIntakeControls() {
+    $('intakeButton').disabled = submittingIntake || !data?.enabled || !$('intakeText').value.trim();
+    $('intakeButton').textContent = submittingIntake ? '正在记账…' : '发送给哨兵';
+    $('intakeText').readOnly = submittingIntake;
+    $('intakeHint').textContent = data && !data.enabled ? '开启厨房 AI 后可发送' : '';
+  }
+  $('intakeText').addEventListener('input', renderIntakeControls);
+  $('intakeForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const text = $('intakeText').value.trim(), status = $('intakeStatus');
+    if (!text || submittingIntake || !data?.enabled) return;
+    submittingIntake = true;
+    renderIntakeControls();
+    status.textContent = '';
+    try {
+      if (intakeAttempt?.text !== text) {
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        const id = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+        intakeAttempt = {request_id:id, text};
+      }
+      sessionStorage.setItem('kitchen_intake_attempt', JSON.stringify(intakeAttempt));
+      const result = await request('/intake', {method:'POST', body:JSON.stringify(intakeAttempt)});
+      const lines = [];
+      if (result.added.length) lines.push('已入库：' + result.added.join('、'));
+      if (result.pending.length) lines.push('待确认：' + result.pending.join('、'));
+      if (result.skipped.length) lines.push('已手动更新，跳过：' + result.skipped.join('、'));
+      status.textContent = lines.join('\n') || '没有识别到这次要入库的食材。';
+      if (lines.length) $('intakeText').value = '';
+      intakeAttempt = null;
+      sessionStorage.removeItem('kitchen_intake_attempt');
+      await refresh();
+    } catch (error) {
+      status.textContent = error.message || '暂时无法连接哨兵，请重试。';
+    } finally {
+      submittingIntake = false;
+      renderIntakeControls();
+    }
   });
   $('preferencesForm').addEventListener('input', () => { preferencesDirty=true; });
   $('preferencesForm').addEventListener('submit', async event => {

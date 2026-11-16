@@ -63,6 +63,8 @@ public class WebViewActivity extends AppCompatActivity
     private static final int REQ_AUDIO = 1001;
     private static final int REQ_CAMERA = 1002;
     private WebView webView;
+    private ChatWebCardBridge webCardBridge;
+    private final LaunchLoginOverlay launchLogin = new LaunchLoginOverlay();
     private android.app.Dialog attentionCallDialog;
     private SharedAssetCache sharedAssetCache;
     private MediaCacheStore mediaCacheStore;
@@ -74,6 +76,7 @@ public class WebViewActivity extends AppCompatActivity
     private PrivateMemoBridge privateMemoBridge;
     private TtsAudioBridge ttsAudioBridge;
     private LocalAsrBridge localAsrBridge;
+    private AmbientSoundBridge ambientSoundBridge;
     private String targetUrl;
     private boolean initialPageLoadStarted = false;
     private boolean pageLoaded = false;
@@ -148,6 +151,10 @@ public class WebViewActivity extends AppCompatActivity
 
         SharedPreferences launchPrefs =
                 getSharedPreferences("aion_prefs", MODE_PRIVATE);
+        boolean showLaunchLogin = savedInstanceState == null
+                && Intent.ACTION_MAIN.equals(getIntent().getAction())
+                && getIntent().hasCategory(Intent.CATEGORY_LAUNCHER)
+                && !getIntent().hasExtra("url");
         String launchUrl = WebViewLaunchPolicy.resolveUrl(
                 getIntent().getStringExtra("url"),
                 launchPrefs.getBoolean("auto_connect", false),
@@ -157,6 +164,7 @@ public class WebViewActivity extends AppCompatActivity
             Intent launcherIntent = new Intent(this, LauncherActivity.class);
             launcherIntent.putExtra(
                     LauncherActivity.EXTRA_FORCE_ADDRESS_PICKER, true);
+            launcherIntent.putExtra(LauncherActivity.EXTRA_SHOW_LAUNCH_LOGIN, showLaunchLogin);
             startActivity(launcherIntent);
             finish();
             return;
@@ -180,7 +188,12 @@ public class WebViewActivity extends AppCompatActivity
         mediaCacheStore = MediaCacheStore.shared(this);
         sharedJsonStore = new SharedJsonStore(this);
         webView.setBackgroundColor(android.graphics.Color.TRANSPARENT);
-        setContentView(webView);
+        android.widget.FrameLayout chatHost = new android.widget.FrameLayout(this);
+        chatHost.addView(webView);
+        setContentView(chatHost);
+        webCardBridge = new ChatWebCardBridge(this, webView, chatHost);
+        webView.addJavascriptInterface(webCardBridge, "AionWebCard");
+        if (showLaunchLogin) launchLogin.show(this);
 
         AppSupervisionRuntime.start(this);
         webView.addJavascriptInterface(
@@ -282,6 +295,19 @@ public class WebViewActivity extends AppCompatActivity
         webView.addJavascriptInterface(audioBridge, "AionAudio");
         localAsrBridge = new LocalAsrBridge(this, webView, audioBridge);
         webView.addJavascriptInterface(localAsrBridge, "AionLocalAsr");
+        ambientSoundBridge = new AmbientSoundBridge(webView, audioBridge);
+        webView.addJavascriptInterface(ambientSoundBridge, "AionAmbientSound");
+        webView.addJavascriptInterface(new Object() {
+            @android.webkit.JavascriptInterface
+            public void open() {
+                runOnUiThread(() -> {
+                    localAsrBridge.cancelActive();
+                    ambientSoundBridge.stop();
+                    audioBridge.stop();
+                    startActivity(new Intent(WebViewActivity.this, SoundTestActivity.class));
+                });
+            }
+        }, "AionSoundTest");
 
         // 原生摄像头桥接（绕过 getUserMedia 的 HTTPS 限制）
         cameraBridge = new CameraBridge(webView);
@@ -454,6 +480,7 @@ public class WebViewActivity extends AppCompatActivity
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
+                webCardBridge.destroy();
                 FloatingChatService.setVisiblePage(url == null ? "" : Uri.parse(url).getPath());
                 pageLoaded = false;
             }
@@ -881,6 +908,7 @@ public class WebViewActivity extends AppCompatActivity
     @SuppressWarnings("deprecation")
     @Override
     public void onBackPressed() {
+        if (launchLogin.dismiss()) return;
         // 统一由 JS 判断当前页面状态，决定导航到 Home 还是弹对话框
         webView.evaluateJavascript(
             "(function(){ if(typeof handleNativeBack==='function') return handleNativeBack(); return 'dialog'; })()",
@@ -914,20 +942,31 @@ public class WebViewActivity extends AppCompatActivity
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        if (intent.hasExtra("url") || intent.hasExtra(AttentionCall.EXTRA_MESSAGE)) launchLogin.dismiss();
         if (!intent.hasExtra(AttentionCall.EXTRA_MESSAGE)) return;
         setIntent(intent);
         String callUrl = intent.getStringExtra("url");
         if (callUrl != null && webView != null) {
             targetUrl = WebViewLaunchPolicy.toShellUrl(callUrl);
-            pageLoaded = false;
-            sharedAssetCache.freezeForPageLoad();
-            webView.loadUrl(targetUrl);
+            if (pageLoaded && WebViewLaunchPolicy.canReuseChatShell(webView.getUrl(), callUrl)) {
+                String script = "window.openAttentionConversation?.("
+                        + org.json.JSONObject.quote(callUrl) + ") === true";
+                webView.evaluateJavascript(script, handled -> {
+                    if (!"true".equals(handled) && getIntent() == intent && !isDestroyed()) loadAttentionPage();
+                });
+            } else loadAttentionPage();
         }
         if (attentionCallDialog != null) {
             attentionCallDialog.dismiss();
             attentionCallDialog = null;
         }
         if (activityResumed) showAttentionCall();
+    }
+
+    private void loadAttentionPage() {
+        pageLoaded = false;
+        sharedAssetCache.freezeForPageLoad();
+        webView.loadUrl(targetUrl);
     }
 
     private void showAttentionCall() {
@@ -1151,7 +1190,10 @@ public class WebViewActivity extends AppCompatActivity
 
     @Override
     protected void onDestroy() {
+        if (webCardBridge != null) webCardBridge.destroy();
+        launchLogin.dismiss();
         if (localAsrBridge != null) localAsrBridge.shutdown();
+        if (ambientSoundBridge != null) ambientSoundBridge.shutdown();
         if (attentionCallDialog != null) attentionCallDialog.dismiss();
         mainHandler.removeCallbacksAndMessages(null);
         PhoneCameraPreviewCoordinator.shared().unregister(this);

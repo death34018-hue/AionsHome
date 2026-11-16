@@ -19,6 +19,14 @@ from wechat_bridge import (
 
 
 class WeChatBridgeTests(unittest.IsolatedAsyncioTestCase):
+    def test_extract_preserves_chat_markdown_spacing(self):
+        markdown = "- 第一项  \n  续写。\n\n> 引用\n\n正文。"
+        self.assertEqual(extract_wechat_messages(markdown), (markdown, []))
+        self.assertEqual(
+            extract_wechat_messages(markdown.replace("> 引用", "[微信消息：收到]\n> 引用")),
+            (markdown, ["收到"]),
+        )
+
     def test_extract_wechat_messages_removes_tool_markers_and_keeps_payloads(self):
         cleaned, messages = extract_wechat_messages(
             "我先在本地说一句。\n[微信消息：你看到的话回我一下]\n尾巴[微信消息:第二条]"
@@ -145,7 +153,7 @@ class WeChatBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(config, "SETTINGS", settings):
             cleaned, messages = await process_wechat_outbound_commands(
-                "本地一句。[微信消息：微信一句]",
+                "- 本地一句。\n\n正文。[微信消息：微信一句]",
                 source_type="aion_private",
                 source_id="conv_1",
                 sender="aion",
@@ -155,7 +163,7 @@ class WeChatBridgeTests(unittest.IsolatedAsyncioTestCase):
                 record_route=record_route,
             )
 
-        self.assertEqual(cleaned, "本地一句。\n微信一句")
+        self.assertEqual(cleaned, "- 本地一句。\n\n正文。\n微信一句")
         self.assertEqual(messages, ["微信一句"])
         self.assertEqual(saved_system_messages, [])
         send_wechat_message.assert_not_awaited()

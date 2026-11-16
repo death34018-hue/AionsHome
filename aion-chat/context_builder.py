@@ -13,9 +13,11 @@ from config import load_worldbook
 from database import get_db, timeline_created_at_sql
 from taobao_context import trip_card, load_trip_products, render_trip_context
 from schedule import get_active_schedules, build_schedule_prompt
+from schedule_timeline import build_routine_prompt
 from luckin import LUCKIN_CMD_PATTERN
 from song_gen import SONG_CMD_PATTERN
 from compositions import COMPOSE_CMD_PATTERN
+from chat_web_cards import BLOCK as WEB_CARD_BLOCK
 from wechat_bridge import WECHAT_MESSAGE_PATTERN
 from web_search import WEB_EXTRACT_CMD_PATTERN, WEB_SEARCH_CMD_PATTERN
 from capabilities import (
@@ -35,6 +37,7 @@ from memory import (
 
 # ── 工具指令正则（供调用方做后处理用，集中定义） ──
 from game_invites import GAME_COMMAND_PATTERN
+from chat_ambience import AMBIENCE_COMMAND_PATTERN
 MUSIC_CMD_PATTERN = re.compile(r'\[MUSIC:([^\]]+)\]')
 MOMENT_CMD_PATTERN = re.compile(r'\[MOMENT:(.+?)(?:\|(true|false))?\]')
 MEMORY_CMD_PATTERN = re.compile(
@@ -68,6 +71,7 @@ KITCHEN_CMD_PATTERN = re.compile(r'\[KITCHEN(?:_CARD)?\s*[:：][^\]]*\]', re.I)
 
 # 所有需要从 AI 回复中剥离的工具指令正则列表（TTS、保存时统一清理）
 _ALL_CMD_PATTERNS = [
+    WEB_CARD_BLOCK,
     MUSIC_CMD_PATTERN, MOMENT_CMD_PATTERN, MEMORY_CMD_PATTERN, WISH_CMD_PATTERN,
     ACTIVITY_CHECK_PATTERN, SELFIE_CMD_PATTERN, DRAW_CMD_PATTERN, SONG_CMD_PATTERN, COMPOSE_CMD_PATTERN,
     POI_SEARCH_PATTERN, TOY_CMD_PATTERN, SVAKOM_CMD_PATTERN, ANKNI_CMD_PATTERN, PET_CMD_PATTERN,
@@ -75,6 +79,7 @@ _ALL_CMD_PATTERNS = [
     LUCKIN_CMD_PATTERN, TRANSFER_CMD_PATTERN, PRIVATE_WHISPER_CMD_PATTERN,
     WECHAT_MESSAGE_PATTERN, WEB_SEARCH_CMD_PATTERN, WEB_EXTRACT_CMD_PATTERN,
     APP_COMMAND_PATTERN, MEMORY_SEARCH_CMD_PATTERN, PAT_COMMAND_PATTERN, RPS_COMMAND_PATTERN, GAME_COMMAND_PATTERN,
+    AMBIENCE_COMMAND_PATTERN,
     KITCHEN_MENU_CMD_PATTERN, KITCHEN_CMD_PATTERN,
 ]
 
@@ -256,6 +261,9 @@ async def build_ability_block(
     if is_capability_enabled("schedule"):
         schedules = await get_active_schedules()
         schedule_text = build_schedule_prompt(schedules)
+        routine_text = await build_routine_prompt(db_factory=get_db)
+        if routine_text:
+            schedule_text += "\n\n" + routine_text
         parts.append(f"【当前日程列表】\n{schedule_text}")
 
     if is_capability_enabled("location_context"):
@@ -422,6 +430,7 @@ async def build_memory_blocks(
     # 并行执行：背景浮现 + 向量召回 + 聊天室记忆
     surfaced = []
     surfaced_ids = set()
+    main_recalled = []
     main_candidates = []
     chatroom_mems = []
 
@@ -432,7 +441,7 @@ async def build_memory_blocks(
         tasks.append(build_surfacing_memories(topic, recall_keywords))
         task_labels.append("main_surfacing")
         if recall_query:
-            tasks.append(recall_memories(recall_query, query_keywords=recall_keywords))
+            tasks.append(recall_memories(recall_query, query_keywords=recall_keywords, min_results=3))
         else:
             async def _empty_recall():
                 return ([], [])
@@ -456,7 +465,7 @@ async def build_memory_blocks(
         elif label == "chatroom_surfacing":
             surfaced, surfaced_ids = results[i]
         elif label == "main_recall":
-            _, main_candidates = results[i]
+            main_recalled, main_candidates = results[i]
         elif label == "chatroom_recall":
             chatroom_mems = results[i]
 
@@ -479,8 +488,8 @@ async def build_memory_blocks(
     recalled = []
     if recall_query:
         # 主记忆库
-        if main_candidates:
-            recalled = [r for r in main_candidates if r["score"] >= 0.45 and r["id"] not in surfaced_ids][:5]
+        if main_recalled:
+            recalled = [r for r in main_recalled if r["id"] not in surfaced_ids][:5]
         # 聊天室记忆合并
         if chatroom_mems:
             seen_content = {m["content"][:100] for m in recalled}
@@ -595,7 +604,7 @@ def _sanitize_timeline_content(content: str) -> str:
 
 def _is_model_visible_timeline_message(message: dict) -> bool:
     """Return whether render_merged_timeline can retain this transcript row."""
-    if message.get("sender") != "system":
+    if message.get("sender") != "system" or message.get("source") == "family":
         return True
     attachments = _parse_timeline_attachments(message.get("attachments", []))
     if any(isinstance(a, dict) and a.get('type') in ('rps_pending_context', 'rps_synced_context') for a in attachments):
@@ -887,6 +896,72 @@ async def count_merged_timeline(
     )
 
 
+# ── 家庭动态：作为系统事件并入时间线 ──
+FAMILY_DYNAMICS_LIMIT = 60
+_FAMILY_ACTOR_TITLES = {"moment": "发布了朋友圈", "diary": "发布了日记"}
+# 这些动态本身会在聊天窗口留下消息（说话、角色间聊天、台球战报卡片），不再重复。
+_FAMILY_CHAT_ACTIONS = frozenset({"private_chat", "role_chat", "billiards_result"})
+# 读书标题“X读了《书名》的《章节》第N段”只保留到书名。
+_FAMILY_BOOK_TITLE_RE = re.compile(r"^(.+读了《.+》)的《.+》第\d+段$")
+
+
+async def family_dynamics_since(since_ts: float, until_ts: float = None) -> list[dict]:
+    """since_ts 起的家庭动态标题（时间升序，最多保留最新 FAMILY_DYNAMICS_LIMIT 条），上下文与聊天界面共用。
+
+    只收不在聊天窗口留消息的动态，只给标题不带正文。
+    """
+    try:
+        from routes.activity import list_family_timeline_items
+        items = await list_family_timeline_items(
+            since_ts, FAMILY_DYNAMICS_LIMIT, until=until_ts,
+        )
+    except Exception:
+        # 动态读取失败不影响聊天。
+        return []
+    result = []
+    for item in reversed(items[:FAMILY_DYNAMICS_LIMIT]):
+        kind = item.get("kind") or ""
+        action = item.get("action")
+        if action in _FAMILY_CHAT_ACTIONS:
+            continue
+        suffix = _FAMILY_ACTOR_TITLES.get(kind)
+        title = f"{item.get('actor') or ''}{suffix}" if suffix else str(item.get("title") or "")
+        if action == "book_read":
+            title = _FAMILY_BOOK_TITLE_RE.sub(r"\1", title.strip())
+        if not title.strip():
+            continue
+        result.append({
+            "id": f"family_{kind}_{item.get('source_id') or item['timestamp']}",
+            "timestamp": item["timestamp"],
+            "kind": kind,
+            "title": title.strip(),
+        })
+    return result
+
+
+async def with_family_dynamics(merged: list[dict]) -> list[dict]:
+    """把首尾两条消息之间发生的家庭动态按时间并入时间线。"""
+    if len(merged) < 2:
+        return merged
+    since_ts, until_ts = merged[0]["created_at"], merged[-1]["created_at"]
+    rows = [
+        {
+            "id": item["id"],
+            "sender": "system",
+            "content": item["title"],
+            "created_at": item["timestamp"],
+            "attachments": [],
+            "source": "family",
+        }
+        for item in await family_dynamics_since(since_ts, until_ts)
+        if since_ts <= item["timestamp"] < until_ts
+    ]
+    if not rows:
+        return merged
+    # 稳定排序：同一时刻消息在前，最后一条始终是真实消息。
+    return sorted([*merged, *rows], key=lambda m: m["created_at"])
+
+
 def render_merged_timeline(
     merged: list[dict],
     who: str,
@@ -915,7 +990,7 @@ def render_merged_timeline(
         return []
 
     user_name, ai_name, connor_name = _timeline_display_names()
-    sources = set(m["source"] for m in merged)
+    sources = set(m["source"] for m in merged if m["source"] != "family")
     has_mixed = len(sources) > 1
 
     history: list[dict] = [{
@@ -958,6 +1033,9 @@ def render_merged_timeline(
         )
         ai_images = []
         if sender in ("assistant", "aion", "connor"):
+            for att in message_attachments:
+                if isinstance(att, dict) and att.get('type') == 'web_card' and is_capability_enabled('web_cards'):
+                    content = (content + '\n[送了一张互动网页：' + str(att.get('title') or '小网页')[:60] + ']').strip()
             ai_images = [a for a in message_attachments if _is_timeline_image_attachment(a)]
             if ai_images:
                 content = (content + f"\n[发送了{len(ai_images)}张图片]").strip()
@@ -978,8 +1056,10 @@ def render_merged_timeline(
                 card, msg.get("taobao_products"), {"aion": ai_name, "connor": connor_name},
             )
 
+        is_family = source == "family"
+
         # ── 场景切换标记：不再插入 fake 应答对，仅记录下来在下一条消息前内联输出 ──
-        if has_mixed and source != current_source:
+        if has_mixed and not is_family and source != current_source:
             if current_source is not None:
                 # 第二次及以后的切换才需要明示，第一次直接由首条消息的 [群聊/私聊] meta 表明即可
                 label = "群聊" if source == "group" else "私聊"
@@ -987,7 +1067,9 @@ def render_merged_timeline(
             current_source = source
 
         # ── 说话人映射：所有历史记录都作为 user 侧 transcript 提供，避免多 assistant 污染输出格式 ──
-        if sender == "system":
+        if is_family:
+            speaker = "家庭动态"
+        elif sender == "system":
             speaker = "系统事件"
         elif sender == "user":
             speaker = user_name
@@ -1020,19 +1102,21 @@ def render_merged_timeline(
         role = "user"
 
         # ── 清洗旧 meta 标签 + 添加精确时间戳 ──
-        if has_mixed:
+        if has_mixed and not is_family:
             label = "群聊" if source == "group" else "私聊"
             content = append_message_meta(content, msg.get("created_at"), label)
         else:
             content = append_message_meta(content, msg.get("created_at"))
 
-        # 把待写入的场景切换提示并入本条 content 开头
-        if pending_scene_marker:
+        # 把待写入的场景切换提示并入本条 content 开头（家庭动态不属于任何场景，留给下一条消息）
+        if pending_scene_marker and not is_family:
             content = pending_scene_marker + content
             pending_scene_marker = ""
 
         # API roles are all user here; retain the real speaker for attachment lifetime.
         entry = {"role": role, "content": content, "_timeline_sender": msg["sender"]}
+        if is_family:
+            entry["_family_dynamic"] = True
 
         # ── 附件：普通对话保留最近两轮用户图片；后台唤醒可完全关闭历史图片 ──
         attachments = []

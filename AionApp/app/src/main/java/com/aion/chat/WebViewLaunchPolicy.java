@@ -20,6 +20,19 @@ final class WebViewLaunchPolicy {
         return autoConnect ? toShellUrl(savedUrl) : null;
     }
 
+    static boolean canReuseChatShell(String currentUrl, String requestedUrl) {
+        if (currentUrl == null || requestedUrl == null) return false;
+        try {
+            URI page = new URI(currentUrl);
+            URI target = new URI(requestedUrl);
+            return ("http".equalsIgnoreCase(page.getScheme()) || "https".equalsIgnoreCase(page.getScheme()))
+                    && page.getHost() != null && "/chat".equals(page.getRawPath())
+                    && page.resolve("/").equals(target.resolve("/"));
+        } catch (URISyntaxException invalidUrl) {
+            return false;
+        }
+    }
+
     /** Every native entry keeps navigation and system-bar insets in /chat. */
     static String toShellUrl(String requestedUrl) {
         String url = ConnectionEndpoint.normalizePageUrl(requestedUrl);

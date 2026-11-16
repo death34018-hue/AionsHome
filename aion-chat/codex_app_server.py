@@ -7,9 +7,11 @@ from generation_control import terminate_process_tree
 import asyncio
 import contextlib
 import json
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import AsyncIterator, Awaitable, Callable
 
 
@@ -137,6 +139,61 @@ def _final_agent_text(message: dict) -> str:
     if item.get("type") != "agentMessage":
         return ""
     return str(item.get("text") or "")
+
+
+def codex_quota_groups(report: dict) -> list[dict]:
+    shared = (report.get("rateLimitsByLimitId") or {}).get("codex") or report.get("rateLimits") or {}
+    if shared.get("limitId") not in (None, "codex"):
+        raise ValueError("缺少 Codex 账号额度")
+    buckets = []
+    for key in ("primary", "secondary"):
+        limit = shared.get(key)
+        if not limit:
+            continue
+        used = limit.get("usedPercent")
+        if type(used) not in (int, float) or not 0 <= used <= 100:
+            raise ValueError("Codex 额度格式错误")
+        minutes = limit.get("windowDurationMins")
+        label = {300: "5h", 10080: "weekly"}.get(minutes)
+        if not label:
+            label = f"{minutes} 分钟" if minutes else {"primary": "主周期", "secondary": "次周期"}[key]
+        reset = limit.get("resetsAt")
+        buckets.append({"window": label, "remaining": 100 - used,
+                        "reset_at": datetime.fromtimestamp(reset, timezone.utc).isoformat() if reset else None})
+    if not buckets:
+        raise ValueError("Codex 尚未提供账号额度")
+    return [{"name": "Codex", "buckets": buckets}]
+
+
+async def query_codex_quota():
+    from ai_providers import _CODEX_SCRIPT, _build_codex_chat_environment
+    from agy_usage import UsageError
+
+    if not _CODEX_SCRIPT:
+        raise UsageError("小家服务器未找到 Codex CLI")
+    env = await asyncio.to_thread(_build_codex_chat_environment)
+    command = build_codex_app_server_command(shutil.which("node") or "node", _CODEX_SCRIPT)
+    process = await asyncio.create_subprocess_exec(
+        *command, cwd=env["CODEX_HOME"], env=env, stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    try:
+        async with asyncio.timeout(35):
+            await _request(process, 1, "initialize", {"clientInfo": {
+                "name": "aionshome_usage", "title": "AionsHome Usage", "version": "1.0",
+            }}, [])
+            await _write_json(process.stdin, {"method": "initialized", "params": {}})
+            report = await _request(process, 2, "account/rateLimits/read", {}, [])
+            return codex_quota_groups(report)
+    except TimeoutError:
+        raise UsageError("Codex 额度查询超时") from None
+    except (CodexAppServerError, EOFError):
+        raise UsageError("Codex 额度查询失败，请检查 CLI 的登录和网络") from None
+    except ValueError as exc:
+        raise UsageError(str(exc)) from None
+    finally:
+        await _close_process(process, interrupt_turn=None)
 
 
 async def stream_codex_app_server(

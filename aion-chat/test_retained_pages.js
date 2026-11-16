@@ -7,6 +7,36 @@ const vm = require('node:vm');
 const read = file => fs.readFileSync(path.join(__dirname, 'static', file), 'utf8');
 const block = (s, start, end) => s.slice(s.indexOf(start), s.indexOf(end, s.indexOf(start)));
 
+test('a warm attention call opens its source without replacing the chat document or a ready room', () => {
+  const pages = [], selected = [];
+  const room = {id: 'first'};
+  const frame = {contentWindow: {}};
+  const ctx = vm.createContext({
+    URL, location: {origin: 'https://home', pathname: '/chat'}, currentConvId: 'private',
+    persistentSubPageFrames: new Map([['/chatroom', frame]]),
+    openSubPage: url => pages.push(url), closeSubPage: () => pages.push('/chat'),
+    selectConv: id => selected.push(id),
+  });
+  const roomCtx = vm.createContext({rooms: [room, {id: 'second'}], currentRoom: room,
+    selectRoom: id => selected.push(id)});
+  const source = read('chat.js'), roomSource = read('chatroom.js');
+  for (const [context, file, name] of [[ctx, source, 'openAttentionConversation'], [roomCtx, roomSource, 'openAttentionRoom']]) {
+    const start = file.indexOf('function ' + name + '(');
+    assert.notEqual(start, -1, name + ' must handle warm calls');
+    vm.runInContext(file.slice(start, file.indexOf('\n}', start) + 2), context);
+  }
+  frame.contentWindow.openAttentionRoom = roomCtx.openAttentionRoom;
+  for (const route of ['/chatroom?room=first', '/chatroom?room=second', '/chat?conv=private', '/chat?conv=another']) {
+    assert.equal(ctx.openAttentionConversation('https://home' + route), true);
+  }
+  assert.deepEqual(pages, ['/chatroom', '/chatroom', '/chat', '/chat']);
+  assert.deepEqual(selected, ['second', 'another']);
+  assert.equal(ctx.openAttentionConversation('https://other/chat?conv=another'), false);
+  ctx.persistentSubPageFrames.clear();
+  ctx.openAttentionConversation('https://home/chatroom?room=new');
+  assert.equal(pages.at(-1), '/chatroom?room=new');
+});
+
 test('floating chat follows the visible subpage and returning to private chat', () => {
   const pages = [];
   const element = { classList: { remove() {}, toggle() {}, contains: () => true } };
@@ -15,7 +45,7 @@ test('floating chat follows the visible subpage and returning to private chat', 
     window: { AionFloatingChat: { setVisiblePage: page => pages.push(page) }, AionSubPageNavigation: { hide() {} } },
     _subPageNames: {}, resetSubPageChrome() {}, applySubPageThemeChrome() {},
     activeSubPageFrame: null, transientSubPageFrame: {}, currentSubPage: '/theater',
-    notifySubPageLifecycle() {}, syncHealthRingPageVisibility() {}, applyAionTheme() {},
+    notifySubPageLifecycle() {}, syncHealthRingPageVisibility() {}, applyAionTheme() {}, reportPhoneHomePage() {},
     localStorage: { getItem: () => 'dark' }, currentConvId: null,
   });
   const source = read('chat.js');
@@ -31,12 +61,53 @@ test('floating chat follows the visible subpage and returning to private chat', 
   assert.doesNotThrow(() => ctx.syncSubPageMode('/reading'), 'older apps and browsers still navigate');
 });
 
+test('phone activity follows visible theater, chat and native foreground state', async () => {
+  const reports = [], timers = [];
+  const element = { classList: { remove() {}, toggle() {}, contains: () => true } };
+  const ctx = vm.createContext({
+    URL, location: { origin: 'http://home' }, $: () => element,
+    navigator: { userAgent: 'Chrome AionChatApp/1.0' },
+    document: { hidden: false, addEventListener() {} },
+    window: { AionSubPageNavigation: { hide() {} } },
+    api: async (method, url, body) => { reports.push({ method, url, body }); },
+    setInterval: fn => { timers.push(fn); },
+    _subPageNames: {}, resetSubPageChrome() {}, applySubPageThemeChrome() {},
+    activeSubPageFrame: null, transientSubPageFrame: {}, currentSubPage: null,
+    syncHealthRingPageVisibility() {}, applyAionTheme() {}, _sendTTSState() {},
+    localStorage: { getItem: () => 'dark' }, currentConvId: null,
+  });
+  const source = read('chat.js');
+  vm.runInContext(block(read('chat.html'), 'function syncSubPageLayout(', '// Start the desktop')
+    + block(source, 'function syncSubPageMode(', 'const persistentSubPageFrames =')
+    + block(source, 'let _aionAppForeground =', 'window.onAionPhoneCameraCaptureState =')
+    + block(source, 'function closeSubPage(', '// 导航到 Home'), ctx);
+  ctx.window.onAionAppForegroundChanged(true);
+  ctx.syncSubPageMode('/theater?story=1');
+  ctx.closeSubPage();
+  ctx.syncSubPageMode('/theater');
+  ctx.syncSubPageMode('/chatroom');
+  ctx.syncSubPageMode('/theater');
+  ctx.window.onAionAppForegroundChanged(false);
+  timers.forEach(fn => fn());
+  ctx.window.onAionAppForegroundChanged(true);
+  timers.forEach(fn => fn());
+  assert.deepEqual(reports.map(row => row.body.data.home_page.value),
+    ['home', 'theater', 'home', 'theater', 'home', 'theater', 'background', 'theater', 'theater']);
+  assert.ok(reports.every(row => row.method === 'POST' && row.url === '/api/device-context/phone'));
+  ctx.navigator.userAgent = 'Chrome';
+  ctx.syncSubPageMode('/theater');
+  ctx.window.onAionAppForegroundChanged(true);
+  timers.forEach(fn => fn());
+  assert.equal(reports.length, 9, 'desktop browsing must not change phone activity');
+});
+
 function subPageLifecycle(userAgent, hidden = false) {
   const events = {}, foreground = [];
   const frame = { dataset: {}, contentWindow: { onAionAppForegroundChanged: value => foreground.push(value) } };
   const ctx = vm.createContext({
     navigator: { userAgent }, document: { hidden, addEventListener: (name, fn) => events[name] = fn },
     window: {}, activeSubPageFrame: frame, _sendTTSState() {},
+    setInterval() {}, api: async () => ({}),
   });
   vm.runInContext(block(read('chat.js'), 'let _aionAppForeground =', 'window.onAionPhoneCameraCaptureState ='), ctx);
   ctx.notifySubPageLifecycle(frame, true);

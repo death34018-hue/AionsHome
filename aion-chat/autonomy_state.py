@@ -28,6 +28,7 @@ ACTION_IDS = (
     "home_dynamics",
     "memory_browse",
     "album_browse",
+    "book_read",
     "web_roam",
     "xhs_roam",
     "taobao_roam",
@@ -37,7 +38,7 @@ ACTION_IDS = (
     "seeky_interaction",
     "wish_pool",
 )
-DEFAULT_OFF_ACTIONS = {"album_browse", "board_check", "board_visit", "billiards_play"}
+DEFAULT_OFF_ACTIONS = {"album_browse", "book_read", "board_check", "board_visit", "billiards_play"}
 
 _AUTONOMY_WAKE_ACTOR = ContextVar("autonomy_wake_actor", default="")
 

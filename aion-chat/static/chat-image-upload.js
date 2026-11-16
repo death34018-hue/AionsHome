@@ -4,6 +4,39 @@
   const TARGET_BYTES = 400 * 1024;
   const MAX_EDGE = 1600;
 
+  function hasImagePixels(context, canvas) {
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    // Check alpha before adding the JPEG background: an opaque white photo is valid.
+    for (let i = 3; i < pixels.length; i += 4) {
+      if (pixels[i]) return true;
+    }
+    return false;
+  }
+
+  async function drawImage(file, image, canvas, context) {
+    let bitmap;
+    try {
+      // Decode a bounded bitmap directly, avoiding WebView's lazy <img> drawing path.
+      if (typeof createImageBitmap === 'function') {
+        bitmap = await createImageBitmap(file, {
+          resizeWidth: canvas.width, resizeHeight: canvas.height, resizeQuality: 'high',
+        });
+        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        if (hasImagePixels(context, canvas)) return;
+      }
+    } catch (_) {
+      // Older WebViews and some formats need the HTML image decoder instead.
+    } finally {
+      bitmap?.close();
+    }
+    if (typeof image.decode === 'function') await image.decode();
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    if (!hasImagePixels(context, canvas)) {
+      throw new Error('图片处理失败，请重新选择图片，或缩小图片后重试');
+    }
+  }
+
   async function compress(file) {
     if (!file.type.startsWith('image/') || file.type === 'image/gif' || file.size <= TARGET_BYTES) return file;
     const sourceUrl = URL.createObjectURL(file);
@@ -15,17 +48,20 @@
         image.onerror = () => reject(new Error('这张图片无法在设备上压缩，请换成 JPG 或 PNG 后重试'));
         image.src = sourceUrl;
       });
-      const context = canvas.getContext('2d');
+      // Software-backed canvas avoids mobile GPU texture limits and supports pixel checks.
+      const context = canvas.getContext('2d', { willReadFrequently: true });
       if (!context) throw new Error('设备暂时无法处理图片，请重试');
       let edge = Math.min(MAX_EDGE, Math.max(image.naturalWidth, image.naturalHeight));
       while (edge >= 320) {
         const scale = Math.min(1, edge / Math.max(image.naturalWidth, image.naturalHeight));
         canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
         canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-        // JPEG has no alpha channel; a white background keeps transparent text readable.
+        await drawImage(file, image, canvas, context);
+        // Add white only after verifying that the image was actually drawn.
+        context.globalCompositeOperation = 'destination-over';
         context.fillStyle = '#fff';
         context.fillRect(0, 0, canvas.width, canvas.height);
-        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        context.globalCompositeOperation = 'source-over';
         for (const quality of [0.85, 0.72, 0.6]) {
           const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
           if (!blob) throw new Error('图片压缩失败，请重新选择图片');

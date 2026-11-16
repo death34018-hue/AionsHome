@@ -293,11 +293,10 @@ def _idle_event_timeline_title(row, actor: str, shown_diary_ids: set[str], shown
     return row["title"]
 
 
-@router.get("/api/timeline")
-async def get_timeline(hours: int = 24, limit: int = 300):
-    hours = max(1, min(hours, 24 * 30))
-    limit = max(20, min(limit, 1000))
-    cutoff = time.time() - hours * 3600
+async def list_family_timeline_items(since: float, limit: int = 300, until: Optional[float] = None) -> list[dict]:
+    """聚合 [since, until] 内的家庭动态，按时间倒序返回。"""
+    cutoff = float(since)
+    upper = float(until) if until is not None else 1e18
     names = _timeline_names()
     user_name = _actor_name("user", names)
     items = []
@@ -309,8 +308,8 @@ async def get_timeline(hours: int = 24, limit: int = 300):
 
         cur = await db.execute(
             "SELECT id, author, content, attachments, created_at FROM moments "
-            "WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?",
-            (cutoff, limit),
+            "WHERE created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?",
+            (cutoff, upper, limit),
         )
         for r in await cur.fetchall():
             actor = _actor_name(r["author"], names)
@@ -323,8 +322,8 @@ async def get_timeline(hours: int = 24, limit: int = 300):
 
         cur = await db.execute(
             "SELECT id, author, title, content, created_at FROM diary_entries "
-            "WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?",
-            (cutoff, limit),
+            "WHERE created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?",
+            (cutoff, upper, limit),
         )
         for r in await cur.fetchall():
             actor = _actor_name(r["author"], names)
@@ -334,8 +333,8 @@ async def get_timeline(hours: int = 24, limit: int = 300):
 
         cur = await db.execute(
             "SELECT id, image_path, message, created_at, sender FROM gifts "
-            "WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?",
-            (cutoff, limit),
+            "WHERE created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?",
+            (cutoff, upper, limit),
         )
         for r in await cur.fetchall():
             actor = _actor_name(r["sender"] or "aion", names)
@@ -349,8 +348,8 @@ async def get_timeline(hours: int = 24, limit: int = 300):
 
         cur = await db.execute(
             "SELECT id, actor, action, title, detail, target_type, target_id, result_type, result_id, metadata, created_at FROM idle_events "
-            "WHERE created_at >= ? ORDER BY created_at DESC LIMIT ?",
-            (cutoff, limit),
+            "WHERE created_at >= ? AND created_at <= ? ORDER BY created_at DESC LIMIT ?",
+            (cutoff, upper, limit),
         )
         for r in await cur.fetchall():
             actor = _actor_name(r["actor"], names)
@@ -364,10 +363,13 @@ async def get_timeline(hours: int = 24, limit: int = 300):
             album_photos = meta.get("album_photos", []) if meta.get("selected_action") == "album_browse" else []
             photo_urls = [p["url"] for p in album_photos[:2]
                           if isinstance(p, dict) and str(p.get("url", "")).startswith("/uploads/album/")]
-            items.append(_timeline_item(
+            detail = r["detail"] if meta.get("selected_action") in {"album_browse", "book_read"} else _clip(r["detail"])
+            item = _timeline_item(
                 r["created_at"], "idle_event", actor,
-                title, r["detail"] if meta.get("selected_action") == "album_browse" else _clip(r["detail"]), r["id"], photo_urls,
-            ))
+                title, detail, r["id"], photo_urls,
+            )
+            item["action"] = str(meta.get("selected_action") or r["action"] or "")
+            items.append(item)
 
     user_groups = await list_grouped_user_events(since=cutoff, limit=limit)
     items.extend(build_user_timeline_items(user_groups, user_name))
@@ -390,8 +392,37 @@ async def get_timeline(hours: int = 24, limit: int = 300):
             "；".join(detail_parts),
         ))
 
+    items = [item for item in items if item["timestamp"] <= upper]
     items.sort(key=lambda x: x["timestamp"], reverse=True)
+    return items
+
+
+@router.get("/api/timeline")
+async def get_timeline(hours: int = 24, limit: int = 300):
+    hours = max(1, min(hours, 24 * 30))
+    limit = max(20, min(limit, 1000))
+    items = await list_family_timeline_items(time.time() - hours * 3600, limit)
     return {"items": items[:limit], "hours": hours, "total": len(items)}
+
+
+@router.get("/api/timeline/chat")
+async def get_chat_timeline(who: str = "aion", limit: int = 30, conv_id: str = ""):
+    """聊天界面内联显示的家庭动态：与模型上下文同一个起点。"""
+    from context_builder import family_dynamics_since, fetch_merged_timeline
+
+    limit = max(1, min(limit, 500))
+    actors = ("aion", "connor") if who == "group" else (("connor",) if who == "connor" else ("aion",))
+    starts = []
+    for actor in actors:
+        merged = await fetch_merged_timeline(
+            actor, limit, conv_id=conv_id if actor == "aion" and conv_id else None,
+        )
+        if merged:
+            starts.append(float(merged[0]["created_at"]))
+    if not starts:
+        return {"since": None, "items": []}
+    since = min(starts)
+    return {"since": since, "items": await family_dynamics_since(since)}
 
 
 @router.get("/api/activity/dates")

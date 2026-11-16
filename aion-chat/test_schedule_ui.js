@@ -179,6 +179,8 @@ test('private memo change messages request a memo refresh', () => {
 function createTabDocument() {
   const elements = {};
   for (const id of [
+    'schTabRoutine',
+    'schPanelRoutine',
     'schTabActive',
     'schTabMemo',
     'schPanelActive',
@@ -266,6 +268,17 @@ test('memo tab gets its own exclusive panel', () => {
   assert.equal(fixture.elements.schTabMemo.attributes.tabindex, '0');
 });
 
+test('routine tab is independent from reminders and private memos', () => {
+  const fixture = createTabDocument();
+  assert.equal(ui.selectScheduleTab('routine', fixture.document), 'routine');
+  assert.equal(fixture.elements.schPanelRoutine.hidden, false);
+  assert.equal(fixture.elements.schPanelActive.hidden, true);
+  assert.equal(fixture.elements.schPanelMemo.hidden, true);
+  assert.equal(fixture.elements.schHistoryButton.hidden, true);
+  assert.equal(ui.handleScheduleTabKeydown({key:'ArrowRight',preventDefault(){}}, 'memo', fixture.document), 'routine');
+  assert.equal(fixture.elements.schTabRoutine.focusCalls, 1);
+});
+
 test('tab keyboard navigation selects and focuses the expected tab', () => {
   const fixture = createTabDocument();
   let prevented = 0;
@@ -287,9 +300,9 @@ test('tab keyboard navigation selects and focuses the expected tab', () => {
   event.key = 'Home';
   assert.equal(
     ui.handleScheduleTabKeydown(event, 'memo', fixture.document),
-    'active',
+    'routine',
   );
-  assert.equal(fixture.elements.schTabActive.focusCalls, 1);
+  assert.equal(fixture.elements.schTabRoutine.focusCalls, 1);
 
   event.key = 'Enter';
   assert.equal(

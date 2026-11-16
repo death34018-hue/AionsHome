@@ -2,24 +2,26 @@
 日程路由：列表 / 手动添加 / 删除
 """
 
-import time
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
-from typing import Optional
+from typing import Literal, Optional
 
 import aiosqlite
 from database import get_db
 from schedule import get_schedule_origin_name
 from schedule_history import fetch_schedule_history, finish_schedule
 from ws import manager
+from calendar_store import write_schedule
 
 router = APIRouter()
 
 
 class ScheduleCreate(BaseModel):
-    type: str = "alarm"          # alarm / reminder
+    type: Literal["alarm", "reminder", "monitor"] = "alarm"
     trigger_at: str              # ISO: 2026-03-25T10:00
     content: str
+    event_key: str = ""
+    event_at: str = ""
 
 
 @router.get("/api/schedules")
@@ -43,18 +45,30 @@ async def list_schedules(status: Optional[str] = Query(None)):
 
 @router.post("/api/schedules")
 async def create_schedule(body: ScheduleCreate):
-    sid = f"sch_{int(time.time()*1000)}"
-    now = time.time()
-    trigger_at = body.trigger_at.replace("T", " ")
     async with get_db() as db:
-        await db.execute(
-            "INSERT INTO schedules (id, type, trigger_at, content, created_at, status, origin, origin_room_id) VALUES (?,?,?,?,?,?,?,?)",
-            (sid, body.type, trigger_at, body.content, now, "active", "user", ""),
-        )
+        try:
+            item = await write_schedule(db, body.type, body.trigger_at, body.content, "user", event_key=body.event_key, event_at=body.event_at)
+        except ValueError as error:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=422, detail=str(error)) from None
         await db.commit()
-    item = {"id": sid, "type": body.type, "trigger_at": trigger_at,
-            "content": body.content, "created_at": now, "status": "active",
-            "origin": "user", "origin_room_id": "", "origin_name": get_schedule_origin_name("user")}
+    item["origin_name"] = get_schedule_origin_name(item.get("origin"))
+    await manager.broadcast({"type": "schedule_changed"})
+    return item
+
+
+@router.put("/api/schedules/{schedule_id}")
+async def update_schedule(schedule_id: str, body: ScheduleCreate):
+    from fastapi import HTTPException
+    async with get_db() as db:
+        try:
+            item = await write_schedule(db, body.type, body.trigger_at, body.content, "user", event_key=body.event_key, event_at=body.event_at, item_id=schedule_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="这条提醒已不存在或已经结束") from None
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        await db.commit()
+    item["origin_name"] = get_schedule_origin_name(item.get("origin"))
     await manager.broadcast({"type": "schedule_changed"})
     return item
 

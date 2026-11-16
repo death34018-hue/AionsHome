@@ -95,13 +95,19 @@ html.aion-app:not(.aion-iframe) body { padding-top:34px; }
 .kh-item-name { display:block; font-size:13px; line-height:1.45; font-weight:500; overflow-wrap:anywhere; }
 .kh-item-meta { display:block; font-size:10px; color:var(--kh-muted); margin-top:2px; }
 .kh-item-amount { font-size:12px; white-space:nowrap; max-width:72px; overflow:hidden; text-overflow:ellipsis; }
-.kh-item.is-empty { opacity:.55; }
+.kh-item.is-empty { opacity:.55; filter:grayscale(1); }
 .kh-preferences { max-width:760px; }
 .kh-form-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px 10px; }
 .kh-field { display:flex; flex-direction:column; gap:3px; font-size:12px; color:var(--kh-muted); min-width:0; }
 .kh-field input, .kh-field textarea, .kh-field select { width:100%; border:1px solid var(--kh-line); border-radius:10px; padding:4px 8px; color:var(--kh-ink); background:var(--kh-bg); font-size:14px; }
 .kh-field textarea { resize:vertical; line-height:1.8; }
 .kh-field input::placeholder, .kh-field textarea::placeholder { color:var(--kh-muted); opacity:.65; }
+.kh-icon-input { display:flex; align-items:center; gap:8px; }
+.kh-icon-input input { max-width:70px; text-align:center; font-size:22px; }
+.kh-icon-picker summary { cursor:pointer; padding:6px 0; }
+.kh-icon-choices { display:grid; grid-template-columns:repeat(8,minmax(0,1fr)); gap:4px; }
+.kh-icon-choices button { border:1px solid var(--kh-line); border-radius:7px; background:var(--kh-bg); padding:4px 0; font-size:20px; min-height:36px; }
+.kh-icon-choices button[aria-pressed="true"] { border-color:var(--kh-leaf); background:var(--kh-soft); }
 .kh-span-two { grid-column:1/-1; }
 .kh-input-unit { position:relative; }
 .kh-input-unit input { padding-right:55px; }
@@ -110,6 +116,10 @@ html.aion-app:not(.aion-iframe) body { padding-top:34px; }
 .kh-check input { accent-color:var(--kh-leaf); width:16px; height:16px; }
 .kh-form-footer { display:flex; align-items:center; justify-content:flex-end; gap:8px; border-top:1px solid var(--kh-line); margin-top:9px; padding-top:8px; }
 .kh-section-note { color:var(--kh-muted); font-size:12px; margin:-5px 0 20px; line-height:1.9; }
+.kh-intake { max-width:760px; margin-bottom:16px; }
+.kh-intake strong { color:var(--kh-ink); font-size:16px; margin-bottom:4px; }
+.kh-intake textarea { resize:vertical; }
+#intakeStatus:not(:empty) { margin-top:8px; font-size:13px; line-height:1.6; white-space:pre-line; overflow-wrap:anywhere; }
 .kh-pending-card { background:var(--kh-paper); border:1px solid var(--kh-line); border-left:3px solid var(--kh-red); border-radius:14px; padding:10px; margin-bottom:7px; max-width:760px; }
 .kh-pending-card h3 { font-size:16px; font-weight:500; }
 .kh-pending-card p { font-size:12px; color:var(--kh-muted); margin:3px 0 7px; }

@@ -32,13 +32,6 @@ body[data-theme="dark"] { background: #06091f; }
 body[data-theme="dark"] .phone-screen {
   background-image: url('/public/BackGroundN.png');
 }
-body[data-theme="dark"] .phone-screen::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(180deg, rgba(3,7,29,0.18), rgba(5,8,27,0.32));
-}
 
 /* ── 时钟小组件 ── */
 .clock-widget {
@@ -89,14 +82,13 @@ body[data-theme="dark"] .clock-widget {
   flex: 0 0 100%;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  grid-template-rows: repeat(var(--home-page-rows, 3), 82px);
-  gap: 14px 0;
+  grid-template-rows: repeat(var(--home-page-rows, 3), var(--home-row-height));
+  row-gap: var(--home-row-gap);
   padding: 16px 16px 8px;
   align-content: end;
 }
 .app-slot {
   min-width: 0;
-  height: 82px;
   display: flex;
   justify-content: center;
   align-items: flex-start;
@@ -108,6 +100,7 @@ body[data-theme="dark"] .clock-widget {
 .app-slot .app-icon,
 .app-slot .app-placeholder {
   width: 100%;
+  height: 100%;
 }
 .page-dots {
   flex-shrink: 0;
@@ -150,12 +143,11 @@ body[data-theme="dark"] .page-dot.active {
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
-  gap: 6px;
+  gap: 5px;
   border: 0;
   background: transparent;
   padding: 0;
   min-width: 0;
-  height: 82px;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   user-select: none;
@@ -169,10 +161,14 @@ body[data-theme="dark"] .page-dot.active {
 .app-pages.dragging .app-icon:active .icon-img {
   transform: none;
 }
+.app-icon .icon-img,
+.app-placeholder::before {
+  width: 45px;
+  height: 45px;
+  border-radius: 12px;
+}
 .app-icon .icon-img {
-  width: 60px;
-  height: 60px;
-  border-radius: 16px;
+  position: relative;
   overflow: hidden;
   transition: transform 0.15s;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
@@ -190,7 +186,6 @@ body[data-theme="dark"] .page-dot.active {
   text-shadow: 0 1px 3px rgba(255,255,255,0.5);
   text-align: center;
   line-height: 1.2;
-  margin-top: 4px;
   max-width: 70px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -208,7 +203,6 @@ body[data-theme="dark"] .app-icon .icon-label {
   transform: none;
 }
 .app-placeholder {
-  height: 82px;
   display: flex;
   justify-content: center;
   align-items: flex-start;
@@ -217,9 +211,6 @@ body[data-theme="dark"] .app-icon .icon-label {
 }
 .app-placeholder::before {
   content: "";
-  width: 60px;
-  height: 60px;
-  border-radius: 16px;
   border: 1px dashed rgba(58,46,34,0.38);
   background: rgba(255,255,255,0.22);
   box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18);
@@ -261,26 +252,19 @@ body[data-theme="dark"] .drag-ghost .icon-label {
   z-index: 1;
 }
 .dock::before {
-  content: '';
+  content: "";
   position: absolute;
-  left: 12px; right: 12px;
-  top: 0; bottom: 0;
-  background: rgba(255,255,255,0.35);
-  backdrop-filter: blur(24px) saturate(1.4);
-  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  inset: 0 12px;
+  z-index: -1;
+  pointer-events: none;
   border-radius: 24px;
-  z-index: 0;
-  border: 1px solid rgba(255,255,255,0.45);
-  box-shadow: 0 4px 20px rgba(0,0,0,0.06);
-}
-body[data-theme="dark"] .dock::before {
-  background: rgba(9,14,45,0.46);
-  border-color: rgba(157,166,255,0.30);
-  box-shadow: 0 10px 30px rgba(0,0,0,0.20), inset 0 1px 0 rgba(255,255,255,0.10);
+  border: 1px solid rgba(255,255,255,0.24);
+  background: rgba(255,255,255,0.06);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }
 .dock .app-icon {
-  position: relative;
-  z-index: 1;
+  width: 60px;
 }
 .dock .app-icon .icon-label { display: none; }
 
@@ -619,6 +603,7 @@ const APPS = [
   { id: 'fund', name: '奥罗斯财团', icon: '/public/funIcon_0019_奥罗斯财团.png', url: '/fund' },
   { id: 'playground', name: '娱乐室', icon: '/public/funIcon_0019_娱乐室.png', url: '/playground' },
   { id: 'repair', name: '维修室', icon: '/public/funIcon_0035_维修室.png', url: '/repair' },
+  { id: 'usage', name: '用量', icon: '/public/usage-meter.webp', url: '/usage' },
 ];
 
 function applyAionTheme(theme) {
@@ -649,8 +634,8 @@ const HOME_GRID_ORDER_KEY = 'aion_home_grid_order_v1';
 const HOME_LAYOUT_KEY = 'aion_home_layout_v2';
 const HOME_LAYOUT_SYNC_URL = '/api/home/layout';
 const PAGE_COLUMNS = 4;
-const PAGE_ROW_HEIGHT = 82;
-const PAGE_ROW_GAP = 14;
+const PAGE_ROW_HEIGHT = 64;
+const PAGE_ROW_GAP = 8;
 const MIN_FREE_PAGES = 3;
 let appLayout = {};
 let pageCapacity = 12;
@@ -713,7 +698,7 @@ function getRowsPerPage() {
   const height = pages?.clientHeight || 330;
   const verticalPadding = 24;
   const rows = Math.floor((height - verticalPadding + PAGE_ROW_GAP) / (PAGE_ROW_HEIGHT + PAGE_ROW_GAP));
-  return Math.max(2, Math.min(4, rows || 3));
+  return Math.max(2, Math.min(6, rows || 3));
 }
 
 function buildSequentialLayout(ids) {
@@ -1210,12 +1195,6 @@ function endIconDrag(save) {
   renderApps();
 }
 
-function handleHomeResize() {
-  const oldCapacity = pageCapacity;
-  renderApps();
-  if (pageCapacity !== oldCapacity) updatePager(false);
-}
-
 /* ── 打开应用 ── */
 function openApp(url) {
   // 在 iframe 中时，如果目标是 /chat 则关闭浮层回到聊天页
@@ -1352,6 +1331,9 @@ function updateClock() {
 }
 
 /* ── 初始化 ── */
+const gridStyle = document.getElementById('appPages').style;
+gridStyle.setProperty('--home-row-height', `${PAGE_ROW_HEIGHT}px`);
+gridStyle.setProperty('--home-row-gap', `${PAGE_ROW_GAP}px`);
 loadLayout();
 renderApps();
 fetch('/api/lounge-board/features').then(response => response.json()).then(features => {
@@ -1380,7 +1362,7 @@ document.getElementById('pageDots').addEventListener('click', e => {
   const dot = e.target.closest('.page-dot');
   if (dot) setCurrentPage(Number(dot.dataset.page));
 });
-window.addEventListener('resize', handleHomeResize);
+new ResizeObserver(renderApps).observe(document.getElementById('appPages'));
 window.addEventListener('focus', requestLayoutSync);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) requestLayoutSync();

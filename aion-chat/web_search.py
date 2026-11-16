@@ -20,7 +20,7 @@ _WEB_CMD_START_RE = re.compile(
     r"|BAND_NOTE_(?:SINGLE|CALL)\s*[：:]|APP_(?:LOCK|TEMP_UNLOCK|UNLOCK)\s*:"
     r"|DEVICE_(?:LOCK|TEMP_UNLOCK)\s*:|DEVICE_UNLOCK"
     r"|(?:COME_HOME|LOOK_AT_ME)\s*:"
-    r"|拍拍抱枕:|PAT\s*[：:]|小游戏\s*[：:])",
+    r"|拍拍抱枕:|PAT\s*[：:]|小游戏\s*[：:]|小家氛围\s*[：:])",
     re.IGNORECASE,
 )
 _MAX_QUERIES = 3
@@ -270,6 +270,7 @@ def _possible_command_prefix_len(text: str) -> int:
         "[DEVICE_LOCK:", "[DEVICE_TEMP_UNLOCK:", "[DEVICE_UNLOCK]",
         "[COME_HOME:", "[LOOK_AT_ME:",
         "[拍拍抱枕:", "[PAT:", "[PAT：", "[小游戏:", "[小游戏：",
+        "[小家氛围:", "[小家氛围：",
     ) + memory_probes
     max_len = min(len(text), max(len(item) for item in probes) - 1)
     upper = text.upper()

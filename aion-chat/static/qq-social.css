@@ -3,6 +3,7 @@
 @media(max-width:420px){main{padding:14px 12px 22px}h1{font-size:25px}.intro{padding:14px 0}.actors{gap:8px}.actor{padding:10px}.actor h2{font-size:14px}.card{padding:12px}.fields{grid-template-columns:1fr 1fr}.fields label:last-child{grid-column:1 / -1}.modes>label{padding:8px}.modes small{margin-left:0}.model{font-size:11px!important}}
 
 .mode-card h2{margin:0}.mode-card .modes{margin:10px 0 7px}.modes>button{flex:1;min-height:40px;font-size:13px}.modes>button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#243023;font-weight:650}.mode-card .hint{margin:6px 0 9px;font-size:11px}.mode-card .advanced{border-top:1px solid var(--line);padding-top:8px}
+.model-select{display:block;width:100%;min-width:0;margin:8px 0;padding:8px 4px;border:1px solid var(--line);border-radius:7px;background:#182122;color:var(--text);font:inherit;font-size:12px;text-overflow:ellipsis;cursor:pointer}.model-select:focus{outline:1px solid var(--accent);outline-offset:1px}.model-select:disabled{opacity:.55;cursor:wait}
 
 .presets{display:flex;gap:6px;margin-top:10px}.presets button{flex:1;padding:7px 3px;font-size:11px}.save-settings{margin-top:10px}.advanced form>details summary{font-size:12px}
 #outsideMemories{max-height:360px;overflow:auto;overscroll-behavior:contain}#outsideMemories a{font-size:12px}

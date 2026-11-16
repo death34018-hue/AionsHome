@@ -218,3 +218,80 @@ class BoundedTimelineTest(unittest.IsolatedAsyncioTestCase):
                 # More equal-time visible rows than one page: no skips or duplicates.
                 tied = await cb.fetch_merged_timeline('connor', 90)
                 self.assertEqual([m['id'] for m in tied], [f'tie{i}' for i in range(10,100)])
+
+
+class FamilyDynamicsTimelineTest(unittest.IsolatedAsyncioTestCase):
+    async def test_only_dynamics_between_first_and_last_message_join_the_timeline(self):
+        import context_builder as cb
+
+        merged = [
+            {"id": "m1", "source": "private", "sender": "user", "content": "早", "created_at": 100.0},
+            {"id": "m2", "source": "group", "sender": "connor", "content": "来了", "created_at": 200.0},
+            {"id": "m3", "source": "group", "sender": "user", "content": "在吗", "created_at": 300.0},
+        ]
+        dynamics = AsyncMock(return_value=[
+            {"id": "family_old", "timestamp": 50.0, "kind": "diary", "title": "旧日记"},
+            {"id": "family_moment_1", "timestamp": 150.0, "kind": "moment", "title": "Connor发布了朋友圈"},
+            {"id": "family_idle_1", "timestamp": 250.0, "kind": "idle_event", "title": "Aion 逛了小红书"},
+            {"id": "family_late", "timestamp": 300.0, "kind": "gift", "title": "晚到的礼物"},
+        ])
+        with patch.object(cb, "family_dynamics_since", dynamics):
+            result = await cb.with_family_dynamics(merged)
+            single = merged[:1]
+            self.assertIs(await cb.with_family_dynamics(single), single)
+        dynamics.assert_awaited_once_with(100.0, 300.0)
+        self.assertEqual(
+            [m["id"] for m in result],
+            ["m1", "family_moment_1", "m2", "family_idle_1", "m3"],
+        )
+
+        with (
+            patch("context_builder.load_worldbook", return_value={"ai_name": "Aion", "user_name": "Ithil"}),
+            patch("chatroom.load_chatroom_config", return_value={"connor_name": "Connor"}),
+        ):
+            history = cb.render_merged_timeline(result, "aion")[1:]
+        self.assertTrue(history[1]["content"].startswith("历史消息 - 家庭动态：Connor发布了朋友圈\n<meta>发送时间："))
+        self.assertNotIn("[", history[1]["content"].split("<meta>")[1])
+        self.assertTrue(history[1]["_family_dynamic"])
+        self.assertTrue(history[3]["content"].startswith("历史消息 - 家庭动态：Aion 逛了小红书\n"))
+        # 场景切换提示跳过家庭动态，落在真正切换场景的那条消息上。
+        self.assertTrue(history[2]["content"].startswith("（以下切换到群聊场景）\n历史消息 - Connor：来了"))
+        self.assertTrue(history[4]["content"].startswith("当前用户消息 - Ithil：在吗"))
+        self.assertEqual([bool(h.get("_family_dynamic")) for h in history], [False, True, False, True, False])
+
+    async def test_dynamics_keep_titles_only_and_skip_spoken_messages(self):
+        import context_builder as cb
+
+        # 聚合函数按时间倒序返回。
+        newest_first = [
+            {"timestamp": 48.0, "kind": "idle_event", "actor": "Aion", "title": "Aion去网上冲浪了",
+             "detail": "搜索了…", "source_id": "i6", "action": "web_roam"},
+            {"timestamp": 46.0, "kind": "idle_event", "actor": "Connor", "title": "Ithil & Connor打完了一局台球",
+             "detail": "", "source_id": "i5", "action": "billiards_result"},
+            {"timestamp": 44.0, "kind": "idle_event", "actor": "Connor", "title": "Connor和另一位家庭成员聊了聊",
+             "detail": "", "source_id": "i4", "action": "role_chat"},
+            {"timestamp": 42.0, "kind": "idle_event", "actor": "Connor", "title": "Connor读了《《太阳背后》》的《雨落之前》第2段",
+             "detail": "", "source_id": "i3", "action": "book_read"},
+            {"timestamp": 40.0, "kind": "idle_event", "actor": "Connor", "title": "Connor说了一句话",
+             "detail": "想叫她起床", "source_id": "i2", "action": "private_chat"},
+            {"timestamp": 30.0, "kind": "idle_event", "actor": "Aion", "title": "Aion读了《书》的《第五章 的《终身》合约》第1段",
+             "detail": "本次已读 1/2 段。", "source_id": "i1", "action": "book_read"},
+            {"timestamp": 20.0, "kind": "memory_compression", "actor": "Aion", "title": "Aion整理了 2026-11-06 的记忆",
+             "detail": "感想\n\n统计", "reflection": "感想", "source_id": "c1"},
+            {"timestamp": 10.0, "kind": "moment", "actor": "Aion", "title": "Aion 发布了朋友圈（2张图）",
+             "detail": "朋友圈正文", "source_id": "m1"},
+        ]
+        with patch("routes.activity.list_family_timeline_items", AsyncMock(return_value=newest_first)) as listing:
+            items = await cb.family_dynamics_since(5.0, 50.0)
+        listing.assert_awaited_once_with(5.0, cb.FAMILY_DYNAMICS_LIMIT, until=50.0)
+        self.assertEqual(
+            [(item["id"], item["title"]) for item in items],
+            [
+                ("family_moment_m1", "Aion发布了朋友圈"),
+                ("family_memory_compression_c1", "Aion整理了 2026-11-06 的记忆"),
+                ("family_idle_event_i1", "Aion读了《书》"),
+                ("family_idle_event_i3", "Connor读了《《太阳背后》》"),
+                ("family_idle_event_i6", "Aion去网上冲浪了"),
+            ],
+        )
+        self.assertTrue(all(set(item) == {"id", "timestamp", "kind", "title"} for item in items))

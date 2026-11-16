@@ -1,11 +1,12 @@
 """
-AI 生图模块：Codex 登录额度或 OpenAI 兼容接口，未配置时沿用 Gemini
+AI 生图模块：订阅 CLI、Flow AI 或 OpenAI 兼容接口，未配置时沿用 Gemini
 支持 SELFIE（自拍）和 DRAW（自由绘图），两者均可带人物锚点
 """
 
-import base64, re, mimetypes, time
+import base64, json, re, mimetypes, time
 from contextvars import ContextVar
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -19,6 +20,13 @@ SECONDARY_REFERENCE_IMAGE_PATH = PUBLIC_DIR / "2号机生图锚点.jpg"
 IMAGE_GEN_MODEL = "gemini-3.1-flash-lite-image"
 IMAGE_GEN_TIMEOUT = 600  # 静图、动图统一等待 10 分钟
 GIF_MODELS = {'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'}
+# 代理隧道静默约 60 秒会被掐断：OpenAI 官方图片接口用流式 + 中间预览图保持连接上有数据。
+STREAM_IDLE_TIMEOUT = 90
+STREAM_PARTIAL_IMAGES = 2
+
+
+class _ImageStreamError(Exception):
+    """流式响应里的失败事件，只带错误码。"""
 
 
 _retry_selfie_reference = ContextVar('retry_selfie_reference', default=None)
@@ -39,7 +47,7 @@ def _selfie_reference_path(source_identity: str = "") -> Path:
 
 def supports_gif_generation() -> bool:
     return (
-        SETTINGS.get('image_gen_provider') not in ('codex', 'flowai')
+        SETTINGS.get('image_gen_provider') not in ('codex', 'flowai', 'grok')
         and (SETTINGS.get('image_gen_model') or '').strip() in GIF_MODELS
         and bool((SETTINGS.get('image_gen_api_key') or '').strip())
         and bool((SETTINGS.get('image_gen_base_url') or '').strip())
@@ -75,9 +83,51 @@ def _openai_image_source(data: dict, *, output_format: str = 'png') -> str | Non
             or extract(data.get("image_urls")))
 
 
+def _rejection_message(detail: str, code) -> str:
+    # Keep the error code, not the raw message (which may echo private inputs).
+    if not isinstance(code, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,79}', code):
+        code = ''
+    reason = ('生图请求被内容审核拒绝' if code in ('moderation_blocked', 'content_policy_violation')
+              else '生图接口请求失败')
+    return f'{reason}（{detail}' + (f'，{code}' if code else '') + '）'
+
+
+async def _post_image_stream(client, url: str, api_key: str, request: dict) -> dict:
+    """流式请求图片接口，返回与非流式相同结构的结果；连接中断或长时间没有数据时重试一次。"""
+    timeout = httpx.Timeout(IMAGE_GEN_TIMEOUT, read=STREAM_IDLE_TIMEOUT)
+    for attempt in (1, 2):
+        try:
+            async with client.stream('POST', url, headers={"Authorization": f"Bearer {api_key}"},
+                                     timeout=timeout, **request) as response:
+                if response.status_code >= 400 or 'text/event-stream' not in response.headers.get('content-type', ''):
+                    await response.aread()
+                    response.raise_for_status()
+                    return response.json()
+                async for line in response.aiter_lines():
+                    if not line.startswith('data:'):
+                        continue
+                    try:
+                        event = json.loads(line[5:])
+                    except ValueError:
+                        continue
+                    kind = str(event.get('type') or '')
+                    if kind.endswith('.completed') and event.get('b64_json'):
+                        return {'data': [{'b64_json': event['b64_json']}],
+                                'output_format': event.get('output_format', 'png')}
+                    if kind == 'error' or kind.endswith('.failed'):
+                        error = event.get('error') if isinstance(event.get('error'), dict) else event
+                        raise _ImageStreamError(error.get('code') or error.get('type') or '')
+                raise httpx.RemoteProtocolError('image stream ended before completion')
+        except httpx.TransportError as exc:
+            if attempt == 2:
+                raise
+            print(f"[image_gen] 流式生图连接中断（{type(exc).__name__}），重试一次")
+
+
 async def _generate_openai_image(prompt: str, is_selfie: bool, source_identity: str,
                                  base_url: str, api_key: str, model: str, references=None,
                                  *, output_format: str | None = None, raise_errors=False) -> str | None:
+    stream = False
     try:
         refs = list(references or [])
         reference_bytes = None
@@ -128,19 +178,29 @@ async def _generate_openai_image(prompt: str, is_selfie: bool, source_identity: 
                     request['data'].update({key: str(value) for key, value in animation.items()})
                 else:
                     request['json'].update(animation)
+            elif urlsplit(url).hostname == 'api.openai.com':
+                stream = True
+                if files:
+                    request['data'].update(stream='true', partial_images=str(STREAM_PARTIAL_IMAGES))
+                else:
+                    request['json'].update(stream=True, partial_images=STREAM_PARTIAL_IMAGES)
         else:
             if not url.endswith("/chat/completions"):
                 url += "/chat/completions" if url.endswith("/v1") else "/v1/chat/completions"
             request = {'json': {"model": model, "stream": False, "messages": [{"role": "user", "content": content}]}}
         async with httpx.AsyncClient(timeout=IMAGE_GEN_TIMEOUT) as client:
             print(f"[image_gen] 使用自定义生图模型: {model}")
-            response = await client.post(
-                url,
-                headers={"Authorization": f"Bearer {api_key}"},
-                **request,
-            )
-            response.raise_for_status()
-            source = _openai_image_source(response.json(), output_format=output_format or 'png')
+            if stream:
+                body = await _post_image_stream(client, url, api_key, request)
+            else:
+                response = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    **request,
+                )
+                response.raise_for_status()
+                body = response.json()
+            source = _openai_image_source(body, output_format=output_format or 'png')
             if not source:
                 print("[image_gen] 自定义接口响应中未找到图片")
                 return None
@@ -161,11 +221,15 @@ async def _generate_openai_image(prompt: str, is_selfie: bool, source_identity: 
                                           actor=source_identity, kind="selfie" if is_selfie else "draw",
                                           reference_bytes=reference_bytes)
     except httpx.TimeoutException as exc:
+        if stream:
+            print(f"[image_gen] 自定义生图超时（{type(exc).__name__}，{STREAM_IDLE_TIMEOUT} 秒没有收到数据，已重试一次），未切换至 Gemini")
+            if raise_errors:
+                raise TimeoutError(f"生图请求超时（{STREAM_IDLE_TIMEOUT} 秒没有收到数据，已重试一次），请稍后重试") from exc
+            return None
         print(f"[image_gen] 自定义生图超时（{type(exc).__name__}，等待上限 {IMAGE_GEN_TIMEOUT} 秒），未切换至 Gemini")
         if raise_errors:
             raise TimeoutError(f"生图请求超时（等待上限 {IMAGE_GEN_TIMEOUT} 秒），请稍后重试") from exc
     except httpx.HTTPStatusError as exc:
-        # Keep the error code, not the raw message (which may echo private inputs).
         code = ''
         try:
             body = exc.response.json()
@@ -174,12 +238,12 @@ async def _generate_openai_image(prompt: str, is_selfie: bool, source_identity: 
                 code = error.get('code') or error.get('type') or ''
         except ValueError:
             pass
-        if not isinstance(code, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,79}', code):
-            code = ''
-        reason = ('生图请求被内容审核拒绝' if code in ('moderation_blocked', 'content_policy_violation')
-                  else '生图接口请求失败')
-        detail = f'HTTP {exc.response.status_code}' + (f'，{code}' if code else '')
-        message = f'{reason}（{detail}）'
+        message = _rejection_message(f'HTTP {exc.response.status_code}', code)
+        print(f"[image_gen] {message}，未切换至 Gemini")
+        if raise_errors:
+            raise ValueError(message) from None
+    except _ImageStreamError as exc:
+        message = _rejection_message('生成中途失败', exc.args[0])
         print(f"[image_gen] {message}，未切换至 Gemini")
         if raise_errors:
             raise ValueError(message) from None
@@ -205,6 +269,8 @@ def image_model_label():
     provider = SETTINGS.get('image_gen_provider')
     if provider == 'codex':
         return 'codex/image-generation'
+    if provider == 'grok':
+        return 'grok/imagine'
     if provider == 'flowai':
         return 'flowai/' + SETTINGS.get('flowai_image_model', 'gpt_image2_5_flare')
     return SETTINGS.get('image_gen_model') or IMAGE_GEN_MODEL
@@ -229,6 +295,15 @@ async def generate_image(prompt: str, is_selfie: bool = False, source_identity: 
                                                flow_job_id=flow_job_id, on_flow_job=on_flow_job)
         except Exception as exc:
             print(f'[image_gen] Flow AI 生图失败（{type(exc).__name__}）')
+            if raise_errors:
+                raise
+            return None
+    if SETTINGS.get('image_gen_provider') == 'grok':
+        from grok_image_gen import generate_grok_image
+        try:
+            return await generate_grok_image(prompt, is_selfie, source_identity, references=references)
+        except Exception as exc:
+            print(f'[image_gen] Grok 生图失败（{type(exc).__name__}）')
             if raise_errors:
                 raise
             return None

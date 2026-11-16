@@ -54,7 +54,7 @@ async def compact(cid, doc):
     end = max(0, len(complete)-8)
     start = doc.get('summarized', 0)
     if len(complete)-start > 20:
-        notes = await s.generate_text(cid, '整理故事讨论记录，约1500字。保留用户明确确认、否定、待定的内容并区分，保留人物关系、世界观、文风和禁忌，不将提议当成已确认事实。\n已有讨论摘要：'+doc.get('notes', '')+'\n补充记录：'+json.dumps(complete[start:end], ensure_ascii=False))
+        notes = await s.generate_text(cid, '整理故事讨论记录，约1500字。保留用户明确确认、否定、待定的内容并区分，保留人物关系、世界观、文风和禁忌，不将提议当成已确认事实。\n已有讨论摘要：'+doc.get('notes', '')+'\n补充记录：'+json.dumps(complete[start:end], ensure_ascii=False), auxiliary=True)
         doc = await s.change(doc['id'], notes=notes, summarized=end)
     return doc
 

@@ -28,8 +28,8 @@ async def init_storage(db):
 
 
 def _provider():
-    if SETTINGS.get('image_gen_provider') == 'codex':
-        return 'codex'
+    if SETTINGS.get('image_gen_provider') in ('codex', 'grok'):
+        return SETTINGS['image_gen_provider']
     if SETTINGS.get('image_gen_provider') == 'flowai':
         from image_gen import image_model_label
         return image_model_label()

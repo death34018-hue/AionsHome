@@ -22,6 +22,8 @@ public class LauncherActivity extends AppCompatActivity {
     private HomecomingBackupScheduler homecomingBackupScheduler;
 
     public static final String EXTRA_FORCE_ADDRESS_PICKER = "force_address_picker";
+    static final String EXTRA_SHOW_LAUNCH_LOGIN = "show_launch_login";
+    private final LaunchLoginOverlay launchLogin = new LaunchLoginOverlay();
     private static final String PREFS       = "aion_prefs";
     private static final String KEY_URL     = "saved_url";
     private static final String KEY_AUTO    = "auto_connect";
@@ -68,6 +70,9 @@ public class LauncherActivity extends AppCompatActivity {
                 false);
 
         setContentView(R.layout.activity_launcher);
+        if (savedInstanceState == null && getIntent().getBooleanExtra(EXTRA_SHOW_LAUNCH_LOGIN, false)) {
+            launchLogin.show(this);
+        }
 
         TextView tvHome       = findViewById(R.id.tvHomeUrl);
         TextView tvCloudflare = findViewById(R.id.tvCloudflareUrl);
@@ -119,6 +124,17 @@ public class LauncherActivity extends AppCompatActivity {
             intent.putExtra(HomecomingActivity.EXTRA_OPEN_RETURN, hasPendingReturn);
             startActivity(intent);
         });
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (!launchLogin.dismiss()) super.onBackPressed();
+    }
+
+    @Override
+    protected void onDestroy() {
+        launchLogin.dismiss();
+        super.onDestroy();
     }
 
     private void prepareHomecomingBackup() {

@@ -4,6 +4,68 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
 
+async function desktopChat(t, entry) {
+  const browser = await chromium.launch({ channel: 'chrome' });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const original = Buffer.from(await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 32; canvas.height = 24;
+    canvas.getContext('2d').fillRect(0, 0, 32, 24);
+    return canvas.toDataURL('image/jpeg').split(',')[1];
+  }), 'base64');
+  await page.routeWebSocket('**/*', () => {});
+  await page.route('**/*', route => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/api/chat-media/thumbnail') return route.fulfill({ contentType: 'image/gif', body: Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64') });
+    if (pathname === '/uploads/photo.jpg') return route.fulfill({ contentType: 'image/jpeg', body: original });
+    if (pathname === '/chat' || pathname === '/chatroom') return route.fulfill({ path: path.join(__dirname, 'static', pathname + '.html') });
+    if (pathname.startsWith('/static/') && fs.existsSync(path.join(__dirname, pathname))) return route.fulfill({ path: path.join(__dirname, pathname) });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto('http://localhost' + entry, { waitUntil: 'domcontentloaded' });
+  const chat = entry.includes('chatroom')
+    ? await (await page.waitForSelector('iframe[data-startup-path="/chatroom"]')).contentFrame()
+    : page;
+  await chat.waitForFunction(() => typeof renderAttachments === 'function');
+  await chat.evaluate(() => {
+    const box = document.createElement('div');
+    box.style.cssText = 'position:fixed;top:10px;left:10px;z-index:9999';
+    box.innerHTML = renderAttachments(['/uploads/photo.jpg?size=original']);
+    document.body.append(box);
+  });
+  return { page, chat, original };
+}
+
+test('saving a chatroom preview inside the desktop shell downloads the selected original', async t => {
+  const { page, chat, original } = await desktopChat(t, '/chat?page=/chatroom');
+  await chat.locator('img[data-original-src]').click();
+  const [download] = await Promise.all([
+    page.waitForEvent('download', { timeout: 4000 }),
+    chat.getByRole('button', { name: '保存图片', exact: true }).click(),
+  ]);
+  assert.equal(download.suggestedFilename(), 'photo.jpg');
+  assert.deepEqual(fs.readFileSync(await download.path()), original);
+});
+
+test('right-clicking a private chat image copies its full-size pixels as PNG', async t => {
+  const { chat } = await desktopChat(t, '/chat?conv=1');
+  // Capture only this test's write, leaving the user's system clipboard alone.
+  await chat.evaluate(() => {
+    navigator.clipboard.write = async ([item]) => {
+      const bitmap = await createImageBitmap(await item.getType('image/png'));
+      window.copiedSize = [bitmap.width, bitmap.height];
+      bitmap.close();
+    };
+  });
+  await chat.locator('img[data-original-src]').click({ button: 'right' });
+  const copy = chat.getByRole('button', { name: '复制图片', exact: true });
+  assert.equal(await copy.count(), 1);
+  await copy.click();
+  await chat.waitForFunction(() => window.copiedSize);
+  assert.deepEqual(await chat.evaluate(() => window.copiedSize), [32, 24]);
+});
+
 async function setup(t, chat = 'chat') {
   const browser = await chromium.launch({ headless: true, channel: 'chrome' });
   t.after(() => browser.close());

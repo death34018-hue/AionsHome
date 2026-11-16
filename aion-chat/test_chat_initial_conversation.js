@@ -219,7 +219,10 @@ test('HTML desktop shell supports navigation and native back before chat scripts
   assert.equal(frames.length, 1);
   assert.equal(frames[0].src, 'https://test.invalid/');
   assert.equal(classes.has('show'), true);
+  context.window.openSubPage('/usage');
+  assert.equal(classes.has('immersive-subpage'), true);
   context.window.openSubPage('/settings');
+  assert.equal(classes.has('immersive-subpage'), false);
   assert.equal(frames[0].src, 'https://test.invalid/settings');
   assert.equal(context.window.__aionStartupPage, '/settings');
   assert.equal(context.window.handleNativeBack(), 'handled');

@@ -296,6 +296,23 @@ class KitchenTests(KitchenFixture):
         self.assertEqual(data['items'][0]['quantity'], 1)
         self.assertEqual(data['items'][0]['id'], item['id'])
 
+    async def test_custom_icon_survives_emptying_and_restocking(self):
+        from routes.kitchen import save_item
+        item = await save_item({'name':'平菇','amount':2,'unit':'盒','icon':'🍄','soon':True})
+        await self.k.upsert_item({'name':'黄瓜','amount':1,'unit':'根'})
+        await self.k.upsert_item({'name':'香菜','amount':'少量','unit':'把'})
+        await self.apply('empty-mushroom', [{'op':'consume','name':'平菇','amount':2,'unit':'盒'}])
+        items = (await self.k.snapshot())['items']
+        self.assertEqual(items[-1]['name'], '平菇')
+        self.assertEqual((items[-1]['quantity'], items[-1]['icon']), (0, '🍄'))
+        await self.apply('restock-mushroom', [{'op':'add','name':'平菇','amount':1,'unit':'盒'}])
+        items = (await self.k.snapshot())['items']
+        self.assertEqual((items[0]['name'], items[0]['quantity'], items[0]['icon']), ('平菇', 1, '🍄'))
+        await self.k.bulk_items('平菇 3 盒')
+        self.assertEqual((await self.k.snapshot())['items'][0]['icon'], '🍄')
+        reset = await save_item({'id':item['id'],'icon':''})
+        self.assertEqual(reset['icon'], '')
+
     async def test_unclear_amount_waits_for_confirmation_without_guessing(self):
         await self.k.upsert_item({'name': '肥牛', 'amount': '半', 'unit': '盒'})
         await self.apply('private:two', [{'op': 'consume', 'name': '肥牛'}])
@@ -405,6 +422,89 @@ class KitchenTests(KitchenFixture):
 
 
 class KitchenSentinelTests(KitchenFixture):
+    async def test_reported_lunch_books_the_list_and_empties_the_named_stock(self):
+        import kitchen_sentinel as sentinel
+        await self.k.bulk_items('土豆南瓜藜麦饭 5份\n黄牛肉 120克\n油菜 200克')
+        message = '开饭！～消耗一份土豆南瓜藜麦饭，还有一份黄牛肉，小油菜也吃完啦～'
+        changes = [dict(op='consume', name='土豆南瓜藜麦饭', evidence='消耗一份土豆南瓜藜麦饭', amount=1, unit='份'),
+                   dict(op='consume', name='黄牛肉', evidence='还有一份黄牛肉', amount=1, unit='份'),
+                   dict(op='empty', name='油菜', ingredient='小油菜', evidence='小油菜也吃完啦', unit='份')]
+        await sentinel.enqueue_event(await self.event(message))
+        with patch.object(sentinel, '_call_model', AsyncMock(return_value={'changes': changes})), \
+             patch.object(sentinel, '_broadcast', AsyncMock()), patch.object(self.k, 'notify', AsyncMock()):
+            await sentinel.run_pending_once()
+        data = await self.k.snapshot()
+        self.assertEqual({i['name']: (i['quantity'], i['unit']) for i in data['items']},
+                         {'土豆南瓜藜麦饭': (4, '份'), '黄牛肉': (120, '克'), '油菜': (0, '克')})
+        self.assertEqual([p['name'] for p in data['pending']], ['黄牛肉'])
+
+    async def test_used_it_all_can_refer_to_the_previous_ingredient(self):
+        import kitchen_sentinel as sentinel
+        await self.k.bulk_items('茭白 230克\n黄牛肉 120克')
+        await self.event('刚才做的是茭白', 'previous')
+        self.assertTrue(await sentinel.enqueue_event(await self.event('用完了')))
+        change = dict(op='empty', name='茭白', ingredient='茭白', evidence='用完了')
+        with patch.object(sentinel, '_call_model', AsyncMock(return_value={'changes': [change]})), \
+             patch.object(sentinel, '_broadcast', AsyncMock()), patch.object(self.k, 'notify', AsyncMock()):
+            await sentinel.run_pending_once()
+        data = await self.k.snapshot()
+        self.assertEqual({i['name']: i['quantity'] for i in data['items']}, {'茭白': 0, '黄牛肉': 120})
+        await self.event('冰箱里的黄牛肉和茭白呢？', 'two-items')
+        await sentinel.enqueue_event(await self.event('用完了', 'ambiguous'))
+        guess = {**change, 'name': '黄牛肉', 'ingredient': '黄牛肉', 'reference': '黄牛肉'}
+        with patch.object(sentinel, '_call_model', AsyncMock(return_value={'changes': [guess]})), \
+             patch.object(sentinel, '_broadcast', AsyncMock()), patch.object(self.k, 'notify', AsyncMock()):
+            await sentinel.run_pending_once()
+        data = await self.k.snapshot()
+        self.assertEqual([i['quantity'] for i in data['items'] if i['name'] == '黄牛肉'], [120])
+        self.assertEqual([p['name'] for p in data['pending']], ['黄牛肉'])
+
+    async def test_direct_intake_books_a_plain_list_and_returns_the_same_receipt_on_retry(self):
+        import kitchen_sentinel as sentinel
+        from routes.kitchen import IntakeRequest, submit_intake
+        await self.k.upsert_item({'name':'鱼丸','amount':100,'unit':'g'})
+        body = IntakeRequest(request_id='778bc88b-e058-4b8a-a6be-610da7649500', text='鱼丸 300g，黄瓜，豆腐一块品种记不清，鸡蛋明天买')
+        changes = [dict(op='add', name='鱼丸', amount=300, unit='g', evidence='鱼丸 300g'),
+                   dict(op='add', name='黄瓜', amount=None, evidence='黄瓜'),
+                   dict(op='add', name='豆腐', amount=1, unit='块', evidence='豆腐一块品种记不清',
+                        needs_confirmation=True, note='请确认是哪种豆腐。'),
+                   dict(op='add', name='鸡蛋', amount=2, unit='颗', evidence='鸡蛋'),
+                   dict(op='consume', name='鱼丸', amount=300, unit='g', evidence='鱼丸 300g')]
+        with patch.object(sentinel, '_call_model', AsyncMock(side_effect=[{'changes':[]}, {'changes':changes}])), \
+             patch.object(self.k, 'notify', AsyncMock()):
+            receipt = await submit_intake(body)
+            self.assertEqual(await submit_intake(body), receipt)
+        self.assertEqual(receipt['added'], ['鱼丸 300g'])
+        self.assertEqual(receipt['pending'], ['黄瓜', '豆腐'])
+        data = await self.k.snapshot()
+        self.assertEqual([(i['name'], i['quantity']) for i in data['items']], [('鱼丸', 400)])
+        self.assertEqual([p['name'] for p in data['pending']], ['黄瓜', '豆腐'])
+        self.assertEqual(data['pending'][1]['description'], '请确认是哪种豆腐。')
+
+    def test_purchase_list_shares_one_action_across_item_quotes(self):
+        import kitchen_sentinel as sentinel
+        message = '今天明天要吃的菜都采购齐了，入库～\n豆腐一块，鱼丸 300g，竹轮虾滑，6根，满购还送了一颗两斤的柚子'
+        entries = [('豆腐', '豆腐一块', 1, '块'), ('鱼丸', '鱼丸 300g', 300, 'g'),
+                   ('竹轮虾滑', '竹轮虾滑，6根', 6, '根'), ('柚子', '满购还送了一颗两斤的柚子', 2, '斤')]
+        changes = [dict(op='add', name=name, evidence=quote, amount=amount, unit=unit)
+                   for name, quote, amount, unit in entries]
+        self.assertEqual(sentinel.reported_changes(message, changes), changes)
+        self.assertTrue(sentinel.candidate('这批入库：魔芋 200g'))
+
+    async def test_stock_context_covers_this_purchase_only(self):
+        import kitchen_sentinel as sentinel
+        message = '刚拆开生鲜箱：茭白 300g。明天打算买山药 500g'
+        fresh = dict(op='add', name='茭白', evidence='茭白 300g', amount=300, unit='g')
+        planned = dict(op='add', name='山药', evidence='山药 500g', amount=500, unit='g')
+        missing = dict(op='add', name='白菜', evidence='白菜一棵', amount=1, unit='棵')
+        await sentinel.enqueue_event(await self.event(message))
+        analysis = {'stock_context':'刚拆开生鲜箱','changes':[fresh, planned, missing]}
+        with patch.object(sentinel, '_call_model', AsyncMock(return_value=analysis)), \
+             patch.object(sentinel, '_broadcast', AsyncMock()), patch.object(self.k, 'notify', AsyncMock()):
+            await sentinel.run_pending_once()
+        items = (await self.k.snapshot())['items']
+        self.assertEqual([(i['name'], i['quantity'], i['unit']) for i in items], [('茭白', 300, 'g')])
+
     async def test_only_current_reported_ingredients_change_stock(self):
         import kitchen_sentinel as sentinel
         await self.k.bulk_items('冷冻黑虎虾 18 只\n鸡蛋 6 颗')

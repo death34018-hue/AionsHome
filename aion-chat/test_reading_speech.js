@@ -62,14 +62,14 @@ async function test() {
     showToast(){}, startAnnotateAll(){requests++;}, confirm(message){assert.match(message,/当前已经共读过一次/);confirmations++;return approved;}};
   require('node:vm').runInNewContext(invitation+';inviteRead()',ctx);
   assert.equal(requests,1);assert.equal(confirmations,0);
-  for(const field of ['annotations','connor_annotations','summaries','connor_summaries']) {
-    ctx.chapterData[field]=field.includes('summaries')?[{summary:'已有读后感'}]:{0:{text:'已有批注'}};
-    ctx.inviteRead();
-    assert.equal(requests,1,'Cancelling repeat co-reading must not start regeneration');
-    delete ctx.chapterData[field];
-  }
-  ctx.chapterData.chapter.segments_meta[0].status='done';approved=true;ctx.inviteRead();
-  assert.equal(requests,2);assert.equal(confirmations,5);
+  ctx.chapterData.annotations={0:{text:'夜读留下的批注'}};
+  ctx.chapterData.chapter.segments_meta[0].status='partial';ctx.inviteRead();
+  assert.equal(requests,2,'Inviting both companions should fill the missing reading');
+  assert.equal(confirmations,0);
+  ctx.chapterData.chapter.segments_meta[0].status='done';ctx.inviteRead();
+  assert.equal(requests,2,'Cancelling a complete reread must leave the notes alone');
+  approved=true;ctx.inviteRead();
+  assert.equal(requests,3);assert.equal(confirmations,2);
   console.log('Reading speech queue: order, pause/resume and stale callbacks passed');
 }
 

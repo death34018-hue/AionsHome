@@ -1,4 +1,6 @@
 """Kitchen endpoints; manual records remain usable with the AI switch off."""
+from uuid import UUID
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -9,6 +11,11 @@ router = APIRouter(prefix='/api/kitchen', tags=['kitchen'])
 
 class Toggle(BaseModel):
     enabled: bool
+
+
+class IntakeRequest(BaseModel):
+    request_id: UUID
+    text: str = Field(min_length=1, max_length=12000)
 
 
 class PlanRequest(BaseModel):
@@ -71,6 +78,17 @@ async def batch_items(body: dict):
         raise HTTPException(422, str(error))
     await kitchen.notify()
     return {'items': result}
+
+
+@router.post('/intake')
+async def submit_intake(body: IntakeRequest):
+    from kitchen_sentinel import record_intake
+    try:
+        return await record_intake(body.request_id, body.text)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    except (RuntimeError, TimeoutError) as error:
+        raise HTTPException(503, '哨兵暂时没有完成入库，请稍后重试。') from error
 
 
 @router.put('/preferences')

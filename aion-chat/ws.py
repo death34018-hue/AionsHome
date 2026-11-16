@@ -196,7 +196,8 @@ class ConnectionManager:
         event_data = data.get("data") or {}
         expressive = bool(event_data.get("expressive"))
         msg_id = event_data.get("msg_id", "")
-        owner = self._tts_message_clients.get(msg_id)
+        message_owner = self._tts_message_clients.get(msg_id)
+        owner = message_owner
         generation = current_generation()
         if owner is None and generation is not None:
             owner = self._tts_generation_clients.get(generation)
@@ -206,7 +207,12 @@ class ConnectionManager:
         # the two speakers must not move the second reply to another phone player.
         candidates.sort(key=lambda item: item[0] is not owner)
         for ws, state in candidates:
-            if ws not in self.active or (not expressive and not state.get("enabled")) or not state.get("can_play", True):
+            if ws not in self.active or not state.get("can_play", True):
+                continue
+            # The Android service can finish its current message while the newly
+            # foregrounded page publishes its own autoplay setting.
+            native_continuation = ws is message_owner and self.client_ids.get(ws, "").startswith("android-push:")
+            if not (expressive or state.get("enabled") or native_continuation):
                 continue
             payload = json.loads(json.dumps(data, ensure_ascii=False))
             if isinstance(payload.get("data"), dict):

@@ -103,19 +103,7 @@ public final class LocalAsrBridge {
         worker.execute(() -> {
             if (s.canceled) return;
             try {
-                if (idleRelease != null) idleRelease.cancel(false);
-                if (recognizer == null) {
-                    OnlineTransducerModelConfig transducer = new OnlineTransducerModelConfig();
-                    transducer.setEncoder(MODEL + "encoder-epoch-99-avg-1.int8.onnx");
-                    transducer.setDecoder(MODEL + "decoder-epoch-99-avg-1.onnx");
-                    transducer.setJoiner(MODEL + "joiner-epoch-99-avg-1.int8.onnx");
-                    OnlineModelConfig model = new OnlineModelConfig();
-                    model.setTransducer(transducer); model.setTokens(MODEL + "tokens.txt");
-                    model.setModelType("zipformer"); model.setNumThreads(1); model.setProvider("cpu");
-                    OnlineRecognizerConfig config = new OnlineRecognizerConfig();
-                    config.setModelConfig(model); config.setEnableEndpoint(true);
-                    recognizer = new OnlineRecognizer(context.getAssets(), config);
-                }
+                ensureRecognizer();
                 s.stream = recognizer.createStream("");
                 emit(s, "ready", "", null, null);
             } catch (Exception | LinkageError e) {
@@ -167,6 +155,51 @@ public final class LocalAsrBridge {
     }
 
     public synchronized void cancelActive() { if (active != null) cancel(active.id); }
+
+    /** Decode an already captured ambient segment without acquiring its microphone. */
+    @JavascriptInterface public synchronized boolean transcribeWav(String id, String base64) {
+        if (!available() || active != null || id == null || id.length() > 100 || base64 == null) return false;
+        Session s = new Session(id);
+        s.finishing = true;
+        active = s;
+        worker.execute(() -> {
+            if (s.canceled) return;
+            try {
+                byte[] pcm = LocalAsrAudio.pcmFromWav(Base64.decode(base64, Base64.DEFAULT));
+                ensureRecognizer();
+                s.stream = recognizer.createStream("");
+                s.stream.acceptWaveform(LocalAsrAudio.samples(pcm), 16000);
+                s.stream.acceptWaveform(new float[8000], 16000);
+                s.stream.inputFinished();
+                decode(s);
+                if (s.canceled) return;
+                String text = recognizer.getResult(s.stream).getText().trim();
+                synchronized (LocalAsrBridge.this) { if (active == s) active = null; }
+                emit(s, "final", text, null, null);
+                Log.i("LocalAsr", "Ambient segment transcribed locally");
+                releaseSession(s);
+            } catch (Exception | LinkageError e) {
+                Log.e("LocalAsr", "ambient transcription failed", e);
+                fail(s, "本地环境转写失败，请重试");
+            }
+        });
+        return true;
+    }
+
+    private void ensureRecognizer() {
+        if (idleRelease != null) idleRelease.cancel(false);
+        if (recognizer != null) return;
+        OnlineTransducerModelConfig transducer = new OnlineTransducerModelConfig();
+        transducer.setEncoder(MODEL + "encoder-epoch-99-avg-1.int8.onnx");
+        transducer.setDecoder(MODEL + "decoder-epoch-99-avg-1.onnx");
+        transducer.setJoiner(MODEL + "joiner-epoch-99-avg-1.int8.onnx");
+        OnlineModelConfig model = new OnlineModelConfig();
+        model.setTransducer(transducer); model.setTokens(MODEL + "tokens.txt");
+        model.setModelType("zipformer"); model.setNumThreads(1); model.setProvider("cpu");
+        OnlineRecognizerConfig config = new OnlineRecognizerConfig();
+        config.setModelConfig(model); config.setEnableEndpoint(true);
+        recognizer = new OnlineRecognizer(context.getAssets(), config);
+    }
 
     private void fail(Session s, String message) {
         synchronized (this) {

@@ -11,8 +11,10 @@ final class ForegroundResumeSyncScript {
     static String build() {
         return nativeMessages() + "(function(){"
                 + "try{"
+                + "function check(w){try{w?.aionCheckSocket?.();}catch(e){}}"
+                + "check(window);document.querySelectorAll('iframe').forEach(f=>check(f.contentWindow));"
                 + "var needsReconnect=(typeof ws==='undefined'||!ws||ws.readyState!==1);"
-                + "if(needsReconnect&&typeof connectWS==='function'){"
+                + "if(typeof window.aionCheckSocket!=='function'&&needsReconnect&&typeof connectWS==='function'){"
                 + "console.log('[AionApp] WS reconnect on foreground resume');"
                 + "connectWS();"
                 + "}"

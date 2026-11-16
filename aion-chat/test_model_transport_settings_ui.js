@@ -24,6 +24,23 @@ assert.match(list.innerHTML, /已统一启用/);
 assert.doesNotMatch(list.innerHTML, /<button|<select|旧版保守模式/);
 console.log('unified model transport UI passed');
 
+const grokSource = source.slice(source.indexOf('function renderGrokReasoning('),
+  source.indexOf('function renderModelTransportModes('));
+const grokList = {innerHTML: '', querySelectorAll: () => [
+  {dataset: {grokModel: 'grok-4.7'}, value: 'xhigh'},
+  {dataset: {grokModel: 'grok-4.5'}, value: 'high'},
+]};
+const grokContext = {$: () => grokList, escHtml: String, escAttr: String};
+vm.runInNewContext(grokSource + `\nrenderGrokReasoning([
+  {model:'grok-4.7',name:'Grok · 4.7',efforts:['low','medium','high','xhigh']},
+  {model:'grok-4.5',name:'Grok · 4.5',efforts:['low','medium','high']}
+]);`, grokContext);
+assert.equal((grokList.innerHTML.match(/value="high" selected/g) || []).length, 2);
+assert.equal((grokList.innerHTML.match(/value="xhigh"/g) || []).length, 1);
+assert.equal(JSON.stringify(grokContext.collectGrokReasoningEfforts()),
+  JSON.stringify({'grok-4.7': 'xhigh', 'grok-4.5': 'high'}));
+console.log('Grok reasoning defaults and model-specific options passed');
+
 async function testSettingsLoadWithoutWaitingForModels() {
   const initSource = source.match(/\(async function init\(\) \{[\s\S]*?\n\}\)\(\);/)[0];
   const fields = new Map();
@@ -43,6 +60,7 @@ async function testSettingsLoadWithoutWaitingForModels() {
     updateAsrProviderUi() {},
     renderCustomRoutes() {},
     renderModelTransportModes() {},
+    renderGrokReasoning() {},
     refreshPhoneScreenStatus() {},
     refreshFloatingChatStatus() {},
     refreshMediaCacheStatus() {},
@@ -58,6 +76,13 @@ async function testSettingsLoadWithoutWaitingForModels() {
   assert.deepEqual(Array.from(options.matchAll(/value="([^"]+)"/g), m => m[1]),
     ['gpt_image2_5_flare', 'seedream_5_0_flash', 'grok_imagine_image_2_0']);
   assert.equal(field('imageGenFlowConfig').hidden, false);
+  assert.equal(field('imageGenApiConfig').hidden, true);
+  saved.image_gen_provider = 'grok';
+  vm.runInNewContext(initSource, initContext);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(field('imageGenProviderInput').value, 'grok');
+  assert.equal(field('imageGenGrokHint').hidden, false);
+  assert.equal(field('imageGenFlowConfig').hidden, true);
   assert.equal(field('imageGenApiConfig').hidden, true);
   console.log('settings load independently of model discovery passed');
 }

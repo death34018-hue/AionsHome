@@ -7,7 +7,7 @@
   <title>小厨房 · 小家</title>
   <link rel="stylesheet" href="/static/common.css">
   <link rel="stylesheet" href="/static/kitchen-cards.css?v=20261103-lookup2">
-  <link rel="stylesheet" href="/static/kitchen.css?v=20261103-table">
+  <link rel="stylesheet" href="/static/kitchen.css?v=20261107-icons">
   <script>document.documentElement.dataset.theme=localStorage.getItem('aion_chat_theme')||'light';</script>
 </head>
 <body class="kh-page">
@@ -59,15 +59,40 @@
       </section>
 
       <section id="panelPending" class="kh-panel-view" role="tabpanel" hidden>
+        <form id="intakeForm" class="kh-paper kh-intake">
+          <label for="intakeText" class="kh-field"><strong>本次入库</strong>
+            <textarea id="intakeText" rows="3" maxlength="12000" required placeholder="鱼丸 300g，竹轮虾滑 6 根，黄瓜两根"></textarea>
+          </label>
+          <div class="kh-form-footer"><span id="intakeHint" class="kh-plan-status"></span><button id="intakeButton" type="submit" class="kh-primary" disabled>发送给哨兵</button></div>
+          <p id="intakeStatus" role="status" aria-live="polite"></p>
+        </form>
         <div class="kh-section-heading"><div><h2>待确认</h2></div></div>
-        
         <div id="pendingArea"></div>
       </section>
     </main>
   </div>
 
   <dialog id="itemDialog" class="kh-dialog" aria-labelledby="itemDialogTitle">
-    <form id="itemForm"><div class="kh-dialog-heading"><div><h2 id="itemDialogTitle">记一样食材</h2></div><button type="button" class="kh-close" data-close-dialog aria-label="关闭">×</button></div><input type="hidden" name="id"><div class="kh-form-grid"><label class="kh-field kh-span-two">食材名称<input name="name" required maxlength="60" placeholder="比如：黄瓜"></label><label class="kh-field">现在还剩<input name="amount" required maxlength="30" placeholder="2、半、少量"></label><label class="kh-field">单位<input name="unit" maxlength="16" placeholder="根、盒、袋"></label><label class="kh-field">分类<select name="category"><option value="vegetable">蔬菜菌菇</option><option value="protein">肉蛋豆与海鲜</option><option value="staple">主食杂粮</option><option value="dairy">奶与奶制品</option><option value="fruit">水果</option><option value="other">其他食材</option></select></label><label class="kh-field">放在哪里<select name="storage"><option value="fridge">冷藏</option><option value="freezer">冷冻</option><option value="pantry">常温</option></select></label><label class="kh-field kh-span-two">顺手留句话<input name="note" maxlength="200" placeholder="比如：已开封，想先吃掉"></label></div><label class="kh-check"><input name="soon" type="checkbox"><span>这份食材想尽快吃掉</span></label><p id="itemError" class="kh-inline-error" role="alert"></p><div class="kh-dialog-footer"><button type="button" id="deleteItemButton" class="kh-delete" hidden>从清单移除</button><button type="submit" class="kh-primary">放进冰箱清单</button></div></form>
+    <form id="itemForm">
+      <div class="kh-dialog-heading"><div><h2 id="itemDialogTitle">记一样食材</h2></div><button type="button" class="kh-close" data-close-dialog aria-label="关闭">×</button></div>
+      <input type="hidden" name="id">
+      <div class="kh-form-grid">
+        <label class="kh-field kh-span-two">食材名称<input name="name" required maxlength="60" placeholder="比如：黄瓜"></label>
+        <div class="kh-field kh-span-two">
+          <label for="itemIcon">食材图标</label>
+          <div class="kh-icon-input"><input id="itemIcon" name="icon" maxlength="32" aria-label="食材图标"><button id="resetIconButton" type="button" class="kh-outline">自动匹配</button></div>
+          <details id="iconPicker" class="kh-icon-picker"><summary>常用食材图标</summary><div id="iconChoices" class="kh-icon-choices"></div></details>
+        </div>
+        <label class="kh-field">现在还剩<input name="amount" required maxlength="30" placeholder="2、半、少量"></label>
+        <label class="kh-field">单位<input name="unit" maxlength="16" placeholder="根、盒、袋"></label>
+        <label class="kh-field">分类<select name="category"><option value="vegetable">蔬菜菌菇</option><option value="protein">肉蛋豆与海鲜</option><option value="staple">主食杂粮</option><option value="dairy">奶与奶制品</option><option value="fruit">水果</option><option value="other">其他食材</option></select></label>
+        <label class="kh-field">放在哪里<select name="storage"><option value="fridge">冷藏</option><option value="freezer">冷冻</option><option value="pantry">常温</option></select></label>
+        <label class="kh-field kh-span-two">顺手留句话<input name="note" maxlength="200" placeholder="比如：已开封，想先吃掉"></label>
+      </div>
+      <label class="kh-check"><input name="soon" type="checkbox"><span>这份食材想尽快吃掉</span></label>
+      <p id="itemError" class="kh-inline-error" role="alert"></p>
+      <div class="kh-dialog-footer"><button type="button" id="deleteItemButton" class="kh-delete" hidden>从清单移除</button><button type="submit" class="kh-primary">放进冰箱清单</button></div>
+    </form>
   </dialog>
 
   <dialog id="batchDialog" class="kh-dialog" aria-labelledby="batchDialogTitle">
@@ -77,6 +102,6 @@
   <div id="khToast" class="kh-toast" role="status" aria-live="polite"></div>
   <script src="/static/common.js"></script>
   <script src="/static/kitchen-cards.js?v=20261103-lookup3"></script>
-  <script src="/static/kitchen.js?v=20261103-freechoice"></script>
+  <script src="/static/kitchen.js?v=20261107-icons"></script>
 </body>
 </html>

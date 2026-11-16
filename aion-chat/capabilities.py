@@ -59,6 +59,7 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
         default_enabled=True,
     ),
     CapabilityDef("expressive_voice", "主动语音", "media", "", default_enabled=False),
+    CapabilityDef("web_cards", "即兴互动网页", "media", "在私聊、群聊和主动消息中提示两位 AI 创作单屏小互动。关闭后停发创作提示，已有网页仍可打开。"),
     CapabilityDef("music", "点歌", "media", "注入 [MUSIC:歌曲名 歌手名]，让模型可以点歌或推荐音乐。"),
     CapabilityDef("compose_music", "作曲 · 小音乐盒", "media", "开启后向两位 AI 提示 Strudel 作曲能力，可点曲或偶尔收到赠曲。关闭只停止提示，已保存的小曲仍可播放。", default_enabled=False),
     CapabilityDef("cam_check", "查看监控/状态", "core", "注入 [CAM_CHECK]，让模型可以主动请求查看当前画面。"),
@@ -91,6 +92,7 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef("pat", "AI 拍拍", "social", "让 AI 自己决定怎么拍：私聊里拍你或自己，群聊里也能拍另一位 AI。关闭只停用 AI 拍拍，你仍可手动拍拍，已有拍拍继续进入聊天上下文。"),
     CapabilityDef("rps", "猜拳", "core", "遇到商议不决的事情时，可以通过猜拳决胜。关闭后不再向 AI 提示这项能力，已有邀请仍可继续。"),
     CapabilityDef("mini_game", "小游戏邀请", "core", "让 AI 在你无聊或时机合适时邀请你玩桌球、斗地主、德州扑克、吹牛骰子，点击聊天中的邀请按钮进入游戏。关闭后不再发起新邀请，已有按钮仍可使用。"),
+    CapabilityDef("chat_ambience", "小家氛围", "core", "让 AI 根据聊天内容切换聊天界面的氛围动效（雨、雪、樱花、阳光、极光等）和叠加颜色，也可以放撒花、烟花、流星。关闭后 AI 不再切换，你仍可手动调整。"),
     CapabilityDef("memory_write", "写入记忆", "social", "注入 [MEMORY:内容]，让模型可以记录重要记忆。"),
     CapabilityDef(
         "memory_search",
@@ -630,6 +632,10 @@ async def build_capability_prompt_items(
             "在回复中使用[小游戏：桌球]、[小游戏：斗地主]、[小游戏：德州扑克]或[小游戏：吹牛骰子]，"
             "回复下方会出现进入游戏的邀请按钮；每次回复最多邀请一个游戏。"
         )
+
+    if "chat_ambience" not in excluded_capabilities and is_capability_enabled("chat_ambience"):
+        from chat_ambience import ability_text as ambience_ability_text
+        abilities.append(ambience_ability_text(user_name))
 
     if "rps" not in excluded_capabilities and is_capability_enabled("rps"):
         abilities.append(f"有商议不决的事情，或想鼓励{user_name}做某件事，比如催促起床，放下手机去运动，以及其他你认为合适的情况，可主动通过猜拳和{user_name}决胜。主动发起必须写一句本局约定，格式为[猜拳:石头|输了就马上起床，赢了可以再赖床五分钟]（石头可换剪刀或布；约定不超过200字，不含方括号或换行）。接到邀请时沿用对方约定，用[猜拳:石头]、[猜拳:剪刀]或[猜拳:布]接招。揭晓前不在正文透露拳型，不自行宣布输赢。结果由系统揭晓并记入聊天，后续结合上下文中的结果、约定和用户的话正常回应。")

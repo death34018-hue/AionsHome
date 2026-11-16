@@ -101,6 +101,7 @@
     }, { passive:false });
     listen(stage, 'contextmenu', event => {
       if (!options.onLongPress) return;
+      if (event.target === img && event.pointerType !== 'touch' && matchMedia('(any-pointer: fine)').matches) return;
       event.preventDefault(); cancelHold(); suppressClick = Date.now()+700; options.onLongPress();
     });
     listen(img, 'load', reset);
@@ -125,6 +126,7 @@
     const prev = overlay.querySelector('.aion-viewer-prev'), next = overlay.querySelector('.aion-viewer-next');
     const count = overlay.querySelector('[aria-live]'), error = overlay.querySelector('.aion-viewer-error');
     const closeButton = overlay.querySelector('[aria-label="关闭大图"]');
+    if (options.hint) overlay.querySelector('.aion-viewer-hint').textContent = options.hint;
     const gestures = bind(stage,img,{
       onSwipe: step, onDismiss: close,
       onTap: () => overlay.classList.toggle('controls-hidden'),
@@ -173,10 +175,14 @@
   async function saveOriginal(url) {
     const response = await fetch(url);
     if (!response.ok) throw Error('下载失败');
-    const blob = await response.blob(), filename = new URL(url,location.href).pathname.split('/').pop() || 'image.png';
+    const blob = await response.blob();
+    const source = new URL(url, location.href);
+    const name = /^https?:$/.test(source.protocol) && source.pathname.split('/').pop();
+    let filename = name || 'image.' + (blob.type.split('/')[1] || 'png');
+    try { filename = decodeURIComponent(filename); } catch (_) {}
     let saver;
     for (const frame of [window,window.parent,window.top]) {
-      try { if(frame.AionImageSaver?.save) { saver=frame.AionImageSaver; break; } } catch (_) {}
+      try { if(typeof frame.AionImageSaver?.save === 'function') { saver=frame.AionImageSaver; break; } } catch (_) {}
     }
     if(saver) {
       const data = await new Promise((resolve,reject) => {
@@ -194,5 +200,5 @@
     const images = group ? [...group.querySelectorAll('img')] : [img];
     open(images.map(image => image.dataset.originalSrc || image.src), images.indexOf(img));
   }
-  window.AionImageViewer = { open, close, bind, openFromElement };
+  window.AionImageViewer = { open, close, bind, openFromElement, saveOriginal };
 })();

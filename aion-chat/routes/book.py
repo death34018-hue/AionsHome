@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from config import DATA_DIR, load_worldbook, MODELS, DEFAULT_MODEL
 from database import get_db
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
-from book import parse_epub, delete_book_files, build_annotate_text, BOOKS_DIR, _compute_segments
+from book import parse_epub, delete_book_files, build_annotate_text, BOOKS_DIR, _compute_segments, split_long_paragraphs
 from context_builder import fetch_merged_timeline, render_merged_timeline
 from chatroom import stream_connor_cli, check_connor_online, _read_connor_persona, load_chatroom_config
 import reading_tts
@@ -235,6 +235,29 @@ async def list_books():
 # =============================================
 #  书籍详情（含章节目录）
 # =============================================
+def chapter_readers(segments, rows):
+    """Readers of each segment, including legacy notes attributed to the main AI."""
+    readers = [set() for _ in segments]
+    for row in rows:
+        index = row['segment_index']
+        actor = row['annotator'] or 'aion'
+        if actor in ('aion', 'connor') and 0 <= index < len(segments) and actor not in segments[index].get('pending_annotators', []):
+            readers[index].add(actor)
+    return readers
+
+
+def _show_read_progress(book_id, chapter, rows):
+    segments = json.loads(chapter['segments_meta'])
+    readers = chapter_readers(segments, rows)
+    chapter['segments_meta'] = segments
+    chapter['read_counts'] = {actor: sum(actor in group for group in readers) for actor in ('aion', 'connor')}
+    for i, (segment, group) in enumerate(zip(segments, readers)):
+        lock = _annotating_locks.get(f"{book_id}:{chapter['chapter_index']}:{i}")
+        if len(group) < 2 and segment.get('status') == 'annotating' and lock and lock.locked():
+            continue
+        segment['status'] = 'done' if len(group) == 2 else 'partial' if group else 'not_sent'
+
+
 @router.get("/api/books/{book_id}")
 async def get_book(book_id: str):
     async with get_db() as db:
@@ -251,21 +274,14 @@ async def get_book(book_id: str):
         """, (book_id,))
         chapters = await rows.fetchall()
 
-        # 附加每章的批注状态
+        ann_rows = await (await db.execute("""
+            SELECT chapter_index, segment_index, annotator FROM book_annotations WHERE book_id = ?
+        """, (book_id,))).fetchall()
+        by_chapter = {}
+        for note in ann_rows:
+            by_chapter.setdefault(note['chapter_index'], []).append(note)
         for ch in chapters:
-            seg_meta = json.loads(ch.get('segments_meta', '[]'))
-            # 查询该章节已有的批注
-            ann_rows = await db.execute("""
-                SELECT segment_index FROM book_annotations
-                WHERE book_id = ? AND chapter_index = ?
-            """, (book_id, ch['chapter_index']))
-            annotated_segments = {r['segment_index'] for r in await ann_rows.fetchall()}
-            # 更新状态
-            for seg in seg_meta:
-                idx = seg_meta.index(seg)
-                if idx in annotated_segments:
-                    seg['status'] = 'done'
-            ch['segments_meta'] = seg_meta
+            _show_read_progress(book_id, ch, by_chapter.get(ch['chapter_index'], []))
 
     return {"book": book, "chapters": chapters}
 
@@ -274,7 +290,7 @@ async def get_book(book_id: str):
 #  获取章节内容
 # =============================================
 async def _refresh_unread_segments(book_id, ch_idx):
-    """仅升级完全未共读的章节；已有摘要仍沿用原段号。"""
+    """Keep existing notes when an old oversized paragraph needs several sessions."""
     if any(key[:2] == (book_id, ch_idx) for key in _annotation_jobs):
         return
     if any(key.startswith(f'{book_id}:{ch_idx}:') and lock.locked()
@@ -287,17 +303,51 @@ async def _refresh_unread_segments(book_id, ch_idx):
         if not row:
             return
         old = json.loads(row[2])
-        if any(s.get('status') != 'not_sent' for s in old):
-            return
+        paragraphs = json.loads(row[1])
         exists = await (await db.execute('SELECT 1 FROM book_annotations WHERE book_id=? AND chapter_index=? LIMIT 1',
                                         (book_id, ch_idx))).fetchone()
-        if exists:
-            return
-        segments = _compute_segments(json.loads(row[1]))
+        if exists or any(s.get('status') != 'not_sent' for s in old):
+            parts = [split_long_paragraphs(paragraphs, seg) for seg in old]
+            if all(len(group) == 1 for group in parts):
+                return
+            await _spread_existing_notes(db, book_id, ch_idx, parts)
+            segments = [piece for group in parts for piece in group]
+        else:
+            segments = _compute_segments(paragraphs)
         if segments != old:
             await db.execute('UPDATE book_chapters SET segments_meta=?, segment_count=? WHERE id=?',
                              (json.dumps(segments), len(segments), row[0]))
             await db.commit()
+            return True
+
+
+async def _spread_existing_notes(db, book_id, ch_idx, parts):
+    """Move backwards so later indices are free. Preserve each note and summary once."""
+    stop = sum(map(len, parts))
+    for old_index in reversed(range(len(parts))):
+        group = parts[old_index]
+        first = stop - len(group)
+        stop = first
+        if first == old_index and len(group) == 1:
+            continue
+        notes = await (await db.execute("""
+            SELECT id, annotations, annotator, created_at, updated_at FROM book_annotations
+            WHERE book_id=? AND chapter_index=? AND segment_index=?
+        """, (book_id, ch_idx, old_index))).fetchall()
+        for note_id, raw, actor, created, updated in notes:
+            annotations = json.loads(raw or '[]')
+            buckets = [[] for _ in group]
+            for annotation in annotations:
+                dest = next((i for i, piece in enumerate(group)
+                             if piece['start_p'] <= annotation['p'] <= piece['end_p']), len(group)-1)
+                buckets[dest].append(annotation)
+            await db.execute('UPDATE book_annotations SET segment_index=?, annotations=? WHERE id=?',
+                             (first + len(group) - 1, json.dumps(buckets[-1], ensure_ascii=False), note_id))
+            for offset, bucket in enumerate(buckets[:-1]):
+                await db.execute("""
+                    INSERT INTO book_annotations(book_id,chapter_index,segment_index,annotations,
+                        summary,annotator,created_at,updated_at) VALUES(?,?,?,?,'',?,?,?)
+                """, (book_id, ch_idx, first + offset, json.dumps(bucket, ensure_ascii=False), actor, created, updated))
 
 
 @router.get("/api/books/{book_id}/chapters/{ch_idx}")
@@ -351,6 +401,8 @@ async def get_chapter(book_id: str, ch_idx: int):
             for a in ann_list:
                 p = a.get('p')
                 if p is not None:
+                    if p in target_map and target_map[p].get('text') and a.get('text'):
+                        a = {**a, 'text': target_map[p]['text'] + '\n' + a['text']}
                     target_map[p] = a
         except:
             pass
@@ -361,7 +413,7 @@ async def get_chapter(book_id: str, ch_idx: int):
             })
 
     chapter['paragraphs'] = json.loads(chapter.get('paragraphs', '[]'))
-    chapter['segments_meta'] = json.loads(chapter.get('segments_meta', '[]'))
+    _show_read_progress(book_id, chapter, annotations_raw)
 
     # 解析高亮
     highlights = []
@@ -584,7 +636,7 @@ async def annotate_segment(book_id: str, ch_idx: int, body: AnnotateRequest):
     start_p, end_p = seg['start_p'], seg['end_p']
 
     # 构建文本
-    annotate_text = build_annotate_text(paragraphs, start_p, end_p)
+    annotate_text = build_annotate_text(paragraphs, start_p, end_p, seg)
 
     # 加载上下文
     prev_summaries = await _get_prev_summaries(book_id, ch_idx, limit=3)
@@ -738,7 +790,7 @@ async def annotate_all_segments(book_id: str, ch_idx: int, body: AnnotateAllRequ
                                                          pending_annotators=missing + [who for who in pending if who not in required])
                             emit(dict(type='segment_start', segment_index=seg_idx, total=total))
                             start_p, end_p = seg['start_p'], seg['end_p']
-                            annotate_text = build_annotate_text(paragraphs, start_p, end_p)
+                            annotate_text = build_annotate_text(paragraphs, start_p, end_p, seg)
                             prev = await _get_prev_summaries(book_id, ch_idx, limit=3)
                             context = await _get_chat_context_merged(limit=15)
                             names = {'aion': wb.get('ai_name', 'AI'), 'connor': load_chatroom_config().get('connor_name', 'Connor')}
@@ -769,7 +821,7 @@ async def annotate_all_segments(book_id: str, ch_idx: int, body: AnnotateAllRequ
                             complete = True
                         # A temporarily unavailable companion may still have a pending reread.
                         complete = complete and not any(who not in required for who in pending)
-                        status = 'done' if complete else 'partial'
+                        status = 'done' if complete and {'aion', 'connor'} <= results.keys() else 'partial'
                         if not await _update_segment_status(book_id, ch_idx, seg_idx, status, expected_chapter_id=chapter['id']):
                             raise RuntimeError('章节已更新，请重新打开本章')
                         emit(dict(type='segment_done', segment_index=seg_idx, status=status,
@@ -983,13 +1035,18 @@ def _parse_annotation_json(text: str, start_p: int, end_p: int) -> Optional[dict
         logger.warning(f"JSON 解析失败，原文: {text[:200]}...")
         return None
 
-    # 校验结构
+    return _annotation_fields(result, start_p, end_p)
+
+
+def _annotation_fields(result: dict, start_p: int, end_p: int) -> dict:
     annotations = result.get('annotations', [])
     summary = result.get('summary', '')
 
     # 过滤无效批注（p 值超出范围）
     valid_annotations = []
-    for a in annotations:
+    for a in annotations if isinstance(annotations, list) else []:
+        if not isinstance(a, dict):
+            continue
         p = a.get('p')
         if isinstance(p, int) and start_p <= p <= end_p:
             valid_annotations.append({

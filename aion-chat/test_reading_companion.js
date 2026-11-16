@@ -117,10 +117,18 @@ const {chromium} = require(process.env.PLAYWRIGHT_PATH || 'C:/Users/32816/.cache
     assert.equal(confirmations,1,'Completed chapters still offer an explicit reread');
     assert.equal(posts.filter(p=>p.path.endsWith('/annotate-all')).at(-1).body.reread,true);
     assert.match(await reading.locator('#segmentStatus').getAttribute('aria-label'),/0\/1/,'A partial failure must not be reported as complete');
+    data.chapter.read_counts={aion:1,connor:0};
+    await reading.evaluate(()=>toggleTOC());
+    assert.equal(await reading.locator('.toc-progress').textContent(),'伴侣甲 已读 · 伴侣乙 0/1 段');
+    await reading.evaluate(()=>toggleTOC());
     await reading.evaluate(()=>ReadingCompanion.inviteRead());
     assert.equal(confirmations,1,'Incomplete chapters resume without asking to regenerate saved notes');
     assert.equal(posts.filter(p=>p.path.endsWith('/annotate-all')).at(-1).body.reread,false);
     assert.match(await reading.locator('#segmentStatus').getAttribute('aria-label'),/1\/1/);
+    data.chapter.read_counts={aion:1,connor:1};
+    await reading.evaluate(()=>toggleTOC());
+    assert.equal(await reading.locator('.toc-progress').textContent(),'已读');
+    await reading.evaluate(()=>toggleTOC());
     data.chapter.html_content += '<div class="book-img"><img src="/public/AIIcon.png" alt="故事插画"></div>';
     await reading.evaluate(()=>refreshPublishedBook());
     await reading.waitForSelector('#readerContent .book-img img');

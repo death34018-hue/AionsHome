@@ -110,6 +110,7 @@ class TheaterRegenerateTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse((cache_dir / "tm_old_ai_s0.mp3").exists())
                 self.assertEqual(captured["model"], "new-model")
                 self.assertIs(captured["stream_kwargs"].get("include_device_context"), False)
+                self.assertIs(captured["stream_kwargs"].get("include_thoughts"), True)
                 self.assertNotIn("discard this reply", json.dumps(captured["history"]))
                 self.assertEqual(
                     captured["history"][:2],

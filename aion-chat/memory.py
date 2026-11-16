@@ -285,11 +285,12 @@ def _keyword_match_score(query_keywords: list[str], mem_keywords_json: str) -> f
 # ── 记忆召回（向量 + 关键词 + 重要度 综合评分）────
 @timed("main_recall")
 async def recall_memories(query_text: str, query_keywords: list[str] = None,
-                          top_k: int = 5, threshold: float = 0.45) -> tuple[list[dict], list[dict]]:
+                          top_k: int = 5, threshold: float = 0.45,
+                          min_results: int = 0) -> tuple[list[dict], list[dict]]:
     """
     综合评分 = 向量相似度×0.6 + 关键词命中率×0.3 + 重要度×0.1
-    threshold 为最终得分门槛。
-    返回 (matched, debug_top6): matched 为达标结果, debug_top6 为得分最高的前6条（含未达标）
+    达标结果不足 min_results 时按排名补足，最多返回 top_k 条。
+    返回 (matched, debug_top6): matched 为选中结果, debug_top6 为得分最高的前6条（含未选中）
     """
     query_vec = await get_embedding(query_text, timeout=4)
     if not query_vec:
@@ -331,6 +332,15 @@ async def recall_memories(query_text: str, query_keywords: list[str] = None,
     all_scored.sort(key=lambda x: x["score"], reverse=True)
     debug_top6 = all_scored[:6]
     matched = [r for r in all_scored if r["score"] >= threshold][:top_k]
+    if min_results > 0 and len(matched) < min_results:
+        seen_ids = {m["id"] for m in matched}
+        for mem in all_scored:
+            if len(matched) >= min(top_k, min_results):
+                break
+            if mem["id"] in seen_ids:
+                continue
+            matched.append(mem)
+            seen_ids.add(mem["id"])
     return matched, debug_top6
 
 
@@ -559,7 +569,7 @@ async def _call_sentinel_text(scfg: dict, prompt: str, timeout: int = 60) -> str
         from ai_providers import call_codex_sentinel
         return await call_codex_sentinel(
             prompt,
-            model=scfg.get("model") or "gpt-5.6-luna",
+            model=scfg.get("model") or "gpt-6-luna",
             timeout=timeout,
         )
     if scfg.get("use_openai"):
@@ -602,7 +612,7 @@ async def _call_sentinel_vision(scfg: dict, prompt: str, img_b64: str, mime_type
         from ai_providers import call_codex_sentinel
         return await call_codex_sentinel(
             prompt,
-            model=scfg.get("model") or "gpt-5.6-luna",
+            model=scfg.get("model") or "gpt-6-luna",
             image_b64=img_b64,
             mime_type=mime_type,
             timeout=timeout,
@@ -1128,7 +1138,7 @@ async def _generate_digest_diary(
             reason = "返回内容不是可解析的 JSON 对象"
         if data is not None:
             diary_entry, _ = normalize_diary_payload(data)
-            if not diary_entry.get("content"):
+            if data["diary"] is not None and not diary_entry.get("content"):
                 reason = "日记正文为空"
             else:
                 return data, {
@@ -1406,7 +1416,7 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
         except Exception:
             pass
 
-    # ── 全部总结完成后，生成日记；可选发布朋友圈 ──
+    # ── 总结后自由选择写日记、发朋友圈和送礼 ──
     context_msgs = []
     diary_generation = {
         "ok": False,
@@ -1446,21 +1456,25 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
             context_text = "\n".join(context_lines)
             summaries_text = "\n".join(f"- {s}" for s in all_summaries)
             time_str = datetime.now().strftime("%Y年%m月%d日 %A %H:%M:%S")
+            from diary import (
+                DIGEST_DIARY_INSTRUCTION, normalize_diary_payload, publish_ai_moment, save_diary_entry,
+            )
+            from image_anchors import family_image_prompt
             diary_prompt = (
                 f"{persona_block}"
                 f"当前时间：{time_str}\n\n"
                 f"你是{ai_name}。你刚刚整理了和{user_name}今天的聊天记忆，以下是你整理出的摘要：\n"
                 f"{summaries_text}\n\n"
                 f"【最近上下文】\n{context_text}\n\n"
-                f"请从你自己的视角写一篇私密日记，不是写给{user_name}看的聊天消息。"
-                f"日记可以记录你对这段记忆的感想，只写值得记录或有感触的事，不用每件事都提起，不要记流水账。语气必须符合你的人设。"
+                f"{DIGEST_DIARY_INSTRUCTION}"
                 f"你可以自行决定是否发布一次朋友圈，朋友圈不用每次都发，有想吐槽或者感慨，或者搞笑的事情，或者用朋友圈隔空向对方喊话。\n"
                 f"moment.expect_reply 表示发布朋友圈后是否希望另一个角色主动评论：true=希望对方回复，false=只发布、不触发回复；请根据朋友圈内容和你当下是否想与对方互动自行决定。\n"
                 f"你可以自行决定是否给{user_name}送一份图片小礼物。送礼应是更低概率的特殊事件，只在特殊日子，或聊天中确实有特别温馨、感动、有意义、值得纪念的内容时才送；不要为了完成任务而送礼，也不要用礼物重复日记或朋友圈已经表达的普通感想。\n"
                 f"givegift 为 true 时，gift.image_prompt 填写英文生图提示词，gift.message 填写符合你人设、自然真挚的赠言；为 false 时两项留空。\n\n"
+                f"{await family_image_prompt('aion')}"
                 f"直接输出JSON，不要解释，不要说话，不要输出 Markdown：\n"
                 f"{{\n"
-                f"  \"diary\": {{\"title\": \"日记标题\", \"content\": \"日记正文\", \"mood\": \"此刻心情\"}},\n"
+                f"  \"diary\": null,\n"
                 f"  \"post_moment\": false,\n"
                 f"  \"moment\": {{\"content\": \"朋友圈内容，post_moment 为 false 时留空\", \"expect_reply\": false}},\n"
                 f"  \"givegift\": false,\n"
@@ -1468,22 +1482,21 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
                 f"}}"
             )
             diary_messages = context_msgs + [{"role": "user", "content": diary_prompt}]
-            diary_data, diary_generation = await _generate_digest_diary(diary_messages, model_key)
+            diary_data, generation_status = await _generate_digest_diary(diary_messages, model_key)
+            diary_generation.update(generation_status)
 
-            from diary import normalize_diary_payload, publish_ai_moment, save_diary_entry
             if diary_data:
                 diary_entry, moment_entry = normalize_diary_payload(diary_data)
-                saved_diary = await save_diary_entry(
-                    author="aion",
-                    title=diary_entry.get("title", ""),
-                    content=diary_entry.get("content", ""),
-                    mood=diary_entry.get("mood", ""),
-                    source_type="memory_digest",
-                    source_ref=conv_id or "",
-                    source_start_ts=new_msgs[0]["created_at"],
-                    source_end_ts=new_msgs[-1]["created_at"],
-                )
-                diary_generation["diary_saved"] = bool(saved_diary)
+                if diary_entry["content"]:
+                    saved_diary = await save_diary_entry(
+                        author="aion",
+                        **diary_entry,
+                        source_type="memory_digest",
+                        source_ref=conv_id or "",
+                        source_start_ts=new_msgs[0]["created_at"],
+                        source_end_ts=new_msgs[-1]["created_at"],
+                    )
+                    diary_generation["diary_saved"] = bool(saved_diary)
                 if moment_entry and moment_entry.get("content"):
                     published_moment = await publish_ai_moment(
                         author="aion",
@@ -1498,9 +1511,9 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
                     await send_gift_from_decision(diary_data, sender="aion")
                 except Exception as e:
                     print(f"[digest] 执行送礼决定失败: {e}")
-                diary_generation["message"] = "日记已生成" + (
-                    "，并发布了朋友圈" if diary_generation["moment_published"] else "，本次未选择发布朋友圈"
-                )
+                diary_generation["message"] = "日记已保存" if diary_generation["diary_saved"] else "本次未写日记"
+                if diary_generation["moment_published"]:
+                    diary_generation["message"] += "，已发布朋友圈"
         except Exception as e:
             print(f"[digest] 生成日记失败: {e}")
             diary_generation = {

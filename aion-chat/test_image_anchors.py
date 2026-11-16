@@ -99,6 +99,54 @@ class ChatAnchorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(generate.await_count, 2)
         self.assertEqual(generate.call_args.kwargs['source_identity'], 'connor')
 
+    async def test_gift_retry_keeps_the_selected_family_portraits(self):
+        from gift import judge_and_send_gift
+
+        decision = '{"givegift":true,"image_prompt":"characters=月亮,星星,云朵 | Group portrait","message":"给你"}'
+        self.generate.return_value = None
+        with patch('ai_providers.simple_ai_call', AsyncMock(return_value=decision)) as judge:
+            status = await judge_and_send_gift([], [], '', '星星', '月亮', 'model', 'conv', force=True)
+        self.assertEqual(status, 'image_failed')
+        self.assertEqual(self.generate.await_count, 2)
+        for call in self.generate.await_args_list:
+            self.assertEqual([Path(ref['path']).stem for ref in call.kwargs.get('references', [])], ['u', 'a', 'c'])
+            self.assertNotIn('characters=', call.args[0])
+        prompt = judge.call_args.args[0][-1]['content']
+        for anchor in self.cast:
+            self.assertIn(anchor['name'], prompt)
+
+    async def test_journey_card_uses_only_the_people_in_the_picture(self):
+        import autonomy
+
+        self.cast.append(dict(id='anchor_other', name='剧中人物', aliases='', identity='', image='/uploads/a.png'))
+        for cast, expected in [('月亮,云朵', ['u', 'c']), ('none', [])]:
+            with self.subTest(cast=cast):
+                decisions = [{'decision': 'CONTINUE', 'query': 'museum'}, {
+                    'decision': 'FINISH', 'image_prompt': f'characters={cast} | A museum at dusk'}]
+                with patch.dict(autonomy.SETTINGS, image_gen_enabled=True), \
+                        patch.object(autonomy, '_ask_actor_json', AsyncMock(side_effect=decisions)) as ask, \
+                        patch.object(autonomy, 'run_web_commands', AsyncMock(return_value=['museum'])), \
+                        patch.object(autonomy, 'create_niche_card', AsyncMock(side_effect=lambda **data: data)):
+                    result = await autonomy._run_web_journey('connor', 'trip')
+                self.assertEqual(result.card['photo_path'], '/uploads/album/test.png')
+                self.assertEqual([Path(r['path']).stem for r in self.generate.call_args.kwargs.get('references', [])],
+                                 expected)
+                self.assertNotIn('characters=', self.generate.call_args.args[0])
+                prompt = ask.call_args.args[1]
+                for name in ['月亮', '星星', '云朵']:
+                    self.assertIn(name, prompt)
+                self.assertNotIn('剧中人物', prompt)
+
+    async def test_gift_rejects_a_theater_only_portrait(self):
+        from gift import send_gift_from_decision
+
+        self.cast.append(dict(id='anchor_other', name='剧中人物', aliases='', identity='', image='/uploads/a.png'))
+        self.generate.return_value = None
+        status = await send_gift_from_decision({'givegift': True, 'gift': {
+            'image_prompt': 'characters=剧中人物 | Portrait', 'message': '一张画'}})
+        self.assertEqual(status, 'image_failed')
+        self.generate.assert_not_awaited()
+
     async def test_missing_reference_is_visible_in_private_and_group_chat(self):
         from routes import chat, chatroom
         with patch('image_gen.generate_chat_image', AsyncMock(side_effect=ValueError('人物锚点照片失效'))), \

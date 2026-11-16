@@ -23,6 +23,48 @@
     mode() { try { return api.available() ? bridge.getMode() : 'cloud'; } catch (_) { return 'cloud'; } },
     setMode(value) { if (api.available()) bridge.setMode(value); },
     enabled() { return api.available() && api.mode() === 'local'; },
+    transcribeBlob(blob) {
+      if (!api.enabled()) return Promise.reject(new Error('当前设备未选择本地识别'));
+      if (typeof bridge.transcribeWav !== 'function')
+        return Promise.reject(new Error('请更新 Android 小家以使用本地环境转写'));
+      const id = 'clip-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+      return new Promise((resolve, reject) => {
+        let done = false;
+        function settle(text, error) {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          sessions.delete(id); own.delete(session);
+          if (error) reject(error); else resolve(text);
+        }
+        const session = {
+          id, transcription: true,
+          receive(event) {
+            if (event.type === 'final') settle((event.text || '').trim());
+            else if (event.type === 'error') settle(null, new Error(event.message || '本地转写失败'));
+            else if (event.type === 'canceled') session.cancel();
+          },
+          cancel(error = new Error('本地转写已取消')) {
+            if (done) return;
+            settle(null, error);
+            try { bridge.cancel(id); } catch (_) {}
+          }
+        };
+        const timer = setTimeout(() => session.cancel(new Error('本地转写超时')), 20000);
+        sessions.set(id, session); own.add(session);
+        blob.arrayBuffer().then(buffer => {
+          if (done) return;
+          const bytes = new Uint8Array(buffer);
+          let binary = '';
+          for (let i = 0; i < bytes.length; i += 32768)
+            binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+          if (!bridge.transcribeWav(id, btoa(binary))) throw new Error('本地识别正在处理另一段语音');
+        }).catch(error => session.cancel(error));
+      });
+    },
+    cancelTranscriptions() {
+      for (const session of Array.from(own)) if (session.transcription) session.cancel();
+    },
     start(callbacks = {}) {
       if (!api.enabled()) return null;
       if (!api.isVisible()) throw new Error('请回到聊天页面再录音');

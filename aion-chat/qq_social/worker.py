@@ -125,16 +125,18 @@ def create_app(directory=DIRECTORY):
 
     @app.get('/status')
     async def status():
-        from .context import home_config
+        from .context import available_models, home_config
         cfg,models,_,names = home_config()
         actors = {}
         for actor in ('aion','connor'):
             bot = transports.get(actor)
-            actors[actor] = dict(name=names[actor],model=cfg.get(actor+'_model',''),settings=store.actor_settings(actor),
+            own = store.actor_settings(actor)
+            home_model = cfg.get(actor+'_model','')
+            actors[actor] = dict(name=names[actor],model=own['model'] or home_model,home_model=home_model,settings=own,
                 **(bot.status if bot else {'connected':False,'state':'未配置'}),
                 last_event=service.last_event.get(actor),last_send=service.last_send.get(actor),
                 reply_error=service.last_error.get(actor,''),context=service.diagnostics.get(actor,{}))
-        return {'settings':store.settings(),'actors':actors,'groups':store.groups(),'pending':len(service.tasks),'pid':os.getpid()}
+        return {'settings':store.settings(),'actors':actors,'models':available_models(models),'groups':store.groups(),'pending':len(service.tasks),'pid':os.getpid()}
 
     @app.patch('/settings')
     async def settings(request: Request):
@@ -146,7 +148,13 @@ def create_app(directory=DIRECTORY):
     @app.patch('/actors/{actor}/settings')
     async def actor_settings(actor:str,request:Request):
         try:
-            return service.configure(await request.json(),actor=actor)
+            patch = await request.json()
+            if isinstance(patch,dict) and 'model' in patch:
+                from .context import available_models, home_config
+                model = patch['model']
+                if not isinstance(model,str) or (model.strip() and model.strip() not in available_models(home_config()[1])):
+                    raise HTTPException(400,'请选择可用于 QQ 群聊的现有模型')
+            return service.configure(patch,actor=actor)
         except (ValueError,TypeError):
             raise HTTPException(400,'角色设置值无效')
 

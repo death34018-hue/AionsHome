@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#dcefe6">
+  <title>用量</title>
+  <link rel="stylesheet" href="/static/common.css">
+  <link rel="stylesheet" href="/static/usage.css">
+</head>
+<body class="usage-page">
+  <div class="sub-page usage-screen">
+    <header class="top-bar">
+      <button class="back-btn" type="button" onclick="navigateSubPageBack()" aria-label="返回桌面">‹</button>
+      <h2>用量</h2>
+    </header>
+    <main class="usage-content">
+      <div class="console">
+        <div class="switcher" role="group" aria-label="选择角色">
+          <button type="button" data-source="agy" aria-pressed="true">主 AI</button>
+          <button type="button" data-source="codex" aria-pressed="false">伙伴</button>
+        </div>
+        <article class="panel glass">
+          <h1 id="quotaTitle">Gemini 4 Argon</h1>
+          <div id="quotas"></div>
+          <p id="usageStatus" role="status">正在读取额度…</p>
+          <footer><span id="updatedAt"></span><span>每 5 分钟查询</span></footer>
+        </article>
+        <details class="more glass" id="more" hidden>
+          <summary>其他 AGY 额度</summary>
+          <div id="otherGroups"></div>
+        </details>
+      </div>
+    </main>
+  </div>
+  <script src="/static/common.js"></script>
+  <script src="/static/usage.js"></script>
+</body>
+</html>

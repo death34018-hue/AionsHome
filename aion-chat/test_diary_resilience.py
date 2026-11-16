@@ -3,7 +3,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from ai_providers import (
     MODEL_RAW_RESPONSE_RETENTION_SECONDS,
@@ -74,6 +74,19 @@ class DiaryResilienceTests(unittest.TestCase):
 
 
 class DigestDiaryCircuitBreakerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_skipping_diary_preserves_other_decisions(self):
+        decision = {
+            "diary": None, "post_moment": True, "moment": {"content": "值得分享"},
+            "givegift": True, "gift": {"image_prompt": "a bookmark", "message": "送给你"},
+        }
+        model = AsyncMock(return_value=json.dumps(decision))
+        with patch("ai_providers.simple_ai_call", model):
+            payload, status = await _generate_digest_diary([], "primary-model")
+
+        self.assertTrue(status["ok"])
+        self.assertEqual(payload, decision)
+        model.assert_awaited_once()
+
     async def test_failure_calls_model_only_once(self):
         calls = []
 
