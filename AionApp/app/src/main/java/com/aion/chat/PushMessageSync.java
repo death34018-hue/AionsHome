@@ -30,6 +30,17 @@ final class PushMessageSync {
         trim();
     }
 
+    /** Returns the saved snapshot with the furthest cursor. */
+    static String newest(String... saved) {
+        String best = "";
+        long bestCursor = -1;
+        for (String value : saved) {
+            long cursor = new PushMessageSync(value == null ? "" : value).cursor;
+            if (cursor > bestCursor) { best = value; bestCursor = cursor; }
+        }
+        return best;
+    }
+
     long cursor() { return Math.max(0, cursor); }
     boolean initialized() { return cursor >= 0; }
     boolean needsReplay() { return !replayComplete; }

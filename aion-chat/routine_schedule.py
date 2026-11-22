@@ -1,27 +1,63 @@
 """Weekly personal routines and date-only edits, with optional linked alarms."""
 
 import json
+import logging
 import uuid
 from datetime import date
+from pathlib import Path
 
+from config import DEFAULT_ROUTINE_PATH
 from database import get_db
 
+logger = logging.getLogger(__name__)
 
-_DEFAULT_DAY = [
-    ("morning", "09:00", "10:00", "起床、洗漱、煮茶做早饭"),
-    ("walk1", "10:00", "10:30", "早间遛狗、活动"),
-    ("work1", "10:30", "13:00", "工作块一"),
-    ("lunch", "13:00", "14:30", "午餐、午间休息"),
-    ("work2", "14:30", "15:30", "工作块二"),
-    ("gym", "15:30", "17:00", "健身"),
-    ("walk2", "17:00", "18:30", "第二次遛狗、自由活动、洗澡"),
-    ("dinner", "18:30", "19:30", "做饭、吃晚餐"),
-    ("free", "19:30", "21:30", "自由活动"),
-    ("wash", "21:30", "22:00", "洗漱"),
-    ("nest", "22:00", "23:30", "回窝、准备睡觉"),
-    ("sleep", "23:30", "", "入睡"),
-]
-_TRAINING = ["健身 · 练胸", "健身 · 练背", "拉伸", "健身 · 练腿", "休息 / 随意有氧", "休息 / 随意有氧", "休息 / 随意有氧"]
+
+def _normalize_default_items(raw_items):
+    """Normalize optional local default routine rows into stored item dicts."""
+    if not isinstance(raw_items, list):
+        return []
+    items = []
+    for row in raw_items:
+        if isinstance(row, dict):
+            content = str(row.get("content") or "").strip()
+            start = str(row.get("start") or "").strip()
+            end = str(row.get("end") or "").strip()
+            item_id = str(row.get("id") or "").strip() or uuid.uuid4().hex
+        elif isinstance(row, (list, tuple)) and len(row) == 4:
+            item_id = str(row[0] or "").strip() or uuid.uuid4().hex
+            start = str(row[1] or "").strip()
+            end = str(row[2] or "").strip()
+            content = str(row[3] or "").strip()
+        else:
+            continue
+        if content and start:
+            items.append({"id": item_id, "start": start, "end": end, "content": content})
+    return items
+
+
+def _load_default_routines():
+    """Load per-weekday defaults from an untracked local file, or start empty."""
+    empty = {weekday: [] for weekday in range(7)}
+    path = Path(DEFAULT_ROUTINE_PATH)
+    if not path.exists():
+        return empty
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to read default routine file %s: %s", path, exc)
+        return empty
+    if isinstance(raw, dict):
+        fallback = raw.get("default", [])
+        return {
+            weekday: _normalize_default_items(raw.get(str(weekday), raw.get(weekday, fallback)))
+            for weekday in range(7)
+        }
+    if isinstance(raw, list):
+        if len(raw) == 7 and all(isinstance(day_items, list) for day_items in raw):
+            return {weekday: _normalize_default_items(raw[weekday]) for weekday in range(7)}
+        shared = _normalize_default_items(raw)
+        return {weekday: list(shared) for weekday in range(7)}
+    return empty
 
 
 async def init_routine_storage():
@@ -38,16 +74,10 @@ async def init_routine_storage():
         """)
         from calendar_store import ensure_calendar_schema
         await ensure_calendar_schema(db)
+        defaults = _load_default_routines()
         for weekday in range(7):
-            items = []
-            for item_id, start, end, content in _DEFAULT_DAY:
-                if item_id == "gym":
-                    content = _TRAINING[weekday]
-                elif weekday >= 5 and item_id.startswith("work"):
-                    content = "自由活动"
-                items.append({"id": item_id, "start": start, "end": end, "content": content})
             # Empty lists remain rows, so deleting everything never reseeds it.
-            await db.execute("INSERT OR IGNORE INTO routine_weekly VALUES (?, ?)", (weekday, _json(items)))
+            await db.execute("INSERT OR IGNORE INTO routine_weekly VALUES (?, ?)", (weekday, _json(defaults[weekday])))
         await db.commit()
 
 

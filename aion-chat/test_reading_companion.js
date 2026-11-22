@@ -102,7 +102,29 @@ const {chromium} = require(process.env.PLAYWRIGHT_PATH || 'C:/Users/32816/.cache
     assert.equal(data.highlights[0].annotator,'group');
     assert.equal(data.highlights[0].connor_answer,'我也想和你一起看。');
     assert.equal(posts.filter(p=>p.path.endsWith('/annotate-all')).length,1);
-    assert.equal(posts.filter(p=>p.path==='/api/chatroom/rooms/group/send').length,1,'A second submit during context loading must not send the question twice');
+    const groupPosts=posts.filter(p=>p.path==='/api/chatroom/rooms/group/send');
+    assert.equal(groupPosts.length,1,'A second submit during context loading must not send the question twice');
+    assert.deepEqual(groupPosts[0].body.reading_ref,{
+      book_id:'theater_shared',
+      chapter_index:0,
+      chapter_id:101,
+      start_p:0,
+      end_p:0,
+      selected_text:'🌙月光落在窗前。',
+    });
+    await theater.locator('#replyInput').fill('后面那句呢？');
+    await theater.locator('#replySendBtn').click();
+    await theater.waitForFunction(()=>document.querySelectorAll('#replyMsgs .rc-row').length>=6 && !document.getElementById('replySendBtn').disabled);
+    const groupPostsAfterFollowup=posts.filter(p=>p.path==='/api/chatroom/rooms/group/send');
+    assert.equal(groupPostsAfterFollowup.length,2);
+    assert.deepEqual(groupPostsAfterFollowup[1].body.reading_ref,{
+      book_id:'theater_shared',
+      chapter_index:0,
+      chapter_id:101,
+      start_p:0,
+      end_p:0,
+      selected_text:'🌙月光落在窗前。',
+    });
     const reading=await context.newPage();reading.on('pageerror',e=>errors.push(e.message));
     await reading.goto('http://coreading.test/reading?book=theater_shared');
     await reading.waitForSelector('#readerContent .user-hl');

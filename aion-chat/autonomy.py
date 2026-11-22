@@ -14,15 +14,19 @@ from album import get_album_store
 from config import DEFAULT_MODEL, SETTINGS, load_worldbook, save_settings
 from context_builder import fetch_merged_timeline, render_merged_timeline
 from database import get_db
+from active_window_state import last_user_private_conversation
 from link_preview import build_link_preview_attachments, strip_urls_for_message
 from lounge_friends import LoungeFriend, redact_visitor_key
 from lounge_visit_reporting import publish_outbound_report
+from peer_dm import start_peer_dm
 from tts import synthesize_message_tts_later
 from web_search import WEB_SEARCH_CMD_PATTERN, clean_web_command_text, is_web_search_available, run_web_commands
 from ws import manager
 from autonomy_state import (
     ACTOR_IDS,
+    CHAT_QUIET_MINUTES,
     claim_due_wake,
+    defer_actor_wake,
     get_actor_config,
     refresh_actor_wake_for_user,
     schedule_actor_wake,
@@ -33,12 +37,30 @@ from autonomy_niches import archive_album_event, create_niche_card, recent_niche
 _AUTONOMY_WAKE_INTERNAL = ContextVar("autonomy_wake_internal", default=False)
 _AUTONOMY_WAKE_MONITOR_CONTEXT = ContextVar("autonomy_wake_monitor_context", default=None)
 
+QUIET_ACTIONS = (
+    "web_roam",
+    "album_browse",
+    "book_read",
+    "billiards_play",
+    "memory_browse",
+    "home_dynamics",
+    "xhs_roam",
+    "taobao_roam",
+    "peer_dm",
+    "friend_visit",
+    "board_check",
+    "board_visit",
+    "seeky_interaction",
+)
+INTERACTIVE_ACTIONS = ("private_chat", "role_chat", "wish_pool")
+
 
 ACTION_DEFS = {
     "rest": "什么都不做，继续休息",
     "private_chat": "主动联系用户说点此刻想说的话",
     "seeky_interaction": "和宠物鲸鱼 Seeky 互动",
-    "role_chat": "和另一个家庭成员自然聊聊",
+    "role_chat": "在群聊里和另一位 AI 聊聊",
+    "peer_dm": "私下和另一位 AI 聊聊",
     "billiards_play": "邀请另一位家庭成员打一局休闲台球（算法负责击球，可以边打边聊）",
     "home_dynamics": "查看近期家庭动态",
     "memory_browse": "按需翻看一段旧记忆",
@@ -359,14 +381,10 @@ async def _latest_conversation(*, prefer_user: bool = False) -> tuple[str, str] 
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         if prefer_user:
-            row = await (await db.execute("""
-                SELECT c.id, c.model FROM messages m JOIN conversations c ON c.id=m.conv_id
-                WHERE m.role='user' ORDER BY m.created_at DESC LIMIT 1
-            """)).fetchone()
-            if row:
-                return row["id"], row["model"] or DEFAULT_MODEL
-        cur = await db.execute("SELECT id, model FROM conversations ORDER BY updated_at DESC LIMIT 1")
-        row = await cur.fetchone()
+            row = await last_user_private_conversation(db)
+        else:
+            cur = await db.execute("SELECT id, model FROM conversations ORDER BY updated_at DESC LIMIT 1")
+            row = await cur.fetchone()
     if row:
         return row["id"], row["model"] or DEFAULT_MODEL
     return None, DEFAULT_MODEL
@@ -465,9 +483,9 @@ async def _ask_actor_json(actor: str, instruction: str, *, limit: int = 30) -> d
         user_name = _actor_label("user")
         monitor_prompt = (
             "[本次自主醒来实时环境]\n"
-            f"这是系统在你本次自主醒来时为你取得的实时画面。{build_monitor_layout_guidance(bool(cam.cfg.get('include_pc_screen', False)))}"
-            "先结合画面和更新事实判断现在发生了什么，再决定是否继续上次意图；"
-            "现实变化可以让你放弃原计划。看不清或没有对应画面时必须明确不确定，不得编造。"
+            f"这是本次醒来时的实时画面。{build_monitor_layout_guidance(bool(cam.cfg.get('include_pc_screen', False)))}"
+            f"用于了解{user_name}此刻状态，决定是否发消息联系她；不影响你安静做自己的事。"
+            "看不清或没有画面时如实说明不确定。"
         )
         if image_result.source == "device":
             monitor_prompt += f"本次没有可用摄像头画面，只能根据设备上下文判断{user_name}的设备使用情况。"
@@ -537,7 +555,7 @@ async def _save_autonomy_monitor_card(actor: str, monitor_context) -> dict | Non
 
     if actor != "aion":
         return None
-    conv_id, _model = await _latest_conversation()
+    conv_id, _model = await _latest_conversation(prefer_user=True)
     if not conv_id:
         return None
     now = time.time()
@@ -600,18 +618,188 @@ def _idle_duration_text(minutes: int) -> str:
     return f"{remaining} 分钟"
 
 
+async def _recent_actor_actions(actor: str, limit: int = 20) -> list[dict]:
+    items: list[dict] = []
+    try:
+        async with get_db() as db:
+            db.row_factory = aiosqlite.Row
+            try:
+                cur = await db.execute(
+                    "SELECT title, metadata, created_at FROM idle_events "
+                    "WHERE actor=? AND action='wake_summary' ORDER BY created_at DESC LIMIT ?",
+                    (actor, max(10, limit * 2)),
+                )
+                for row in await cur.fetchall():
+                    try:
+                        meta = json.loads(row["metadata"] or "{}")
+                    except Exception:
+                        meta = {}
+                    act = str(meta.get("selected_action") or "").strip()
+                    if not act or act == "error":
+                        continue
+                    items.append({
+                        "action": act,
+                        "title": str(row["title"] or ACTION_DEFS.get(act, act)).strip(),
+                        "created_at": float(row["created_at"] or 0.0),
+                    })
+            except Exception:
+                pass
+            try:
+                cur = await db.execute(
+                    "SELECT created_at FROM chatroom_messages "
+                    "WHERE room_id='cr_peer_dm' AND sender=? AND id LIKE 'peer_%_01' "
+                    "ORDER BY created_at DESC LIMIT 5",
+                    (actor,),
+                )
+                for row in await cur.fetchall():
+                    items.append({
+                        "action": "peer_dm",
+                        "title": f"{_actor_label(actor)}和另一位 AI 私聊了一次",
+                        "created_at": float(row["created_at"] or 0.0),
+                    })
+            except Exception:
+                pass
+    except Exception:
+        return []
+    items.sort(key=lambda item: item["created_at"], reverse=True)
+    return items[:limit]
+
+
+def _weighted_sample_without_replacement(items: list[str], weights: list[float], k: int) -> list[str]:
+    remaining_items = list(items)
+    remaining_weights = [max(0.01, float(weight)) for weight in weights]
+    chosen: list[str] = []
+    for _ in range(min(k, len(remaining_items))):
+        picked = random.choices(remaining_items, weights=remaining_weights, k=1)[0]
+        idx = remaining_items.index(picked)
+        chosen.append(picked)
+        remaining_items.pop(idx)
+        remaining_weights.pop(idx)
+    return chosen
+
+
+def _sample_action_candidates(enabled: list[str], recent_actions: list[dict], *, manual: bool) -> list[str]:
+    has_rest = "rest" in enabled
+    pool = [key for key in enabled if key != "rest"]
+    if manual or len(pool) <= 4:
+        quiet = [key for key in pool if key in QUIET_ACTIONS]
+        interactive = [key for key in pool if key not in QUIET_ACTIONS]
+        return quiet + interactive + (["rest"] if has_rest else [])
+
+    recent_rank: dict[str, int] = {}
+    for idx, item in enumerate(recent_actions):
+        act = str(item.get("action") or "").strip()
+        if act and act != "rest" and act not in recent_rank:
+            recent_rank[act] = idx
+
+    def weight_for(key: str) -> float:
+        if key not in recent_rank:
+            return 10.0
+        rank = recent_rank[key]
+        if rank == 0:
+            return 0.15
+        if rank == 1:
+            return 0.6
+        return min(8.0, 1.5 + rank * 0.8)
+
+    quiet_pool = [key for key in pool if key in QUIET_ACTIONS]
+    interactive_pool = [key for key in pool if key not in QUIET_ACTIONS]
+
+    has_role_chat = "role_chat" in interactive_pool
+    sampled_interactive_pool = (
+        [key for key in interactive_pool if key != "role_chat"]
+        if has_role_chat
+        else list(interactive_pool)
+    )
+    target_interactive = 1 if sampled_interactive_pool else 0
+    chosen_interactive = _weighted_sample_without_replacement(
+        sampled_interactive_pool,
+        [weight_for(key) for key in sampled_interactive_pool],
+        target_interactive,
+    )
+    if has_role_chat:
+        chosen_interactive.append("role_chat")
+
+    base_interactive_slots = 1 if interactive_pool else 0
+    target_quiet = min(len(quiet_pool), 4 - base_interactive_slots)
+    last_action = str(recent_actions[0].get("action") or "").strip() if recent_actions else ""
+    quiet_candidates = (
+        [key for key in quiet_pool if key != last_action]
+        if last_action in quiet_pool and len(quiet_pool) > target_quiet
+        else list(quiet_pool)
+    )
+    chosen_quiet = _weighted_sample_without_replacement(
+        quiet_candidates,
+        [weight_for(key) for key in quiet_candidates],
+        target_quiet,
+    )
+
+    chosen = chosen_quiet + chosen_interactive
+    if len(chosen) < min(4, len(pool)):
+        leftover_interactive = [key for key in interactive_pool if key not in chosen]
+        chosen.extend(
+            _weighted_sample_without_replacement(
+                leftover_interactive,
+                [weight_for(key) for key in leftover_interactive],
+                min(4, len(pool)) - len(chosen),
+            )
+        )
+    return chosen + (["rest"] if has_rest else [])
+
+
+async def _build_action_descriptions(
+    actor: str,
+    offered: list[str],
+    *,
+    reading_choices: list[dict],
+    unseen_photos: int | None,
+) -> dict[str, str]:
+    descriptions = {key: ACTION_DEFS[key] for key in offered}
+    if "book_read" in descriptions and reading_choices:
+        descriptions["book_read"] = f"自主阅读（书架上有 {len(reading_choices)} 本可读，选后再挑书）"
+    if "album_browse" in descriptions and unseen_photos:
+        descriptions["album_browse"] = f"翻看家庭相册（还有 {unseen_photos} 张未看照片，随机抽 2 张）"
+    if "home_dynamics" in descriptions:
+        try:
+            _text, items = await _home_dynamics_snapshot(6)
+            if items:
+                descriptions["home_dynamics"] = f"查看近期家庭动态（近 6 小时有 {len(items)} 条动态）"
+        except Exception:
+            pass
+    if "billiards_play" in descriptions:
+        other_name = _actor_label("connor" if actor == "aion" else "aion")
+        descriptions["billiards_play"] = f"约{other_name}去台球室打一局休闲台球（算法击球，可边打边聊）"
+    if "xhs_roam" in descriptions:
+        try:
+            import xhs_lite
+            nick = str(xhs_lite.load_config().get("target_nickname") or "").strip()
+            if nick:
+                descriptions["xhs_roam"] = f"去小红书查看「{nick}」最新帖子并按人设互动"
+        except Exception:
+            pass
+    if "web_roam" in descriptions:
+        descriptions["web_roam"] = "上网冲浪，按当下兴趣搜点新鲜内容（记入私人壁龛）"
+    return descriptions
+
+
 async def _select_action(actor: str, *, manual: bool = False, idle_minutes: int = 0) -> dict:
     cfg = await get_actor_config(actor)
     enabled = [
         key for key in ACTION_DEFS
         if bool(cfg.get("actions", {}).get(key, key == "rest"))
     ]
+    unseen_photos: int | None = None
     if "album_browse" in enabled:
-        if not await asyncio.to_thread(get_album_store().has_unseen_photos, actor):
+        store = get_album_store()
+        if hasattr(store, "count_unseen_photos"):
+            unseen_photos = await asyncio.to_thread(store.count_unseen_photos, actor)
+            if unseen_photos <= 0:
+                enabled.remove("album_browse")
+        elif not await asyncio.to_thread(store.has_unseen_photos, actor):
             enabled.remove("album_browse")
     reading_choices = []
     if "book_read" in enabled:
-        from autonomy_reading import shelf, shelf_prompt
+        from autonomy_reading import shelf
         reading_choices = await shelf(actor)
         if not reading_choices:
             enabled.remove("book_read")
@@ -660,44 +848,64 @@ async def _select_action(actor: str, *, manual: bool = False, idle_minutes: int 
             enabled.remove("taobao_roam")
     if not enabled:
         return {"action": "rest", "reason": "当前没有可执行的已启用事件，本次休息。", "message": ""}
-    options = "\n".join(f"- {key}: {ACTION_DEFS[key]}" for key in enabled)
-    if reading_choices:
-        options += "\n" + shelf_prompt(reading_choices)
-    reading_field = ',"book":"选择 book_read 时填写书架编号"' if reading_choices else ''
+
+    recent_actions = await _recent_actor_actions(actor, limit=20)
+    offered = _sample_action_candidates(enabled, recent_actions, manual=manual)
+    descriptions = await _build_action_descriptions(
+        actor,
+        offered,
+        reading_choices=reading_choices,
+        unseen_photos=unseen_photos,
+    )
+    quiet_lines = [f"- {key}: {descriptions[key]}" for key in offered if key in QUIET_ACTIONS]
+    interactive_lines = [f"- {key}: {descriptions[key]}" for key in offered if key in INTERACTIVE_ACTIONS]
+    option_blocks: list[str] = []
+    if quiet_lines:
+        option_blocks.append("安静做自己的事（不会发消息打扰用户）：\n" + "\n".join(quiet_lines))
+    if interactive_lines:
+        option_blocks.append("会发消息互动：\n" + "\n".join(interactive_lines))
+    if "rest" in offered:
+        option_blocks.append(f"- rest: {descriptions['rest']}")
+    options = "\n\n".join(option_blocks)
+
     from capabilities import is_capability_enabled
     from chat_web_cards import PROMPT as WEB_CARD_PROMPT
-    if 'private_chat' in enabled and is_capability_enabled('web_cards'):
-        options += '\nprivate_chat 的 message ' + WEB_CARD_PROMPT
+    if "private_chat" in offered and is_capability_enabled("web_cards"):
+        options += "\nprivate_chat 的 message " + WEB_CARD_PROMPT
     try:
         niche_index = await recent_niche_index(actor, limit=6)
     except Exception:
         niche_index = []
+    recent_hint = (
+        "\n\n你最近几次自主行动（尽量换点不同事情做）：\n"
+        + "\n".join(
+            f"- [{datetime.fromtimestamp(item['created_at']).strftime('%m-%d %H:%M')}] {item['title']}"
+            for item in recent_actions[:5]
+        )
+        if recent_actions else ""
+    )
     niche_hint = (
         "\n\n你最近留在私人壁龛里的旅行索引（仅用于避免重复，也可以沿着兴趣继续探索）：\n"
         + json.dumps(niche_index, ensure_ascii=False)
         if niche_index else ""
     )
     rest_hint = (
-        "鼓励做些事情，不要因为怕打扰用户每次都选择休息；确实不想做事情时，可以选择 rest。"
-        if "rest" in enabled else
-        "本次没有提供休息选项，你必须从下面的可用事件中选择一项去做，不要返回 rest。"
+        "有想做的事就去做，确实不想动时可选 rest。"
+        if "rest" in offered else
+        "本次没有休息选项，请从下面选项中选一项执行，不要返回 rest。"
     )
+    peer_hint = "，peer_dm 私下找另一位 AI（夜里用户睡着时也可聊）" if "peer_dm" in offered else ""
     instruction = (
         "[空闲自主行动]\n"
-        f"用户已经 {_idle_duration_text(idle_minutes)}没有发送新消息，可能在忙碌或休息。"
-        "你现在被自主意识唤醒，可以按照自己的想法随便做点什么。请根据你的人设、最近30条聊天记录和当前心情，"
-        "从下面动作里，按照自己想做的事情选择一项。只返回 JSON，不要解释。每次都可以随机选择要做的事。"
+        f"用户已经 {_idle_duration_text(idle_minutes)}没有发送新消息。"
+        "你现在自主醒来，结合人设、最近30条聊天记录和当下心情，从下面可用动作中选一项执行。只返回 JSON，不要解释。\n"
         "如果最近用户明确要求测试或选择某个动作，请在下面的可用选项范围内优先遵守。"
         f"{rest_hint}\n\n"
-        f"{options}{niche_hint}\n\n"
-        "reason 请保留你选择它的真实动机。"
-        "如果 action 是 private_chat 或 role_chat，message 就是本次要实际发送的正式聊天正文："
-        "private_chat 是对用户说，role_chat 是对另一位家庭成员说。"
-        "请直接以你自身人格像平时聊天一样自然完整地表达，由你决定篇幅、段落和表达形式；"
-        "可以有符合平时习惯的内心活动，但不要机械套模板，不要写成行动说明，也不要刻意压短。"
-        "其他动作的 message 留空。\n"
-        '格式：{"action":"上面的key之一","reason":"选择这个动作的理由","message":"聊天动作要实际发送的完整正文，其他动作为空"'
-        + reading_field + '}'
+        f"{options}{recent_hint}{niche_hint}\n\n"
+        "reason 填写你选择它的真实动机。"
+        f"聊天动作（private_chat 找用户，role_chat 群聊找另一位 AI{peer_hint}）的 message 是实际发送的正式聊天正文，"
+        "请以你自身人格自然表达，不要写成行动说明，也不要刻意压短；其他动作的 message 留空。\n"
+        '格式：{"action":"上面的key之一","reason":"选择理由","message":"聊天动作的完整正文，其他动作为空"}'
     )
     try:
         data = await _ask_actor_json(actor, instruction)
@@ -711,20 +919,16 @@ async def _select_action(actor: str, *, manual: bool = False, idle_minutes: int 
     if action not in enabled:
         return fallback
     if action == "book_read":
-        number = data.get("book")
-        if isinstance(number, str) and number in {str(i) for i in range(1, len(reading_choices) + 1)}:
-            number = int(number)
-        if type(number) is not int or not 1 <= number <= len(reading_choices):
-            return fallback
-        return {"action": action, "reason": str(data.get("reason") or ""), "reading": reading_choices[number - 1]}
+        return {"action": action, "reason": str(data.get("reason") or "").strip(), "message": ""}
     message = data.get("message")
     message = message.strip() if isinstance(message, str) else ""
-    if action in {"private_chat", "role_chat"} and not message:
+    chat_action = action in {"private_chat", "role_chat", "peer_dm"}
+    if chat_action and not message:
         return fallback
     return {
         "action": action,
-        "reason": str(data.get("reason") or "").strip(),
-        "message": message if action in {"private_chat", "role_chat"} else "",
+        "reason": "" if action == "peer_dm" else str(data.get("reason") or "").strip(),
+        "message": message if chat_action else "",
     }
 
 
@@ -755,7 +959,7 @@ async def _save_aion_private_message(
     if not content:
         return None
     now = time.time()
-    conv_id, model = await _latest_conversation(prefer_user=bool(reading_notice))
+    conv_id, model = await _latest_conversation(prefer_user=True)
     from chat_web_cards import split_reply
     from capabilities import is_capability_enabled
     content, web_card = split_reply(content, enabled=is_capability_enabled('web_cards'))
@@ -1303,8 +1507,8 @@ async def _run_role_chat(actor: str, selected: dict | None = None) -> dict:
         raise RuntimeError("role_chat 动作没有生成可发送的消息")
     notice_args = {"reading_notice": selected["reading_notice"]} if selected.get("reading_notice") else {}
     await _save_autonomy_chatroom_message(room_id, actor, message, **notice_args)
-    from chat_web_cards import BLOCK
-    message = BLOCK.sub('', message).strip()
+    from chat_web_cards import strip_drawings
+    message = strip_drawings(message).strip()
     room, msgs = await _load_room_and_messages(room_id, 50)
     queue: asyncio.Queue = asyncio.Queue()
     context_limit = room.get("context_minutes", 30) if room else 30
@@ -2232,6 +2436,48 @@ async def _latest_user_message_ts() -> float:
     return latest
 
 
+async def _latest_user_message_ts_for_actor(actor: str) -> float:
+    latest = 0.0
+    async with get_db() as db:
+        db.row_factory = aiosqlite.Row
+        if actor == "aion":
+            try:
+                cur = await db.execute(
+                    "SELECT created_at FROM messages WHERE role='user' ORDER BY created_at DESC LIMIT 1"
+                )
+                row = await cur.fetchone()
+                if row and row["created_at"] is not None:
+                    latest = max(latest, float(row["created_at"]))
+            except Exception:
+                pass
+            try:
+                cur = await db.execute(
+                    "SELECT m.created_at FROM chatroom_messages m "
+                    "JOIN chatroom_rooms r ON r.id=m.room_id "
+                    "WHERE m.sender='user' AND r.type='group' "
+                    "ORDER BY m.created_at DESC LIMIT 1"
+                )
+                row = await cur.fetchone()
+                if row and row["created_at"] is not None:
+                    latest = max(latest, float(row["created_at"]))
+            except Exception:
+                pass
+        else:
+            try:
+                cur = await db.execute(
+                    "SELECT m.created_at FROM chatroom_messages m "
+                    "JOIN chatroom_rooms r ON r.id=m.room_id "
+                    "WHERE m.sender='user' AND r.type IN ('connor_1v1','group') "
+                    "ORDER BY m.created_at DESC LIMIT 1"
+                )
+                row = await cur.fetchone()
+                if row and row["created_at"] is not None:
+                    latest = max(latest, float(row["created_at"]))
+            except Exception:
+                pass
+    return latest
+
+
 async def _latest_idle_event_ts() -> float:
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
@@ -2240,11 +2486,19 @@ async def _latest_idle_event_ts() -> float:
     return float(row["created_at"]) if row else 0.0
 
 
-async def _run_actor_once(actor: str, *, manual: bool = False, idle_minutes: int = 0) -> dict:
+async def _run_actor_once(actor: str, *, manual: bool = False, idle_minutes: int = 0, wake_id: str = "") -> dict:
     selected = await _select_action(actor, manual=manual, idle_minutes=idle_minutes)
     action = selected["action"]
     actor_name = _actor_label(actor)
     session_id = f"journey_{actor}_{int(time.time() * 1000)}_{time.time_ns() % 100000}"
+    if action == "peer_dm":
+        # The peer thread is this action's record. Family events also go to the
+        # live activity feed, so keep both the selection and the result private.
+        try:
+            await start_peer_dm(actor, selected["message"], trigger_id=f"idle:{actor}:{wake_id or session_id}")
+        except Exception as exc:
+            return {"ok": False, "actor": actor, "action": action, "error": type(exc).__name__}
+        return {"ok": True, "actor": actor, "action": action}
     await append_idle_event(
         actor, "select", f"{actor_name}进行了空闲行动",
         selected.get("reason", ""),
@@ -2267,11 +2521,17 @@ async def _run_actor_once(actor: str, *, manual: bool = False, idle_minutes: int
         elif action == "album_browse":
             result = await _run_album_browse(actor)
         elif action == "book_read":
-            from autonomy_reading import read_one
-            if (await get_actor_config(actor))['actions'].get('book_read'):
-                result = await read_one(actor, selected['reading'])
+            from autonomy_reading import choose_book, read_one, shelf
+            if (await get_actor_config(actor)).get("actions", {}).get("book_read"):
+                reading = selected.get("reading")
+                if not reading:
+                    reading = await choose_book(actor, await shelf(actor))
+                if reading:
+                    result = await read_one(actor, reading)
+                else:
+                    result = {"skipped": "书架上暂时没有可读段落"}
             else:
-                result = {'skipped': '自主阅读已关闭'}
+                result = {"skipped": "自主阅读已关闭"}
         elif action == "home_dynamics":
             result = await _run_home_dynamics(actor)
         elif action == "web_roam":
@@ -2420,17 +2680,31 @@ class IdleAutonomyManager:
             cfg = await get_actor_config(actor)
             if not cfg.get("enabled"):
                 return {"ok": False, "actor": actor, "skipped": "disabled"}
-            latest_user = await _latest_user_message_ts()
-            refreshed = await refresh_actor_wake_for_user(actor, latest_user_at=latest_user)
-            if not manual and not cfg.get("next_wake_at") and not refreshed:
-                await schedule_actor_wake(actor, anchor_at=latest_user or time.time())
-                return {"ok": False, "actor": actor, "skipped": "not due"}
-            timer = cfg if manual else await claim_due_wake(actor, now=time.time())
+            now = time.time()
+            latest_user = await _latest_user_message_ts_for_actor(actor)
+            if not manual:
+                if not cfg.get("next_wake_at"):
+                    await schedule_actor_wake(actor, anchor_at=now)
+                    return {"ok": False, "actor": actor, "skipped": "not due"}
+                if float(cfg["next_wake_at"]) > now:
+                    return {"ok": False, "actor": actor, "skipped": "not due"}
+                quiet_until = latest_user + CHAT_QUIET_MINUTES * 60 if latest_user else 0.0
+                if quiet_until > now:
+                    await defer_actor_wake(actor, wake_at=quiet_until)
+                    return {
+                        "ok": False,
+                        "actor": actor,
+                        "skipped": "active_chat_deferred",
+                        "deferred_until": quiet_until,
+                    }
+                timer = await claim_due_wake(actor, now=now)
+            else:
+                timer = cfg
             if not timer:
                 return {"ok": False, "actor": actor, "skipped": "not due"}
             if not (await get_actor_config(actor)).get("enabled"):
                 return {"ok": False, "actor": actor, "skipped": "disabled"}
-            idle_minutes = max(0, int((time.time() - latest_user) // 60)) if latest_user else 0
+            idle_minutes = max(0, int((now - latest_user) // 60)) if latest_user else 0
             try:
                 monitor_context = await _capture_autonomy_monitor_context(actor)
                 try:
@@ -2444,6 +2718,7 @@ class IdleAutonomyManager:
                         actor,
                         manual=manual,
                         idle_minutes=idle_minutes,
+                        wake_id=str(timer.get("next_wake_at") or "") if not manual else "",
                     )
                 finally:
                     _AUTONOMY_WAKE_INTERNAL.reset(wake_token)
@@ -2465,11 +2740,7 @@ class IdleAutonomyManager:
                 )
                 return {"ok": False, "actor": actor, "error": str(exc)}
             finally:
-                next_anchor = time.time()
-                latest_user_after_wake = await _latest_user_message_ts()
-                if latest_user_after_wake > latest_user:
-                    next_anchor = latest_user_after_wake
-                await schedule_actor_wake(actor, anchor_at=next_anchor)
+                await schedule_actor_wake(actor, anchor_at=time.time())
 
     async def run_once(self, *, manual: bool = False, actor: str = "aion") -> dict:
         return await self.run_actor_once(actor, manual=manual)

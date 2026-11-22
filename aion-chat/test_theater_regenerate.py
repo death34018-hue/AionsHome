@@ -85,6 +85,7 @@ class TheaterRegenerateTests(unittest.IsolatedAsyncioTestCase):
                         "_load_personas",
                         return_value=[{"id": "new-persona", "persona": "fresh persona text"}],
                     ),
+                    patch.object(route, "_load_prompt_modules", return_value=[]),
                     patch.object(route.manager, "broadcast", new=AsyncMock()) as broadcast,
                 ):
                     response = await route.regenerate_message(

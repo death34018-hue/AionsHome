@@ -308,6 +308,22 @@ class AutonomyStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("running", first["status"])
         self.assertIsNone(second)
 
+    async def test_defer_actor_wake_moves_wake_forward_without_resetting_start(self):
+        self.assertEqual(15, autonomy_state.CHAT_QUIET_MINUTES)
+        await autonomy_state.update_actor_config(
+            "connor", enabled=True, min_interval_minutes=60, max_interval_minutes=180, db=self.db
+        )
+        await autonomy_state.schedule_actor_wake(
+            "connor", anchor_at=1_000, delay_minutes=60, db=self.db
+        )
+
+        deferred = await autonomy_state.defer_actor_wake("connor", wake_at=5_000, db=self.db)
+        self.assertEqual(1_000, deferred["timer_started_at"])
+        self.assertEqual(5_000, deferred["next_wake_at"])
+
+        unchanged = await autonomy_state.defer_actor_wake("connor", wake_at=4_800, db=self.db)
+        self.assertEqual(5_000, unchanged["next_wake_at"])
+
 
 if __name__ == "__main__":
     unittest.main()

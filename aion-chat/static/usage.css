@@ -115,7 +115,9 @@ html.aion-app:not(.aion-iframe) .usage-screen::before {
   background: repeating-linear-gradient(to right, transparent 0 calc(5% - 1px), var(--glass) calc(5% - 1px) 5%);
 }
 .recovery { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; color: var(--muted); font-size: 12px; }
-.panel footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px 8px; border-top: 1px solid var(--rule); margin-top: 17px; padding-top: 10px; font-size: 11px; color: var(--muted); }
+.panel footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 5px 8px; border-top: 1px solid var(--rule); margin-top: 17px; padding-top: 10px; font-size: 11px; color: var(--muted); }
+#refreshUsage { min-height: 40px; padding: 0 16px; border: 0; border-radius: 8px; background: var(--ink); color: var(--glass-text, #f2fff8); font: 600 14px system-ui, sans-serif; cursor: pointer; }
+#refreshUsage:disabled { opacity: .65; cursor: wait; }
 #usageStatus:not(:empty) { margin-top: 14px; font-size: 14px; }
 .more { margin-top: 10px; }
 .more summary { cursor: pointer; padding: 13px 20px; font-size: 14px; font-weight: 600; }

@@ -618,6 +618,7 @@ function applyAionTheme(theme) {
 function toggleAionTheme() {
   const next = document.body.dataset.theme === 'light' ? 'dark' : 'light';
   applyAionTheme(next);
+  window.AionAmbienceSync.save({ theme: next });
   if (window.parent !== window && typeof window.parent.applyAionTheme === 'function') {
     window.parent.applyAionTheme(next);
   }
@@ -1388,7 +1389,8 @@ checkMomentsUnread();
 setInterval(checkMomentsUnread, 60000);
 </script>
 <script>if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');</script>
-<script src="/static/home-popups.js?v=20260923"></script>
+<script src="/static/ambience-sync.js?v=20261118"></script>
+<script src="/static/home-popups.js?v=20261118-theme"></script>
 <script src="/static/kitchen-cards.js?v=20261103-lookup3"></script>
 <script>setInterval(() => window.KitchenCards?.refreshBadge(), 60000); window.addEventListener('focus', () => window.KitchenCards?.refreshBadge());</script>
 <script src="/lounge-board/assets/home_board_notice.js?v=20260925"></script>

@@ -256,8 +256,15 @@
   function connect() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(proto + '//' + location.host + '/ws');
-    socket.onopen = checkPendingGifts;
-    socket.onmessage = event => handleEvent(JSON.parse(event.data));
+    socket.onopen = () => {
+      window.AionAmbienceSync.restore();
+      checkPendingGifts();
+    };
+    socket.onmessage = event => {
+      const message = JSON.parse(event.data);
+      if (message.type === 'chat_ambience') window.AionAmbienceSync.receive(message.data);
+      else handleEvent(message);
+    };
     socket.onclose = () => setTimeout(connect, 2000);
     socket.onerror = () => socket.close();
   }

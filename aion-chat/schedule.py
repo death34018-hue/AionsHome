@@ -12,11 +12,12 @@ import aiosqlite
 
 from config import DB_PATH, DEFAULT_MODEL, load_worldbook, SETTINGS, resolve_model_transport_mode
 from database import get_db
+from active_window_state import last_user_private_conversation
 from ws import manager
 from band_commands import process_band_vibration, with_band_vibration_attachment
 from hug_pillow_commands import process_hug_pillow_commands
 from capabilities import process_pat_commands, is_capability_enabled
-from chat_web_cards import PROMPT as WEB_CARD_PROMPT, BLOCK as WEB_CARD_BLOCK, prose_chunks
+from chat_web_cards import PROMPT as WEB_CARD_PROMPT, prose_chunks, strip_drawings
 from game_invites import process_game_invites
 from chat_ambience import process_ambience_commands
 from compositions import process_compositions
@@ -42,6 +43,8 @@ from proactive_companionship import (
 from safe_live_stream import consume_safe_live_stream
 from realtime_stream_transport import RealtimeTransportOutcome, consume_realtime_transport
 from autonomy_state import autonomy_prompt_text
+from peer_dm import PEER_DM_HINT
+from peer_dm_wake import WakePeerReply
 from wechat_bridge import (
     dispatch_wechat_message,
     process_wechat_outbound_commands,
@@ -352,6 +355,8 @@ class ScheduleManager:
             last = manager.get_aion_last_active()
             if last and last.startswith("chatroom:"):
                 return {"type": "chatroom", "room_id": last.split(":", 1)[1]}
+            if last == "private":
+                return {"type": "private"}
             # Aion 侧没有活跃记录，回退到创建时的 room_id
             origin_room = item.get("origin_room_id", "")
             if origin_room:
@@ -378,8 +383,14 @@ class ScheduleManager:
                 "event_id": event_id,
             },
         })
-        from phone_screen import wait_for_phone_screen_after, freeze_phone_screen
-        phone_path = await wait_for_phone_screen_after(capture_requested_at)
+        from phone_screen import wait_for_phone_screen_result_after, freeze_phone_screen
+        status, phone_path = await wait_for_phone_screen_result_after(capture_requested_at)
+        if status == "locked":
+            return
+        if status == "timeout":
+            from activity import device_context_store
+            if device_context_store.slots.get("screen", {}).get("value") == "off":
+                return
         phone_attachment = (
             freeze_phone_screen(phone_path, event_id=event_id)
             if phone_path is not None else ""
@@ -579,8 +590,7 @@ class ScheduleManager:
         # 获取 conv_id（始终需要，用于 Aion 的上下文获取和保存）
         async with get_db() as db:
             db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT * FROM conversations ORDER BY updated_at DESC LIMIT 1")
-            conv = await cur.fetchone()
+            conv = await last_user_private_conversation(db)
             if not conv:
                 return
             conv_id = conv["id"]
@@ -727,6 +737,7 @@ class ScheduleManager:
                 trigger_message["attachments"] = [checkpoint_phone_attachment]
             messages = prefix + mem_inject + history + [trigger_message]
 
+        messages[-1]["content"] += "\n" + PEER_DM_HINT
         from app_supervision_ai import inject_app_supervision_context
         inject_app_supervision_context(messages)
 
@@ -785,8 +796,10 @@ class ScheduleManager:
         if is_proactive and allow_web_card:
             messages = [{'role': 'system', 'content': WEB_CARD_PROMPT}, *messages]
 
+        peer_reply = WakePeerReply()
+
         def reply_stream():
-            return prose_chunks(content_stream(), web_attachments, enabled=allow_web_card, model_key=debug_model_key)
+            return prose_chunks(peer_reply.public_stream(content_stream()), web_attachments, enabled=allow_web_card, model_key=debug_model_key)
 
         if use_realtime_wakeup:
             transport_outcome = await _consume_background_realtime_stream(
@@ -803,6 +816,7 @@ class ScheduleManager:
                 WebCommandStreamFilter(),
                 alarm_tts,
             )
+        await peer_reply.dispatch(sender, f"schedule:{sid}:{sender}", stream_result, usage_meta)
         full_text = stream_result.committed_text
         has_error = stream_result.stop_reason is not None
         error_text = stream_result.diagnostic_error or stream_result.stop_reason
@@ -927,8 +941,7 @@ class ScheduleManager:
 
         async with get_db() as db:
             db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT * FROM conversations ORDER BY updated_at DESC LIMIT 1")
-            conv = await cur.fetchone()
+            conv = await last_user_private_conversation(db)
             if not conv:
                 return
             conv_id = conv["id"]
@@ -992,6 +1005,7 @@ class ScheduleManager:
             trigger_prompt += f"\n请根据画面内容、设备活动动态、心率摘要和之前的对话上下文，自然地回应。"
         else:
             trigger_prompt += f"\n请根据设备活动动态、心率摘要和之前的对话上下文，自然地回应。"
+        trigger_prompt += "\n" + PEER_DM_HINT
 
         # 根据来源构建不同的上下文
         if origin == "connor" and is_chatroom:
@@ -1138,8 +1152,10 @@ class ScheduleManager:
         if is_proactive and allow_web_card:
             messages = [{'role': 'system', 'content': WEB_CARD_PROMPT}, *messages]
 
+        peer_reply = WakePeerReply()
+
         def reply_stream():
-            return prose_chunks(content_stream(), web_attachments, enabled=allow_web_card, model_key=debug_model_key)
+            return prose_chunks(peer_reply.public_stream(content_stream()), web_attachments, enabled=allow_web_card, model_key=debug_model_key)
 
         if use_realtime_wakeup:
             transport_outcome = await _consume_background_realtime_stream(
@@ -1156,6 +1172,7 @@ class ScheduleManager:
                 WebCommandStreamFilter(),
                 monitor_tts,
             )
+        await peer_reply.dispatch(sender, f"schedule:{sid}:{sender}", stream_result, usage_meta)
         full_text = stream_result.committed_text
         has_error = stream_result.stop_reason is not None
         error_text = stream_result.diagnostic_error or stream_result.stop_reason
@@ -1460,7 +1477,7 @@ async def _process_background_reply_commands(
     target_type = "chatroom" if (target or {}).get("type") == "chatroom" else "private"
     source_id = (target or {}).get("room_id") if target_type == "chatroom" else conv_id
     scope = {"room_id": source_id} if target_type == "chatroom" else {"conv_id": conv_id}
-    full_text, image_prompt, is_selfie = extract_image_command(WEB_CARD_BLOCK.sub('', full_text))
+    full_text, image_prompt, is_selfie = extract_image_command(strip_drawings(full_text))
     cleaned = await process_svakom_commands(full_text, ai_msg_id, **scope)
     cleaned = await _process_home_commands(cleaned)
     cleaned = await _process_background_wechat_commands(

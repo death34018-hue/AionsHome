@@ -1,9 +1,11 @@
-/* Store the artwork in its attachment. Only the isolated player receives HTML. */
+/* Store the artwork in its attachment. SVG drawings run in the chat after a
+   whitelist pass; legacy HTML pages only play in the isolated player. */
 (() => {
   const sources = new Map();
+  const prepared = new Map();
+  const drawn = new WeakSet();
   const sessions = new WeakMap();
   const pending = new Set();
-  const collapsed = new Set();
   let nativeSession;
   const escape = value => String(value).replace(/[&<>"']/g, c =>
     ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[c]));
@@ -11,20 +13,148 @@
   function render(attachments) {
     const item = attachments?.find(a => ['web_card','web_card_incomplete','web_card_pending'].includes(a?.type));
     if (!item) return '';
-    if (item.type === 'web_card_pending') return '<small class="web-card-note">正在写小网页…</small>';
+    if (item.type === 'web_card_pending') return '<small class="web-card-note">正在画小动画…</small>';
     if (item.type === 'web_card_incomplete') {
-      const reason = {too_large:'小网页超过了当时的 ' + (Number(item.limit) || 12000).toLocaleString('en-US') + ' 字符上限，可以让我写个短版。',
-        unclosed:'小网页少了结束标记，可以让我重写。', invalid_html:'没有收到可用的 HTML，可以让我重写。'};
-      return '<small class="web-card-note">' + (reason[item.reason] || '小网页没写完整，可以让我重写。') + '</small>';
+      const reason = {too_large:'超过了 ' + (Number(item.limit) || 16000).toLocaleString('en-US') + ' 字符上限，可以让我做个简单点的。',
+        invalid_html:'没有收到可用的 HTML，可以让我重写。', invalid:'没有收到能显示的动画，可以让我重画。'};
+      return '<small class="web-card-note">' + (reason[item.reason] || '这次没画完，可以让我重画。') + '</small>';
     }
     if (!/^[a-f0-9]{32}$/.test(item.id) || typeof item.html !== 'string') return '';
     const known = sources.get(item.id);
     if (!known || known.revision <= item.revision) sources.set(item.id, item);
-    return '<chat-web-card class="chat-web-card" data-web-card="' + item.id + '">' +
-      '<header><button type="button" class="web-card-title" data-web-action="rename" title="改标题" aria-label="改标题：' + escape(sources.get(item.id).title) + '"><strong>' + escape(sources.get(item.id).title) + '</strong> ✎</button><button type="button" data-web-action="edit">改网页</button>' +
+    const current = sources.get(item.id), title = escape(current.title);
+    const rename = '<button type="button" class="web-card-title" data-web-action="rename" title="改标题" aria-label="改标题：' +
+      title + '"><strong>' + title + '</strong> ✎</button>';
+    if (current.format === 'svg') {
+      const art = prepare(current);
+      return '<chat-web-card class="chat-web-card svg-card" data-web-card="' + item.id + '"><header>' + rename +
+        '<button type="button" data-web-action="replay">重来</button><button type="button" data-web-action="edit">改动画</button></header>' +
+        '<div class="web-card-art" style="aspect-ratio:' + art.ratio + '"></div><small role="status" aria-live="polite">' +
+        (art.root ? '' : '这段动画没法显示，可以点「改动画」重画。') + '</small></chat-web-card>';
+    }
+    return '<chat-web-card class="chat-web-card" data-web-card="' + item.id + '"><header>' + rename +
       '<button type="button" data-web-action="play" aria-expanded="false">打开</button></header><div class="web-card-stage" hidden></div>' +
       '<small role="status" aria-live="polite"></small></chat-web-card>';
   }
+
+  // ---- SVG drawings ----
+  // Only drawing and animation elements survive; nothing may run script,
+  // load a resource, or style the chat page.
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const TAGS = new Map(('svg g defs symbol use title desc style path rect circle ellipse line polyline polygon text tspan ' +
+    'textPath linearGradient radialGradient stop pattern clipPath mask marker filter feBlend feColorMatrix ' +
+    'feComponentTransfer feComposite feDropShadow feFlood feFuncA feFuncB feFuncG feFuncR feGaussianBlur feMerge ' +
+    'feMergeNode feMorphology feOffset feTurbulence feDisplacementMap animate animateMotion animateTransform set mpath')
+    .split(' ').map(name => [name.toLowerCase(), name]));
+  const ANIMATIONS = new Set(['animate', 'animateMotion', 'animateTransform', 'set']);
+  const EXTERNAL = /url\((?!\s*['"]?\s*#)|image-set\(|src\(|javascript:|\\/i;
+  const SCOPE_ESCAPE = /:host|slotted|@font-face|@import/i;
+  const ART_STYLE = ':host>svg{display:block!important;width:100%!important;height:100%!important;position:static!important}' +
+    ':host(.paused) *{animation-play-state:paused!important}';
+
+  function cleanCss(css) {
+    try {
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(css);
+      return [...sheet.cssRules].map(rule => rule.cssText)
+        .filter(text => !EXTERNAL.test(text) && !SCOPE_ESCAPE.test(text)).join('\n');
+    } catch { return ''; }
+  }
+
+  function copyAttributes(from, to) {
+    for (const {name, value} of from.attributes) {
+      const lower = name.toLowerCase();
+      if (lower.startsWith('on') || EXTERNAL.test(value)) continue;
+      if (lower === 'href' || lower === 'xlink:href') {
+        if (value.trim().startsWith('#')) to.setAttribute('href', value.trim());
+        continue;
+      }
+      if (lower.includes(':') || lower.startsWith('xmlns')) continue;
+      try { to.setAttribute(name, value); } catch {}
+    }
+  }
+
+  function cleanChildren(from, to) {
+    for (const node of from.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.CDATA_SECTION_NODE) {
+        to.append(node.data);
+        continue;
+      }
+      const name = node.nodeType === Node.ELEMENT_NODE && TAGS.get(node.localName.toLowerCase());
+      if (!name) continue;
+      if (ANIMATIONS.has(name) && /^on|href|^style$/i.test(node.getAttribute('attributeName') || '')) continue;
+      const el = document.createElementNS(SVG_NS, name);
+      copyAttributes(node, el);
+      if (name === 'style') el.textContent = cleanCss(node.textContent);
+      else cleanChildren(node, el);
+      to.append(el);
+    }
+  }
+
+  function parseSvg(source) {
+    const xml = new DOMParser().parseFromString(source, 'image/svg+xml');
+    if (!xml.getElementsByTagName('parsererror').length && xml.documentElement?.localName === 'svg') return xml.documentElement;
+    // HTML parsing tolerates stray "&" and closes tags cut off at the end.
+    return new DOMParser().parseFromString(source, 'text/html').querySelector('svg');
+  }
+
+  function prepare(item) {
+    const known = prepared.get(item.id);
+    if (known?.revision === item.revision) return known;
+    let root = null, w = 4, h = 3;
+    const source = parseSvg(item.html);
+    if (source) {
+      root = document.createElementNS(SVG_NS, 'svg');
+      copyAttributes(source, root);
+      for (const name of ['width', 'height', 'x', 'y', 'style']) root.removeAttribute(name);
+      const box = (source.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+      const size = name => /^\s*[\d.]+\s*(px)?\s*$/.test(source.getAttribute(name) || '') ? parseFloat(source.getAttribute(name)) : 0;
+      [w, h] = box.length === 4 && box.every(Number.isFinite) && box[2] > 0 && box[3] > 0 ? box.slice(2) : [size('width'), size('height')];
+      if (!(w > 0 && h > 0)) [w, h] = [320, 320];
+      if (box.length !== 4) root.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+      root.setAttribute('role', 'img');
+      root.setAttribute('aria-label', item.title);
+      cleanChildren(source, root);
+      if (!root.querySelector(':not(title):not(desc):not(style)')) root = null;
+    }
+    const ratio = Math.min(2.5, Math.max(0.5, w / h)).toFixed(4);
+    const result = {revision: item.revision, root, ratio};
+    prepared.set(item.id, result);
+    return result;
+  }
+
+  function draw(card) {
+    const model = sources.get(card.dataset.webCard);
+    const host = card.querySelector('.web-card-art');
+    const art = model && host && prepare(model);
+    if (!art?.root) return;
+    const shadow = host.shadowRoot || host.attachShadow({mode: 'open'});
+    const style = document.createElement('style');
+    style.textContent = ART_STYLE;
+    const svg = art.root.cloneNode(true);
+    shadow.replaceChildren(style, svg);
+    host.style.aspectRatio = art.ratio;
+    if (host.classList.contains('paused')) svg.pauseAnimations();
+    drawn.add(card);
+  }
+
+  // Off-screen drawings pause, so a long chat never animates in the background.
+  function setPlaying(card, playing) {
+    const host = card.querySelector('.web-card-art');
+    const svg = host?.shadowRoot?.querySelector('svg');
+    if (!svg) return;
+    host.classList.toggle('paused', !playing);
+    if (playing) svg.unpauseAnimations(); else svg.pauseAnimations();
+  }
+
+  const artObserver = new IntersectionObserver(entries => {
+    for (const {target, isIntersecting} of entries) {
+      if (isIntersecting && !drawn.has(target)) draw(target);
+      setPlaying(target, isIntersecting);
+    }
+  }, {rootMargin: '150px 0px'});
+
+  // ---- Legacy HTML pages ----
 
   // The artwork always runs on a virtual screen 360px wide, so vh, canvas
   // sizes and media queries match on every phone, then is scaled into the
@@ -280,7 +410,7 @@
       const doc = shellDocument(model.html, key);
       if (doc.length > PLAYER_LIMIT) {
         close(card);
-        status(card, '这张网页太长，App 播放器放不下。可以点「改网页」让作者精简一下。');
+        status(card, '这张网页太长，App 播放器放不下，可以用手机浏览器打开这段聊天。');
         return;
       }
       nativeSession = session;
@@ -301,38 +431,26 @@
     frame.srcdoc = artworkDocument(model.html);
   }
 
-  // Load visible cards lazily and respect an explicit collapse on re-render.
-  const observer = new IntersectionObserver(entries => {
-    for (const entry of entries) {
-      const card = entry.target;
-      if (!entry.isIntersecting || !card.isConnected || document.hidden) continue;
-      observer.unobserve(card);
-      const id = card.dataset.webCard;
-      if (collapsed.has(id) || sessions.has(card)) continue;
-      if (!window.AionWebCard || !nativeSession) open(card);
-    }
-  }, {threshold:0.95});
   customElements.define('chat-web-card', class extends HTMLElement {
-    connectedCallback() { observer.observe(this); }
+    connectedCallback() { if (this.classList.contains('svg-card')) artObserver.observe(this); }
     disconnectedCallback() {
-      observer.unobserve(this);
+      artObserver.unobserve(this);
       if (sessions.has(this)) close(this);
     }
   });
 
-  async function change(card, error, instruction, title) {
+  async function change(card, body) {
     const item = sources.get(card.dataset.webCard);
     if (!item || pending.has(item.id)) return;
-    if (error && item.auto_repaired) { status(card, '网页运行出错，可以点「改网页」。'); return; }
     const row = card.closest('[data-msg-id]');
     if (!row) return;
     const scope = row.classList.contains('msg-row') ? 'private' : 'chatroom';
     pending.add(item.id);
-    status(card, error ? '网页运行出错，正在修复…' : title ? '正在保存标题…' : '作者正在修改网页…');
+    status(card, body.title ? '正在保存标题…' : '作者正在修改动画…');
     try {
       const response = await fetch('/api/web-cards/' + scope + '/' + encodeURIComponent(row.dataset.msgId) + '/' + item.id, {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({revision:item.revision, error, instruction, title})
+        body:JSON.stringify({revision:item.revision, ...body})
       });
       const data = await response.json();
       if (!response.ok) throw Error(typeof data.detail === 'string' ? data.detail : '这次修改没有完成');
@@ -341,37 +459,32 @@
       if (!current) return;
       current.querySelector('strong').textContent = data.title;
       current.querySelector('[data-web-action=rename]').setAttribute('aria-label', '改标题：' + data.title);
-      if (!title) open(current);
-      status(current, title ? '标题已保存' : '网页已更新');
+      if (body.instruction) draw(current);
+      status(current, body.title ? '标题已保存' : '动画已更新');
     } catch (err) { status(document.querySelector('[data-web-card="' + item.id + '"]') || card, err.message || '这次修改没有完成'); }
     finally { pending.delete(item.id); }
   }
 
   function report(session, error) {
-    if (!session || session.reported || !error) return;
-    session.reported = true;
-    change(session.card, String(error).slice(0, 400), '');
+    if (session && error) status(session.card, '这张旧网页运行出错了。');
   }
   document.addEventListener('click', event => {
     const button = event.target.closest('[data-web-action]');
     const card = button?.closest('[data-web-card]');
     if (!card) return;
     event.stopPropagation();
-    if (button.dataset.webAction === 'play') {
-      if (sessions.has(card)) {
-        collapsed.add(card.dataset.webCard);
-        close(card);
-      } else {
-        collapsed.delete(card.dataset.webCard);
-        open(card);
-      }
-    } else if (button.dataset.webAction === 'rename') {
+    const action = button.dataset.webAction;
+    if (action === 'play') {
+      if (sessions.has(card)) close(card); else open(card);
+    } else if (action === 'replay') {
+      draw(card);
+    } else if (action === 'rename') {
       const name = sources.get(card.dataset.webCard).title;
       const title = window.prompt('卡片标题', name)?.trim();
-      if (title && title !== name) change(card, '', '', title.slice(0, 60));
+      if (title && title !== name) change(card, {title: title.slice(0, 60)});
     } else {
-      const instruction = window.prompt('想让作者怎样修改网页的内容、布局或玩法？')?.trim();
-      if (instruction) change(card, '', instruction.slice(0, 600));
+      const instruction = window.prompt('想让作者怎样修改这个动画？')?.trim();
+      if (instruction) change(card, {instruction: instruction.slice(0, 600)});
     }
   });
   window.addEventListener('pagehide', () => { if (nativeSession) close(nativeSession.card); });

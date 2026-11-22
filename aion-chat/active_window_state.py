@@ -15,6 +15,17 @@ AION_LAST_ACTIVE_KEY = "aion_last_active"
 CONNOR_LAST_ACTIVE_KEY = "connor_last_active"
 
 
+async def last_user_private_conversation(db):
+    cur = await db.execute(
+        "SELECT c.* FROM messages m JOIN conversations c ON c.id=m.conv_id "
+        "WHERE m.role='user' ORDER BY m.created_at DESC LIMIT 1"
+    )
+    row = await cur.fetchone()
+    if row:
+        return row
+    return await (await db.execute("SELECT * FROM conversations ORDER BY updated_at DESC LIMIT 1")).fetchone()
+
+
 async def _upsert_many(values: dict[str, str]) -> None:
     now = time.time()
     async with get_db() as db:

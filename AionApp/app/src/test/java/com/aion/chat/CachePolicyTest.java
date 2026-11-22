@@ -48,11 +48,19 @@ public class CachePolicyTest {
         assertTrue(MediaCacheStore.isCacheablePath("/cr-uploads/2026-06-21/photo.jpg"));
         assertTrue(MediaCacheStore.isCacheablePath("/api/tts/audio/message-1"));
         assertTrue(MediaCacheStore.isCacheablePath("/api/theater/tts/audio/message-2"));
+        assertTrue(MediaCacheStore.isCacheablePath("/api/theater/studio/audio/na_0123/4"));
         assertTrue(MediaCacheStore.isCacheablePath("/api/gift/thumbnail/gift-1"));
         assertTrue(MediaCacheStore.isCacheablePath("/api/diaries/entry-1/tts/audio"));
 
         assertFalse(MediaCacheStore.isCacheablePath("/api/messages"));
         assertFalse(MediaCacheStore.isCacheablePath("/api/music/stream/123"));
         assertFalse(MediaCacheStore.isCacheablePath("/public/wallpaper/large.mp4"));
+    }
+
+    @Test
+    public void nativeSpeechPlaysChatAndStoryClipsFromLocalCopies() {
+        assertTrue(TtsAudioBridge.usesLocalCopy("https://lan.test/api/tts/audio/message-1"));
+        assertTrue(TtsAudioBridge.usesLocalCopy("https://remote.test/api/theater/studio/audio/na_0123/4"));
+        assertFalse(TtsAudioBridge.usesLocalCopy("https://remote.test/api/diaries/entry-1/tts/audio"));
     }
 }

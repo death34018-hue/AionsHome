@@ -27,6 +27,12 @@ def _connor_display_name() -> str:
         return "第二AI"
 
 
+def chat_source_label(source: str, ai_name: str, companion_name: str) -> str:
+    if source == "peer_dm":
+        return f"{ai_name}与{companion_name}私聊"
+    return "群聊" if source == "group" else "私聊"
+
+
 def _json_list(value) -> list:
     if value is None:
         return []
@@ -152,7 +158,9 @@ async def _fetch_source_rows_by_ids(source_ids: list[str], user_name: str, ai_na
                     })
             elif prefix == "chatroom":
                 cur = await db.execute(
-                    "SELECT id, sender, content, created_at FROM chatroom_messages WHERE id=? AND sender != 'system'",
+                    "SELECT m.id, m.sender, m.content, m.created_at, r.type AS source "
+                    "FROM chatroom_messages m JOIN chatroom_rooms r ON r.id=m.room_id "
+                    "WHERE m.id=? AND m.sender != 'system' AND r.type IN ('group','peer_dm')",
                     (raw_id,),
                 )
                 row = await cur.fetchone()
@@ -160,6 +168,7 @@ async def _fetch_source_rows_by_ids(source_ids: list[str], user_name: str, ai_na
                     rows.append({
                         "id": f"chatroom:{row['id']}",
                         "name": chat_name_map.get(row["sender"], row["sender"]),
+                        "source_label": chat_source_label(row["source"], chat_ai_name, companion_name),
                         "content": row["content"],
                         "created_at": row["created_at"],
                     })
@@ -174,7 +183,8 @@ def _format_raw_evidence_block(mem: dict, rows: list[dict], limit: int = 700) ->
     for row in rows:
         ts = datetime.fromtimestamp(float(row["created_at"])).strftime("%m-%d %H:%M")
         text = re.sub(r"\s+", " ", str(row.get("content") or "")).strip()
-        lines.append(f"  - [{ts}] {row.get('name', '')}: {text[:limit]}")
+        label = f"[{row['source_label']}]" if row.get("source_label") else ""
+        lines.append(f"  - [{ts}]{label} {row.get('name', '')}: {text[:limit]}")
     return "\n".join(lines)
 
 
@@ -395,23 +405,15 @@ async def fetch_source_details(memories: list[dict], keywords: list[str]) -> str
                 "ORDER BY created_at ASC",
                 (start_ts, end_ts)
             )
-            rows = list(await cur.fetchall())
-            # 群聊消息
+            rows = [dict(r) for r in await cur.fetchall()]
             cur = await db.execute(
-                "SELECT id FROM chatroom_rooms WHERE type = 'group' ORDER BY updated_at DESC LIMIT 1"
+                "SELECT m.sender, m.content, m.created_at, r.type AS source FROM chatroom_messages m "
+                "JOIN chatroom_rooms r ON r.id=m.room_id "
+                "WHERE r.type IN ('group','peer_dm') AND m.created_at BETWEEN ? AND ? AND m.sender != 'system'",
+                (start_ts, end_ts),
             )
-            group_room = await cur.fetchone()
-            if group_room:
-                cur = await db.execute(
-                    "SELECT sender, content, created_at FROM chatroom_messages "
-                    "WHERE room_id = ? AND created_at >= ? AND created_at <= ? AND sender != 'system' "
-                    "ORDER BY created_at ASC",
-                    (group_room["id"], start_ts, end_ts),
-                )
-                for gr in await cur.fetchall():
-                    rows.append({"role": "assistant" if gr["sender"] == "aion" else "user",
-                                 "content": gr["content"], "created_at": gr["created_at"],
-                                 "_sender": gr["sender"]})
+            rows.extend(dict(r) for r in await cur.fetchall())
+        connor_name = _connor_display_name()
         print(f"[source_detail] 记忆 {mem.get('id','?')[:12]} 范围 {start_ts}-{end_ts}: 取到 {len(rows)} 条消息")
         hit_count = 0
         for row in rows:
@@ -420,14 +422,14 @@ async def fetch_source_details(memories: list[dict], keywords: list[str]) -> str
                 key = (row["created_at"], row["content"][:80])
                 if key not in seen:
                     seen.add(key)
-                    sender = row["_sender"] if isinstance(row, dict) and "_sender" in row else ""
+                    sender = row.get("sender")
                     if sender:
-                        connor_name = _connor_display_name()
                         name = {"user": user_name, "aion": ai_name, "connor": connor_name}.get(sender, sender)
                     else:
                         name = user_name if row["role"] == "user" else ai_name
                     matched_rows.append({
                         "name": name,
+                        "source_label": chat_source_label(row.get("source", "private"), ai_name, connor_name),
                         "content": row["content"],
                         "created_at": row["created_at"],
                     })
@@ -1069,7 +1071,7 @@ def _atomic_digest_prompt(
     ignored_text = "、".join(ignored_names) if ignored_names else "高频对话称呼"
     return (
         f"{persona_block}"
-        f"你是{actor_name}，请以自己的视角整理和{user_name}相关的对话记忆。从对话里抽取多条【原子记忆】。\n\n"
+        f"你是{actor_name}，请以自己的视角整理你参与的对话，按原文保留实际发言人和交流对象。从对话里抽取多条【原子记忆】。\n\n"
         "原子记忆规则：\n"
         "1. content 的第一个字符必须是绝对日期，格式固定为“YYYY-MM-DD，……”。日期来自 source_message_ids 对应原文的发生时间，用公历数字写入正文，作为 embedding 的一部分。\n"
         "2. content 开头必须使用绝对日期。尽量不要在正文里使用“今天、昨天、前天、最近、近期、这几天、前几天、那天、当天、当时、刚才、上周、上个月”等相对时间；如果原文用了相对时间，优先按原文时间换算成绝对日期，换算不清也不要因此丢弃有价值的记忆。\n"
@@ -1189,11 +1191,11 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
                 m["_source_id"] = f"private:{m['id']}"
                 m["_source"] = "private"
 
-            # ── 所有群聊窗口中主记忆锚点之后的消息 ──
+            # 主角色参与的群聊与角色间私聊。
             cur = await db.execute(
-                "SELECT m.id, m.sender, m.content, m.created_at FROM chatroom_messages m "
+                "SELECT m.id, m.sender, m.content, m.created_at, r.type AS _source FROM chatroom_messages m "
                 "JOIN chatroom_rooms r ON r.id = m.room_id "
-                "WHERE r.type = 'group' AND m.created_at > ? AND m.sender != 'system' "
+                "WHERE r.type IN ('group','peer_dm') AND m.created_at > ? AND m.sender != 'system' "
                 "ORDER BY m.created_at ASC",
                 (anchor_ts,),
             )
@@ -1201,7 +1203,6 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
                 d = dict(r)
                 # 映射 sender → role（主 AI 视角）
                 d["role"] = "assistant" if d["sender"] == "aion" else "user"
-                d["_source"] = "group"
                 d["_source_id"] = f"chatroom:{d['id']}"
                 d["attachments"] = None
                 new_msgs.append(d)
@@ -1289,11 +1290,11 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
             ts = datetime.fromtimestamp(m["created_at"]).strftime("%m-%d %H:%M")
             src = m.get("_source", "private")
             sender = m.get("sender", "")
-            if src == "group":
+            if sender:
                 name = {"user": user_name, "aion": ai_name, "connor": connor_name}.get(sender, sender)
             else:
                 name = user_name if m["role"] == "user" else ai_name
-            tag = f"[{'群聊' if src == 'group' else '私聊'}]" if has_mixed else ""
+            tag = f"[{chat_source_label(src, ai_name, connor_name)}]" if has_mixed or src == "peer_dm" else ""
             source_id = m.get("_source_id", "")
             lines.append(f"[{ts}][id={source_id}]{tag} {name}: {m['content']}")
         messages_text = date_header + "\n".join(lines)
@@ -1417,7 +1418,7 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
             pass
 
     # ── 总结后自由选择写日记、发朋友圈和送礼 ──
-    context_msgs = []
+    context_text = ""
     diary_generation = {
         "ok": False,
         "attempts": [],
@@ -1434,11 +1435,6 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
     elif total_new > 0 and all_summaries:
         try:
             # 使用本轮已合并排序的新消息，避免把总结产物或旧私聊尾巴重新喂给模型。
-            context_msgs = [
-                {"role": m["role"], "content": m["content"][:300]}
-                for m in new_msgs[-30:]
-                if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()
-            ]
             connor_name = _connor_display_name()
             context_lines = []
             for m in new_msgs[-30:]:
@@ -1447,11 +1443,11 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
                     continue
                 ts = datetime.fromtimestamp(m["created_at"]).strftime("%m-%d %H:%M")
                 src = m.get("_source", "private")
-                if src == "group":
+                if m.get("sender"):
                     name = {"user": user_name, "aion": ai_name, "connor": connor_name}.get(m.get("sender"), m.get("sender", ""))
                 else:
                     name = user_name if m.get("role") == "user" else ai_name
-                source_label = "群聊" if src == "group" else "私聊"
+                source_label = chat_source_label(src, ai_name, connor_name)
                 context_lines.append(f"[{ts}][{source_label}] {name}: {content[:300]}")
             context_text = "\n".join(context_lines)
             summaries_text = "\n".join(f"- {s}" for s in all_summaries)
@@ -1463,7 +1459,7 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
             diary_prompt = (
                 f"{persona_block}"
                 f"当前时间：{time_str}\n\n"
-                f"你是{ai_name}。你刚刚整理了和{user_name}今天的聊天记忆，以下是你整理出的摘要：\n"
+                f"你是{ai_name}。你刚刚整理了最近的聊天记忆，以下是摘要：\n"
                 f"{summaries_text}\n\n"
                 f"【最近上下文】\n{context_text}\n\n"
                 f"{DIGEST_DIARY_INSTRUCTION}"
@@ -1481,7 +1477,7 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
                 f"  \"gift\": {{\"image_prompt\": \"英文生图提示词，givegift 为 false 时留空\", \"message\": \"赠言，givegift 为 false 时留空\"}}\n"
                 f"}}"
             )
-            diary_messages = context_msgs + [{"role": "user", "content": diary_prompt}]
+            diary_messages = [{"role": "user", "content": diary_prompt}]
             diary_data, generation_status = await _generate_digest_diary(diary_messages, model_key)
             diary_generation.update(generation_status)
 
@@ -1529,17 +1525,6 @@ async def _do_digest(min_messages: int = 0, allow_ai_wishes: bool = False) -> di
     ai_wish_created = False
     if allow_ai_wishes and total_new > 0 and all_summaries and followup_model_calls_allowed and not digest_incomplete:
         try:
-            if not context_msgs:
-                context_msgs = [
-                    {"role": m["role"], "content": m["content"][:300]}
-                    for m in new_msgs[-30:]
-                    if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()
-                ]
-            context_text = "\n".join(
-                f"{item.get('role', 'message')}: {str(item.get('content') or '')[:300]}"
-                for item in context_msgs[-30:]
-            )
-
             async def _generate_wish_text(prompt: str):
                 return await simple_ai_call(
                     [{"role": "user", "content": prompt}],

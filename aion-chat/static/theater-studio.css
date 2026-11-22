@@ -334,6 +334,17 @@ body.theater-page.studio-shell[data-theme="light"] .input-row textarea:focus {
   border-color: var(--border-strong);
 }
 
+body.theater-page.studio-shell[data-theme="light"] .persona-modal :is(input:not([type="checkbox"]), select, textarea),
+body.theater-page.studio-shell[data-theme="light"] .persona-module-card,
+body.theater-page.studio-shell[data-theme="light"] .persona-module-state {
+  border-color: rgba(153, 99, 123, 0.24);
+}
+
+body.theater-page.studio-shell[data-theme="light"] .persona-module-card.is-enabled,
+body.theater-page.studio-shell[data-theme="light"] .persona-modal :is(input:not([type="checkbox"]), select, textarea):focus {
+  border-color: var(--border-strong);
+}
+
 body.theater-page.studio-shell[data-theme="light"] :is(.studio-btn.primary, .message-nav button, .studio-follow-toggle) {
   background: var(--glass-panel);
   border-color: var(--border-strong);

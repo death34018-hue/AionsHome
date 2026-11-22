@@ -65,6 +65,16 @@ public class PushMessageSyncTest {
         assertEquals(50, sync.cursor());
     }
 
+    @Test public void migrationKeepsTheNewestAddressCheckpoint() throws Exception {
+        String home = new PushMessageSync("{\"cursor\":500}").snapshot();
+        String outdoor = new PushMessageSync("{\"cursor\":120}").snapshot();
+        PushMessageSync merged = new PushMessageSync(PushMessageSync.newest(outdoor, "", null, home));
+        assertEquals(500, merged.cursor());
+        merged.acceptReplay(message(300, "msg_created", "seen-at-home", "old"),
+                (event, notify) -> fail("message already received on another address"));
+        assertEquals("", PushMessageSync.newest("", null));
+    }
+
     @Test public void baselineResponseCannotEraseNewerLiveNotificationDedup() throws Exception {
         PushMessageSync sync = new PushMessageSync("");
         List<String> notifications = new ArrayList<>();

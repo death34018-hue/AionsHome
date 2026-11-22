@@ -1378,19 +1378,25 @@ async def call_antigravity_cli(messages: list, model: str, meta: dict | None = N
 @logged_ai_call("antigravity_acp")
 async def call_antigravity_acp(messages, model, meta=None):
     image_paths = _collect_cli_image_paths(messages)
+    audio_paths = _collect_cli_media_paths(messages, "audio/") if antigravity_model_supports_audio(model) else ()
     prompt_messages = []
     for message in messages:
         paths = _collect_cli_image_paths([message]) if image_paths else ()
         if paths:
             labels = "、".join(f"图片{image_paths.index(path) + 1}" for path in paths)
             message = {**message, "content": f"{message.get('content') or ''}\n（图片附件：{labels}）"}
+        paths = _collect_cli_media_paths([message], "audio/") if audio_paths else ()
+        if paths:
+            labels = "、".join(f"音频{audio_paths.index(path) + 1}" for path in paths)
+            message = {**message, "content": f"{message.get('content') or ''}\n（语音附件：{labels}）"}
         prompt_messages.append(message)
     prompt = _build_cli_prompt(prompt_messages, include_image_refs=False, include_audio_refs=False)
-    await record_cli_prompt(prompt, instructions_file=antigravity_cli.PROFILE_SOURCE, images=image_paths)
     yield f"{CLI_STATUS_PREFIX}正在回复🚀…"
     try:
         timeout = antigravity_cli._timeout_seconds(_antigravity_print_timeout(meta))
-        async with aclosing(antigravity_acp.stream(prompt, model, image_paths, timeout=timeout)) as events:
+        async with aclosing(antigravity_acp.stream(
+            prompt, model, image_paths, audio_paths, timeout=timeout,
+        )) as events:
             async for kind, data in events:
                 if kind == 'text':
                     yield data
@@ -1418,6 +1424,8 @@ async def call_grok_cli(messages: list, model: str, meta: dict | None = None):
         return
     prompt = _build_cli_prompt(messages, include_image_refs=False, include_audio_refs=False)
     try:
+        await record_sent_messages([{"role": "system", "content": grok_cli.CHAT_INSTRUCTIONS},
+                                    {"role": "user", "content": prompt}])
         async for event in own_stream(grok_cli.stream_chat(
             binary, prompt, model, reasoning_effort=resolve_grok_reasoning_effort(model),
         )):

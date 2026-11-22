@@ -15,12 +15,15 @@ from config import (
     resolve_model_transport_mode,
 )
 from database import get_db
+from active_window_state import last_user_private_conversation
 from ws import manager
 from ai_providers import stream_ai, CLI_STATUS_PREFIX
 from memory import recall_memories, format_recalled_memories_for_prompt
 from tts import TTSStreamer
 from web_search import WebCommandStreamFilter
 from phone_camera import phone_camera
+from peer_dm import PEER_DM_HINT
+from peer_dm_wake import WakePeerReply
 
 
 SENTINEL_WAKE_TARGETS = {"main_ai", "second_ai", "both"}
@@ -203,10 +206,7 @@ async def async_get_last_aion_timeline_user_msg_time(conv_id: str = None) -> flo
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         if not conv_id:
-            cur = await db.execute(
-                "SELECT id FROM conversations ORDER BY updated_at DESC LIMIT 1"
-            )
-            conv = await cur.fetchone()
+            conv = await last_user_private_conversation(db)
             conv_id = conv["id"] if conv else None
 
         if conv_id:
@@ -270,10 +270,7 @@ async def async_get_recent_aion_timeline_text(
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
         if not conv_id:
-            cur = await db.execute(
-                "SELECT id FROM conversations ORDER BY updated_at DESC LIMIT 1"
-            )
-            conv = await cur.fetchone()
+            conv = await last_user_private_conversation(db)
             conv_id = conv["id"] if conv else None
 
         if conv_id:
@@ -1291,6 +1288,7 @@ class CameraMonitor:
             log_entry["core_reason"],
             recent_logs,
             "",
+            wake_id=image_result.request_id or str(now),
         )
 
     async def _analyze_and_log(
@@ -1320,10 +1318,7 @@ class CameraMonitor:
         try:
             async with get_db() as db:
                 db.row_factory = aiosqlite.Row
-                cur = await db.execute(
-                    "SELECT id FROM conversations ORDER BY updated_at DESC LIMIT 1"
-                )
-                conv = await cur.fetchone()
+                conv = await last_user_private_conversation(db)
                 conv_id = conv["id"] if conv else None
         except Exception:
             conv_id = None
@@ -1559,10 +1554,7 @@ class CameraMonitor:
                             "room_id": room["id"],
                             "room_type": room["type"],
                         }
-                cur = await db.execute(
-                    "SELECT id FROM conversations ORDER BY updated_at DESC LIMIT 1"
-                )
-                conv = await cur.fetchone()
+                conv = await last_user_private_conversation(db)
                 return (
                     {"type": "private", "conv_id": conv["id"]}
                     if conv else None
@@ -1658,6 +1650,8 @@ class CameraMonitor:
         cached_logs: list = None,
         screenshot_filename: str = "",
         camera_jpeg: bytes | None = None,
+        *,
+        wake_id: str = "",
     ):
         if target.get("type") != "chatroom" or not target.get("room_id"):
             raise RuntimeError("第二 AI 没有可用的聊天室窗口")
@@ -1721,10 +1715,11 @@ class CameraMonitor:
             else f"{connor_name} 与 {user_name} 的私聊里"
         )
         core_parts.append(
-            f"你现在是在{contact_scene}主动联系她。"
+            f"想联系{user_name}时，你的回复会发到{contact_scene}。"
             "只用你自己的口吻回复，不要续写、复述或模仿历史里的角色标签，"
             "也不要替其他角色发言。"
         )
+        core_parts.append(PEER_DM_HINT)
         try:
             from location import format_location_for_prompt
             loc_info = format_location_for_prompt()
@@ -1808,14 +1803,16 @@ class CameraMonitor:
                         continue
                     yield chunk
 
+        peer_reply = WakePeerReply()
         transport_outcome = await _consume_background_realtime_stream(
-            content_stream,
+            lambda: peer_reply.public_stream(content_stream()),
             model_key=model_key,
             tts_streamer=core_tts,
         )
         if transport_outcome.manual_retry_required:
             return
         stream_result = transport_outcome.result
+        await peer_reply.dispatch("connor", f"patrol:{wake_id or screenshot_filename}:connor", stream_result, usage_meta)
         full_text = _strip_leading_cli_role_header(stream_result.committed_text)
         safety_notice = stream_result.notice
         if not full_text.strip() and not safety_notice:
@@ -1883,6 +1880,7 @@ class CameraMonitor:
         camera_jpeg: bytes | None = None,
         *,
         target_override: dict | None = None,
+        wake_id: str = "",
     ):
         wb = load_worldbook()
         user_name = wb.get("user_name", "你")
@@ -1908,8 +1906,7 @@ class CameraMonitor:
 
         async with get_db() as db:
             db.row_factory = aiosqlite.Row
-            cur = await db.execute("SELECT * FROM conversations ORDER BY updated_at DESC LIMIT 1")
-            conv = await cur.fetchone()
+            conv = await last_user_private_conversation(db)
             if not conv:
                 return
             conv_id = conv["id"]
@@ -1964,10 +1961,11 @@ class CameraMonitor:
             core_parts.append(device_activity)
         contact_scene = "群聊里" if is_chatroom else f"{ai_name} 与 {user_name} 的私聊里"
         core_parts.append(
-            f"你现在是在{contact_scene}主动联系她。"
+            f"想联系{user_name}时，你的回复会发到{contact_scene}。"
             "只用你自己的口吻回复，不要续写、复述或模仿历史里的 [其他角色名]:、[Assistant]、[User] 等角色标签，"
             "也不要替 其他角色 发言。"
         )
+        core_parts.append(PEER_DM_HINT)
         # 注入位置和天气信息
         try:
             from location import format_location_for_prompt
@@ -2047,14 +2045,16 @@ class CameraMonitor:
                     continue
                 yield chunk
 
+        peer_reply = WakePeerReply()
         transport_outcome = await _consume_background_realtime_stream(
-            content_stream,
+            lambda: peer_reply.public_stream(content_stream()),
             model_key=model_key,
             tts_streamer=core_tts,
         )
         if transport_outcome.manual_retry_required:
             return
         stream_result = transport_outcome.result
+        await peer_reply.dispatch("aion", f"patrol:{wake_id or screenshot_filename}:aion", stream_result, usage_meta)
         full_text = stream_result.committed_text
         has_error = stream_result.stop_reason is not None
         error_text = stream_result.diagnostic_error or stream_result.stop_reason

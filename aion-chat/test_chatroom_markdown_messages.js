@@ -57,6 +57,14 @@ function loadMessageRenderer() {
   return context.renderMessage;
 }
 
+test('peer history displays escaped text with configured names and no message or avatar actions', () => {
+  const html = loadMessageRenderer()({id:'dm', room_id:'cr_peer_dm', sender:'aion', created_at:1,
+    content:'你好 <button>按钮</button>', attachments:[{type:'web_card'}]});
+  assert.match(html, /Primary AI/);
+  assert.match(html, /你好 &lt;button&gt;按钮&lt;\/button&gt;/);
+  assert.doesNotMatch(html, /onclick|<button|data-pat-target|chat-web-card|tts-replay-btn/);
+});
+
 test('web card is shown once between the invitation and the follow-up', () => {
   const before = '看看手感怎么样：', after = '怎么样，还顺滑吧？';
   const html = loadMessageRenderer()({id:'card', sender:'aion', content:before+'\n\n'+after,

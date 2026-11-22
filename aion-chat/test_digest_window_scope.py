@@ -161,6 +161,17 @@ class DigestWindowScopeTests(unittest.IsolatedAsyncioTestCase):
                 prompt, _, _ = await self.capture_full_text_prompt(target, complete=True)
                 self.assertIn('伴侣画像维护测试材料', prompt)
 
+    async def test_both_digests_label_peer_message_with_participants_and_actual_speaker(self):
+        async with self.connect() as db:
+            await db.execute("INSERT INTO chatroom_rooms VALUES ('cr_peer_dm','peer_dm',44)")
+            await db.execute("INSERT INTO chatroom_messages VALUES ('peer-1','cr_peer_dm','connor','一起去找北极星',44)")
+            await db.commit()
+        with patch('memory._connor_display_name', return_value='Nova'):
+            for target in ('main', 'second'):
+                with self.subTest(target=target):
+                    prompt, _, _ = await self.capture_full_text_prompt(target)
+                    self.assertIn('[id=chatroom:peer-1][Sol与Nova私聊] Nova: 一起去找北极星', prompt)
+
 
 if __name__ == '__main__':
     unittest.main()

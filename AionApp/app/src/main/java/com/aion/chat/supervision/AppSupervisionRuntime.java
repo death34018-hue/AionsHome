@@ -1,8 +1,13 @@
 package com.aion.chat.supervision;
 
+import android.app.KeyguardManager;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
 
@@ -63,7 +68,15 @@ public final class AppSupervisionRuntime {
     private final EmergencyUnlockGate emergencyGate;
 
     private boolean accessibilityActive;
-    private boolean screenReady = true;
+    private boolean screenReady;
+    private final BroadcastReceiver screenReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            if (Intent.ACTION_SCREEN_OFF.equals(action)) onScreenOff();
+            else if (Intent.ACTION_SCREEN_ON.equals(action)) onScreenOn();
+            else if (Intent.ACTION_USER_PRESENT.equals(action)) onUserPresent();
+        }
+    };
     private boolean detectorPolling;
     private boolean persistenceScheduled;
     private String currentForegroundPackage = "";
@@ -155,7 +168,11 @@ public final class AppSupervisionRuntime {
                 new AccessibilityRecoveryController(appContext),
                 new AppSupervisionOverlay(appContext),
                 new MainScheduler());
-        instance.onRuntimeStarted(isAccessibilityServiceEnabled(appContext));
+        IntentFilter screenEvents = new IntentFilter(Intent.ACTION_SCREEN_OFF);
+        screenEvents.addAction(Intent.ACTION_SCREEN_ON);
+        screenEvents.addAction(Intent.ACTION_USER_PRESENT);
+        appContext.registerReceiver(instance.screenReceiver, screenEvents);
+        instance.onRuntimeStarted(isAccessibilityServiceEnabled(appContext), instance.isDeviceUnlocked());
         return instance;
     }
 
@@ -180,7 +197,16 @@ public final class AppSupervisionRuntime {
                 "accessibility service connected");
     }
 
-    void onRuntimeStarted(boolean accessibilityEnabled) {
+    private boolean isDeviceUnlocked() {
+        if (context == null) return true; // JVM tests supply screen transitions directly.
+        PowerManager power = context.getSystemService(PowerManager.class);
+        KeyguardManager keyguard = context.getSystemService(KeyguardManager.class);
+        return power != null && power.isInteractive() && keyguard != null
+                && !keyguard.isKeyguardLocked() && !keyguard.isDeviceLocked();
+    }
+
+    synchronized void onRuntimeStarted(boolean accessibilityEnabled, boolean unlocked) {
+        screenReady = unlocked;
         if (!accessibilityEnabled) {
             onAccessibilityUnavailable();
         }
@@ -200,7 +226,8 @@ public final class AppSupervisionRuntime {
     }
 
     public synchronized void onPackageForeground(String packageName) {
-        if (packageName == null || packageName.trim().isEmpty()) {
+        if (!screenReady || packageName == null || packageName.trim().isEmpty()
+                || !isDeviceUnlocked()) {
             return;
         }
         String ownPackage = context == null ? "com.aion.chat" : context.getPackageName();
@@ -242,6 +269,7 @@ public final class AppSupervisionRuntime {
     }
 
     public synchronized void onAionsHomeForegroundChanged(boolean resumed) {
+        if (resumed && (!screenReady || !isDeviceUnlocked())) return;
         aionsHomeActivityResumed = resumed;
         foregroundGeneration++;
         if (resumed) {
@@ -283,6 +311,7 @@ public final class AppSupervisionRuntime {
     }
 
     public synchronized void onUserPresent() {
+        if (!isDeviceUnlocked()) return;
         screenReady = true;
         recovery.onUserPresent();
         settleIdleRounds();
@@ -301,8 +330,8 @@ public final class AppSupervisionRuntime {
         detector.pollOnce(packageName -> {
             synchronized (AppSupervisionRuntime.this) {
                 if (generation != foregroundGeneration) return;
+                onPackageForeground(packageName);
             }
-            onPackageForeground(packageName);
         });
     }
 
@@ -802,7 +831,7 @@ public final class AppSupervisionRuntime {
     }
 
     private synchronized void onCheckpointDeadline(String groupId) {
-        if (!screenReady || !engine.isFeatureEnabled()) return;
+        if (!screenReady || !engine.isFeatureEnabled() || !isDeviceUnlocked()) return;
         AppGroup foreground = engine.groupForPackage(currentForegroundPackage);
         if (foreground == null || !foreground.isMonitored()
                 || !groupId.equals(foreground.getGroupId())) return;
@@ -879,6 +908,7 @@ public final class AppSupervisionRuntime {
     }
 
     private void shutdown() {
+        if (context != null) context.unregisterReceiver(screenReceiver);
         stopDetectorIfRunning();
         checkpointDeadlineScheduler.shutdown();
         scheduler.cancelAll();

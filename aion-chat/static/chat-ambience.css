@@ -7,11 +7,28 @@
   overflow: hidden;
   border-radius: inherit;
 }
-.chat-ambience-tint {
+.chat-ambience-bg {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
   opacity: 0;
-  transition: opacity .35s ease, background-color .35s ease;
+  transition: opacity .35s ease;
+}
+.chat-ambience-page-bg {
+  position: fixed;
+  inset: 0;
+  z-index: -3;
+  width: 100%;
+  height: 100%;
+  display: block;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .35s ease;
+}
+@media (max-width: 768px) {
+  .chat-ambience-page-bg { display: none; }
 }
 .chat-ambience-canvas {
   position: absolute;
@@ -134,3 +151,22 @@
   font-variant-numeric: tabular-nums;
 }
 .chat-ambience-row:has(input:disabled) { opacity: .4; }
+
+/* 氛围字体联动（保留 Aion/Connor 专属名与内心独白颜色） */
+body[data-ambience-tint] :is(.private-ai-message-content, .ai-message-content, .msg-bubble, .bubble) strong {
+  color: var(--ambience-strong);
+}
+body[data-ambience-tint] .markdown-body blockquote {
+  border-left-color: var(--ambience-quote-bar, var(--accent));
+}
+body[data-ambience-tint] .markdown-body a,
+body[data-theme="light"][data-ambience-tint] .markdown-body a {
+  color: var(--accent);
+  text-decoration-color: var(--ambience-link-underline, currentColor);
+}
+body[data-ambience-tint] .chat-area .chat-header .header-actions .ai-chat-btn {
+  color: var(--accent);
+}
+body[data-ambience-tint] .msg-row.user .msg-role-name {
+  color: var(--accent) !important;
+}

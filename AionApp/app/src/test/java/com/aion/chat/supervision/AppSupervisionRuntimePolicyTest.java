@@ -67,12 +67,52 @@ public class AppSupervisionRuntimePolicyTest {
     }
 
     @Test
+    public void staleForegroundWhileLockedDoesNotStartAnotherUsageInterval() {
+        Harness harness = new Harness(true);
+        RecordingSyncListener listener = new RecordingSyncListener();
+        harness.runtime.setSyncListener(listener);
+        harness.runtime.onPackageForeground("com.example.main");
+        harness.scheduler.advanceMinutes(1);
+        harness.runtime.onScreenOff();
+        listener.events.clear();
+
+        harness.runtime.onPackageForeground("com.example.main");
+        harness.runtime.onScreenOn();
+        harness.scheduler.advanceMinutes(7 * 60);
+        harness.runtime.checkpointWatchdog();
+        harness.scheduler.runDue();
+        assertTrue(listener.events.isEmpty());
+        assertEquals(60_000L, harness.engine.snapshot(
+                "group-1", harness.scheduler.elapsedRealtime()).getRoundUsageMs());
+
+        harness.runtime.onUserPresent();
+        harness.runtime.onPackageForeground("com.example.main");
+        harness.scheduler.advanceMinutes(20);
+        harness.scheduler.runDue();
+        assertTrue(listener.events.contains("checkpoint:group-1:20"));
+    }
+
+    @Test
     public void coldStartWithoutEnabledAccessibilityStartsFallbackDetection() {
         Harness harness = new Harness(true);
 
-        harness.runtime.onRuntimeStarted(false);
+        harness.runtime.onRuntimeStarted(false, true);
 
         assertEquals(1, harness.recovery.unavailableCount);
+        assertEquals(1, harness.detector.startCount);
+    }
+
+    @Test
+    public void lockedColdStartWaitsForUnlockBeforeStartingFallback() {
+        Harness harness = new Harness(true);
+        harness.runtime.onRuntimeStarted(false, false);
+        harness.runtime.onPackageForeground("com.example.main");
+        harness.scheduler.advanceMinutes(60);
+        harness.runtime.checkpointWatchdog();
+        assertEquals(0, harness.detector.startCount);
+        assertEquals(0L, harness.engine.snapshot(
+                "group-1", harness.scheduler.elapsedRealtime()).getRoundUsageMs());
+        harness.runtime.onUserPresent();
         assertEquals(1, harness.detector.startCount);
     }
 
@@ -658,6 +698,7 @@ public class AppSupervisionRuntimePolicyTest {
                     featureEnabled, Collections.singletonList(group));
             runtime = new AppSupervisionRuntime(
                     null, engine, store, detector, recovery, overlay, scheduler);
+            runtime.onRuntimeStarted(true, true);
         }
     }
 

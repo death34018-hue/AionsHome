@@ -16,8 +16,7 @@ class AutonomyJourneyTests(unittest.IsolatedAsyncioTestCase):
             return {"id": "failed-event"}
 
         with patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value=config)), \
-             patch.object(autonomy, "_latest_user_message_ts", new=AsyncMock(return_value=900)), \
-             patch.object(autonomy, "refresh_actor_wake_for_user", new=AsyncMock(return_value=False)), \
+             patch.object(autonomy, "_latest_user_message_ts_for_actor", new=AsyncMock(return_value=900)), \
              patch.object(autonomy, "_capture_autonomy_monitor_context", new=AsyncMock(return_value=None)), \
              patch.object(autonomy, "_save_autonomy_monitor_card", new=AsyncMock()), \
              patch.object(autonomy, "_run_actor_once", new=AsyncMock(side_effect=RuntimeError("断线"))), \

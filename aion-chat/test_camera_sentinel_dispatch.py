@@ -193,6 +193,10 @@ class CameraActorRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_aion_resolves_private_and_group_windows(self):
         monitor = camera.CameraMonitor()
+        async with self._get_db() as db:
+            await db.execute("INSERT INTO conversations VALUES ('newer-ai-only', 50)")
+            await db.execute("INSERT INTO chatroom_rooms VALUES ('peer-room', 'peer_dm', 60)")
+            await db.commit()
         with (
             patch.object(camera, "get_db", side_effect=self._get_db),
             patch.object(camera.manager, "get_aion_last_active", return_value="private"),
@@ -217,6 +221,12 @@ class CameraActorRouteTests(unittest.IsolatedAsyncioTestCase):
             {"type": "chatroom", "room_id": "group-1", "room_type": "group"},
             group_target,
         )
+        from schedule import ScheduleManager
+        with patch.object(camera.manager, "get_aion_last_active", return_value="private"):
+            self.assertEqual(
+                {"type": "private"},
+                ScheduleManager()._resolve_target({"origin": "aion", "origin_room_id": "group-1"}),
+            )
 
     async def test_connor_uses_active_room_and_falls_back_to_private_room(self):
         monitor = camera.CameraMonitor()

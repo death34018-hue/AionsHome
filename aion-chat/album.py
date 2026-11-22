@@ -210,25 +210,29 @@ class AlbumStore:
                 pass
         return freed
 
-    def random_unseen_photos(self, actor: str, limit: int = 2) -> list[dict]:
+    def _unseen_photo_rows(self, actor: str, *, random_order: bool = False):
         if actor not in ("aion", "connor"):
             raise ValueError("未知浏览角色")
-        selected = []
+        order_clause = " ORDER BY RANDOM()" if random_order else ""
         with self._connect() as db:
-            rows = db.execute("""SELECT p.* FROM photos p
+            rows = db.execute(
+                f"""SELECT p.* FROM photos p
                 WHERE p.album_id='family' AND p.removed_at IS NULL
-                AND NOT EXISTS (SELECT 1 FROM photo_views v WHERE v.actor=? AND v.photo_id=p.id)
-                ORDER BY RANDOM()""", (actor,))
-            for row in rows:
-                if not (self.images_dir / row["filename"]).is_file():
-                    continue
-                selected.append(self._photo(row))
-                if len(selected) >= min(max(limit, 1), 2):
-                    break
-        return selected
+                AND NOT EXISTS (SELECT 1 FROM photo_views v WHERE v.actor=? AND v.photo_id=p.id){order_clause}""",
+                (actor,),
+            ).fetchall()
+        return [row for row in rows if (self.images_dir / row["filename"]).is_file()]
+
+    def random_unseen_photos(self, actor: str, limit: int = 2) -> list[dict]:
+        rows = self._unseen_photo_rows(actor, random_order=True)
+        cap = min(max(limit, 1), 2)
+        return [self._photo(row) for row in rows[:cap]]
+
+    def count_unseen_photos(self, actor: str) -> int:
+        return len(self._unseen_photo_rows(actor))
 
     def has_unseen_photos(self, actor: str) -> bool:
-        return bool(self.random_unseen_photos(actor, limit=1))
+        return self.count_unseen_photos(actor) > 0
 
     def get_photo_views(self, photo_id: str) -> list[dict]:
         with self._connect() as db:

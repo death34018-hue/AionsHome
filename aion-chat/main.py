@@ -6,6 +6,7 @@ FastAPI app 创建、lifespan、静态文件挂载、路由注册
 import asyncio, json, logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 import sys
 
 if __name__ == "__main__" and "--scheduled" in sys.argv:
@@ -38,6 +39,7 @@ from config import BASE_DIR, DATA_DIR, PUBLIC_DIR, UPLOADS_DIR, ALBUM_IMAGES_DIR
 from database import init_db, get_db
 from active_window_state import restore_active_windows
 from agy_usage import UsageMonitor, monitor as agy_usage_monitor
+from antigravity_cli import update_loop as agy_update_loop
 from codex_app_server import query_codex_quota
 from ws import manager
 from system_logs import router as system_logs_router
@@ -147,7 +149,7 @@ async def _auto_digest_loop():
                 cur = await db.execute(
                     "SELECT m.created_at FROM chatroom_messages m "
                     "JOIN chatroom_rooms r ON r.id = m.room_id "
-                    "WHERE m.sender='user' AND r.type='group' "
+                    "WHERE (m.sender='user' AND r.type='group') OR r.type='peer_dm' "
                     "ORDER BY m.created_at DESC LIMIT 1"
                 )
                 row = await cur.fetchone()
@@ -228,6 +230,8 @@ async def lifespan(app: FastAPI):
     # 自动记忆总结定时任务
     digest_task = asyncio.create_task(_auto_digest_loop())
     cr_digest_task = asyncio.create_task(_connor_1v1_auto_digest_loop())
+    from peer_dm import resume_pending, stop as stop_peer_dm
+    await resume_pending()
     compression_task = asyncio.create_task(auto_calendar_compression_loop())
     persona_evolution_task = asyncio.create_task(main_ai_persona_evolution_loop())
     connor_persona_evolution_task = asyncio.create_task(connor_persona_evolution_loop())
@@ -237,8 +241,7 @@ async def lifespan(app: FastAPI):
     wechat_mode_dispatcher.start()
     openclaw_weixin_runtime.start()
     qq_social_task = asyncio.create_task(supervise_qq_social())
-    agy_usage_task = asyncio.create_task(agy_usage_monitor.run())
-    codex_usage_task = asyncio.create_task(codex_usage_monitor.run())
+    agy_update_task = asyncio.create_task(agy_update_loop())
     security_access_service.start(manager.broadcast)
     try:
         from billiards.service import get_service as billiards_service
@@ -248,10 +251,10 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        agy_usage_task.cancel()
-        codex_usage_task.cancel()
+        await stop_peer_dm()
         qq_social_task.cancel()
-        await asyncio.gather(agy_usage_task, codex_usage_task, qq_social_task, return_exceptions=True)
+        agy_update_task.cancel()
+        await asyncio.gather(qq_social_task, agy_update_task, return_exceptions=True)
         from sentinel_dispatch import stop as stop_sentinel_dispatch
         await stop_sentinel_dispatch()
         await kitchen_sentinel.stop()
@@ -513,6 +516,12 @@ async def get_usage():
         "agy": {**agy_usage_monitor.snapshot, "display_name": ai_name},
         "codex": {**codex_usage_monitor.snapshot, "display_name": companion_name},
     }, headers={"Cache-Control": "no-store"})
+
+@app.post("/api/usage/{source}/refresh")
+async def refresh_usage(source: Literal["agy", "codex"]):
+    monitor = agy_usage_monitor if source == "agy" else codex_usage_monitor
+    await monitor.refresh()
+    return JSONResponse(monitor.snapshot, headers={"Cache-Control": "no-store"})
 
 @app.get("/tts-test")
 async def tts_test_page():

@@ -422,6 +422,23 @@ class IdleAutonomyFriendVisitSelectionTests(unittest.IsolatedAsyncioTestCase):
 
 
 class IdleAutonomyRoleChatTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sleeping_user_can_be_left_out_of_a_peer_chat(self):
+        choice = {"action": "peer_dm", "reason": "私下商量的原因", "message": "她睡着了，我们聊会儿？"}
+        with patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value={"actions": {"peer_dm": True}})), \
+             patch.object(autonomy, "recent_niche_index", new=AsyncMock(return_value=[])), \
+             patch.object(autonomy, "_ask_actor_json", new=AsyncMock(return_value=choice)) as ask, \
+             patch.object(autonomy, "start_peer_dm", new=AsyncMock()) as deliver, \
+             patch.object(autonomy, "append_idle_event", new=AsyncMock()) as event, \
+             patch.object(autonomy, "_save_private_message", new=AsyncMock()) as public:
+            result = await autonomy._run_actor_once("aion", idle_minutes=180, wake_id="123")
+        self.assertTrue(result["ok"])
+        self.assertIn("夜里", ask.await_args.args[1])
+        deliver.assert_awaited_once_with("aion", choice["message"], trigger_id="idle:aion:123")
+        self.assertNotIn(choice["reason"], str(result))
+        self.assertNotIn(choice["message"], str(result))
+        event.assert_not_awaited()
+        public.assert_not_awaited()
+
     async def test_role_chat_uses_natural_message_from_action_selection_without_extra_call(self):
         selected = {
             "action": "role_chat",

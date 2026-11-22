@@ -159,12 +159,141 @@ class _StreamingReasoningMeta(dict):
 
 # ── 角色预设文件路径 ──
 PERSONAS_PATH = DATA_DIR / "theater_personas.json"
+PROMPT_MODULES_PATH = DATA_DIR / "theater_prompt_modules.json"
+
+DEFAULT_PROMPT_MODULES = (
+    {"id": "writing_prompt_1", "title": "写作提示1"},
+    {"id": "writing_prompt_2", "title": "写作提示2"},
+)
+
+
+def _coerce_prompt_module_dict(item) -> Optional[dict]:
+    if hasattr(item, "model_dump"):
+        item = item.model_dump()
+    elif hasattr(item, "dict"):
+        item = item.dict()
+    if not isinstance(item, dict):
+        return None
+    mod_id = str(item.get("id") or "").strip()
+    if not mod_id:
+        return None
+    content = item.get("content")
+    return {
+        "id": mod_id,
+        "title": str(item.get("title") or "").strip(),
+        "enabled": bool(item.get("enabled", False)),
+        "content": "" if content is None else str(content),
+    }
+
+
+def _normalize_prompt_modules(raw_modules=None) -> list[dict]:
+    by_id: dict[str, dict] = {}
+    extra_order: list[str] = []
+    default_ids = {item["id"] for item in DEFAULT_PROMPT_MODULES}
+    if isinstance(raw_modules, (list, tuple)):
+        for raw_item in raw_modules:
+            coerced = _coerce_prompt_module_dict(raw_item)
+            if not coerced:
+                continue
+            mod_id = coerced["id"]
+            if mod_id not in by_id and mod_id not in default_ids:
+                extra_order.append(mod_id)
+            by_id[mod_id] = coerced
+
+    result: list[dict] = []
+    for default in DEFAULT_PROMPT_MODULES:
+        existing = by_id.get(default["id"])
+        result.append({
+            "id": default["id"],
+            "title": (existing["title"] if existing and existing["title"] else default["title"]),
+            "enabled": existing["enabled"] if existing else False,
+            "content": existing["content"] if existing else "",
+        })
+
+    for mod_id in extra_order:
+        existing = by_id[mod_id]
+        result.append({
+            "id": mod_id,
+            "title": existing["title"] or mod_id,
+            "enabled": existing["enabled"],
+            "content": existing["content"],
+        })
+    return result
+
+
+def _legacy_prompt_modules_from_personas() -> list[dict]:
+    raw_personas = []
+    if PERSONAS_PATH.exists():
+        try:
+            loaded = json.loads(PERSONAS_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, list):
+                raw_personas = [p for p in loaded if isinstance(p, dict)]
+        except Exception:
+            pass
+
+    picked: list[dict] = []
+    for default in DEFAULT_PROMPT_MODULES:
+        slot_id = default["id"]
+        candidates = []
+        for persona_obj in raw_personas:
+            raw_mods = persona_obj.get("prompt_modules")
+            if not isinstance(raw_mods, list):
+                continue
+            for item in raw_mods:
+                coerced = _coerce_prompt_module_dict(item)
+                if coerced and coerced["id"] == slot_id:
+                    candidates.append(coerced)
+        chosen = next(
+            (c for c in candidates if c["enabled"] and c["content"].strip()),
+            None,
+        ) or next(
+            (c for c in candidates if c["content"].strip()),
+            None,
+        )
+        if chosen:
+            picked.append(chosen)
+    return _normalize_prompt_modules(picked)
+
+
+def _load_prompt_modules() -> list[dict]:
+    if PROMPT_MODULES_PATH.exists():
+        try:
+            raw = json.loads(PROMPT_MODULES_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                raw = raw.get("prompt_modules") if "prompt_modules" in raw else raw.get("modules")
+            if isinstance(raw, list):
+                return _normalize_prompt_modules(raw)
+        except Exception:
+            pass
+    return _legacy_prompt_modules_from_personas()
+
+
+def _save_prompt_modules(raw_modules) -> list[dict]:
+    normalized = _normalize_prompt_modules(raw_modules)
+    PROMPT_MODULES_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+    return normalized
+
+
+def compose_persona_text(persona_obj: Optional[dict], prompt_modules: Optional[list] = None) -> str:
+    base = "" if not isinstance(persona_obj, dict) or persona_obj.get("persona") is None else str(persona_obj.get("persona"))
+    modules = _normalize_prompt_modules(prompt_modules) if prompt_modules is not None else []
+    enabled_modules = [
+        mod["content"].strip()
+        for mod in modules
+        if mod["enabled"] and mod["content"].strip()
+    ]
+    if not enabled_modules:
+        return base if base.strip() else ""
+    parts = ([base.strip()] if base.strip() else []) + enabled_modules
+    return "\n\n".join(parts)
 
 
 def _load_personas() -> list:
     if PERSONAS_PATH.exists():
         try:
-            return json.loads(PERSONAS_PATH.read_text(encoding="utf-8"))
+            raw = json.loads(PERSONAS_PATH.read_text(encoding="utf-8"))
+            if isinstance(raw, list):
+                return [p for p in raw if isinstance(p, dict)]
         except Exception:
             pass
     return []
@@ -175,6 +304,17 @@ def _save_personas(data: list):
 
 
 # ── Pydantic 模型 ──
+class PersonaPromptModule(BaseModel):
+    id: str
+    title: str = ""
+    enabled: bool = False
+    content: str = ""
+
+
+class PromptModulesUpdate(BaseModel):
+    prompt_modules: List[PersonaPromptModule]
+
+
 class PersonaCreate(BaseModel):
     name: str = "新角色"
     persona: str = ""
@@ -223,6 +363,16 @@ class TheaterRegenerateRequest(BaseModel):
 @router.get("/personas")
 async def list_personas():
     return _load_personas()
+
+
+@router.get("/prompt-modules")
+async def list_prompt_modules():
+    return _load_prompt_modules()
+
+
+@router.put("/prompt-modules")
+async def update_prompt_modules(body: PromptModulesUpdate):
+    return _save_prompt_modules(body.prompt_modules)
 
 
 @router.post("/personas")
@@ -454,14 +604,11 @@ async def send_message(conv_id: str, body: MsgCreate):
     for msg in history[:-1]:
         msg["attachments"] = []
 
-    # 加载角色人设
-    persona_text = ""
+    # 加载角色人设与通用写作提示
     temperature = body.temperature
     personas = _load_personas()
-    for p in personas:
-        if p["id"] == persona_id:
-            persona_text = p.get("persona", "")
-            break
+    selected_persona = next((p for p in personas if p["id"] == persona_id), None)
+    persona_text = compose_persona_text(selected_persona, _load_prompt_modules())
 
     # 构建 prompt：仅注入人设 + 上下文，干净纯粹
     prefix = []
@@ -637,13 +784,10 @@ async def regenerate_message(conv_id: str, body: TheaterRegenerateRequest,
         if i != last_user_idx:
             msg["attachments"] = []
 
-    # 加载角色人设
-    persona_text = ""
+    # 加载角色人设与通用写作提示
     personas = _load_personas()
-    for p in personas:
-        if p["id"] == persona_id:
-            persona_text = p.get("persona", "")
-            break
+    selected_persona = next((p for p in personas if p["id"] == persona_id), None)
+    persona_text = compose_persona_text(selected_persona, _load_prompt_modules())
 
     prefix = []
     if persona_text:

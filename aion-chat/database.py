@@ -133,6 +133,7 @@ async def init_db():
             pass
         for col, defn in [
             ("reasoning_content", "TEXT DEFAULT ''"),
+            ("model_key", "TEXT DEFAULT ''"),
             ("ai_feedback_rating", "TEXT DEFAULT ''"),
             ("ai_feedback_reason", "TEXT DEFAULT ''"),
             ("ai_feedback_created_at", "REAL"),
@@ -675,6 +676,7 @@ async def init_db():
         """)
         for col, defn in [
             ("reasoning_content", "TEXT DEFAULT ''"),
+            ("model_key", "TEXT DEFAULT ''"),
             ("ai_feedback_rating", "TEXT DEFAULT ''"),
             ("ai_feedback_reason", "TEXT DEFAULT ''"),
             ("ai_feedback_created_at", "REAL"),
@@ -685,6 +687,8 @@ async def init_db():
             except:
                 pass
         await db.execute("CREATE INDEX IF NOT EXISTS idx_chatroom_msg_room ON chatroom_messages(room_id, created_at)")
+        from peer_dm import init_storage as init_peer_dm
+        await init_peer_dm(db)
         from chatroom_image_retry import init_storage as init_image_retries
         await init_image_retries(db)
         await db.execute("CREATE INDEX IF NOT EXISTS idx_chatroom_msg_created ON chatroom_messages(created_at DESC)")

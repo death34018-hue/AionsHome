@@ -69,8 +69,8 @@ async def search_messages(q: str = Query(..., min_length=1, max_length=80), limi
             "SELECT m.id, m.room_id AS target_id, m.sender AS speaker_key, m.content, m.attachments, "
             "m.created_at, r.title AS target_title, r.type AS room_type "
             "FROM chatroom_messages m "
-            "LEFT JOIN chatroom_rooms r ON r.id = m.room_id "
-            "WHERE COALESCE(m.content,'') LIKE ? ESCAPE '\\' "
+            "JOIN chatroom_rooms r ON r.id = m.room_id "
+            "WHERE r.type IN ('group','connor_1v1') AND COALESCE(m.content,'') LIKE ? ESCAPE '\\' "
             "ORDER BY m.created_at DESC LIMIT ?",
             (like, room_limit),
         )

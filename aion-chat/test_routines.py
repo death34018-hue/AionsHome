@@ -1,6 +1,7 @@
 """The routine API must preserve independent weekdays and date-only changes."""
 
 import importlib
+import json
 import tempfile
 import unittest
 from contextlib import asynccontextmanager
@@ -54,11 +55,42 @@ class RoutineApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
 
+    async def test_fresh_install_starts_empty_without_local_defaults(self):
+        for day in ("2026-11-02", "2026-11-03", "2026-11-08"):
+            self.assertEqual((await self.get_day(day))["items"], [])
+
+    async def test_local_default_routine_seeds_once_when_present(self):
+        seed_path = Path(self.tmp.name) / "seed.json"
+        seed_path.write_text(json.dumps({
+            "0": [{"id": "slot1", "start": "15:30", "end": "17:00", "content": "周一固定安排"}],
+            "1": [{"id": "slot1", "start": "15:30", "end": "17:00", "content": "周二固定安排"}],
+        }, ensure_ascii=False), encoding="utf-8")
+        seed_db = Path(self.tmp.name) / "seeded.db"
+
+        @asynccontextmanager
+        async def seeded_db():
+            async with aiosqlite.connect(seed_db) as db:
+                yield db
+
+        with patch.object(self.store, "DEFAULT_ROUTINE_PATH", seed_path), patch.object(self.store, "get_db", seeded_db):
+            await self.store.init_routine_storage()
+            async with seeded_db() as db:
+                row = await (await db.execute("SELECT items FROM routine_weekly WHERE weekday=0")).fetchone()
+                self.assertEqual(json.loads(row[0])[0]["content"], "周一固定安排")
+                await db.execute("UPDATE routine_weekly SET items='[]' WHERE weekday=0")
+                await db.commit()
+            await self.store.init_routine_storage()
+            async with seeded_db() as db:
+                row = await (await db.execute("SELECT items FROM routine_weekly WHERE weekday=0")).fetchone()
+                self.assertEqual(json.loads(row[0]), [])
+
     async def test_weekday_crud_repeats_without_changing_other_weekdays(self):
+        await self.write("POST", "2026-11-02", "周一项目", start="15:30", end="17:00")
+        await self.write("POST", "2026-11-03", "周二项目", start="15:30", end="17:00")
         monday = await self.get_day("2026-11-02")
         tuesday = await self.get_day("2026-11-03")
-        self.assertIn("健身 · 练胸", [row["content"] for row in monday["items"]])
-        self.assertIn("健身 · 练背", [row["content"] for row in tuesday["items"]])
+        self.assertIn("周一项目", [row["content"] for row in monday["items"]])
+        self.assertIn("周二项目", [row["content"] for row in tuesday["items"]])
         created = await self.write("POST", "2026-11-02", "  晚间阅读  ", start="20:00", end="20:30")
         item_id = created["id"]
         self.assertEqual(created["content"], "晚间阅读")
@@ -72,9 +104,8 @@ class RoutineApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(item_id, [row["id"] for row in (await self.get_day("2026-11-09"))["items"]])
 
     async def test_date_overrides_merge_with_weekly_changes_and_can_be_reset(self):
-        monday = await self.get_day("2026-11-02")
-        gym = next(row for row in monday["items"] if row["start"] == "15:30")
-        dinner = next(row for row in monday["items"] if row["start"] == "18:30")
+        gym = await self.write("POST", "2026-11-02", "周一安排", start="15:30", end="17:00")
+        dinner = await self.write("POST", "2026-11-02", "晚餐时间", start="18:30", end="19:30")
         await self.write("PUT", "2026-11-02", "今天休息", gym["id"], scope="day")
         extra = await self.write("POST", "2026-11-02", "临时出门", scope="day", start="19:30", end="20:00")
         await self.write("PUT", "2026-11-02", "外出吃晚餐", dinner["id"], start="18:30", end="19:30")
@@ -85,7 +116,7 @@ class RoutineApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("外出吃晚餐", contents)
         self.assertIn("临时出门", contents)
         next_week = await self.get_day("2026-11-09")
-        self.assertIn("健身 · 练胸", [row["content"] for row in next_week["items"]])
+        self.assertIn("周一安排", [row["content"] for row in next_week["items"]])
         self.assertNotIn(extra["id"], [row["id"] for row in next_week["items"]])
         await self.client.delete(f"/api/routines/items/{gym['id']}", params={"date": "2026-11-02", "scope": "day"})
         self.assertNotIn(gym["id"], [row["id"] for row in (await self.get_day("2026-11-02"))["items"]])
@@ -93,15 +124,16 @@ class RoutineApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reset.status_code, 200)
         restored = await self.get_day("2026-11-02")
         self.assertFalse(restored["has_overrides"])
-        self.assertIn("健身 · 练胸", [row["content"] for row in restored["items"]])
+        self.assertIn("周一安排", [row["content"] for row in restored["items"]])
 
     async def test_copy_does_not_link_weekdays_and_empty_plan_survives_restart(self):
+        await self.write("POST", "2026-11-02", "周一安排", start="15:30", end="17:00")
         copied = await self.client.post("/api/routines/copy", json={"source_weekday": 0, "target_weekdays": [1]})
         self.assertEqual(copied.status_code, 200, copied.text)
         tuesday = await self.get_day("2026-11-03")
         gym = next(row for row in tuesday["weekly_items"] if row["start"] == "15:30")
-        await self.write("PUT", "2026-11-03", "改回练背", gym["id"])
-        self.assertIn("健身 · 练胸", [row["content"] for row in (await self.get_day("2026-11-02"))["items"]])
+        await self.write("PUT", "2026-11-03", "改回周二安排", gym["id"])
+        self.assertIn("周一安排", [row["content"] for row in (await self.get_day("2026-11-02"))["items"]])
         for row in (await self.get_day("2026-11-03"))["weekly_items"]:
             response = await self.client.delete(f"/api/routines/items/{row['id']}", params={"date": "2026-11-03", "scope": "weekly"})
             self.assertEqual(response.status_code, 200)
@@ -109,7 +141,7 @@ class RoutineApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.get_day("2026-11-10"))["items"], [])
 
     async def test_promoting_date_edit_updates_that_date_without_erasing_other_exceptions(self):
-        gym = next(row for row in (await self.get_day("2026-11-02"))["items"] if row["start"] == "15:30")
+        gym = await self.write("POST", "2026-11-02", "周一安排", start="15:30", end="17:00")
         await self.write("PUT", "2026-11-02", "当天散步", gym["id"], scope="day")
         await self.write("PUT", "2026-11-09", "下周出门", gym["id"], scope="day")
         await self.write("PUT", "2026-11-02", "每周游泳", gym["id"])

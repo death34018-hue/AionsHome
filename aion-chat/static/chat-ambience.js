@@ -1,10 +1,9 @@
-// 聊天氛围层：在背景图之上、消息之下叠加天气动效和一层淡色。
+// 聊天氛围层：在背景图之上、消息之下叠加天气动效，并通过离线亮度 LUT 重绘底图色调。
 // 效果和颜色由服务端保存，用户与 AI 共用；浓淡只存本机。
 // 手机优先：粒子数量固定并循环复用，窄屏限 30 帧，没有东西可画时停掉循环并释放画布。
 (() => {
   'use strict';
   const KEY = 'aion_chat_ambience';
-  const API = '/api/chat-ambience';
   const EFFECTS = [
     ['rain', '🌧️', '下雨'], ['snow', '❄️', '下雪'], ['wind', '🍃', '刮风'], ['leaves', '🍂', '落叶'],
     ['sakura', '🌸', '樱花'], ['sun', '☀️', '阳光'], ['firefly', '✨', '萤火虫'], ['bubble', '🫧', '泡泡'],
@@ -16,10 +15,18 @@
     ['#ff5a5f', '赤'], ['#ff9d42', '橙'], ['#ffd84a', '黄'], ['#57c96b', '绿'],
     ['#45a8ff', '蓝'], ['#4656c9', '靛'], ['#a05cff', '紫']
   ];
-  const MIN_STRENGTH = 4;
-  const MAX_STRENGTH = 40;
-  const DEFAULT_STRENGTH = 12;
+  const MIN_STRENGTH = 20;
+  const MAX_STRENGTH = 100;
+  const DEFAULT_STRENGTH = 70;
+  const STATE_VERSION = 2;
   const TAU = Math.PI * 2;
+  const BG_URLS = { dark: '/public/chat-bg-dark.jpg', light: '/public/chat-bg-light.jpg' };
+  const BG_MAX_HEIGHT = { dark: 1280, light: 1120 };
+  const IS_LITTLE_ENDIAN = (() => {
+    const buf = new ArrayBuffer(4);
+    new Uint32Array(buf)[0] = 0x0a0b0c0d;
+    return new Uint8Array(buf)[0] === 0x0d;
+  })();
 
   const area = document.querySelector('.chat-area');
   if (!area) return;
@@ -32,12 +39,15 @@
     if (typeof raw === 'string') {
       try { data = JSON.parse(raw); } catch (_) { data = null; }
     }
-    const next = { effect: 'none', tint: '', strength: DEFAULT_STRENGTH };
+    const next = { v: STATE_VERSION, effect: 'none', tint: '', strength: DEFAULT_STRENGTH };
     if (!data || typeof data !== 'object') return next;
     if (has(SIMS, data.effect)) next.effect = data.effect;
     if (typeof data.tint === 'string' && /^#[0-9a-f]{6}$/i.test(data.tint)) next.tint = data.tint.toLowerCase();
-    const strength = Number(data.strength);
-    if (Number.isFinite(strength)) next.strength = Math.min(MAX_STRENGTH, Math.max(MIN_STRENGTH, Math.round(strength)));
+    // 旧版（无 v: 2）把浓淡当作遮罩透明度（默认 12%），迁移时重置为新算法默认 70%
+    if (data.v === STATE_VERSION) {
+      const strength = Number(data.strength);
+      if (Number.isFinite(strength)) next.strength = Math.min(MAX_STRENGTH, Math.max(MIN_STRENGTH, Math.round(strength)));
+    }
     return next;
   }
 
@@ -48,14 +58,25 @@
   const layer = document.createElement('div');
   layer.className = 'chat-ambience';
   layer.setAttribute('aria-hidden', 'true');
-  const tint = document.createElement('div');
-  tint.className = 'chat-ambience-tint';
+  const bgCanvas = document.createElement('canvas');
+  bgCanvas.className = 'chat-ambience-bg';
+  bgCanvas.width = bgCanvas.height = 0;
   const canvas = document.createElement('canvas');
   canvas.className = 'chat-ambience-canvas';
   canvas.width = canvas.height = 0;
-  layer.append(tint, canvas);
+  layer.append(bgCanvas, canvas);
   area.prepend(layer);
 
+  const pageBgCanvas = document.createElement('canvas');
+  pageBgCanvas.className = 'chat-ambience-page-bg';
+  pageBgCanvas.setAttribute('aria-hidden', 'true');
+  pageBgCanvas.width = pageBgCanvas.height = 0;
+  document.body.prepend(pageBgCanvas);
+
+  const bgCtx = bgCanvas.getContext('2d');
+  const pageBgCtx = pageBgCanvas.getContext('2d');
+  const desktopQuery = typeof window.matchMedia === 'function' ? window.matchMedia('(min-width: 769px)') : null;
+  const isDesktop = () => (desktopQuery ? desktopQuery.matches : window.innerWidth >= 769);
   const ctx = canvas.getContext('2d');
   const subPage = document.getElementById('subPageOverlay');
   let width = 0;
@@ -1027,10 +1048,314 @@
     else if (sim || bursts.length) fit();
   }
 
+  // ── 离线 1D 亮度 LUT 重着色 ──
+  const lumaCache = { dark: null, light: null };
+  const lumaPending = { dark: null, light: null };
+  let bgImageData = null;
+  let tintRaf = 0;
+  let tintSeq = 0;
+  let clearTimer = 0;
+
+  const clamp01 = x => (x < 0 ? 0 : x > 1 ? 1 : x);
+  const smoothstep = (e0, e1, x) => {
+    const t = clamp01((x - e0) / (e1 - e0));
+    return t * t * (3 - 2 * t);
+  };
+
+  function hexToRgb(hex) {
+    if (typeof hex !== 'string' || !/^#[0-9a-f]{6}$/i.test(hex)) return [1, 1, 1];
+    return [
+      parseInt(hex.slice(1, 3), 16) / 255,
+      parseInt(hex.slice(3, 5), 16) / 255,
+      parseInt(hex.slice(5, 7), 16) / 255
+    ];
+  }
+
+  function hslToRgb01(h, s, l) {
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const hp = (((h % 360) + 360) % 360) / 60;
+    const x = c * (1 - Math.abs((hp % 2) - 1));
+    const m = l - c * 0.5;
+    let r = 0, g = 0, b = 0;
+    const sector = Math.floor(hp) % 6;
+    if (sector === 0) { r = c; g = x; }
+    else if (sector === 1) { r = x; g = c; }
+    else if (sector === 2) { g = c; b = x; }
+    else if (sector === 3) { g = x; b = c; }
+    else if (sector === 4) { r = x; b = c; }
+    else { r = c; b = x; }
+    return [clamp01(r + m), clamp01(g + m), clamp01(b + m)];
+  }
+
+  function targetColorMeta(hex) {
+    const [r, g, b] = hexToRgb(hex);
+    const mx = Math.max(r, g, b);
+    const mn = Math.min(r, g, b);
+    const df = mx - mn;
+    let h = 0;
+    if (df > 1e-6) {
+      if (mx === r) h = (60 * ((g - b) / df) + 360) % 360;
+      else if (mx === g) h = (60 * ((b - r) / df) + 120) % 360;
+      else h = (60 * ((r - g) / df) + 240) % 360;
+    }
+    const sTarget = mx > 1e-6 ? df / mx : 0;
+    const chromaFactor = Math.min(1, sTarget / 0.25);
+    const [pr, pg, pb] = hslToRgb01(h, 1, 0.5);
+    const yHue = 0.2126 * pr + 0.7152 * pg + 0.0722 * pb;
+    const arc = ((280 - h + 180) % 360) - 180;
+    const dirSign = arc >= 0 ? 1 : -1;
+    return { h, yHue, dirSign, chromaFactor };
+  }
+
+  function hslHex(h, sPct, lPct) {
+    const [r, g, b] = hslToRgb01(h, clamp01(sPct / 100), clamp01(lPct / 100));
+    const toHex = c => Math.round(c * 255).toString(16).padStart(2, '0');
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+  }
+
+  function hslaCss(h, sPct, lPct, alpha) {
+    const [r, g, b] = hslToRgb01(h, clamp01(sPct / 100), clamp01(lPct / 100));
+    return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${alpha})`;
+  }
+
+  const clampStrength = value => Math.min(MAX_STRENGTH, Math.max(MIN_STRENGTH, Number(value) || DEFAULT_STRENGTH));
+
+  function buildTextPalette(hex, light, strength = DEFAULT_STRENGTH) {
+    const { h: ht, chromaFactor } = targetColorMeta(hex);
+    const k = clampStrength(strength) / 70;
+    const satScale = (0.45 + 0.55 * k) * chromaFactor;
+    if (light) {
+      const hInk = (ht - 13 * smoothstep(35, 50, ht) * (1 - smoothstep(65, 85, ht)) + 360) % 360;
+      return {
+        text: hslHex(hInk, Math.min(46, 28 * satScale), 19),
+        text2: hslHex(hInk, Math.min(40, 24 * satScale), 36),
+        text3: hslHex(hInk, Math.min(34, 22 * satScale), 47),
+        strong: hslHex(hInk, Math.min(72, 58 * satScale), 31),
+        accent: hslHex(hInk, Math.min(68, 54 * satScale), 40),
+        accent2: hslHex(hInk, Math.min(68, 56 * satScale), 34),
+        quoteBar: hslHex(hInk, Math.min(65, 50 * satScale), 42),
+        borderStrong: hslaCss(hInk, Math.min(62, 46 * satScale), 42, 0.42),
+        linkUnderline: hslaCss(hInk, Math.min(68, 54 * satScale), 40, 0.42)
+      };
+    }
+    return {
+      text: hslHex(ht, Math.min(58, 34 * satScale), 94 - Math.max(0, k - 1) * 4),
+      text2: hslHex(ht, Math.min(50, 32 * satScale), 78),
+      text3: hslHex(ht, Math.min(42, 28 * satScale), 64),
+      strong: hslHex(ht, Math.min(90, 76 * satScale), 82 - Math.max(0, k - 1) * 5),
+      accent: hslHex(ht, Math.min(88, 78 * satScale), 74),
+      accent2: hslHex(ht, Math.min(84, 72 * satScale), 78),
+      quoteBar: hslHex(ht, Math.min(82, 68 * satScale), 72),
+      borderStrong: hslaCss(ht, Math.min(72, 58 * satScale), 76, 0.36),
+      linkUnderline: hslaCss(ht, Math.min(88, 78 * satScale), 74, 0.46)
+    };
+  }
+
+  function buildRecolorLut(hex, light, strength = DEFAULT_STRENGTH) {
+    const { h: ht, yHue, dirSign, chromaFactor } = targetColorMeta(hex);
+    const k = clampStrength(strength) / 70;
+    const lut = new Uint8Array(256 * 3);
+    for (let i = 0; i < 256; i++) {
+      const v = i / 255;
+      let hue, sat, lum;
+      if (light) {
+        const t = clamp01((v - 0.65) / (0.99 - 0.65));
+        hue = (ht + dirSign * (12 * (1 - t) - 10 * t) + 360) % 360;
+        const lBase = 0.71 + 0.285 * Math.pow(t, 0.92);
+        const lShift = (1 - k) * 0.025 * (1 - t);
+        lum = Math.min(0.996, Math.max(0.66, lBase + 0.035 * Math.max(0, yHue - 0.55) * (1 - t) + lShift));
+        const starFade = 1 - smoothstep(0.84, 0.99, t);
+        const sScale = 0.35 + 0.65 * k;
+        sat = Math.min(0.78, Math.max(0, (0.44 + 0.16 * smoothstep(0, 0.70, t)) * starFade * sScale * chromaFactor));
+      } else {
+        const lumComp = Math.pow(0.28 / (0.18 + yHue), 0.35);
+        const lSky = 0.010 + 0.014 * smoothstep(0.015, 0.055, v);
+        const nebT = clamp01((v - 0.042) / (0.36 - 0.042));
+        const nebScale = 0.72 + 0.28 * k;
+        const lNeb = 0.38 * Math.pow(nebT, 0.85) * lumComp * nebScale;
+        const starT = smoothstep(0.28, 0.95, v);
+        lum = clamp01((lSky + lNeb) * (1 - starT) + (0.45 + 0.55 * v) * starT);
+        hue = (ht + dirSign * (10 * (1 - smoothstep(0.04, 0.35, v)) - 6 * smoothstep(0.12, 0.45, v)) + 360) % 360;
+        const sScale = 0.40 + 0.60 * k;
+        sat = Math.min(0.95, Math.max(0, (0.55 + 0.30 * smoothstep(0.045, 0.14, v)) * (1 - 0.88 * smoothstep(0.30, 0.85, v)) * sScale * chromaFactor));
+      }
+      const [r, g, b] = hslToRgb01(hue, sat, lum);
+      const o = i * 3;
+      lut[o] = Math.round(r * 255);
+      lut[o + 1] = Math.round(g * 255);
+      lut[o + 2] = Math.round(b * 255);
+    }
+    return lut;
+  }
+
+  function loadLuma(theme) {
+    if (lumaCache[theme]) return Promise.resolve(lumaCache[theme]);
+    if (lumaPending[theme]) return lumaPending[theme];
+    lumaPending[theme] = new Promise(resolve => {
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => {
+        try {
+          const srcW = img.naturalWidth || img.width;
+          const srcH = img.naturalHeight || img.height;
+          if (!srcW || !srcH) { resolve(null); return; }
+          const maxH = BG_MAX_HEIGHT[theme];
+          const scale = srcH > maxH ? maxH / srcH : 1;
+          const w = Math.max(1, Math.round(srcW * scale));
+          const h = Math.max(1, Math.round(srcH * scale));
+          const off = document.createElement('canvas');
+          off.width = w;
+          off.height = h;
+          const oc = off.getContext('2d', { willReadFrequently: true }) || off.getContext('2d');
+          if (!oc) { off.width = off.height = 0; resolve(null); return; }
+          oc.drawImage(img, 0, 0, w, h);
+          const pixels = oc.getImageData(0, 0, w, h).data;
+          const luma = new Uint8Array(w * h);
+          if (theme === 'light') {
+            for (let i = 0, p = 0; i < luma.length; i++, p += 4) {
+              luma[i] = Math.round(0.299 * pixels[p] + 0.587 * pixels[p + 1] + 0.114 * pixels[p + 2]);
+            }
+          } else {
+            for (let i = 0, p = 0; i < luma.length; i++, p += 4) {
+              luma[i] = Math.round(0.25 * pixels[p] + 0.30 * pixels[p + 1] + 0.45 * pixels[p + 2]);
+            }
+          }
+          off.width = off.height = 0;
+          lumaCache[theme] = { width: w, height: h, data: luma };
+          resolve(lumaCache[theme]);
+        } catch (_) {
+          resolve(null);
+        }
+      };
+      img.onerror = () => resolve(null);
+      img.src = BG_URLS[theme];
+    }).finally(() => { lumaPending[theme] = null; });
+    return lumaPending[theme];
+  }
+
+  function clearPageBg(immediate) {
+    pageBgCanvas.style.opacity = '0';
+    if (immediate) pageBgCanvas.width = pageBgCanvas.height = 0;
+  }
+
+  function syncPageBg() {
+    if (!state.tint || !bgCanvas.width || !bgCanvas.height || !isDesktop() || !pageBgCtx) {
+      clearPageBg(true);
+      return;
+    }
+    if (pageBgCanvas.width !== bgCanvas.width || pageBgCanvas.height !== bgCanvas.height) {
+      pageBgCanvas.width = bgCanvas.width;
+      pageBgCanvas.height = bgCanvas.height;
+    }
+    pageBgCtx.drawImage(bgCanvas, 0, 0);
+    pageBgCanvas.style.opacity = '1';
+  }
+
+  function drawRecolored(entry, tintHex, light, strength) {
+    if (!entry || !bgCtx) return;
+    const { width: w, height: h, data: luma } = entry;
+    const lut = buildRecolorLut(tintHex, light, strength);
+    if (bgCanvas.width !== w || bgCanvas.height !== h || !bgImageData) {
+      bgCanvas.width = w;
+      bgCanvas.height = h;
+      bgImageData = bgCtx.createImageData(w, h);
+    }
+    const out = bgImageData.data;
+    if (IS_LITTLE_ENDIAN && out.buffer) {
+      const lut32 = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) {
+        const o = i * 3;
+        lut32[i] = ((0xff << 24) | (lut[o + 2] << 16) | (lut[o + 1] << 8) | lut[o]) >>> 0;
+      }
+      const out32 = new Uint32Array(out.buffer, out.byteOffset, luma.length);
+      for (let i = 0; i < luma.length; i++) out32[i] = lut32[luma[i]];
+    } else {
+      for (let i = 0, p = 0; i < luma.length; i++, p += 4) {
+        const o = luma[i] * 3;
+        out[p] = lut[o];
+        out[p + 1] = lut[o + 1];
+        out[p + 2] = lut[o + 2];
+        out[p + 3] = 255;
+      }
+    }
+    bgCtx.putImageData(bgImageData, 0, 0);
+    bgCanvas.style.opacity = '1';
+    syncPageBg();
+  }
+
+  function paintTintNow() {
+    const tintHex = state.tint;
+    if (!tintHex) return;
+    const light = isLight();
+    const theme = light ? 'light' : 'dark';
+    const cached = lumaCache[theme];
+    if (cached) {
+      drawRecolored(cached, tintHex, light, state.strength);
+      return;
+    }
+    const seq = ++tintSeq;
+    loadLuma(theme).then(entry => {
+      if (seq !== tintSeq || !entry || state.tint !== tintHex || isLight() !== light) return;
+      drawRecolored(entry, tintHex, light, state.strength);
+    });
+  }
+
+  const TEXT_VARS = [
+    '--text', '--text2', '--text3', '--text-secondary', '--text-muted',
+    '--accent', '--accent2', '--border-strong',
+    '--ambience-strong', '--ambience-quote-bar', '--ambience-link-underline'
+  ];
+
+  function applyTextPalette() {
+    const style = document.body.style;
+    if (!state.tint) {
+      document.body.removeAttribute('data-ambience-tint');
+      for (const key of TEXT_VARS) style.removeProperty(key);
+      return;
+    }
+    const palette = buildTextPalette(state.tint, isLight(), state.strength);
+    document.body.setAttribute('data-ambience-tint', '1');
+    style.setProperty('--text', palette.text);
+    style.setProperty('--text2', palette.text2);
+    style.setProperty('--text3', palette.text3);
+    style.setProperty('--text-secondary', palette.text2);
+    style.setProperty('--text-muted', palette.text3);
+    style.setProperty('--accent', palette.accent);
+    style.setProperty('--accent2', palette.accent2);
+    style.setProperty('--border-strong', palette.borderStrong);
+    style.setProperty('--ambience-strong', palette.strong);
+    style.setProperty('--ambience-quote-bar', palette.quoteBar);
+    style.setProperty('--ambience-link-underline', palette.linkUnderline);
+  }
+
   // ── 设置项 ──
   function applyTint() {
-    if (state.tint) tint.style.backgroundColor = state.tint;
-    tint.style.opacity = state.tint ? String(state.strength / 100) : '0';
+    applyTextPalette();
+    if (!state.tint) {
+      tintSeq++;
+      if (tintRaf) {
+        cancelAnimationFrame(tintRaf);
+        tintRaf = 0;
+      }
+      bgCanvas.style.opacity = '0';
+      clearPageBg(false);
+      clearTimeout(clearTimer);
+      clearTimer = setTimeout(() => {
+        if (!state.tint) {
+          bgCanvas.width = bgCanvas.height = 0;
+          bgImageData = null;
+          clearPageBg(true);
+        }
+      }, 380);
+      return;
+    }
+    clearTimeout(clearTimer);
+    if (!tintRaf) {
+      tintRaf = requestAnimationFrame(() => {
+        tintRaf = 0;
+        paintTintNow();
+      });
+    }
   }
   function render() {
     const custom = Boolean(state.tint) && !TINTS.some(([color]) => color === state.tint);
@@ -1061,30 +1386,26 @@
   }
 
   // ── 与服务端同步：手动修改上报，AI 或其他设备的修改直接套用 ──
-  const clientId = Math.random().toString(36).slice(2);
   let reportTimer = 0;
-  function report() {
+  let pending = {};
+  function report(patch) {
+    Object.assign(pending, patch);
     clearTimeout(reportTimer);
     reportTimer = setTimeout(() => {
-      fetch(API, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ effect: state.effect, tint: state.tint, source: clientId })
-      }).catch(() => {});
+      window.AionAmbienceSync.save(pending);
+      pending = {};
     }, 300);
   }
   function applyRemote(remote) {
-    // 自己上报后的回声不再套用，避免拖动取色时被旧值拉回
-    if (!remote || typeof remote !== 'object' || remote.source === clientId) return;
     const patch = {};
-    if (typeof remote.effect === 'string') patch.effect = remote.effect;
-    if (typeof remote.tint === 'string') patch.tint = remote.tint;
+    if (typeof remote.effect === 'string' && !('effect' in pending)) patch.effect = remote.effect;
+    if (typeof remote.tint === 'string' && !('tint' in pending)) patch.tint = remote.tint;
     update(patch, true);
     if (remote.burst) burst(remote.burst);
   }
   function change(patch) {
     update(patch, true);
-    report();
+    report(patch);
   }
 
   function buildControl(root) {
@@ -1142,24 +1463,29 @@
   }).observe(layer);
   document.addEventListener('visibilitychange', sync);
   if (subPage) new MutationObserver(sync).observe(subPage, { attributes: true, attributeFilter: ['class'] });
-  // 换主题后雨雪颜色跟着换
-  new MutationObserver(() => { if (sim) rebuild(); })
-    .observe(document.body, { attributes: true, attributeFilter: ['data-theme'] });
+  // 换主题后雨雪颜色与底图调色跟着换
+  let lastLight = isLight();
+  new MutationObserver(() => {
+    const nextLight = isLight();
+    if (nextLight === lastLight) return;
+    lastLight = nextLight;
+    if (sim) rebuild();
+    applyTint();
+  }).observe(document.body, { attributes: true, attributeFilter: ['data-theme'] });
+  if (desktopQuery) {
+    if (desktopQuery.addEventListener) desktopQuery.addEventListener('change', syncPageBg);
+    else if (desktopQuery.addListener) desktopQuery.addListener(syncPageBg);
+  }
   window.addEventListener('storage', event => {
     if (event.key === KEY || event.key === null) update(normalize(event.newValue), false);
   });
 
-  // 服务端还没有记录时，用本机设置初始化
-  fetch(API).then(response => response.ok ? response.json() : null).then(result => {
-    if (!result) return;
-    if (result.state) applyRemote(result.state);
-    else report();
-  }).catch(() => {});
-
   window.AionChatAmbience = {
-    get: () => ({ ...state }),
+    get: () => ({ effect: state.effect, tint: state.tint, strength: state.strength }),
     set: change,
     burst,
-    applyRemote
+    applyRemote,
+    buildLut: buildRecolorLut,
+    buildTextPalette
   };
 })();

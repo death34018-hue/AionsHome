@@ -22,6 +22,53 @@ class SystemLogTests(unittest.IsolatedAsyncioTestCase):
         broadcast.start()
         self.addCleanup(broadcast.stop)
 
+    async def test_cli_log_matches_mixed_timeline_sent_to_transport(self):
+        import antigravity_acp
+        import antigravity_cli
+        from test_antigravity_cli import FakeProcess
+
+        def update(kind, text):
+            return {"method": "session/update", "params": {"sessionId": "s", "update": {
+                "sessionUpdate": kind, "content": {"type": "text", "text": text}}}}
+        process = FakeProcess([
+            {"id": 1, "result": {"protocolVersion": 1}},
+            {"id": 2, "result": {"sessionId": "s", "configOptions": [
+                {"id": "model", "currentValue": "test"}, {"id": "thought_level", "currentValue": "high"}]}},
+            {"method": "session/update", "params": {"sessionId": "s", "update": {
+                "sessionUpdate": "available_commands_update", "availableCommands": []}}},
+            update("agent_thought_chunk", "这轮带了三条历史。"),
+            update("agent_message_chunk", "收到。[伙伴私聊："),
+            update("agent_message_chunk", "接着聊]"),
+            {"id": 3, "result": {"stopReason": "end_turn"}},
+        ])
+        peer_text = "第一行\n第二行\n<meta>发送时间：21:55 [甲与乙私聊]</meta>"
+        timeline = [
+            {"role": "user", "content": "前一条消息"},
+            {"role": "user", "content": peer_text, "_timeline_source": "peer_dm"},
+            {"role": "user", "content": "后一条消息"},
+        ]
+        workspace = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        prepare = antigravity_cli.prepare_chat_workspace
+        with patch.object(antigravity_cli, "find_binary", return_value="agy.exe"), \
+                patch.object(antigravity_cli, "require_chat_permissions"), \
+                patch.object(antigravity_cli, "prepare_chat_workspace",
+                             lambda vision=False: prepare(workspace, vision=vision)), \
+                patch.object(antigravity_acp.asyncio, "create_subprocess_exec", AsyncMock(return_value=process)), \
+                patch.object(antigravity_acp, "terminate_process_tree", new=AsyncMock()):
+            async for _ in ai_providers.call_antigravity_acp(timeline, "test-high"):
+                pass
+        sent = [json.loads(c.args[0])["params"]["prompt"][0]["text"]
+                for c in process.stdin.write.call_args_list
+                if json.loads(c.args[0]).get("method") == "session/prompt"]
+        entry, = system_logs.list_logs()
+        self.assertIn(peer_text, sent[0])
+        self.assertEqual([m["content"] for m in entry["prompt_messages"] if m["role"] == "user"], sent)
+        system, = [m["content"] for m in entry["prompt_messages"] if m["role"] == "system"]
+        self.assertTrue(system.startswith("# System Prompt"))
+        self.assertEqual(entry["prompt_count"], len(entry["prompt_messages"]))
+        self.assertEqual(entry["response_text"], "收到。[伙伴私聊：接着聊]")
+        self.assertEqual(entry["reasoning_content"], "这轮带了三条历史。")
+
     async def test_background_provider_call_records_prompt_and_usage(self):
         async def respond(request):
             return httpx.Response(200, text='data: ' + json.dumps({
@@ -117,7 +164,7 @@ class SystemLogTests(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_cli_calls_record_their_own_final_text_and_instructions(self):
         profile = self.enterContext(tempfile.TemporaryDirectory())
         instructions = Path(profile)/"agent.md"
-        instructions.write_text("角色指令",encoding="utf-8")
+        instructions.write_text("---\nname: agent\ntools: []\n---\n\n角色指令",encoding="utf-8")
         @system_logs.logged_ai_call("test-cli")
         async def provider(prompt):
             yield "starting"

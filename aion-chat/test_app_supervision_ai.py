@@ -430,6 +430,22 @@ class AppSupervisionCommandQueueTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AppSupervisionCheckpointWakeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_phone_reporting_locked_at_checkpoint_never_starts_alarm(self):
+        manager = schedule.ScheduleManager()
+        manager._fire_alarm = AsyncMock()
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(phone_screen, "PHONE_SCREEN_META", pathlib.Path(tmp) / "latest.json"),
+            patch.object(schedule.manager, "broadcast", new=AsyncMock(
+                side_effect=lambda _: phone_screen.record_phone_screen_skip("locked", locked=True)
+            )),
+        ):
+            await manager.fire_app_supervision_checkpoint(
+                {"groupId": "wechat", "roleId": "aion"},
+                event_id="locked-checkpoint", checkpoint_minutes=20,
+            )
+        manager._fire_alarm.assert_not_awaited()
+
     async def test_checkpoint_reuses_alarm_pipeline_with_role_and_explicit_reason(self):
         manager = schedule.ScheduleManager()
         manager._fire_alarm = AsyncMock()
@@ -438,8 +454,8 @@ class AppSupervisionCheckpointWakeTests(unittest.IsolatedAsyncioTestCase):
             patch.object(schedule.manager, "broadcast", new=AsyncMock()) as broadcast,
             patch.object(
                 phone_screen,
-                "wait_for_phone_screen_after",
-                new=AsyncMock(return_value=fresh_path),
+                "wait_for_phone_screen_result_after",
+                new=AsyncMock(return_value=("ready", fresh_path)),
             ) as wait_for_screen,
             patch.object(
                 phone_screen,
@@ -468,14 +484,16 @@ class AppSupervisionCheckpointWakeTests(unittest.IsolatedAsyncioTestCase):
         freeze.assert_called_once_with(fresh_path, event_id="checkpoint-1")
 
     async def test_checkpoint_still_wakes_ai_when_phone_capture_times_out(self):
+        from activity import device_context_store
         manager = schedule.ScheduleManager()
         manager._fire_alarm = AsyncMock()
         with (
+            patch.dict(device_context_store.slots, {"screen": {"value": "on"}}),
             patch.object(schedule.manager, "broadcast", new=AsyncMock()),
             patch.object(
                 phone_screen,
-                "wait_for_phone_screen_after",
-                new=AsyncMock(return_value=None),
+                "wait_for_phone_screen_result_after",
+                new=AsyncMock(return_value=("timeout", None)),
             ),
             patch.object(phone_screen, "freeze_phone_screen") as freeze,
         ):
@@ -484,7 +502,13 @@ class AppSupervisionCheckpointWakeTests(unittest.IsolatedAsyncioTestCase):
                 event_id="checkpoint-timeout",
                 checkpoint_minutes=40,
             )
+            device_context_store.slots["screen"] = {"value": "off"}
+            await manager.fire_app_supervision_checkpoint(
+                {"groupId": "xhs", "roleId": "aion"},
+                event_id="checkpoint-asleep", checkpoint_minutes=60,
+            )
 
+        manager._fire_alarm.assert_awaited_once()
         item = manager._fire_alarm.await_args.args[0]
         self.assertNotIn("_app_supervision_phone_attachment", item)
         freeze.assert_not_called()

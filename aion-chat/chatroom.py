@@ -3,18 +3,18 @@
 """
 
 from reply_timing import timed
-import json, time, struct, asyncio, uuid, os, threading
+import json, time, struct, asyncio, uuid, os, threading, random
 from typing import Optional
 from pathlib import Path
 
 import aiosqlite, httpx
 
-from config import DATA_DIR, DEFAULT_MODEL, MODELS, load_worldbook
+from config import DATA_DIR, DB_PATH, DEFAULT_MODEL, MODELS, _is_test_process, is_model_deprecated, load_worldbook
 from database import get_db
 from model_json import extract_json_object
 from memory import (
     get_embedding, cosine_similarity, _pack_embedding, _unpack_embedding, _keyword_match_score,
-    _memory_time_payload, _format_raw_evidence_block,
+    _memory_time_payload, _format_raw_evidence_block, chat_source_label,
 )
 from ai_providers import (
     CLI_STATUS_PREFIX,
@@ -28,7 +28,11 @@ from intimacy_skill import build_play_prompt
 from ws import manager
 
 # ── Connor-Codex 服务配置 ──
-CHATROOM_CONFIG_PATH = DATA_DIR / "chatroom_config.json"
+CHATROOM_CONFIG_PATH = (
+    DB_PATH.with_name("chatroom_config.json")
+    if _is_test_process()
+    else DATA_DIR / "chatroom_config.json"
+)
 _CHATROOM_CONFIG_LOCK = threading.Lock()
 
 _DEFAULT_CONFIG = {
@@ -45,6 +49,10 @@ _DEFAULT_CONFIG = {
     "reply_order": "random",
     "connor_model": "Codex",
     "aion_model": "",
+    "aion_random_model_enabled": False,
+    "aion_random_models": [],
+    "connor_random_model_enabled": False,
+    "connor_random_models": [],
     "ambient_voice_enabled": False,
     "ambient_voice_wake_word": "现在立刻唤醒",
     "ambient_voice_stop_word": "结束立刻唤醒",
@@ -54,13 +62,97 @@ _DEFAULT_CONFIG = {
 }
 
 
+def normalize_random_model_pool(value) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(key)
+    return result
+
+
+def filter_valid_random_models(
+    actor: str,
+    pool,
+    *,
+    available_models: dict | None = None,
+) -> list[str]:
+    models_map = MODELS if available_models is None else available_models
+    cleaned = normalize_random_model_pool(pool)
+    valid: list[str] = []
+    seen: set[str] = set()
+    for raw_key in cleaned:
+        key = raw_key
+        if key.startswith("AGY · ") and key not in models_map:
+            migrated = key.replace("AGY · ", "AGY ACP · ", 1)
+            if migrated in models_map:
+                key = migrated
+        is_valid = (
+            (key in models_map and not is_model_deprecated(models_map[key]))
+            or (actor == "connor" and key == "Codex")
+        )
+        if not is_valid or key in seen:
+            continue
+        seen.add(key)
+        valid.append(key)
+    return valid
+
+
+_LAST_RANDOM_MODEL_LOCK = threading.Lock()
+_LAST_RANDOM_MODEL_BY_ACTOR: dict[str, str] = {}
+
+
+def pick_random_model_from_pool(
+    actor: str,
+    cfg: dict | None = None,
+    *,
+    available_models: dict | None = None,
+    avoid_repeat: bool = True,
+) -> Optional[str]:
+    """Return a randomly chosen valid model key, avoiding immediate repeats when >= 2 options exist."""
+    if actor not in ("aion", "connor"):
+        return None
+    config = cfg if isinstance(cfg, dict) else load_chatroom_config()
+    if not bool(config.get(f"{actor}_random_model_enabled")):
+        return None
+    pool = filter_valid_random_models(
+        actor,
+        config.get(f"{actor}_random_models"),
+        available_models=available_models,
+    )
+    if not pool:
+        return None
+    with _LAST_RANDOM_MODEL_LOCK:
+        last_key = _LAST_RANDOM_MODEL_BY_ACTOR.get(actor)
+        candidates = [k for k in pool if k != last_key] if (avoid_repeat and len(pool) >= 2 and last_key in pool) else pool
+        picked = random.choice(candidates)
+        _LAST_RANDOM_MODEL_BY_ACTOR[actor] = picked
+        return picked
+
+
+def _normalize_chatroom_config(data: dict) -> dict:
+    merged = {**_DEFAULT_CONFIG, **data}
+    merged["aion_random_model_enabled"] = bool(merged.get("aion_random_model_enabled"))
+    merged["connor_random_model_enabled"] = bool(merged.get("connor_random_model_enabled"))
+    merged["aion_random_models"] = normalize_random_model_pool(merged.get("aion_random_models"))
+    merged["connor_random_models"] = normalize_random_model_pool(merged.get("connor_random_models"))
+    return merged
+
+
 def load_chatroom_config() -> dict:
     if CHATROOM_CONFIG_PATH.exists():
         try:
-            return {**_DEFAULT_CONFIG, **json.loads(CHATROOM_CONFIG_PATH.read_text(encoding="utf-8"))}
+            loaded = json.loads(CHATROOM_CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                return _normalize_chatroom_config(loaded)
         except Exception:
             pass
-    return dict(_DEFAULT_CONFIG)
+    return _normalize_chatroom_config({})
 
 
 def save_chatroom_config(data: dict):
@@ -619,13 +711,16 @@ async def fetch_chatroom_source_details(memories: list[dict], keywords: list[str
                     if prefix != "chatroom":
                         continue
                     cur = await db.execute(
-                        "SELECT sender, content, created_at FROM chatroom_messages WHERE id=? AND sender != 'system'",
+                        "SELECT m.sender, m.content, m.created_at, r.type AS source FROM chatroom_messages m "
+                        "JOIN chatroom_rooms r ON r.id=m.room_id WHERE m.id=? AND m.sender != 'system' "
+                        "AND r.type IN ('group','connor_1v1','peer_dm')",
                         (raw_id,),
                     )
                     row = await cur.fetchone()
                     if row:
                         rows.append({
                             "name": name_map.get(row["sender"], row["sender"]),
+                            "source_label": chat_source_label(row["source"], ai_name, connor_name),
                             "content": row["content"],
                             "created_at": row["created_at"],
                         })
@@ -650,9 +745,9 @@ async def fetch_chatroom_source_details(memories: list[dict], keywords: list[str
         async with get_db() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
-                "SELECT sender, content, created_at FROM chatroom_messages "
-                "WHERE sender != 'system' AND created_at >= ? AND created_at <= ? "
-                "ORDER BY created_at ASC",
+                "SELECT m.sender, m.content, m.created_at, r.type AS source FROM chatroom_messages m "
+                "JOIN chatroom_rooms r ON r.id=m.room_id WHERE r.type IN ('group','connor_1v1','peer_dm') "
+                "AND m.sender != 'system' AND m.created_at BETWEEN ? AND ? ORDER BY m.created_at ASC",
                 (start_ts, end_ts)
             )
             rows = await cur.fetchall()
@@ -664,6 +759,7 @@ async def fetch_chatroom_source_details(memories: list[dict], keywords: list[str
                     seen.add(key)
                     matched_rows.append({
                         "name": name_map.get(row["sender"], row["sender"]),
+                        "source_label": chat_source_label(row["source"], ai_name, connor_name),
                         "content": row["content"],
                         "created_at": row["created_at"],
                     })
@@ -741,47 +837,23 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
             row = await cur.fetchone()
             anchor_ts = row["anchor_ts"] if row else 0
 
-            # 最新房间仅用于保存记忆的归属，不限定总结的数据源。
+            # 沿用用户私聊、群聊的存储优先级。只有角色间私聊时也有归属房间。
             cur = await db.execute(
-                "SELECT id FROM chatroom_rooms WHERE type = 'connor_1v1' ORDER BY updated_at DESC LIMIT 1"
+                "SELECT id FROM chatroom_rooms WHERE type IN ('connor_1v1','group','peer_dm') "
+                "ORDER BY CASE type WHEN 'connor_1v1' THEN 0 WHEN 'group' THEN 1 ELSE 2 END, updated_at DESC LIMIT 1"
             )
-            connor_room = await cur.fetchone()
+            store_room = await cur.fetchone()
             msgs = []
-            if connor_room:
-                cur = await db.execute(
-                    "SELECT m.id, m.sender, m.content, m.created_at FROM chatroom_messages m "
-                    "JOIN chatroom_rooms r ON r.id = m.room_id "
-                    "WHERE r.type = 'connor_1v1' AND m.created_at > ? AND m.sender != 'system' "
-                    "ORDER BY m.created_at ASC",
-                    (anchor_ts,),
-                )
-                for r in await cur.fetchall():
-                    d = dict(r)
-                    d["_source"] = "private"
-                    d["_source_id"] = f"chatroom:{d['id']}"
-                    msgs.append(d)
-
-            # ── 所有群聊窗口中本库锚点之后的消息 ──
             cur = await db.execute(
-                "SELECT id FROM chatroom_rooms WHERE type = 'group' ORDER BY updated_at DESC LIMIT 1"
+                "SELECT m.id, m.sender, m.content, m.created_at, "
+                "CASE r.type WHEN 'connor_1v1' THEN 'private' ELSE r.type END AS _source "
+                "FROM chatroom_messages m JOIN chatroom_rooms r ON r.id=m.room_id "
+                "WHERE r.type IN ('connor_1v1','group','peer_dm') AND m.created_at > ? AND m.sender != 'system' "
+                "ORDER BY m.created_at, m.rowid",
+                (anchor_ts,),
             )
-            group_room = await cur.fetchone()
-            if group_room:
-                cur = await db.execute(
-                    "SELECT m.id, m.sender, m.content, m.created_at FROM chatroom_messages m "
-                    "JOIN chatroom_rooms r ON r.id = m.room_id "
-                    "WHERE r.type = 'group' AND m.created_at > ? AND m.sender != 'system' "
-                    "ORDER BY m.created_at ASC",
-                    (anchor_ts,),
-                )
-                for r in await cur.fetchall():
-                    d = dict(r)
-                    d["_source"] = "group"
-                    d["_source_id"] = f"chatroom:{d['id']}"
-                    msgs.append(d)
-
-            # 按时间排序合并
-            msgs.sort(key=lambda x: x["created_at"])
+            for row in await cur.fetchall():
+                msgs.append({**dict(row), "_source_id": f"chatroom:{row['id']}"})
             if msgs:
                 digest_window_last_ts = msgs[-1]["created_at"]
                 from homecoming.summary_coverage import filter_uncovered
@@ -836,7 +908,7 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
     total_new = 0
     all_summaries = []
     digest_incomplete = False
-    store_room_id = connor_room["id"] if connor_room else (group_room["id"] if group_room else "connor_unified")
+    store_room_id = store_room["id"] if store_room else anchor_key
 
     for group in groups:
         # 构建消息文本
@@ -849,7 +921,8 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
         for m in group:
             ts = time.strftime("%m-%d %H:%M", time.localtime(m["created_at"]))
             name = {"user": user_name, "aion": ai_name, "connor": connor_name}.get(m["sender"], m["sender"])
-            tag = f"[{'群聊' if m.get('_source') == 'group' else '私聊'}]" if has_mixed else ""
+            src = m["_source"]
+            tag = f"[{chat_source_label(src, ai_name, connor_name)}]" if has_mixed or src == "peer_dm" else ""
             formatted.append(f"[{ts}][id={m.get('_source_id', '')}]{tag} {name}: {m['content']}")
         messages_text = date_header + "\n".join(formatted)
 
@@ -966,7 +1039,7 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
         return {"ok": True, "message": f"总结完成：处理了 {len(msgs)} 条消息，但没有产出新的有效记忆；锚点已保留，可稍后重试", "new_memories_count": 0, "processed_messages": len(msgs)}
 
     # ── 总结后自由选择写日记、发朋友圈和送礼 ──
-    target_room_id = connor_room["id"] if connor_room else (group_room["id"] if group_room else None)
+    target_room_id = store_room["id"] if store_room else None
     if all_summaries and not digest_incomplete:
         try:
             connor_persona = _read_connor_persona()
@@ -976,7 +1049,7 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
                 content = (m.get("content") or "").strip()
                 if not content:
                     continue
-                source_label = "群聊" if m.get("_source") == "group" else "私聊"
+                source_label = chat_source_label(m["_source"], ai_name, connor_name)
                 ts = time.strftime("%m-%d %H:%M", time.localtime(m["created_at"]))
                 name = {"user": user_name, "aion": ai_name, "connor": connor_name}.get(m["sender"], m["sender"])
                 context_lines.append(f"[{ts}][{source_label}] {name}: {content[:300]}")
@@ -990,7 +1063,7 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
             diary_prompt = (
                 f"{persona_block}"
                 f"当前时间：{time_str}\n\n"
-                f"你是{connor_name}。你刚刚整理了和{user_name}今天的聊天记忆，以下是你整理出的摘要：\n"
+                f"你是{connor_name}。你刚刚整理了最近的聊天记忆，以下是摘要：\n"
                 f"{summaries_text}\n\n"
                 f"【最近上下文】\n{context_text}\n\n"
                 f"{DIGEST_DIARY_INSTRUCTION}"
@@ -1050,7 +1123,7 @@ async def digest_chatroom(room_id: str = None, model_key: str = None, allow_ai_w
                 content = (m.get("content") or "").strip()
                 if not content:
                     continue
-                source_label = "群聊" if m.get("_source") == "group" else "私聊"
+                source_label = chat_source_label(m["_source"], ai_name, connor_name)
                 ts = time.strftime("%m-%d %H:%M", time.localtime(m["created_at"]))
                 name = {"user": user_name, "aion": ai_name, "connor": connor_name}.get(m["sender"], m["sender"])
                 wish_context_lines.append(f"[{ts}][{source_label}] {name}: {content[:300]}")
@@ -1129,6 +1202,14 @@ def _parse_digest_result(raw: str) -> Optional[dict]:
 #  群聊上下文构建
 # ══════════════════════════════════════════════════
 
+def _recent_for_routing(merged: list[dict], actor: str) -> list[dict]:
+    # 本地路由提取当前用户话题，角色间私聊只参与下面的模型时间线。
+    own_senders = ("assistant", "aion") if actor == "aion" else ("connor",)
+    recent = [m for m in merged if m.get("source") != "peer_dm"][-3:]
+    return [{"role": "assistant" if m.get("sender") in own_senders else "user",
+             "content": m.get("content", "")[:200]} for m in recent]
+
+
 @timed("aion_context")
 async def build_aion_group_context(
     room_id: str,
@@ -1188,12 +1269,7 @@ async def build_aion_group_context(
     # 群聊窗口共享历史，合并所有群聊与该角色私聊后按配置取最新条数。
     merged = await fetch_merged_timeline("aion", context_limit)
 
-    recent_for_digest = []
-    for msg in merged[-6:]:
-        sender = msg.get("sender", "user")
-        role = "assistant" if sender in ("aion", "assistant") else "user"
-        recent_for_digest.append({"role": role, "content": msg.get("content", "")[:200]})
-    actual_recent = [m for m in recent_for_digest if m["role"] in ("user", "assistant")][-3:]
+    actual_recent = _recent_for_routing(merged, "aion")
 
     # 4. 记忆召回：主角色只读取主记忆库，不合并副角色的聊天室记忆。
     mem_result = await build_memory_blocks(
@@ -1292,12 +1368,7 @@ async def build_connor_group_context(
     # 群聊窗口共享历史，合并所有群聊与该角色私聊后按配置取最新条数。
     merged = await fetch_merged_timeline("connor", context_limit)
 
-    recent_for_digest = []
-    for msg in merged[-6:]:
-        sender = msg.get("sender", "user")
-        role = "assistant" if sender == "connor" else "user"
-        recent_for_digest.append({"role": role, "content": msg.get("content", "")[:200]})
-    actual_recent = [m for m in recent_for_digest if m["role"] in ("user", "assistant")][-3:]
+    actual_recent = _recent_for_routing(merged, "connor")
 
     # 3. 记忆召回（Connor 只读聊天室记忆，不读 Aion 主记忆库）
     async def _chatroom_recall(query, keywords):
@@ -1401,12 +1472,7 @@ async def build_connor_1v1_context(
     )
 
     # 构建 recent_messages 用于本地前置路由
-    recent_for_digest = []
-    for msg in merged[-6:]:
-        sender = msg.get("sender", "user")
-        role = "assistant" if sender == "connor" else "user"
-        recent_for_digest.append({"role": role, "content": msg.get("content", "")[:200]})
-    actual_recent = [m for m in recent_for_digest if m["role"] in ("user", "assistant")][-3:]
+    actual_recent = _recent_for_routing(merged, "connor")
 
     # 记忆召回（走统一 build_memory_blocks，含本地路由 + 背景浮现 + 原文追溯）
     async def _chatroom_recall(query, keywords):

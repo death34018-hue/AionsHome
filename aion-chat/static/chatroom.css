@@ -110,6 +110,26 @@ button, input, textarea, select { font-family: inherit; }
 }
 .room-tab[data-tab="connor_1v1"].active { color: var(--connor-accent); }
 .room-tab[data-tab="connor_1v1"].active::after { background: var(--connor-accent); }
+.room-tab.has-unread::before {
+  content: '';
+  position: absolute;
+  left: calc(50% + 22px);
+  top: calc(50% - 8px);
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+body.peer-room .header-actions,
+.peer-room .sidebar-mem-btn:not(.sidebar-system-log),
+body.peer-room .preview-area,
+.peer-room .bottom-fade-overlay {
+  display: none;
+}
+.peer-room .room-title:disabled { opacity: 1; cursor: default; }
+.peer-room .messages { padding-bottom: max(20px, env(safe-area-inset-bottom)); }
+.peer-room .peer-message-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .room-list {
   flex: 1;
@@ -637,14 +657,17 @@ button, input, textarea, select { font-family: inherit; }
 .message-row .msg-menu-wrap,
 .message-row .msg-feedback-actions,
 .message-row .tts-replay-btn,
+.message-row .msg-model-badge,
 .system-event-msg .msg-menu-wrap {
   display: none !important;
 }
+.peer-room .message-row .message-time,
 .message-row:focus-within .message-time { display: inline !important; }
 .message-row:focus-within .msg-menu-wrap,
 .system-event-msg:focus-within .msg-menu-wrap { display: block !important; }
 .message-row:focus-within .msg-feedback-actions,
-.message-row:focus-within .tts-replay-btn { display: inline-flex !important; }
+.message-row:focus-within .tts-replay-btn,
+.message-row:focus-within .msg-model-badge { display: inline-flex !important; }
 .message-row:focus,
 .system-event-msg:focus { outline: none; }
 .inner-monologue {
@@ -749,6 +772,7 @@ a.private-whisper-note:focus-visible {
 /* ── 消息操作菜单 ── */
 .sender-line {
   display: flex;
+  flex-wrap: nowrap;
   align-items: flex-end;
   gap: 2px;
 }
@@ -791,6 +815,19 @@ a.private-whisper-note:focus-visible {
   transition: opacity .15s;
 }
 .message-row:hover .msg-feedback-actions { opacity: .78; }
+.msg-model-badge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: 18px;
+  padding: 0 2px;
+  background: transparent;
+  color: var(--text3);
+  font-size: clamp(8.5px, 2.2vw, 10px);
+  line-height: 1;
+  white-space: nowrap;
+  opacity: .88;
+}
 .msg-feedback-btn {
   width: 18px;
   height: 18px;
@@ -1904,11 +1941,96 @@ body[data-theme="light"] #settingsOverlay .settings-panel { background: rgba(244
 #settingsOverlay .save-btn:disabled { opacity: .6; cursor: wait; }
 #settingsOverlay .chat-font-size-control { margin-bottom: 12px; padding-bottom: 10px; }
 #settingsOverlay .tts-toggle-row { min-height: 32px; margin-bottom: 8px; }
+#settingsOverlay .tts-toggle-row > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  line-height: 1.4;
+}
+#settingsOverlay .settings-fold summary {
+  font-size: 12px;
+  font-weight: 500;
+}
 #settingsOverlay .ambient-settings-fold { margin-bottom: 0; background: transparent; }
-#settingsOverlay .ambient-settings-fold summary { min-height: 40px; font-weight: 500; }
+#settingsOverlay .ambient-settings-fold summary { min-height: 38px; font-weight: 500; }
 #settingsOverlay .ambient-settings-fold .settings-inline-row { padding: 0 10px; }
 #settingsOverlay .ambient-settings-fold .field { padding: 0; }
 #settingsOverlay .ambient-buffer-panel { margin: 0 10px 10px; }
+#settingsOverlay .random-pool-block + .random-pool-block {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+#settingsOverlay .random-pool-fold { margin-bottom: 0; background: transparent; }
+#settingsOverlay .random-pool-fold summary { min-height: 38px; font-weight: 500; }
+#settingsOverlay .random-pool-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 10px 6px;
+  font-size: 11px;
+  color: var(--text3);
+}
+#settingsOverlay .random-pool-clear-btn {
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text2);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+#settingsOverlay .random-pool-clear-btn:hover { color: var(--text); border-color: var(--accent); }
+#settingsOverlay .random-pool-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 10px 10px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+#settingsOverlay .random-pool-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface2);
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.2;
+  cursor: pointer;
+  user-select: none;
+  max-width: 100%;
+}
+#settingsOverlay .random-pool-option input[type="checkbox"] {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+#settingsOverlay .random-pool-option.selected {
+  border-color: var(--accent);
+  color: var(--text);
+  background: rgba(124, 92, 255, 0.16);
+}
+body[data-theme="light"] #settingsOverlay .random-pool-option.selected {
+  background: rgba(124, 92, 255, 0.12);
+}
+#settingsOverlay .random-pool-option span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#settingsOverlay .random-pool-empty {
+  font-size: 12px;
+  color: var(--text3);
+  padding: 4px 2px;
+}
 #settingsOverlay.is-private-room .settings-inline-row:has(#fieldAiRounds),
 #settingsOverlay.is-private-room .settings-model-row,
 #settingsOverlay.is-private-room .settings-voice-row { grid-template-columns: minmax(0, 1fr); }

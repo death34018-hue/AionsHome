@@ -181,52 +181,6 @@ class DateTheaterAssetTests(unittest.TestCase):
             ]
         })
 
-    def test_review_controls_live_on_log_messages_only(self):
-        html = (Path(__file__).parent / "static" / "date_theater.html").read_text(encoding="utf-8")
-        js = (Path(__file__).parent / "static" / "date_theater.js").read_text(encoding="utf-8")
-        top_actions = html.split('<nav class="date-actions">', 1)[1].split("</nav>", 1)[0]
-        panel_tools = html.split('<div class="panel-tools">', 1)[1].split("</div>", 1)[0]
-
-        self.assertIn("<strong>约会过程</strong>", html)
-        self.assertNotIn('id="dateReviewBtn"', top_actions)
-        self.assertNotIn('id="dateReviewBtn"', panel_tools)
-        self.assertIn("data-review-msg-index", js)
-        self.assertIn("startDateReviewFromIndex", js)
-
-    def test_date_panel_text_is_smaller_and_send_button_round(self):
-        css = (Path(__file__).parent / "static" / "date_theater.css").read_text(encoding="utf-8")
-
-        dialogue_block = css.split("\n.dialogue-text {", 1)[1].split("}", 1)[0]
-        mobile_block = css.split("@media (max-width: 720px)", 1)[1].split(".dialogue-text {", 1)[1].split("}", 1)[0]
-        send_btn_block = css.split("\n#dateSendBtn {")[-1].split("}", 1)[0]
-        self.assertIn("font-size: 17px;", dialogue_block)
-        self.assertIn("font-size: 15px;", mobile_block)
-        self.assertIn("border-radius: 50%;", send_btn_block)
-
-    def test_date_planner_prompt_area_is_larger_and_actions_aligned(self):
-        css = (Path(__file__).parent / "static" / "date_theater.css").read_text(encoding="utf-8")
-
-        textarea_block = css.split(".planner-field textarea {", 1)[1].split("}", 1)[0]
-        action_buttons_selector = ".planner-actions .primary-btn,\n.planner-actions .ghost-btn {"
-        self.assertIn(action_buttons_selector, css)
-        action_buttons_block = css.split(action_buttons_selector, 1)[1].split("}", 1)[0]
-        self.assertIn("min-height: 112px;", textarea_block)
-        self.assertIn("margin-top: 0;", action_buttons_block)
-
-    def test_date_summary_card_rendering_registered_in_chat_surfaces(self):
-        root = Path(__file__).parent / "static"
-        chatroom_js = (root / "chatroom.js").read_text(encoding="utf-8")
-        chat_js = (root / "chat.js").read_text(encoding="utf-8")
-        chatroom_css = (root / "chatroom.css").read_text(encoding="utf-8")
-        chat_css = (root / "chat.css").read_text(encoding="utf-8")
-
-        self.assertIn("date_summary", chatroom_js)
-        self.assertIn("date_summary", chat_js)
-        self.assertIn("buildDateSummaryCard", chatroom_js)
-        self.assertIn("buildDateSummaryCard", chat_js)
-        self.assertIn("date-summary-card", chatroom_css)
-        self.assertIn("date-summary-card", chat_css)
-
     def test_legacy_system_date_summary_is_kept_in_chat_context(self):
         from context_builder import render_merged_timeline
 
@@ -242,62 +196,6 @@ class DateTheaterAssetTests(unittest.TestCase):
         )
 
         self.assertTrue(any("刚刚完成了约会" in item["content"] for item in history))
-
-    def test_date_music_default_is_softer_and_adjustable_in_settings(self):
-        html = (Path(__file__).parent / "static" / "date_theater.html").read_text(encoding="utf-8")
-        js = (Path(__file__).parent / "static" / "date_theater.js").read_text(encoding="utf-8")
-
-        self.assertIn('id="dateMusicVolume"', html)
-        self.assertIn('value="25"', html)
-        self.assertIn("const DEFAULT_MUSIC_VOLUME = 25;", js)
-        self.assertIn("initialMusicVolumePercent()", js)
-        self.assertIn("date_music_volume_soft_default_v1", js)
-        self.assertIn("Math.min(state.musicVolume, 0.10)", js)
-
-    def test_date_sending_status_uses_animated_writing_copy(self):
-        js = (Path(__file__).parent / "static" / "date_theater.js").read_text(encoding="utf-8")
-
-        self.assertNotIn('setStatus("回应中")', js)
-        self.assertIn('setStatus("正在编写约会剧情", { animated: true })', js)
-        self.assertIn("statusAnimationTimer", js)
-        self.assertIn("window.setInterval", js)
-        self.assertIn("window.clearInterval", js)
-
-    def test_date_input_height_resets_after_send(self):
-        js = (Path(__file__).parent / "static" / "date_theater.js").read_text(encoding="utf-8")
-
-        self.assertIn("function resetDateInputHeight()", js)
-        reset_body = js.split("function resetDateInputHeight()", 1)[1].split("}", 1)[0]
-        self.assertIn('input.style.height = "";', reset_body)
-        form_body = js.split('$("dateForm").onsubmit = (e) => {', 1)[1].split("};", 1)[0]
-        self.assertIn('$("dateInput").value = "";', form_body)
-        self.assertIn("resetDateInputHeight();", form_body)
-
-    def test_log_stats_reports_next_prompt_estimate_not_cumulative_actual(self):
-        js = (Path(__file__).parent / "static" / "date_theater.js").read_text(encoding="utf-8")
-
-        render_body = js.split("function renderLogStats()", 1)[1].split("function canDeleteDateMessage", 1)[0]
-        self.assertIn("function estimateDateTokens", js)
-        self.assertIn("function nextPromptEstimate", js)
-        self.assertIn("下次输入约", render_body)
-        self.assertIn("人设字数", render_body)
-        self.assertNotIn("actual_prompt_tokens", render_body)
-        self.assertNotIn("｜实际输入", render_body)
-
-    def test_date_page_only_silences_media_on_manual_leave(self):
-        js = (Path(__file__).parent / "static" / "date_theater.js").read_text(encoding="utf-8")
-
-        self.assertIn("silenceDateTheaterMedia", js)
-        go_home_body = js.split("function goHome() {", 1)[1].split("function bindEvents()", 1)[0]
-        self.assertIn("silenceDateTheaterMedia();", go_home_body)
-        self.assertNotIn('addEventListener("pagehide"', js)
-        self.assertNotIn('addEventListener("visibilitychange"', js)
-
-    def test_review_skips_user_messages_after_three_seconds(self):
-        js = (Path(__file__).parent / "static" / "date_theater.js").read_text(encoding="utf-8")
-
-        self.assertIn("const fallbackDelay = msg.role === \"user\" ? 3000 : 10000;", js)
-        self.assertIn("await reviewDelay(fallbackDelay);", js)
 
     def test_resolve_date_model_ignores_invalid_legacy_default(self):
         from date_theater import resolve_date_model

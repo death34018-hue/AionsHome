@@ -2,10 +2,9 @@
   const buttons = Array.from(document.querySelectorAll('.switcher button'));
   const preference = 'aion_usage_source';
   let source = localStorage.getItem(preference) === 'codex' ? 'codex' : 'agy';
-  let report = null;
-  let offline = false;
-  let timer;
-  let loading = false;
+  let report = {};
+  let readingCache = true;
+  const querying = new Set();
   const localTime = new Intl.DateTimeFormat('zh-CN', {
     month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
   });
@@ -72,26 +71,42 @@
       return section;
     }));
     $('updatedAt').textContent = snapshot?.updated_at ? '上次更新 ' + localTime.format(new Date(snapshot.updated_at)) : '';
-    const error = offline ? '暂时连不上小家' : snapshot?.error;
-    const status = error ? error + (selected ? '，显示上次成功结果。' : '，稍后自动重试。') :
-      !snapshot?.updated_at ? '正在查询额度…' : !selected ? '暂未返回此额度' : '';
+    const busy = querying.has(source);
+    $('refreshUsage').disabled = readingCache || busy;
+    $('refreshUsage').textContent = busy ? '查询中…' : '查询用量';
+    let status = '';
+    if (readingCache) status = '正在读取上次结果…';
+    else if (busy) status = '正在查询额度…';
+    else if (snapshot?.error) status = snapshot.error + (snapshot.updated_at ? '，显示上次成功结果。' : '');
+    else if (!snapshot?.updated_at) status = '尚未查询';
+    else if (!selected) status = '暂未返回此额度';
     if ($('usageStatus').textContent !== status) $('usageStatus').textContent = status;
   }
 
-  async function load() {
-    clearTimeout(timer);
-    if (document.hidden || loading) return;
-    loading = true;
+  async function readCache() {
     try {
       report = await api('GET', '/api/usage');
-      offline = false;
     } catch {
-      offline = true;
+      for (const btn of buttons) report[btn.dataset.source] = { error: '暂时连不上小家' };
     } finally {
-      loading = false;
+      readingCache = false;
       render();
-      const pending = report && Object.values(report).some(s => !s.error && !s.updated_at);
-      if (!document.hidden) timer = setTimeout(load, pending && !offline ? 2500 : 30000);
+    }
+  }
+
+  async function refresh() {
+    const target = source;
+    if (readingCache || querying.has(target)) return;
+    querying.add(target);
+    render();
+    try {
+      const snapshot = await api('POST', '/api/usage/' + target + '/refresh', null, { timeoutMs: 60000 });
+      report[target] = { ...report[target], ...snapshot };
+    } catch {
+      report[target] = { ...report[target], error: '用量查询未完成，请稍后再试' };
+    } finally {
+      querying.delete(target);
+      render();
     }
   }
   for (const btn of buttons) {
@@ -101,7 +116,12 @@
       render();
     });
   }
-  document.addEventListener('visibilitychange', load);
+  $('refreshUsage').addEventListener('click', refresh);
+  function updateCountdowns() {
+    if (!document.hidden && report[source]?.groups?.length) render();
+  }
+  document.addEventListener('visibilitychange', updateCountdowns);
+  setInterval(updateCountdowns, 60000);
   render();
-  load();
+  readCache();
 })();

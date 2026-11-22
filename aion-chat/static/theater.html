@@ -98,21 +98,40 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
 .persona-switcher select { flex:1; min-width:0; }
 .persona-switcher button { flex-shrink:0; border:1px dashed var(--border); background:var(--surface2); color:var(--text); border-radius:8px; padding:8px 12px; cursor:pointer; }
 .persona-modal .btn-row .persona-delete { margin-right:auto; color:var(--danger); }
-.persona-field-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:12px; margin-bottom:4px; }
+.persona-title-group { display:flex; align-items:baseline; gap:10px; min-width:0; }
+.persona-field-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px; }
 .persona-modal .persona-field-heading label { margin:0; }
-.persona-save-status { font-size:12px; color:var(--text2); }
+.persona-save-status { font-size:12px; color:var(--text2); white-space:nowrap; }
 
 /* ── 角色编辑弹窗 ── */
 .persona-modal-overlay { display:none; position:fixed; inset:0; padding:max(16px,env(safe-area-inset-top)) max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(16px,env(safe-area-inset-left)); background:rgba(3,7,25,.65); backdrop-filter:blur(5px); -webkit-backdrop-filter:blur(5px); z-index:100; align-items:center; justify-content:center; }
 .persona-modal-overlay.show { display:flex; }
 .persona-modal { display:flex; flex-direction:column; background:var(--surface); border:1px solid var(--border-strong); border-radius:18px; padding:24px; width:100%; max-width:1040px; height:88vh; height:88dvh; max-height:100%; overflow:hidden; box-shadow:0 24px 90px #0008; }
-.persona-modal > :not(textarea) { flex-shrink:0; }
+.persona-modal > :not(.persona-editor-body) { flex-shrink:0; }
 .persona-modal h3 { font-size:18px; margin-bottom:16px; color:var(--text); }
 .persona-modal .settings-heading h3 { margin:0; }
+.persona-editor-body { flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:12px; padding-right:2px; }
+.persona-field { flex-shrink:0; display:flex; flex-direction:column; }
 .persona-modal label { display:block; font-size:12px; color:var(--text2); margin-bottom:4px; margin-top:12px; }
-.persona-modal label:first-of-type { margin-top:0; }
-.persona-modal input, .persona-modal select { width:100%; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px 12px; font-size:14px; outline:none; }
-.persona-modal textarea { flex:1; min-height:0; width:100%; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:16px 18px; font-size:16px; line-height:1.85; outline:none; resize:none; overflow-y:auto; font-family:inherit; }
+.persona-modal label:first-of-type,
+.persona-modal .persona-field label { margin-top:0; }
+.persona-modal input:not([type="checkbox"]), .persona-modal select { width:100%; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px 12px; font-size:14px; outline:none; }
+.persona-modal textarea { width:100%; background:var(--surface2); color:var(--text); border:1px solid var(--border); border-radius:8px; padding:16px 18px; font-size:16px; line-height:1.85; outline:none; resize:vertical; overflow-y:auto; font-family:inherit; }
+.persona-main-field textarea { min-height:200px; height:clamp(220px, 34dvh, 400px); }
+.persona-prompt-modules { display:flex; flex-direction:column; flex-shrink:0; gap:12px; padding-top:10px; border-top:1px solid var(--border); }
+.persona-modules-section-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; }
+.persona-modules-section-title { font-size:12px; font-weight:600; color:var(--text2); }
+.persona-modules-section-note { font-size:11px; color:var(--text3); }
+.persona-module-card { border:1px dashed var(--border); border-radius:12px; padding:12px 14px; background:var(--surface3); display:flex; flex-direction:column; gap:8px; }
+.persona-module-card.is-enabled { border-style:solid; border-color:var(--border-strong); background:transparent; }
+.persona-module-header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; }
+.persona-modal label.persona-module-toggle { display:inline-flex; align-items:center; gap:8px; margin:0; font-size:14px; font-weight:600; color:var(--text); cursor:pointer; user-select:none; }
+.persona-module-toggle input[type="checkbox"] { width:18px; height:18px; margin:0; padding:0; accent-color:var(--accent); cursor:pointer; flex-shrink:0; }
+.persona-module-state { font-size:11px; color:var(--text3); padding:2px 8px; border-radius:999px; border:1px solid var(--border); background:var(--surface2); white-space:nowrap; }
+.persona-module-card.is-enabled .persona-module-state { color:var(--accent); border-color:var(--border-strong); }
+.persona-module-card textarea { min-height:110px; height:136px; font-size:14px; line-height:1.75; padding:12px 14px; }
+.persona-module-card:not(.is-enabled) textarea { opacity:0.78; }
+.persona-module-card:not(.is-enabled) textarea:focus { opacity:1; }
 .persona-modal .btn-row { display:flex; gap:8px; margin-top:16px; justify-content:flex-end; }
 .persona-modal .btn-row button { padding:8px 18px; border:none; border-radius:8px; font-size:14px; cursor:pointer; }
 .persona-modal .btn-save { background:var(--accent); color:#fff; }
@@ -121,8 +140,10 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
 @media (max-width:600px) {
   .persona-modal { padding:16px; }
   .persona-modal h3 { margin-bottom:12px; }
-  .persona-modal input { font-size:16px; }
+  .persona-modal input:not([type="checkbox"]) { font-size:16px; }
   .persona-modal textarea { padding:12px; }
+  .persona-main-field textarea { min-height:160px; height:clamp(180px, 28dvh, 300px); }
+  .persona-module-card textarea { min-height:96px; height:120px; padding:10px 12px; }
   .persona-modal .btn-row { margin-top:12px; }
   .persona-modal .btn-row button { min-height:44px; padding:10px; }
   #modelSettingsOverlay .config-popup { padding:20px; }
@@ -131,7 +152,9 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
   .persona-modal { padding-top:8px; padding-bottom:8px; }
   .persona-modal h3 { font-size:16px; margin-bottom:6px; }
   .persona-modal label { margin-top:6px; }
-  .persona-modal input { padding:6px 12px; }
+  .persona-modal input:not([type="checkbox"]) { padding:6px 12px; }
+  .persona-main-field textarea { min-height:110px; height:140px; }
+  .persona-module-card textarea { min-height:80px; height:96px; }
   .persona-modal .btn-row { margin-top:8px; }
   .persona-modal .settings-heading { margin-bottom:6px; }
   .persona-switcher { margin-bottom:6px; }
@@ -264,9 +287,9 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
   .message-nav { right:6px; }
 }
 </style>
-<link id="aion-theme-css" rel="stylesheet" href="/static/theme.css?v=20260905-theater-v2">
-<link rel="stylesheet" href="/static/chat-day-glass.css?v=20261102-2">
-<link rel="stylesheet" href="/static/theater-studio.css?v=20261112-write-status">
+<link id="aion-theme-css" rel="stylesheet" href="/static/theme.css?v=20261121-theater-persona-modules">
+<link rel="stylesheet" href="/static/chat-day-glass.css?v=20261121-night-glass2">
+<link rel="stylesheet" href="/static/theater-studio.css?v=20261121-theater-persona-modules">
 <link rel="stylesheet" href="/static/image-viewer.css?v=20261024">
 <script src="/static/image-viewer.js?v=20261024"></script>
 </head>
@@ -361,16 +384,54 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
 <!-- 角色管理 -->
 <div class="persona-modal-overlay" id="personaModalOverlay" onclick="if(event.target===this)closePersonaModal()">
   <div class="persona-modal" role="dialog" aria-modal="true" aria-labelledby="personaModalTitle">
-    <header class="settings-heading"><h3 id="personaModalTitle">角色管理</h3><button class="settings-close" onclick="closePersonaModal()" aria-label="关闭角色管理">✕</button></header>
+    <header class="settings-heading">
+      <div class="persona-title-group">
+        <h3 id="personaModalTitle">角色管理</h3>
+        <span id="personaSaveStatus" class="persona-save-status" role="status" aria-live="polite"></span>
+      </div>
+      <button class="settings-close" onclick="closePersonaModal()" aria-label="关闭角色管理">✕</button>
+    </header>
     <div class="persona-switcher">
       <select id="personaList" aria-label="切换编辑角色" onchange="openPersonaModal(this.value)"></select>
       <button onclick="openPersonaModal('')">＋ 新建角色</button>
     </div>
     <input type="hidden" id="personaEditId">
-    <label for="personaName">角色名称</label>
-    <input type="text" id="personaName" placeholder="角色名" oninput="personaEdited()">
-    <div class="persona-field-heading"><label for="personaText">角色设定</label><span id="personaSaveStatus" class="persona-save-status" role="status" aria-live="polite"></span></div>
-    <textarea id="personaText" placeholder="角色的人设 / system prompt" oninput="personaEdited()"></textarea>
+    <div class="persona-editor-body" id="personaEditorBody">
+      <div class="persona-field">
+        <label for="personaName">角色名称</label>
+        <input type="text" id="personaName" placeholder="角色名" oninput="personaEdited()">
+      </div>
+      <div class="persona-field persona-main-field">
+        <div class="persona-field-heading"><label for="personaText">角色设定</label></div>
+        <textarea id="personaText" placeholder="角色的人设 / system prompt" oninput="personaEdited()"></textarea>
+      </div>
+      <div class="persona-prompt-modules" aria-label="通用写作提示模块">
+        <div class="persona-modules-section-header">
+          <span class="persona-modules-section-title">通用写作提示</span>
+          <span class="persona-modules-section-note">所有角色共用 · 切换角色不重置</span>
+        </div>
+        <section class="persona-module-card" id="personaPromptCard1">
+          <div class="persona-module-header">
+            <label class="persona-module-toggle" for="personaPromptEnabled1">
+              <input type="checkbox" id="personaPromptEnabled1" onchange="personaEdited()">
+              <span>写作提示1</span>
+            </label>
+            <span class="persona-module-state" id="personaPromptState1">未勾选 · 不发送</span>
+          </div>
+          <textarea id="personaPromptText1" placeholder="在这里填写写作提示、文风要求或禁令；勾选后会在发送角色设定时一并带上" oninput="personaEdited()"></textarea>
+        </section>
+        <section class="persona-module-card" id="personaPromptCard2">
+          <div class="persona-module-header">
+            <label class="persona-module-toggle" for="personaPromptEnabled2">
+              <input type="checkbox" id="personaPromptEnabled2" onchange="personaEdited()">
+              <span>写作提示2</span>
+            </label>
+            <span class="persona-module-state" id="personaPromptState2">未勾选 · 不发送</span>
+          </div>
+          <textarea id="personaPromptText2" placeholder="在这里填写写作提示、文风要求或禁令；勾选后会在发送角色设定时一并带上" oninput="personaEdited()"></textarea>
+        </section>
+      </div>
+    </div>
     <div class="btn-row">
       <button class="btn-cancel persona-delete" id="personaDelete" onclick="deletePersona($('personaEditId').value)">删除角色</button>
       <button class="btn-cancel" id="personaUse" onclick="useEditingPersona()">用于当前剧场</button>
@@ -471,10 +532,14 @@ async function init() {
     personas = data;
     renderPersonaList();
   }).catch(() => {});
+  api('GET', '/api/theater/prompt-modules').then(data => {
+    if (typeof applyLoadedPromptModules === 'function') applyLoadedPromptModules(data);
+  }).catch(() => {});
 
-  // 加载对话列表
+  // 加载对话列表；上次打开的故事以服务器记录为准，局域网和外网地址共用
+  const lastConv = window.theaterLastConversation?.();
   conversations = await api('GET', '/api/theater/conversations');
-  moveConversationToFront(localStorage.getItem('theater_last_conv'));
+  moveConversationToFront(await lastConv || localStorage.getItem('theater_last_conv'));
   renderConvList();
 
   // WebSocket
@@ -1850,14 +1915,154 @@ function playManualReplayNext() {
 }
 
 /* ── 角色管理 ── */
+const PERSONA_PROMPT_SLOTS = [
+  {
+    id: 'writing_prompt_1',
+    title: '写作提示1',
+    enabledId: 'personaPromptEnabled1',
+    textId: 'personaPromptText1',
+    stateId: 'personaPromptState1',
+    cardId: 'personaPromptCard1',
+  },
+  {
+    id: 'writing_prompt_2',
+    title: '写作提示2',
+    enabledId: 'personaPromptEnabled2',
+    textId: 'personaPromptText2',
+    stateId: 'personaPromptState2',
+    cardId: 'personaPromptCard2',
+  },
+];
+
+function normalizePersonaPromptModules(rawModules) {
+  const byId = new Map();
+  const extraOrder = [];
+  const defaultIds = new Set(PERSONA_PROMPT_SLOTS.map(slot => slot.id));
+  if (Array.isArray(rawModules)) {
+    for (const item of rawModules) {
+      if (!item || typeof item !== 'object') continue;
+      const id = String(item.id || '').trim();
+      if (!id) continue;
+      if (!byId.has(id) && !defaultIds.has(id)) extraOrder.push(id);
+      byId.set(id, {
+        id,
+        title: String(item.title || '').trim(),
+        enabled: !!item.enabled,
+        content: item.content == null ? '' : String(item.content),
+      });
+    }
+  }
+  const result = PERSONA_PROMPT_SLOTS.map(slot => {
+    const existing = byId.get(slot.id);
+    return {
+      id: slot.id,
+      title: (existing && existing.title) || slot.title,
+      enabled: existing ? !!existing.enabled : false,
+      content: existing ? existing.content : '',
+    };
+  });
+  for (const id of extraOrder) {
+    const existing = byId.get(id);
+    result.push({
+      id,
+      title: existing.title || id,
+      enabled: !!existing.enabled,
+      content: existing.content,
+    });
+  }
+  return result;
+}
+
+function readPersonaPromptModules() {
+  const draftModules = Array.isArray(promptModulesDraft) ? promptModulesDraft : [];
+  const draftById = new Map(draftModules.map(mod => [mod.id, mod]));
+  const slotIds = new Set(PERSONA_PROMPT_SLOTS.map(slot => slot.id));
+  const slots = PERSONA_PROMPT_SLOTS.map(slot => {
+    const draftMod = draftById.get(slot.id);
+    return {
+      id: slot.id,
+      title: (draftMod && draftMod.title) || slot.title,
+      enabled: !!$(slot.enabledId).checked,
+      content: $(slot.textId).value || '',
+    };
+  });
+  const extras = draftModules
+    .filter(mod => mod && mod.id && !slotIds.has(mod.id))
+    .map(mod => ({ ...mod }));
+  return [...slots, ...extras];
+}
+
+function promptModulesEqual(a, b) {
+  const left = normalizePersonaPromptModules(a);
+  const right = normalizePersonaPromptModules(b);
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i++) {
+    if (
+      left[i].id !== right[i].id ||
+      left[i].title !== right[i].title ||
+      !!left[i].enabled !== !!right[i].enabled ||
+      String(left[i].content || '') !== String(right[i].content || '')
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function syncPersonaPromptModuleUI() {
+  for (const slot of PERSONA_PROMPT_SLOTS) {
+    const enabled = !!$(slot.enabledId).checked;
+    $(slot.stateId).textContent = enabled ? '已勾选 · 发送时附带' : '未勾选 · 不发送';
+    const card = $(slot.cardId);
+    if (enabled) card.classList.add('is-enabled');
+    else card.classList.remove('is-enabled');
+  }
+}
+
+function applyPromptModulesToForm(modules) {
+  const normalized = normalizePersonaPromptModules(modules);
+  for (const slot of PERSONA_PROMPT_SLOTS) {
+    const mod = normalized.find(m => m.id === slot.id);
+    $(slot.enabledId).checked = !!mod?.enabled;
+    $(slot.textId).value = mod?.content || '';
+    $(slot.textId).scrollTop = 0;
+  }
+  syncPersonaPromptModuleUI();
+}
+
+function applyLoadedPromptModules(rawModules) {
+  if (!Array.isArray(rawModules)) return;
+  promptModules = normalizePersonaPromptModules(rawModules);
+  const overlay = $('personaModalOverlay');
+  if (!overlay.classList.contains('show') || !promptModulesHasChanges()) {
+    promptModulesDraft = promptModules.map(mod => ({ ...mod }));
+    applyPromptModulesToForm(promptModules);
+    if (overlay.classList.contains('show')) {
+      $('personaSaveStatus').textContent = personaHasChanges() ? '未保存' : '';
+      updatePersonaActions();
+    }
+  }
+}
+
 let personaDraft = { name: '', persona: '' };
+let promptModules = normalizePersonaPromptModules();
+let promptModulesDraft = promptModules.map(mod => ({ ...mod }));
 let personaBusy = false;
 
-function personaHasChanges() {
+function roleHasChanges() {
   return $('personaName').value !== personaDraft.name || $('personaText').value !== personaDraft.persona;
 }
 
+function promptModulesHasChanges() {
+  return !promptModulesEqual(readPersonaPromptModules(), promptModulesDraft);
+}
+
+function personaHasChanges() {
+  return roleHasChanges() || promptModulesHasChanges();
+}
+
 function personaEdited() {
+  syncPersonaPromptModuleUI();
   $('personaSaveStatus').textContent = personaHasChanges() ? '未保存' : '';
   updatePersonaActions();
 }
@@ -1908,15 +2113,16 @@ async function selectPersona(pid) {
   renderPersonaList();
 }
 
-function openPersonaModal(editId) {
+function openPersonaModal(editId, options = {}) {
   const overlay = $('personaModalOverlay');
   if (personaBusy) return;
   if (editId === undefined) {
     editId = [$('personaEditId').value, currentPersonaId, personas[0]?.id].find(id => personas.some(p => p.id === id)) || '';
   }
-  if (overlay.classList.contains('show')) {
+  const wasOpen = overlay.classList.contains('show');
+  if (wasOpen) {
     if (editId === $('personaEditId').value) return;
-    if (personaHasChanges() && !confirm('当前角色有未保存的修改，放弃修改并切换角色？')) {
+    if (roleHasChanges() && !confirm('当前角色有未保存的修改，放弃修改并切换角色？')) {
       $('personaList').value = $('personaEditId').value;
       return;
     }
@@ -1927,8 +2133,18 @@ function openPersonaModal(editId) {
   $('personaName').value = p?.name || '';
   $('personaText').value = p?.persona || '';
   $('personaText').scrollTop = 0;
-  personaDraft = { name: $('personaName').value, persona: $('personaText').value };
-  $('personaSaveStatus').textContent = '';
+  personaDraft = {
+    name: $('personaName').value,
+    persona: $('personaText').value,
+  };
+  if (!wasOpen && !options.keepPromptModules) {
+    promptModulesDraft = promptModules.map(mod => ({ ...mod }));
+    applyPromptModulesToForm(promptModules);
+    $('personaEditorBody').scrollTop = 0;
+  } else {
+    syncPersonaPromptModuleUI();
+  }
+  $('personaSaveStatus').textContent = personaHasChanges() ? '未保存' : '';
   renderPersonaList();
   closeModelSettings();
   overlay.classList.add('show');
@@ -1944,21 +2160,38 @@ function closePersonaModal() {
 async function savePersona() {
   if (personaBusy) return;
   const editId = $('personaEditId').value;
-  const data = {
+  const roleDirty = roleHasChanges();
+  const modulesDirty = promptModulesHasChanges();
+  const shouldSaveRole = roleDirty || !modulesDirty;
+  const shouldSaveModules = modulesDirty;
+  const roleData = {
     name: $('personaName').value.trim() || '未命名角色',
     persona: $('personaText').value,
   };
+  const nextPromptModules = readPersonaPromptModules();
   setPersonaBusy(true);
   $('personaSaveStatus').textContent = '保存中…';
   try {
-    const saved = await api(editId ? 'PUT' : 'POST', editId ? `/api/theater/personas/${editId}` : '/api/theater/personas', data);
-    if (!saved?.id || saved.error) throw new Error('保存失败');
-    const idx = personas.findIndex(p => p.id === saved.id);
-    if (idx >= 0) personas[idx] = { ...personas[idx], ...saved };
-    else personas.push(saved);
-    $('personaEditId').value = saved.id;
-    $('personaName').value = saved.name;
-    personaDraft = { name: saved.name, persona: data.persona };
+    if (shouldSaveRole) {
+      const saved = await api(editId ? 'PUT' : 'POST', editId ? `/api/theater/personas/${editId}` : '/api/theater/personas', roleData);
+      if (!saved?.id || saved.error) throw new Error('保存失败');
+      const idx = personas.findIndex(p => p.id === saved.id);
+      if (idx >= 0) personas[idx] = { ...personas[idx], ...saved };
+      else personas.push(saved);
+      $('personaEditId').value = saved.id;
+      $('personaName').value = saved.name;
+      personaDraft = {
+        name: saved.name,
+        persona: roleData.persona,
+      };
+    }
+    if (shouldSaveModules) {
+      const savedModules = await api('PUT', '/api/theater/prompt-modules', { prompt_modules: nextPromptModules });
+      if (!Array.isArray(savedModules) || savedModules.error) throw new Error('保存失败');
+      promptModules = normalizePersonaPromptModules(savedModules);
+      promptModulesDraft = promptModules.map(mod => ({ ...mod }));
+      applyPromptModulesToForm(promptModules);
+    }
     renderPersonaList();
     $('personaSaveStatus').textContent = '已保存';
     showToast('已保存，可以继续编辑或切换角色');
@@ -1993,12 +2226,15 @@ async function deletePersona(pid) {
     if (!result?.ok) throw new Error('删除失败');
     personas = personas.filter(p => p.id !== pid);
     if (currentPersonaId === pid) currentPersonaId = '';
-    personaDraft = { name: $('personaName').value, persona: $('personaText').value };
+    personaDraft = {
+      name: $('personaName').value,
+      persona: $('personaText').value,
+    };
     $('personaEditId').value = '';
     setPersonaBusy(false);
     // Reload the editor even when deleting the final character opens a blank draft.
     $('personaModalOverlay').classList.remove('show');
-    openPersonaModal(personas[0]?.id || '');
+    openPersonaModal(personas[0]?.id || '', { keepPromptModules: true });
     showToast('已删除角色');
   } catch (error) {
     showToast('删除失败，请重试');
@@ -2025,9 +2261,9 @@ document.addEventListener('DOMContentLoaded', () => {
 <script src="/static/theater-follow.js?v=20261025-line-indent"></script>
 <script src="/static/image-anchors.js?v=20261103"></script>
 <link rel="stylesheet" href="/static/reading-companion.css?v=20261028-opaque-notes">
-<script src="/static/reading-companion.js?v=20261028"></script>
+<script src="/static/reading-companion.js?v=20261121-reading-context"></script>
 <script src="/static/theater-reading.js?v=20261028"></script>
 <script src="/static/theater-export.js?v=20261028"></script>
-<script src="/static/theater-studio.js?v=20261115-chapter-illustrations"></script>
+<script src="/static/theater-studio.js?v=20261120-retry-voice"></script>
 </body>
 </html>

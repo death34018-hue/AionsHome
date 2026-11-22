@@ -64,7 +64,7 @@ _BRACKET_COMMAND_PREFIXES = tuple(value.upper() for value in (
     "[WEB_SEARCH", "[WEB_EXTRACT", "[LOUNGE_VISIT", "[MUSIC", "[MOMENT",
     "[MEMORY", "[许愿", "[查看动态", "[SELFIE", "[DRAW", "[SONG", "[COMPOSE",
     "[POI_SEARCH", "[TOY", "[SVAKOM", "[ANKNI", "[PET", "[HOME", "[BAND_VIBRATE", "[BAND_NOTE",
-    "[LUCKIN", "[转账", "[悄悄话", "[WECHAT", "[ALARM", "[REMINDER",
+    "[LUCKIN", "[转账", "[悄悄话", "[伙伴私聊", "[WECHAT", "[ALARM", "[REMINDER",
     "[MONITOR", "[SCHEDULE_DEL", "[SCHEDULE_LIST", "[NEXT_CHAT", "[HEART",
     "[视频电话", "[CAM_CHECK", "[微信消息", "[拍拍抱枕", "[剧场属性", "[剧场道具",
     "[DATE_", "[APP_", "[DEVICE_", "[COME_HOME", "[LOOK_AT_ME", "[PAT:", "[PAT：",
@@ -76,7 +76,7 @@ _LONG_FORM_BRACKET_PREFIXES = (
     "[语音",
     "[WEB_SEARCH", "[WEB_EXTRACT", "[LOUNGE_VISIT", "[MUSIC", "[MOMENT",
     "[MEMORY", "[许愿", "[SELFIE", "[DRAW", "[POI_SEARCH", "[BAND_NOTE",
-    "[LUCKIN", "[悄悄话", "[WECHAT", "[ALARM", "[REMINDER", "[MONITOR",
+    "[LUCKIN", "[悄悄话", "[伙伴私聊", "[WECHAT", "[ALARM", "[REMINDER", "[MONITOR",
     "[HEART", "[微信消息", "[拍拍抱枕", "[HOME", "[APP_", "[DEVICE_",
     "[DATE_", "[COME_HOME", "[LOOK_AT_ME", "[SVAKOM", "[ANKNI",
 )

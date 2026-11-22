@@ -1,4 +1,4 @@
-"""聊天氛围：天气动效和叠加颜色，用户与 AI 共用一份状态。"""
+"""聊天氛围：日夜模式、天气动效和叠加颜色，用户与 AI 共用一份状态。"""
 import json
 import re
 
@@ -25,18 +25,22 @@ BURSTS = {'撒花': 'confetti', '烟花': 'fireworks', '流星': 'meteor'}
 # 颜色编号 0~7，与前端色块一致
 TINTS = ['', '#ff5a5f', '#ff9d42', '#ffd84a', '#57c96b', '#45a8ff', '#4656c9', '#a05cff']
 TINT_NAMES = ['不叠加', '红', '橙', '黄', '绿', '蓝', '靛', '紫']
+THEMES = {'light': '日间', 'dark': '夜间'}
 _TINT_PATTERN = re.compile(r'#[0-9a-f]{6}')
 
 router = APIRouter(prefix='/api/chat-ambience', tags=['chat-ambience'])
 
 
 def _clean(data) -> dict:
-    """只保留合法的 effect / tint 字段。"""
+    """只保留合法的氛围设置。"""
     cleaned = {}
     if not isinstance(data, dict):
         return cleaned
-    if data.get('effect') in EFFECTS:
-        cleaned['effect'] = data['effect']
+    if data.get('theme') in ('light', 'dark'):
+        cleaned['theme'] = data['theme']
+    effect = data.get('effect')
+    if isinstance(effect, str) and effect in EFFECTS:
+        cleaned['effect'] = effect
     tint = data.get('tint')
     if isinstance(tint, str) and (tint == '' or _TINT_PATTERN.fullmatch(tint.lower())):
         cleaned['tint'] = tint.lower()
@@ -52,10 +56,14 @@ def load_state() -> dict | None:
     return {'effect': 'none', 'tint': '', **saved}
 
 
-async def set_state(patch: dict, source: str = '', burst: str = '') -> dict:
+async def set_state(patch: dict, source: str = '', burst: str = '', *, only_missing: bool = False) -> dict:
     """保存并广播；source 让发起修改的页面忽略自己的回声，burst 是顺带播放的瞬间特效。"""
     cleaned = _clean(patch)
     state = load_state()
+    if only_missing and state is not None:
+        cleaned = {key: value for key, value in cleaned.items() if key not in state}
+        if not cleaned:
+            return state
     if cleaned:
         state = {**(state or {'effect': 'none', 'tint': ''}), **cleaned}
         STATE_PATH.write_text(json.dumps(state, ensure_ascii=False), encoding='utf-8')
@@ -67,21 +75,23 @@ async def set_state(patch: dict, source: str = '', burst: str = '') -> dict:
 
 
 def parse_command(value: str) -> dict:
-    """解析「效果|颜色编号」或瞬间特效名，认不出的部分保持原样。"""
-    effect, _, color = re.sub(r'[｜丨]', '|', value or '').partition('|')
+    """按名称识别效果、颜色编号、模式，允许只提供其中一项。"""
     patch = {}
-    if effect.strip() in BURSTS:
-        patch['burst'] = BURSTS[effect.strip()]
-    elif effect.strip() in EFFECT_ALIASES:
-        patch['effect'] = EFFECT_ALIASES[effect.strip()]
-    color = color.strip()
-    if color.isascii() and color.isdigit() and int(color) < len(TINTS):
-        patch['tint'] = TINTS[int(color)]
+    for part in re.split(r'[|｜丨]', value or ''):
+        token = part.strip()
+        if token in THEMES.values():
+            patch['theme'] = 'light' if token == '日间' else 'dark'
+        elif token in BURSTS:
+            patch['burst'] = BURSTS[token]
+        elif token in EFFECT_ALIASES:
+            patch['effect'] = EFFECT_ALIASES[token]
+        elif re.fullmatch(r'0*[0-7]', token):
+            patch['tint'] = TINTS[int(token[-1])]
     return patch
 
 
 def state_text() -> str:
-    """给 AI 看的当前状态，例如「当前小家氛围：下雪|红色」。"""
+    """把界面模式、动效和实际叠色放进本轮 prompt。"""
     state = load_state() or {'effect': 'none', 'tint': ''}
     tint = state['tint']
     if not tint:
@@ -89,16 +99,17 @@ def state_text() -> str:
     elif tint in TINTS:
         color = TINT_NAMES[TINTS.index(tint)] + '色'
     else:
-        color = '自定义颜色'
-    return f'当前小家氛围：{EFFECTS[state["effect"]]}|{color}'
+        color = f'自定义颜色 {tint}'
+    theme = THEMES.get(state.get('theme'), '模式待同步')
+    return f'当前小家氛围：{theme}｜{EFFECTS[state["effect"]]}｜{color}'
 
 
 def ability_text(user_name: str) -> str:
     return (
-        f'[小家氛围：效果|颜色编号] — 切换聊天界面的氛围动效和叠加的淡色，{user_name}会立刻看到。'
+        f'[小家氛围：效果|颜色编号|模式] — 调整{user_name}的聊天界面，只写要改的项。'
         '效果：' + '、'.join(EFFECTS.values()) + '；'
         '颜色编号：' + '、'.join(f'{index} {name}' for index, name in enumerate(TINT_NAMES)) + '。'
-        '例如 [小家氛围：落叶|2]。'
+        '模式：日间、夜间。例如 [小家氛围：夜间] 或 [小家氛围：萤火虫|5|夜间]。'
         '聊天的情绪或场景变化时自行切换，氛围合适就不用动。'
         '另有播十秒左右就结束、不改变当前氛围的瞬间特效：' + '、'.join(BURSTS) + '，'
         '写作 [小家氛围：撒花]，留给值得庆祝或许愿的时刻。每次回复最多切换一次、放一个特效。\n'
@@ -129,4 +140,5 @@ async def api_get_state():
 
 @router.put('')
 async def api_set_state(body: dict):
-    return {'ok': True, 'state': await set_state(body, str(body.get('source') or '')[:32])}
+    state = await set_state(body, str(body.get('source') or '')[:32], only_missing=body.get('only_missing') is True)
+    return {'ok': True, 'state': state}

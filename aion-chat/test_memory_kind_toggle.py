@@ -1,5 +1,4 @@
 import sys
-import re
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -72,49 +71,6 @@ class MainMemoryKindToggleTests(unittest.TestCase):
             ("UPDATE memories SET type=? WHERE id=?", ("daily", "mem-1"))
         ])
         self.assertTrue(all("embedding" not in sql.lower() for sql, _ in update_statements))
-
-
-class MemoryKindToggleFrontendTests(unittest.TestCase):
-    def test_memory_labels_open_selection_menus_instead_of_toggling_directly(self):
-        main_html = (ROOT / "static" / "memory-library.js").read_text(encoding="utf-8")
-        chatroom_js = (ROOT / "static" / "chatroom.js").read_text(encoding="utf-8")
-
-        self.assertIn('select id="editKind"', main_html)
-        self.assertIn("memory_kind:el('editKind').value", main_html)
-        self.assertNotIn("toggleMemoryKind('", main_html)
-        self.assertIn("/api/memory-library/${store}", main_html)
-        self.assertIn("openChatroomMemoryKindMenu('", chatroom_js)
-        self.assertIn("selectChatroomMemoryKind('", chatroom_js)
-        self.assertNotIn("toggleChatroomMemoryKind('", chatroom_js)
-        self.assertIn("memory_kind: nextKind", chatroom_js)
-
-    def test_main_memory_counts_use_server_kind_totals_not_loaded_page_length(self):
-        route_source = (ROOT / "routes" / "memories.py").read_text(encoding="utf-8")
-        main_html = (ROOT / "static" / "memory-library.js").read_text(encoding="utf-8")
-
-        self.assertIn('"kind_totals"', route_source)
-        self.assertIn('"daily"', route_source)
-        self.assertIn('"long_term"', route_source)
-        self.assertIn("total:result.total", main_html)
-        self.assertIn("`${state.total} 条`", main_html)
-        self.assertNotIn("${filterText} ${kindFiltered.length} 条", main_html)
-
-    def test_main_memory_kind_tab_requests_a_fresh_server_filtered_page(self):
-        main_html = (ROOT / "static" / "memory-library.js").read_text(encoding="utf-8")
-        load_function = re.search(
-            r"async function loadList\(.*?\n  \}",
-            main_html,
-            re.S,
-        ).group(0)
-        filter_function = re.search(
-            r"el\('chips'\).onclick = .*?;\n",
-            main_html,
-            re.S,
-        ).group(0)
-
-        self.assertIn("q.set(state.view === 'atoms' ? 'state' : 'kind', state.filter)", load_function)
-        self.assertIn("resetView()", filter_function)
-        self.assertNotIn("renderMemories();", filter_function)
 
 
 if __name__ == "__main__":

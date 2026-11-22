@@ -4,11 +4,12 @@ EPUB 解析模块 — 书籍导入、章节拆分、段落标注、图片提取
 
 import hashlib, json, os, re, shutil, uuid
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup, NavigableString, Tag, XMLParsedAsHTMLWarning
+from pydantic import BaseModel
 import warnings
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
@@ -376,3 +377,238 @@ def delete_book_files(book_id: str):
     book_dir = BOOKS_DIR / book_id
     if book_dir.exists():
         shutil.rmtree(book_dir, ignore_errors=True)
+
+
+SELECTION_BEFORE_MAX_CHARS = 1200
+SELECTION_TARGET_MAX_CHARS = 1200
+SELECTION_AFTER_MAX_CHARS = 600
+
+
+class ReadingContextRef(BaseModel):
+    book_id: str
+    chapter_index: int
+    chapter_id: Optional[int] = None
+    start_p: Optional[int] = None
+    end_p: Optional[int] = None
+    selected_text: str = ""
+
+
+def _resolve_selection_span(
+    paragraphs: List[str],
+    start_p: Optional[int],
+    end_p: Optional[int],
+    selected_text: str = "",
+) -> Optional[Tuple[int, int]]:
+    if not paragraphs:
+        return None
+    if start_p is not None:
+        sp = max(0, min(int(start_p), len(paragraphs) - 1))
+        raw_end = sp if end_p is None else int(end_p)
+        ep = max(sp, min(raw_end, len(paragraphs) - 1))
+        return sp, ep
+
+    lines = [ln.strip() for ln in (selected_text or "").splitlines() if ln.strip()]
+    if lines:
+        first_needle = lines[0][:80]
+        sp = next((i for i, p in enumerate(paragraphs) if first_needle in str(p or "")), None)
+        if sp is not None:
+            ep = sp
+            if len(lines) > 1:
+                last_needle = lines[-1][:80]
+                for j in range(sp, min(len(paragraphs), sp + 11)):
+                    if last_needle in str(paragraphs[j] or ""):
+                        ep = j
+            return sp, ep
+
+    if sum(len(str(p or "")) for p in paragraphs) <= SELECTION_BEFORE_MAX_CHARS + SELECTION_AFTER_MAX_CHARS:
+        return 0, len(paragraphs) - 1
+    return None
+
+
+def format_reading_selection_context(
+    *,
+    book_title: str,
+    author: str,
+    chapter_index: int,
+    chapter_title: str,
+    paragraphs: List[str],
+    start_p: Optional[int] = None,
+    end_p: Optional[int] = None,
+    selected_text: str = "",
+    actor_summary: str = "",
+    actor_annotations: Optional[List[str]] = None,
+) -> str:
+    span = _resolve_selection_span(paragraphs, start_p, end_p, selected_text)
+    if not span:
+        return ""
+    sp, ep = span
+
+    before_parts: list[str] = []
+    budget = SELECTION_BEFORE_MAX_CHARS
+    for i in range(sp - 1, -1, -1):
+        text = str(paragraphs[i] or "").strip()
+        if not text:
+            continue
+        if len(text) <= budget:
+            before_parts.append(text)
+            budget -= len(text)
+        elif not before_parts:
+            before_parts.append("……" + text[-budget:])
+            break
+        else:
+            break
+    before_parts.reverse()
+
+    target_parts = [str(paragraphs[i] or "").strip() for i in range(sp, ep + 1)]
+    target_text = "\n".join(p for p in target_parts if p)
+    if len(target_text) > SELECTION_TARGET_MAX_CHARS:
+        target_text = target_text[:SELECTION_TARGET_MAX_CHARS].rstrip() + "……"
+
+    after_parts: list[str] = []
+    budget = SELECTION_AFTER_MAX_CHARS
+    for i in range(ep + 1, len(paragraphs)):
+        text = str(paragraphs[i] or "").strip()
+        if not text:
+            continue
+        if len(text) <= budget:
+            after_parts.append(text)
+            budget -= len(text)
+        elif not after_parts:
+            after_parts.append(text[:budget] + "……")
+            break
+        else:
+            break
+
+    title_text = (chapter_title or "").strip() or f"第{chapter_index + 1}章"
+    author_clean = (author or "").strip()
+    author_part = f"｜{author_clean}" if author_clean and author_clean != "未知作者" else ""
+    header = f"当前共读：《{(book_title or '未知').strip() or '未知'}》{author_part}｜{title_text}"
+
+    sections = [header]
+    if before_parts:
+        sections.append("【上文】\n" + "\n".join(before_parts))
+    if target_text:
+        sections.append("【选中所在段落】\n" + target_text)
+    if after_parts:
+        sections.append("【下文】\n" + "\n".join(after_parts))
+
+    summary_clean = (actor_summary or "").strip()
+    if summary_clean:
+        sections.append("【你之前读本段的读后感】\n" + summary_clean[:400])
+
+    annos_clean = [str(a).strip()[:200] for a in (actor_annotations or []) if str(a or "").strip()][:3]
+    if annos_clean:
+        sections.append("【你在此处的批注】\n" + "\n".join(annos_clean))
+
+    return "\n\n".join(sections)
+
+
+async def load_reading_selection_context(
+    ref: Any,
+    *,
+    actor: Optional[str] = None,
+    db_factory=None,
+) -> str:
+    if ref is None:
+        return ""
+    if hasattr(ref, "model_dump"):
+        ref_data = ref.model_dump()
+    elif hasattr(ref, "dict"):
+        ref_data = ref.dict()
+    elif isinstance(ref, dict):
+        ref_data = dict(ref)
+    else:
+        return ""
+
+    book_id = str(ref_data.get("book_id") or "").strip()
+    try:
+        chapter_index = int(ref_data.get("chapter_index"))
+    except (TypeError, ValueError):
+        return ""
+    if not book_id or chapter_index < 0:
+        return ""
+
+    chapter_id = ref_data.get("chapter_id")
+    start_p = ref_data.get("start_p")
+    end_p = ref_data.get("end_p")
+    selected_text = str(ref_data.get("selected_text") or "")
+
+    if db_factory is None:
+        from database import get_db
+        db_factory = get_db
+
+    try:
+        async with db_factory() as db:
+            book_row = await (await db.execute(
+                "SELECT title, author FROM books WHERE book_id = ?",
+                (book_id,),
+            )).fetchone()
+            chapter_row = await (await db.execute(
+                "SELECT id, title, paragraphs, segments_meta FROM book_chapters WHERE book_id = ? AND chapter_index = ?",
+                (book_id, chapter_index),
+            )).fetchone()
+            if not chapter_row:
+                return ""
+            ch_id, ch_title, paragraphs_raw, segments_raw = chapter_row
+            if chapter_id is not None and ch_id != chapter_id:
+                return ""
+            paragraphs = json.loads(paragraphs_raw or "[]")
+            if not isinstance(paragraphs, list) or not paragraphs:
+                return ""
+            span = _resolve_selection_span(paragraphs, start_p, end_p, selected_text)
+            if not span:
+                return ""
+            sp, ep = span
+            actor_summary = ""
+            actor_annotations: list[str] = []
+            if actor in ("aion", "connor"):
+                segments_meta = json.loads(segments_raw or "[]")
+                matching_segments = {
+                    idx for idx, seg in enumerate(segments_meta)
+                    if isinstance(seg, dict)
+                    and int(seg.get("start_p", 0)) <= ep
+                    and int(seg.get("end_p", -1)) >= sp
+                }
+                ann_rows = await (await db.execute(
+                    "SELECT segment_index, annotations, summary FROM book_annotations "
+                    "WHERE book_id = ? AND chapter_index = ? AND COALESCE(annotator, 'aion') = ? "
+                    "ORDER BY segment_index",
+                    (book_id, chapter_index, actor),
+                )).fetchall()
+                summary_parts: list[str] = []
+                for seg_idx, ann_raw, summary_text in ann_rows:
+                    if (not matching_segments or seg_idx in matching_segments) and summary_text and str(summary_text).strip():
+                        summary_parts.append(str(summary_text).strip())
+                    try:
+                        ann_list = json.loads(ann_raw or "[]")
+                    except Exception:
+                        ann_list = []
+                    if isinstance(ann_list, list):
+                        for item in ann_list:
+                            if not isinstance(item, dict):
+                                continue
+                            p_val = item.get("p")
+                            if isinstance(p_val, int) and sp <= p_val <= ep:
+                                text = str(item.get("text") or "").strip()
+                                if not text:
+                                    continue
+                                kind = str(item.get("type") or "").strip()
+                                actor_annotations.append(f"{kind}：{text}" if kind else text)
+                actor_summary = "\n".join(summary_parts)[:400]
+
+        book_title = (book_row[0] if book_row else "") or ""
+        author = (book_row[1] if book_row else "") or ""
+        return format_reading_selection_context(
+            book_title=book_title,
+            author=author,
+            chapter_index=chapter_index,
+            chapter_title=ch_title or "",
+            paragraphs=paragraphs,
+            start_p=sp,
+            end_p=ep,
+            selected_text=selected_text,
+            actor_summary=actor_summary,
+            actor_annotations=actor_annotations,
+        )
+    except Exception:
+        return ""

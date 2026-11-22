@@ -63,6 +63,7 @@ WORLDBOOK_PATH = DATA_DIR / "worldbook.json"
 CHAT_STATUS_PATH = DATA_DIR / "chat_status.json"
 CAM_CONFIG_PATH = DATA_DIR / "cam_config.json"
 DIGEST_ANCHOR_PATH = DATA_DIR / "digest_anchor.json"
+DEFAULT_ROUTINE_PATH = (_TEST_DB_DIR if _is_test_process() else DATA_DIR) / "default_routine.json"
 INDEX_PATH = CHATS_DIR / "_index.json"
 
 # ── Settings ─────────────────────────────────────
@@ -261,22 +262,16 @@ DEPRECATED_MODEL_PROVIDERS = {"gemini_cli"}
 DEPRECATED_MODEL_KEYS = {"CLI-3.1pro", "AGY-3.1pro"}
 ANTIGRAVITY_MODELS_PATH = DATA_DIR / "antigravity_models.json"
 
-# AGY 模型开关：只展示未注释的官方 slug。取消注释后重启服务器、刷新页面。
+# AGY 只走 ACP 线路。开关：只展示列出的官方 slug，修改后重启服务器、刷新页面。
 # antigravity_models.json 是自动生成的缓存，不要在那里修改开关。
-ANTIGRAVITY_ENABLED_MODELS = (
-    "gemini-4-hydrogen-high",
-    "gemini-4-hydrogen-low",
-    "gemini-4-argon-low",
-    "gemini-4-argon-medium",
-    "gemini-3.8-flash-high",
-    "claude-opus-5-5-medium",
-)
 ANTIGRAVITY_ACP_ENABLED_MODELS = (
+    "gemini-4-neon-low", "gemini-4-neon-high",
+    "gemini-4-carbon-low",
     "gemini-4-hydrogen-low", "gemini-4-hydrogen-high",
     "gemini-4-argon-low", "gemini-4-argon-medium", "gemini-4-argon-high",
     "gemini-3.8-flash-high", "claude-opus-5-5-medium",
 )
-ANTIGRAVITY_CATALOG_MODELS = set(ANTIGRAVITY_ENABLED_MODELS) | set(ANTIGRAVITY_ACP_ENABLED_MODELS)
+ANTIGRAVITY_CATALOG_MODELS = set(ANTIGRAVITY_ACP_ENABLED_MODELS)
 
 
 def antigravity_model_supports_vision(model: str) -> bool:
@@ -317,8 +312,12 @@ BUILTIN_MODELS = {
     "Vertex · 3.8 Flash": {"provider": "vertex", "model": "gemini-3.8-flash", "vision": True, "audio": True},
     "Vertex · 4 Argon": {"provider": "vertex", "model": "gemini-4-argon", "vision": True, "audio": True},
     "Vertex · 4 Carbon": {"provider": "vertex", "model": "gemini-4-carbon", "vision": True, "audio": True, "thinking_level": "low"},
+    "Vertex · 4 Neon (High)": {"provider": "vertex", "model": "gemini-4-neon", "vision": True, "audio": True, "thinking_level": "high"},
+    "Vertex · 4 Neon (Low)": {"provider": "vertex", "model": "gemini-4-neon", "vision": True, "audio": True, "thinking_level": "low"},
     "Codex-5.6-Sol":      {"provider": "codex_cli",  "model": "gpt-5.6-sol", "vision": True, "transport_mode": "safe_live"},
     "Codex-6.1-Sol":   {"provider": "codex_cli",  "model": "gpt-6.1-sol", "vision": True, "transport_mode": "safe_live"},
+    "Codex-6.2-Astra": {"provider": "codex_cli",  "model": "gpt-6.2-astra", "vision": True, "transport_mode": "safe_live"},
+    # "Codex-6.2-Sol":   {"provider": "codex_cli",  "model": "gpt-6.2-sol", "vision": True, "transport_mode": "safe_live"},
 }
 
 GROK_MODEL_EFFORTS = {
@@ -441,16 +440,11 @@ def normalize_custom_model_routes(value) -> list[dict]:
 
 
 def _antigravity_routes() -> dict:
-    acp_routes = {}
-    cli_routes = {}
-    for key, cfg in ANTIGRAVITY_MODELS.items():
-        if cfg["model"] in ANTIGRAVITY_ENABLED_MODELS:
-            cli_routes[key] = cfg
-        if cfg["model"] in ANTIGRAVITY_ACP_ENABLED_MODELS:
-            acp_routes[key.replace("AGY · ", "AGY ACP · ", 1)] = {
-                **cfg, "provider": "antigravity_acp", "audio": False,
-            }
-    return acp_routes | cli_routes
+    return {
+        key.replace("AGY · ", "AGY ACP · ", 1): {**cfg, "provider": "antigravity_acp"}
+        for key, cfg in ANTIGRAVITY_MODELS.items()
+        if cfg["model"] in ANTIGRAVITY_ACP_ENABLED_MODELS
+    }
 
 
 def refresh_custom_models() -> None:
@@ -477,7 +471,11 @@ def refresh_custom_models() -> None:
 
 
 def replace_antigravity_models(models: dict, *, persist: bool = False) -> None:
-    """Apply the AGY switches to the official catalog and its saved cache."""
+    """Apply the AGY switches; save the whole catalog so newly enabled switches work after restart."""
+    if persist:
+        temporary = ANTIGRAVITY_MODELS_PATH.with_suffix(".tmp")
+        temporary.write_text(json.dumps(models, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(ANTIGRAVITY_MODELS_PATH)
     models = {key: {**value, "vision": antigravity_model_supports_vision(value.get("model", "")),
                    "audio": antigravity_model_supports_audio(value.get("model", ""))}
               for key, value in models.items()
@@ -487,10 +485,6 @@ def replace_antigravity_models(models: dict, *, persist: bool = False) -> None:
     ANTIGRAVITY_MODELS.clear()
     ANTIGRAVITY_MODELS.update(models)
     MODELS.update(_antigravity_routes())
-    if persist:
-        temporary = ANTIGRAVITY_MODELS_PATH.with_suffix(".tmp")
-        temporary.write_text(json.dumps(models, ensure_ascii=False, indent=2), encoding="utf-8")
-        temporary.replace(ANTIGRAVITY_MODELS_PATH)
 
 
 MODELS = {}
@@ -525,7 +519,10 @@ def iter_visible_models():
 
 
 def resolve_model_key(model_key: str | None) -> str:
-    candidates = [_clean_text(model_key), _clean_text(DEFAULT_MODEL)]
+    key = _clean_text(model_key)
+    if key.startswith("AGY · "):  # Saved choices of the removed AGY CLI routes use ACP.
+        key = key.replace("AGY · ", "AGY ACP · ", 1)
+    candidates = [key, _clean_text(DEFAULT_MODEL)]
     for key in candidates:
         if key in MODELS and not is_model_deprecated(key):
             return key

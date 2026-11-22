@@ -13,7 +13,7 @@ from pathlib import Path
 from external_memories import ExternalReply
 
 HOME = Path(__file__).resolve().parents[1]
-QQ_PROVIDERS = ('codex_cli','antigravity_cli','grok_cli','custom_openai','gemini','vertex','siliconflow','aipro')
+QQ_PROVIDERS = ('codex_cli','antigravity_acp','grok_cli','custom_openai','gemini','vertex','siliconflow','aipro')
 
 
 @dataclass

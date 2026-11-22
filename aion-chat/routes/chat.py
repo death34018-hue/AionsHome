@@ -17,7 +17,32 @@ from typing import Optional, List, Any
 from config import DEFAULT_MODEL, MODELS, load_worldbook, SETTINGS, UPLOADS_DIR, ALBUM_IMAGES_DIR, CODEX_UPLOADS_DIR, PUBLIC_DIR, resolve_model_key, resolve_model_transport_mode
 from database import get_db
 from ws import manager
+from chatroom import pick_random_model_from_pool
 from system_logs import emit_chat_debug
+
+
+def _resolve_private_chat_model(fixed_model: str | None, *, allow_random: bool = True) -> tuple[str, bool]:
+    resolved_fixed = resolve_model_key(fixed_model)
+    if allow_random:
+        picked = pick_random_model_from_pool("aion", available_models=MODELS)
+        if picked:
+            return resolve_model_key(picked), True
+    return resolved_fixed, False
+
+
+async def _insert_private_assistant_message(db, *, msg_id: str, conv_id: str, content: str, created_at: float, attachments_json: str, reasoning_content: str, model_key: str = "") -> None:
+    col_cur = await db.execute("PRAGMA table_info(messages)")
+    cols = {r[1] for r in await col_cur.fetchall()}
+    if "model_key" in cols:
+        await db.execute(
+            "INSERT INTO messages (id, conv_id, role, content, created_at, attachments, reasoning_content, model_key) VALUES (?,?,?,?,?,?,?,?)",
+            (msg_id, conv_id, "assistant", content, created_at, attachments_json, reasoning_content, model_key or ""),
+        )
+    else:
+        await db.execute(
+            "INSERT INTO messages (id, conv_id, role, content, created_at, attachments, reasoning_content) VALUES (?,?,?,?,?,?,?)",
+            (msg_id, conv_id, "assistant", content, created_at, attachments_json, reasoning_content),
+        )
 from reply_timing import model_started
 from generation_control import (current_generation, cancellable, cancel_generation, generation_status, GenerationQueue, spawn_generation_task)
 from cancelled_reply import save_cancelled_replies
@@ -29,6 +54,7 @@ from camera import cam, CAM_CHECK_CMD, perform_cam_check, build_monitor_alert_da
 from activity import get_activity_summary_for_prompt, get_user_dynamics_for_prompt
 from message_dedup import build_message_dedupe_key, reserve_message_ingress
 from routes.files import export_conversation
+from book import ReadingContextRef, load_reading_selection_context
 from routes.music import MUSIC_CMD_PATTERN
 from music_station import record_music_request
 from song_gen import SONG_CMD_PATTERN, clean_song_visible_reply
@@ -199,7 +225,8 @@ async def _insert_private_ability_block(
         user_name,
         whisper_mode=whisper_mode,
         model_key=model_key,
-        profile_query=next((m.get('content', '') for m in reversed(history) if m.get('role') == 'user'), ''),
+        profile_query=next((m.get('content', '') for m in reversed(history)
+                            if m.get('role') == 'user' and m.get('_timeline_source') != 'peer_dm'), ''),
         include_kitchen=True,
     )
     if ability_block:
@@ -1075,6 +1102,7 @@ class MsgCreate(BaseModel):
     tts_voice: str = ""
     client_id: str = ""
     theater_session_id: str = ""
+    reading_ref: Optional[ReadingContextRef] = None
 
 class MsgUpdate(BaseModel):
     content: str
@@ -1428,7 +1456,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
         db.row_factory = __import__('aiosqlite').Row
         cur = await db.execute("SELECT model FROM conversations WHERE id=?", (conv_id,))
         conv = await cur.fetchone()
-        model_key = resolve_model_key(conv["model"] if conv else DEFAULT_MODEL)
+        model_key, aion_from_pool = _resolve_private_chat_model(conv["model"] if conv else DEFAULT_MODEL, allow_random=True)
 
     # ── 合并私聊 + 群聊消息为统一时间线 ──
     merged = await fetch_merged_timeline("aion", body.context_limit, conv_id=conv_id)
@@ -1437,7 +1465,8 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
     # 图片保留最近两轮用户上下文 + 语音消息处理
     _process_voice_attachments_in_history(history)
 
-    actual_recent = [m for m in history if m["role"] in ("user", "assistant") and not m.get("_family_dynamic")][-3:]
+    actual_recent = [m for m in history if m["role"] in ("user", "assistant")
+                     and not m.get("_family_dynamic") and m.get("_timeline_source") != "peer_dm"][-3:]
 
     wb = load_worldbook()
     ai_name = wb.get("ai_name") or "AI"
@@ -1545,7 +1574,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
 
 
     ai_msg_id = f"msg_{int(time.time()*1000)}"
-    usage_meta: dict = {}
+    usage_meta: dict = {"_log_extra": {"model_key": model_key, "random_pool": aion_from_pool}}
 
     _q: asyncio.Queue = GenerationQueue()
 
@@ -1831,14 +1860,20 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
 
             now2 = time.time()
             async with get_db() as db2:
-                await db2.execute(
-                    "INSERT INTO messages (id, conv_id, role, content, created_at, attachments, reasoning_content) VALUES (?,?,?,?,?,?,?)",
-                    (ai_msg_id, conv_id, "assistant", full_text, now2, att_json, usage_meta.get("reasoning_content", "").strip())
+                await _insert_private_assistant_message(
+                    db2,
+                    msg_id=ai_msg_id,
+                    conv_id=conv_id,
+                    content=full_text,
+                    created_at=now2,
+                    attachments_json=att_json,
+                    reasoning_content=usage_meta.get("reasoning_content", "").strip(),
+                    model_key=model_key,
                 )
                 await db2.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now2, conv_id))
                 await db2.commit()
 
-            ai_msg = {"id": ai_msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now2, "attachments": reply_atts, "reasoning_content": usage_meta.get("reasoning_content", "").strip()}
+            ai_msg = {"id": ai_msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now2, "attachments": reply_atts, "reasoning_content": usage_meta.get("reasoning_content", "").strip(), "model_key": model_key}
             await manager.broadcast({"type": "msg_created", "data": ai_msg})
             await broadcast_app_supervision_command(supervision_command)
             await export_conversation(conv_id)
@@ -1910,6 +1945,8 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
             debug_data = {
                 "type": "debug",
                 "model": model_key,
+                "model_key": model_key,
+                "random_pool": aion_from_pool,
                 "msg_id": ai_msg_id,
                 "recall_keywords": recall_keywords_str,
                 "recall_query": recall_query,
@@ -1917,7 +1954,7 @@ async def edit_resend_message(msg_id: str, body: MsgEditResend):
                 "is_search_needed": is_search_needed,
                 "recalled_memories": debug_recalled,
                 "debug_top6": debug_top6_data,
-                "usage": usage_meta if usage_meta else None,
+                "usage": {k: v for k, v in usage_meta.items() if not k.startswith("_")} or None,
                 "has_error": has_error,
                 "error_text": error_text if has_error else None,
             }
@@ -2051,7 +2088,10 @@ async def send_message(conv_id: str, body: MsgCreate):
         db.row_factory = __import__('aiosqlite').Row
         cur = await db.execute("SELECT model FROM conversations WHERE id=?", (conv_id,))
         conv = await cur.fetchone()
-        model_key = resolve_model_key(conv["model"] if conv else DEFAULT_MODEL)
+        model_key, aion_from_pool = _resolve_private_chat_model(
+            conv["model"] if conv else DEFAULT_MODEL,
+            allow_random=not bool(body.theater_session_id),
+        )
 
     # ── 合并私聊 + 群聊消息为统一时间线 ──
     merged = await fetch_merged_timeline("aion", body.context_limit, conv_id=conv_id)
@@ -2063,7 +2103,8 @@ async def send_message(conv_id: str, body: MsgCreate):
 
     # 本地前置路由：取最近实际对话用于记忆查询
     # 语音消息此时 content 已包含转写文本，哨兵直接分析文本
-    actual_recent = [m for m in history if m["role"] in ("user", "assistant") and not m.get("_family_dynamic")][-3:]
+    actual_recent = [m for m in history if m["role"] in ("user", "assistant")
+                     and not m.get("_family_dynamic") and m.get("_timeline_source") != "peer_dm"][-3:]
 
     wb = load_worldbook()
     ai_name = wb.get("ai_name") or "AI"
@@ -2230,10 +2271,24 @@ async def send_message(conv_id: str, body: MsgCreate):
                 mem_block += f"\n\n[记忆来源原文]\n以下是相关记忆挂载的来源原文；旧记忆没有精确来源时才会按时间范围回退筛选原文：\n{detail_text}"
             history.insert(cap_idx + inject_offset, {"role": "user", "content": mem_block})
             history.insert(cap_idx + inject_offset + 1, {"role": "assistant", "content": "收到，我会自然地参考这些记忆。"})
+            inject_offset += 2
+
+    if body.reading_ref:
+        reading_ctx = await load_reading_selection_context(body.reading_ref, actor="aion")
+        if reading_ctx:
+            history.insert(
+                cap_idx + inject_offset,
+                {"role": "user", "content": f"[当前共读上下文]\n{reading_ctx}"},
+            )
+            history.insert(
+                cap_idx + inject_offset + 1,
+                {"role": "assistant", "content": "收到，我看到这段原文和前后文了。"},
+            )
+            inject_offset += 2
 
 
     ai_msg_id = f"msg_{int(time.time()*1000)}"
-    usage_meta: dict = {}
+    usage_meta: dict = {"_log_extra": {"model_key": model_key, "random_pool": aion_from_pool}}
 
     # ── 后台任务 + SSE 转发：AI 生成和保存在后台任务中完成，即使客户端断开也不丢失 ──
     _q: asyncio.Queue = GenerationQueue()
@@ -2576,14 +2631,20 @@ async def send_message(conv_id: str, body: MsgCreate):
 
             now2 = time.time()
             async with get_db() as db2:
-                await db2.execute(
-                    "INSERT INTO messages (id, conv_id, role, content, created_at, attachments, reasoning_content) VALUES (?,?,?,?,?,?,?)",
-                    (ai_msg_id, conv_id, "assistant", full_text, now2, att_json, usage_meta.get("reasoning_content", "").strip())
+                await _insert_private_assistant_message(
+                    db2,
+                    msg_id=ai_msg_id,
+                    conv_id=conv_id,
+                    content=full_text,
+                    created_at=now2,
+                    attachments_json=att_json,
+                    reasoning_content=usage_meta.get("reasoning_content", "").strip(),
+                    model_key=model_key,
                 )
                 await db2.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now2, conv_id))
                 await db2.commit()
 
-            ai_msg = {"id": ai_msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now2, "attachments": reply_atts, "reasoning_content": usage_meta.get("reasoning_content", "").strip()}
+            ai_msg = {"id": ai_msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now2, "attachments": reply_atts, "reasoning_content": usage_meta.get("reasoning_content", "").strip(), "model_key": model_key}
             await manager.broadcast({"type": "msg_created", "data": ai_msg})
             await broadcast_app_supervision_command(supervision_command)
             await export_conversation(conv_id)
@@ -2662,6 +2723,8 @@ async def send_message(conv_id: str, body: MsgCreate):
             debug_data = {
                 "type": "debug",
                 "model": model_key,
+                "model_key": model_key,
+                "random_pool": aion_from_pool,
                 "msg_id": ai_msg_id,
                 "recall_keywords": recall_keywords_str,
                 "recall_query": recall_query,
@@ -2669,7 +2732,7 @@ async def send_message(conv_id: str, body: MsgCreate):
                 "is_search_needed": is_search_needed,
                 "recalled_memories": debug_recalled,
                 "debug_top6": debug_top6_data,
-                "usage": usage_meta if usage_meta else None,
+                "usage": {k: v for k, v in usage_meta.items() if not k.startswith("_")} or None,
                 "has_error": has_error,
                 "error_text": error_text if has_error else None,
             }
@@ -3602,7 +3665,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
         db.row_factory = __import__('aiosqlite').Row
         cur = await db.execute("SELECT model FROM conversations WHERE id=?", (conv_id,))
         conv = await cur.fetchone()
-        model_key = resolve_model_key(conv["model"] if conv else DEFAULT_MODEL)
+        model_key, aion_from_pool = _resolve_private_chat_model(conv["model"] if conv else DEFAULT_MODEL, allow_random=True)
 
     # ── 合并私聊 + 群聊消息为统一时间线 ──
     merged = await fetch_merged_timeline("aion", context_limit, conv_id=conv_id)
@@ -3620,7 +3683,8 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
     _process_voice_attachments_in_history(history, keep_idx=last_user_idx)
 
     # 本地前置路由：取最近实际对话用于记忆查询
-    actual_recent = [m for m in history if m["role"] in ("user", "assistant") and not m.get("_family_dynamic")][-3:]
+    actual_recent = [m for m in history if m["role"] in ("user", "assistant")
+                     and not m.get("_family_dynamic") and m.get("_timeline_source") != "peer_dm"][-3:]
 
     wb = load_worldbook()
     ai_name = wb.get("ai_name") or "AI"
@@ -3738,7 +3802,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             history.insert(cap_idx + inject_offset + 1, {"role": "assistant", "content": "收到，我会自然地参考这些记忆。"})
 
     ai_msg_id = f"msg_{int(time.time()*1000)}"
-    usage_meta: dict = {}
+    usage_meta: dict = {"_log_extra": {"model_key": model_key, "random_pool": aion_from_pool}}
 
     # ── 后台任务 + SSE 转发：AI 生成和保存在后台任务中完成，即使客户端断开也不丢失 ──
     _q: asyncio.Queue = GenerationQueue()
@@ -4033,14 +4097,20 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
 
             now2 = time.time()
             async with get_db() as db2:
-                await db2.execute(
-                    "INSERT INTO messages (id, conv_id, role, content, created_at, attachments, reasoning_content) VALUES (?,?,?,?,?,?,?)",
-                    (ai_msg_id, conv_id, "assistant", full_text, now2, att_json, usage_meta.get("reasoning_content", "").strip())
+                await _insert_private_assistant_message(
+                    db2,
+                    msg_id=ai_msg_id,
+                    conv_id=conv_id,
+                    content=full_text,
+                    created_at=now2,
+                    attachments_json=att_json,
+                    reasoning_content=usage_meta.get("reasoning_content", "").strip(),
+                    model_key=model_key,
                 )
                 await db2.execute("UPDATE conversations SET updated_at=? WHERE id=?", (now2, conv_id))
                 await db2.commit()
 
-            ai_msg = {"id": ai_msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now2, "attachments": reply_atts, "reasoning_content": usage_meta.get("reasoning_content", "").strip()}
+            ai_msg = {"id": ai_msg_id, "conv_id": conv_id, "role": "assistant", "content": full_text, "created_at": now2, "attachments": reply_atts, "reasoning_content": usage_meta.get("reasoning_content", "").strip(), "model_key": model_key}
             await manager.broadcast({"type": "msg_created", "data": ai_msg})
             await export_conversation(conv_id)
 
@@ -4118,6 +4188,8 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
             debug_data = {
                 "type": "debug",
                 "model": model_key,
+                "model_key": model_key,
+                "random_pool": aion_from_pool,
                 "msg_id": ai_msg_id,
                 "recall_keywords": recall_keywords_str,
                 "recall_query": recall_query,
@@ -4125,7 +4197,7 @@ async def regenerate_message(conv_id: str, context_limit: int = 30, whisper_mode
                 "is_search_needed": is_search_needed,
                 "recalled_memories": debug_recalled,
                 "debug_top6": debug_top6_data,
-                "usage": usage_meta if usage_meta else None,
+                "usage": {k: v for k, v in usage_meta.items() if not k.startswith("_")} or None,
                 "has_error": has_error,
                 "error_text": error_text if has_error else None,
             }

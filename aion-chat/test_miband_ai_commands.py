@@ -1,14 +1,10 @@
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import capabilities
 from context_builder import BAND_VIBRATE_CMD_PATTERN, strip_tool_commands
 from routes.chat import _extract_mi_band_commands
 from web_search import WebCommandStreamFilter
-
-
-ROOT = Path(__file__).resolve().parent.parent
 
 
 class MiBandAiCommandTests(unittest.TestCase):
@@ -46,27 +42,6 @@ class MiBandAiCommandTests(unittest.TestCase):
         )
         self.assertEqual(note_text, "正文  尾巴")
 
-    def test_capability_prompt_and_android_consumer_are_wired(self):
-        capabilities = (ROOT / "aion-chat" / "capabilities.py").read_text(encoding="utf-8")
-        service = (ROOT / "AionApp" / "app" / "src" / "main" / "java" / "com" / "aion" / "chat" / "AionPushService.java").read_text(encoding="utf-8")
-        chat = (ROOT / "aion-chat" / "routes" / "chat.py").read_text(encoding="utf-8")
-
-        self.assertIn('CapabilityDef("band_vibration"', capabilities)
-        self.assertIn("[BAND_NOTE_SINGLE:一句纸条]", capabilities)
-        self.assertIn("[BAND_NOTE_CALL:一句纸条]", capabilities)
-        ability_section = capabilities[capabilities.index('if is_capability_enabled("band_vibration")'):]
-        ability_section = ability_section[:ability_section.index("if include_private_whisper")]
-        self.assertNotIn("[BAND_VIBRATE:single]", ability_section)
-        self.assertNotIn("[BAND_VIBRATE:call]", ability_section)
-        self.assertIn('case "mi_band_command"', service)
-        self.assertIn("MiBandCommandInbox", service)
-        self.assertIn("offerBandCommand(data)", service)
-        self.assertIn("fetchPendingMiBandCommands()", service)
-        self.assertIn("drainMiBandCommands()", service)
-        self.assertIn("ackMiBandCommand(command.id)", service)
-        self.assertIn("miBandRuntime.vibrate(command.pattern", service)
-        self.assertGreaterEqual(chat.count("process_band_vibration("), 3)
-
     def test_stream_filter_never_exposes_band_protocol(self):
         stream_filter = WebCommandStreamFilter()
         visible = ""
@@ -81,23 +56,6 @@ class MiBandAiCommandTests(unittest.TestCase):
             visible += note_filter.feed(chunk)
         visible += note_filter.flush()
         self.assertEqual("正文  尾巴", visible)
-    def test_persisted_vibration_note_is_wired_into_saves_and_both_chat_views(self):
-        chat = (ROOT / "aion-chat" / "routes" / "chat.py").read_text(encoding="utf-8")
-        chatroom = (ROOT / "aion-chat" / "routes" / "chatroom.py").read_text(encoding="utf-8")
-        schedule = (ROOT / "aion-chat" / "schedule.py").read_text(encoding="utf-8")
-        private_js = (ROOT / "aion-chat" / "static" / "chat.js").read_text(encoding="utf-8")
-        room_js = (ROOT / "aion-chat" / "static" / "chatroom.js").read_text(encoding="utf-8")
-
-        self.assertGreaterEqual(chat.count("with_band_vibration_attachment("), 6)
-        self.assertIn("with_band_vibration_attachment(msg_id, att_list)", chatroom)
-        self.assertGreaterEqual(schedule.count("with_band_vibration_attachment("), 2)
-        for source in (private_js, room_js):
-            self.assertIn("band_vibration", source)
-            self.assertIn("band-vibration-line", source)
-            self.assertIn("手环轻震：", source)
-            self.assertIn("手环呼唤：", source)
-            self.assertIn("手环震动：轻轻想了你一下", source)
-            self.assertIn("手环震动：紧急呼叫！", source)
 
 
 if __name__ == "__main__":

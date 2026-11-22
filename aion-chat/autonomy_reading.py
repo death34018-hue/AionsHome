@@ -83,6 +83,28 @@ def shelf_prompt(choices):
     return '\n'.join(lines)
 
 
+async def choose_book(actor, choices):
+    """Pick one book from the shelf; skip the model call when only one book is available."""
+    if not choices:
+        return None
+    if len(choices) == 1:
+        return choices[0]
+    from autonomy import _ask_actor_json
+
+    prompt = (
+        '[自主阅读：选一本书]\n'
+        + shelf_prompt(choices)
+        + '\n\n请选一本现在想读的书，只返回 JSON：{"book":1,"reason":"一句话理由"}'
+    )
+    data = await _ask_actor_json(actor, prompt, limit=12)
+    number = data.get('book') if isinstance(data, dict) else None
+    if isinstance(number, str) and number.strip().isdigit():
+        number = int(number.strip())
+    if type(number) is int and 1 <= number <= len(choices):
+        return choices[number - 1]
+    return choices[0]
+
+
 async def _previous_notes(actor, choice, index):
     async with books.get_db() as db:
         db.row_factory = books._row_dict

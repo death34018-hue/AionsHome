@@ -118,7 +118,9 @@ function applyAionTheme(theme) {
 }
 
 function toggleAionTheme() {
-  applyAionTheme(document.body.dataset.theme === 'light' ? 'dark' : 'light');
+  const theme = document.body.dataset.theme === 'light' ? 'dark' : 'light';
+  applyAionTheme(theme);
+  window.AionAmbienceSync.save({ theme });
 }
 
 applyAionTheme(localStorage.getItem('aion_chat_theme') || 'dark');
@@ -133,13 +135,14 @@ async function init() {
     const selected = conversations.find(c => c.id === currentConvId)?.model || $("modelSelect").value;
     renderModelSelect();
     if (selected) $("modelSelect").value = selected;
+    renderPrivateRandomPool();
   }).catch(e => console.warn('加载模型列表失败:', e));
   const bootstrap = Promise.all([
     api("GET", "/api/worldbook"),
     api("GET", "/api/conversations"),
   ]);
   api("GET", "/api/chatroom/config")
-    .then(config => { chatroomConfig = config; })
+    .then(config => { applyPrivateRandomModelConfig(config); })
     .catch(() => { chatroomConfig = {}; });
   loadProactiveCompanionshipStatus();
   [worldBook, conversations] = await bootstrap;
@@ -1626,6 +1629,7 @@ function connectWS() {
   socket.onopen = () => {
     if (ws !== socket) return;
     privateSocketRecovery.opened(socket);
+    window.AionAmbienceSync.restore();
     socket.send(JSON.stringify({type:'register_client',client_id:_clientId}));
     _sendTTSState();
     reconcilePrivateSync();
@@ -1658,8 +1662,12 @@ function handleSync(msg) {
   if (window.aionPrivateNativeSync?.observe(msg) === false) return;
   if (['msg_created', 'msg_updated', 'msg_deleted'].includes(msg.type)) privateMessageRevision++;
   if (msg.type === 'system_log') { addSystemLog(msg.data); return; }
+  if (msg.type === 'chatroom_settings_updated' && msg.data?.config) {
+    applyPrivateRandomModelConfig(msg.data.config);
+    return;
+  }
   if (msg.type === 'rps_updated') { window.AionRps?.onUpdate(msg.data); return; }
-  if (msg.type === 'chat_ambience') { window.AionChatAmbience?.applyRemote(msg.data); return; }
+  if (msg.type === 'chat_ambience') { window.AionAmbienceSync.receive(msg.data); return; }
   if (msg.type === 'generation_stopped') { _chatControl.remoteStop(msg.data); return; }
   if (!_chatControl.accepts(msg)) return;
   const { type, data } = msg;
@@ -1973,6 +1981,101 @@ function renderModelSelect() {
   ).join("");
 }
 
+function normalizePrivateRandomModels(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const result = [];
+  for (const raw of list) {
+    const key = String(raw || '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(key);
+  }
+  return result;
+}
+
+function applyPrivateRandomModelConfig(cfg = {}) {
+  chatroomConfig = { ...(chatroomConfig || {}), ...(cfg || {}) };
+  const toggle = $('privateRandomPoolToggle');
+  if (toggle && cfg.aion_random_model_enabled !== undefined) {
+    toggle.checked = !!cfg.aion_random_model_enabled;
+  }
+  renderPrivateRandomPool();
+}
+
+function renderPrivateRandomPool() {
+  const listEl = $('privateRandomPoolList');
+  const toggle = $('privateRandomPoolToggle');
+  const statusEl = $('privateRandomPoolStatus');
+  const summaryEl = $('privateRandomPoolSummary');
+  const countEl = $('privateRandomPoolCount');
+  const enabled = !!(chatroomConfig?.aion_random_model_enabled);
+  const selectedList = normalizePrivateRandomModels(chatroomConfig?.aion_random_models);
+  const selectedSet = new Set(selectedList);
+  if (toggle) toggle.checked = enabled;
+  if (listEl) {
+    const visibleKeys = normalizePrivateRandomModels([
+      ...models.filter(m => !DEPRECATED_MODEL_PROVIDERS.has(m.provider)).map(m => m.key),
+      ...selectedList,
+    ]);
+    listEl.innerHTML = visibleKeys.length
+      ? visibleKeys.map(key => {
+          const checked = selectedSet.has(key);
+          return `<label class="private-random-pool-option${checked ? ' selected' : ''}"><input type="checkbox" value="${escHtml(key)}"${checked ? ' checked' : ''} onchange="onPrivateRandomPoolModelChange()"><span>${escHtml(key)}</span></label>`;
+        }).join('')
+      : '<div style="font-size:11px;color:var(--text3)">暂无可选模型</div>';
+  }
+  if (countEl) countEl.textContent = `已选 ${selectedList.length} 个`;
+  if (summaryEl) summaryEl.textContent = selectedList.length ? `已选 ${selectedList.length} 个` : '未选择';
+  if (statusEl) {
+    statusEl.className = 'private-random-pool-status';
+    if (!enabled) {
+      statusEl.textContent = '关闭';
+    } else if (!selectedList.length) {
+      statusEl.textContent = '已开启 · 请选模型';
+      statusEl.classList.add('warn');
+    } else {
+      statusEl.textContent = `已开启 · ${selectedList.length} 个`;
+      statusEl.classList.add('on');
+    }
+  }
+}
+
+async function savePrivateRandomPoolConfig(enabled, selectedModels) {
+  const payload = {
+    aion_random_model_enabled: !!enabled,
+    aion_random_models: normalizePrivateRandomModels(selectedModels),
+  };
+  chatroomConfig = { ...(chatroomConfig || {}), ...payload };
+  renderPrivateRandomPool();
+  try {
+    const res = await api('PUT', '/api/chatroom/config', payload);
+    if (res?.config) applyPrivateRandomModelConfig(res.config);
+  } catch (e) {
+    showToast?.('随机模型池保存失败');
+  }
+}
+
+function onPrivateRandomPoolToggle() {
+  const enabled = !!$('privateRandomPoolToggle')?.checked;
+  const selected = normalizePrivateRandomModels(chatroomConfig?.aion_random_models);
+  const fold = $('privateRandomPoolFold');
+  if (enabled && !selected.length && fold) fold.open = true;
+  savePrivateRandomPoolConfig(enabled, selected);
+}
+
+function onPrivateRandomPoolModelChange() {
+  const listEl = $('privateRandomPoolList');
+  const selected = listEl
+    ? [...listEl.querySelectorAll('input[type="checkbox"]:checked')].map(el => el.value)
+    : [];
+  savePrivateRandomPoolConfig(!!$('privateRandomPoolToggle')?.checked, selected);
+}
+
+function clearPrivateRandomPool() {
+  savePrivateRandomPoolConfig(!!$('privateRandomPoolToggle')?.checked, []);
+}
+
 function renderConvList() {
   $("convList").innerHTML = conversations.map(c => {
     const count = c.message_count != null ? c.message_count : '';
@@ -2133,7 +2236,10 @@ function renderPrivateMessageHTML(m) {
   if (inlineToy?.noticeHtml) contentHtml += `<div class="system-notice">${inlineToy.noticeHtml}</div>`;
   const avatarSrc = isUser ? '/public/UserIcon.png' : '/public/AIIcon.png';
   const ttsBtn = !isUser ? `<button class="tts-replay-btn" onclick="replayTTS('${m.id}')" title="重听语音">🔊</button>` : '';
-  const roleRow = `<div class="msg-role-row">${dotsLeft}<span class="msg-role-name">${escHtml(roleLabel)}</span><span class="msg-time">${time}</span>${dotsRight}${feedbackHtml}${ttsBtn}${starBadge}<div class="msg-menu" id="menu_${m.id}">${actionsHtml}</div></div>`;
+  const dbg = (m?.id && typeof msgDebugData !== 'undefined') ? msgDebugData?.[m.id] : null;
+  const modelLabel = isAssistant ? String(m?.model_key || dbg?.model_key || dbg?.model || '').trim() : '';
+  const modelBadgeHtml = modelLabel ? `<span class="msg-model-badge" title="本次调用模型">${escHtml(modelLabel)}</span>` : '';
+  const roleRow = `<div class="msg-role-row">${dotsLeft}<span class="msg-role-name">${escHtml(roleLabel)}</span><span class="msg-time">${time}</span>${dotsRight}${feedbackHtml}${ttsBtn}${modelBadgeHtml}${starBadge}<div class="msg-menu" id="menu_${m.id}">${actionsHtml}</div></div>`;
   const avatar = `<div class="msg-avatar-col"><img class="msg-avatar" src="${avatarSrc}" alt="" data-pat-target="${isUser ? 'user' : 'aion'}" role="button" tabindex="0" title="双击拍拍" aria-label="双击拍拍" draggable="false"></div>`;
   const header = isUser ? `${roleRow}${avatar}` : `${avatar}${roleRow}`;
   return `
@@ -2284,10 +2390,45 @@ function scrollBottom() {
   requestAnimationFrame(() => el.scrollTop = el.scrollHeight);
 }
 
+function syncPrivateMsgModelBadge(msgId, explicitLabel = '') {
+  if (!msgId) return;
+  const row = document.getElementById(`m_${msgId}`);
+  if (!row || row.classList.contains('user')) return;
+  const roleRow = row.querySelector('.msg-role-row');
+  if (!roleRow) return;
+  const msgObj = typeof currentMessages !== 'undefined' ? currentMessages.find(item => item.id === msgId) : null;
+  const dbg = typeof msgDebugData !== 'undefined' ? msgDebugData?.[msgId] : null;
+  const label = String(explicitLabel || msgObj?.model_key || dbg?.model_key || dbg?.model || '').trim();
+  if (!label) return;
+  const existing = roleRow.querySelector('.msg-model-badge');
+  if (existing) {
+    existing.textContent = label;
+    return;
+  }
+  const badge = document.createElement('span');
+  badge.className = 'msg-model-badge';
+  badge.title = '本次调用模型';
+  badge.textContent = label;
+  const ttsBtn = roleRow.querySelector('.tts-replay-btn');
+  if (ttsBtn) {
+    ttsBtn.insertAdjacentElement('afterend', badge);
+  } else {
+    const menu = roleRow.querySelector('.msg-menu');
+    if (menu) roleRow.insertBefore(badge, menu);
+    else roleRow.appendChild(badge);
+  }
+}
+
 function renderDebugBar(msgId) {
-  // 不再在聊天气泡下方渲染，改为写入系统日志
+  // 不再在聊天气泡下方渲染，改为写入系统日志，并同步消息上方隐藏模型徽标
   const d = msgDebugData[msgId];
   if (!d) return;
+  const label = String(d.model_key || d.model || '').trim();
+  if (label) {
+    const msgObj = currentMessages.find(item => item.id === msgId);
+    if (msgObj && !msgObj.model_key) msgObj.model_key = label;
+    syncPrivateMsgModelBadge(msgId, label);
+  }
   addSystemLog(d);
 }
 
@@ -2499,6 +2640,8 @@ function _formatSystemLogForCopy(d) {
       lines.push(`--- ${i + 1}. ${m.role} ---\n${m.content || ''}`);
     });
   }
+  if (d.reasoning_content) lines.push('模型返回的思考摘要\n' + d.reasoning_content);
+  if (d.response_text) lines.push('模型原始回复\n' + d.response_text);
   return lines.join('\n\n');
 }
 
@@ -2550,6 +2693,9 @@ function renderSystemLogList() {
     if (isError && d.error_text) {
       detailHtml += `<div style="color:#f44336;margin-bottom:8px;word-break:break-all;">⚠️ ${escHtml(d.error_text)}</div>`;
     }
+    if (d.random_pool) {
+      detailHtml += `<div class="debug-recall-keywords">🎲 模型来源: 随机模型池抽取${d.model_key ? ` · ${escHtml(d.model_key)}` : ''}</div>`;
+    }
     // Token 详情（服务器原始数据）
     detailHtml += _buildTokenDetailHtml(u);
     // 即时哨兵结果
@@ -2586,13 +2732,15 @@ function renderSystemLogList() {
       }).join('');
       detailHtml += `<h4>📝 完整 Prompt (${d.prompt_count || d.prompt_messages.length} 条)</h4><div class="debug-prompt-list">${pmItems}</div>`;
     }
+    if (d.reasoning_content) detailHtml += `<h4>模型返回的思考摘要</h4><div class="debug-prompt-text">${escHtml(d.reasoning_content)}</div>`;
+    if (d.response_text) detailHtml += `<h4>模型原始回复</h4><div class="debug-prompt-text">${escHtml(d.response_text)}</div>`;
     const hasDetail = detailHtml.length > 0;
     const errorTag = isError ? '<span class="syslog-error-tag">❌ 错误</span>' : '';
     const entryCls = isError ? 'syslog-entry error-entry' : 'syslog-entry';
     return `<div class="${entryCls}">
       <span class="syslog-time">${d._ts}</span>
       ${errorTag}
-      <span class="syslog-model">📦 ${escHtml(d.model || '?')}</span>
+      <span class="syslog-model">${d.random_pool ? '🎲 ' : '📦 '}${escHtml(d.model_key && d.model && d.model_key !== d.model ? `${d.model_key} (${d.model})` : (d.model_key || d.model || '?'))}</span>
       ${d.source ? `<span class="syslog-mem">${escHtml(d.source)}</span>` : ''}
       ${d.status ? `<span class="syslog-mem">${escHtml(systemLogStatus(d.status))}${d.duration_seconds != null ? ` · ${d.duration_seconds} 秒` : ''}</span>` : ''}
       <span class="syslog-tokens">${tokenText}</span>
@@ -2857,11 +3005,7 @@ function openAttentionConversation(callUrl) {
     const id = url.searchParams.get('conv');
     if (id && id !== currentConvId) selectConv(id);
   } else if (url.pathname === '/chatroom') {
-    const id = url.searchParams.get('room');
-    const frame = persistentSubPageFrames.get('/chatroom');
-    let reused = false;
-    try { reused = frame?.contentWindow?.openAttentionRoom?.(id); } catch (_) {}
-    openSubPage(reused ? '/chatroom' : url.pathname + url.search);
+    openSubPage(url.pathname + url.search);
   } else return false;
   return true;
 }
@@ -5935,6 +6079,9 @@ function getSubPageFrame(url) {
     return transientSubPageFrame;
   }
   let frame = persistentSubPageFrames.get(path);
+  if (path === '/chatroom' && frame?.dataset.navigationReady === '1') {
+    try { if (frame.contentWindow?.openChatroomRoute?.(url)) return frame; } catch (_) {}
+  }
   if (!frame) {
     frame = document.createElement('iframe');
     frame.className = 'sub-page-frame';

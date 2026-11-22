@@ -9,7 +9,7 @@ const block = (s, start, end) => s.slice(s.indexOf(start), s.indexOf(end, s.inde
 
 test('a warm attention call opens its source without replacing the chat document or a ready room', () => {
   const pages = [], selected = [];
-  const room = {id: 'first'};
+  const room = {id: 'first', type: 'group'};
   const frame = {contentWindow: {}};
   const ctx = vm.createContext({
     URL, location: {origin: 'https://home', pathname: '/chat'}, currentConvId: 'private',
@@ -17,24 +17,45 @@ test('a warm attention call opens its source without replacing the chat document
     openSubPage: url => pages.push(url), closeSubPage: () => pages.push('/chat'),
     selectConv: id => selected.push(id),
   });
-  const roomCtx = vm.createContext({rooms: [room, {id: 'second'}], currentRoom: room,
-    selectRoom: id => selected.push(id)});
+  const roomCtx = vm.createContext({URL, location: ctx.location, rooms: [room, {id: 'second', type: 'connor_1v1'}], currentRoom: room,
+    selectRoom: async id => { selected.push(id); }});
   const source = read('chat.js'), roomSource = read('chatroom.js');
-  for (const [context, file, name] of [[ctx, source, 'openAttentionConversation'], [roomCtx, roomSource, 'openAttentionRoom']]) {
+  for (const [context, file, name] of [[ctx, source, 'openAttentionConversation'], [roomCtx, roomSource, 'openChatroomRoute']]) {
     const start = file.indexOf('function ' + name + '(');
     assert.notEqual(start, -1, name + ' must handle warm calls');
     vm.runInContext(file.slice(start, file.indexOf('\n}', start) + 2), context);
   }
-  frame.contentWindow.openAttentionRoom = roomCtx.openAttentionRoom;
+  frame.contentWindow.openChatroomRoute = roomCtx.openChatroomRoute;
+  ctx.openSubPage = url => {
+    pages.push(url);
+    ctx.persistentSubPageFrames.get('/chatroom')?.contentWindow.openChatroomRoute(url);
+  };
   for (const route of ['/chatroom?room=first', '/chatroom?room=second', '/chat?conv=private', '/chat?conv=another']) {
     assert.equal(ctx.openAttentionConversation('https://home' + route), true);
   }
-  assert.deepEqual(pages, ['/chatroom', '/chatroom', '/chat', '/chat']);
+  assert.deepEqual(pages, ['/chatroom?room=first', '/chatroom?room=second', '/chat', '/chat']);
   assert.deepEqual(selected, ['second', 'another']);
   assert.equal(ctx.openAttentionConversation('https://other/chat?conv=another'), false);
   ctx.persistentSubPageFrames.clear();
   ctx.openAttentionConversation('https://home/chatroom?room=new');
   assert.equal(pages.at(-1), '/chatroom?room=new');
+});
+
+test('ordinary re-entry from their private chat switches immediately to a group and checks latest activity', async () => {
+  const source = read('chatroom.js'), selected = [];
+  const peer = {id:'peer', type:'peer_dm'}, first = {id:'first', type:'group'}, newer = {id:'newer', type:'group'};
+  const context = vm.createContext({
+    URL, location:{origin:'https://home'}, rooms:[peer, first], currentRoom:peer, activeTab:'peer_dm',
+    selectRoom(id) { selected.push(id); context.currentRoom = context.rooms.find(room => room.id === id); context.activeTab = context.currentRoom.type; },
+    renderRoomList() {}, api: async () => [peer, newer, first],
+  });
+  vm.runInContext(block(source, 'let crRoomSelectionVersion =', 'async function selectRoom('), context);
+  assert.equal(context.openChatroomRoute('/chatroom'), true);
+  assert.deepEqual(selected, ['first']);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(selected, ['first', 'newer']);
+  assert.equal(context.openChatroomRoute('/chatroom?room=peer'), true);
+  assert.equal(selected.at(-1), 'peer');
 });
 
 test('floating chat follows the visible subpage and returning to private chat', () => {

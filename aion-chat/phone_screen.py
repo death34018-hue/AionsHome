@@ -100,7 +100,7 @@ def get_phone_screen_result_after(received_after: float) -> tuple[str, Path | No
     """Return the first server-received phone result newer than a request.
 
     Status is ``pending`` while no new result exists, ``ready`` for an image,
-    or ``skipped`` when Android explicitly reports that capture was unavailable.
+    ``locked`` for a locked screen, or ``skipped`` for other capture failures.
     Server receipt time is used instead of the phone clock so WAN clock skew
     cannot make a fresh upload look stale.
     """
@@ -111,6 +111,8 @@ def get_phone_screen_result_after(received_after: float) -> tuple[str, Path | No
         received_at = 0.0
     if received_at < float(received_after):
         return "pending", None
+    if meta.get("locked") or meta.get("skip_reason") in ("locked", "screen_off"):
+        return "locked", None
     if meta.get("skip_reason"):
         return "skipped", None
     if not meta.get("filename"):
@@ -121,24 +123,33 @@ def get_phone_screen_result_after(received_after: float) -> tuple[str, Path | No
     return "skipped", None
 
 
+async def wait_for_phone_screen_result_after(
+    received_after: float,
+    *,
+    timeout_seconds: float = 30.0,
+    poll_seconds: float = 0.25,
+) -> tuple[str, Path | None]:
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+    while True:
+        status, path = get_phone_screen_result_after(received_after)
+        if status != "pending":
+            return status, path
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return "timeout", None
+        await asyncio.sleep(min(max(0.001, float(poll_seconds)), remaining))
+
+
 async def wait_for_phone_screen_after(
     received_after: float,
     *,
     timeout_seconds: float = 30.0,
     poll_seconds: float = 0.25,
 ) -> Path | None:
-    """Wait without blocking the event loop for a new upload or skip report."""
-    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
-    while True:
-        status, path = get_phone_screen_result_after(received_after)
-        if status == "ready":
-            return path
-        if status == "skipped":
-            return None
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return None
-        await asyncio.sleep(min(max(0.001, float(poll_seconds)), remaining))
+    _, path = await wait_for_phone_screen_result_after(
+        received_after, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds,
+    )
+    return path
 
 
 def wait_for_phone_screen_after_sync(
@@ -154,10 +165,8 @@ def wait_for_phone_screen_after_sync(
         if should_continue is not None and not should_continue():
             return None
         status, path = get_phone_screen_result_after(received_after)
-        if status == "ready":
+        if status != "pending":
             return path
-        if status == "skipped":
-            return None
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return None

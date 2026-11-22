@@ -14,7 +14,7 @@ from typing import Literal, Sequence
 import aiosqlite
 
 from database import get_db
-from memory import _json_list, _memory_time_payload, _unpack_embedding, cosine_similarity, get_embedding
+from memory import _json_list, _memory_time_payload, _unpack_embedding, chat_source_label, cosine_similarity, get_embedding
 
 
 MAX_REQUESTS = 5
@@ -369,10 +369,10 @@ def _history_sources(actor: str):
         raise ValueError('unsupported memory actor')
     sources = []
     if actor == 'aion':
-        sources.append(('private', 'FROM messages m', 'm.role', 'm.conv_id', '1=1'))
-    room_filter = "r.type='group'" if actor == 'aion' else "r.type IN ('group','connor_1v1')"
+        sources.append(('private', 'FROM messages m', 'm.role', 'm.conv_id', "'private'", '1=1'))
+    room_filter = "r.type IN ('group','peer_dm')" if actor == 'aion' else "r.type IN ('group','connor_1v1','peer_dm')"
     sources.append(('chatroom', 'FROM chatroom_messages m JOIN chatroom_rooms r ON r.id=m.room_id',
-                    'm.sender', 'm.room_id', room_filter))
+                    'm.sender', 'm.room_id', 'r.type', room_filter))
     return sources
 
 
@@ -390,7 +390,8 @@ def _source_line(row: dict, query: str = '') -> str:
     names = {'user': user_name, 'assistant': ai_name,
              'aion': ai_name, 'connor': second_name,
              'system': '系统事件'}
-    return f"[{row['source_id']}｜{_format_time(row['created_at'])}｜{names.get(row['speaker'], row['speaker'])}] {_excerpt(row['content'], query)}"
+    scene = chat_source_label(row['source'], ai_name, second_name)
+    return f"[{row['source_id']}｜{_format_time(row['created_at'])}｜{scene}｜{names.get(row['speaker'], row['speaker'])}] {_excerpt(row['content'], query)}"
 
 
 async def _read_message(actor: str, source_id: str) -> dict | None:
@@ -399,11 +400,11 @@ async def _read_message(actor: str, source_id: str) -> dict | None:
         return None
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
-        for kind, sql, speaker, window, scope in _history_sources(actor):
+        for kind, sql, speaker, window, source, scope in _history_sources(actor):
             if kind != prefix:
                 continue
             row = await (await db.execute(
-                f'SELECT m.*, m.rowid AS source_rowid, {speaker} AS speaker, {window} AS window_id {sql} WHERE {scope} AND m.id=?',
+                f'SELECT m.*, m.rowid AS source_rowid, {speaker} AS speaker, {window} AS window_id, {source} AS source {sql} WHERE {scope} AND m.id=?',
                 (raw_id,),
             )).fetchone()
             if row and not _pending_rps_result(dict(row)):
@@ -438,12 +439,12 @@ async def open_memory_source(actor: str, source_id: str, query: str = '') -> lis
     neighbors = []
     async with get_db() as db:
         db.row_factory = aiosqlite.Row
-        for kind, sql, speaker, window, scope in _history_sources(actor):
+        for kind, sql, speaker, window, source, scope in _history_sources(actor):
             if not source_id.startswith(kind + ':'):
                 continue
             for op, direction in (('<', 'DESC'), ('>', 'ASC')):
                 other = await (await db.execute(
-                    f'SELECT m.*, m.rowid AS source_rowid, {speaker} AS speaker {sql} WHERE {scope} AND {window}=? '
+                    f'SELECT m.*, m.rowid AS source_rowid, {speaker} AS speaker, {source} AS source {sql} WHERE {scope} AND {window}=? '
                     f'AND (m.created_at,m.rowid) {op} (?,?) ORDER BY m.created_at {direction},m.rowid {direction} LIMIT 1',
                     (row['window_id'], row['created_at'], row['source_rowid']),
                 )).fetchone()
@@ -464,7 +465,7 @@ async def search_chat_history(actor: str, requests: Sequence[MemorySearchRequest
             if not terms:
                 continue
             start, end = bounds or resolve_memory_time_window(request, now=now)
-            for kind, sql, speaker, window, scope in _history_sources(actor):
+            for kind, sql, speaker, window, source, scope in _history_sources(actor):
                 conditions = [scope, '(' + ' OR '.join('instr(lower(m.content),?)>0' for _ in terms) + ')']
                 params = list(terms)
                 if start is not None:
@@ -478,7 +479,7 @@ async def search_chat_history(actor: str, requests: Sequence[MemorySearchRequest
                     ordering = f'({rank_sql}) DESC,' + ordering
                     params.extend(terms)
                 rows = await (await db.execute(
-                    f'SELECT m.*, {speaker} AS speaker, {window} AS window_id {sql} '
+                    f'SELECT m.*, {speaker} AS speaker, {window} AS window_id, {source} AS source {sql} '
                     f"WHERE {' AND '.join(conditions)} ORDER BY {ordering} LIMIT 20", params,
                 )).fetchall()
                 for value in rows:

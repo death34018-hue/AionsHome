@@ -87,6 +87,25 @@ test('a whisper-only completion appears without public streaming chunks and is n
   assert.equal(ctx.rows.length, 1);
 });
 
+test('silent peer-only replies clear typing and any provisional row without a received sound or TTS', () => {
+  for (const sender of ['aion', 'connor']) {
+    const ctx = harness();
+    ctx.crSseMessageIds = { [sender]: 'partial' };
+    ctx.crFinalMessageIds = new Set();
+    ctx.rows[0].remove = () => { ctx.rows.length = 0; };
+    let typing = true;
+    ctx.messagesEl.querySelector = selector => selector === '.typing-indicator' ? { remove() { typing = false; } } : null;
+    ctx.playRecv = () => assert.fail('silent completion played a received sound');
+    vm.runInContext(extract('handleSSE', "inputEl.addEventListener('input'"), ctx);
+    ctx.handleSSE({ type: sender + '_done', silent: true, message: null });
+    assert.equal(typing, false);
+    assert.equal(ctx.rows.length, 0);
+    assert.ok(ctx.suppressed.has('partial'));
+    assert.equal(ctx._ttsEngine.playOrder.length, 0);
+    assert.equal(ctx.pendingStreamId, null);
+  }
+});
+
 test('native final reply replaces a stalled streaming row and ignores late stream chunks', () => {
   const ctx = harness();
   ctx.currentRoom = { id: 'r' };

@@ -86,7 +86,7 @@ const ReadingCompanion = (() => {
     annotationAbort = replyAbort = null;
     currentBook = chapterData = null;
     isAnnotating = replySending = replyPreparing = false;
-    selectedText = ''; pendingHighlight = null;
+    selectedText = ''; pendingHighlight = null; activeReadingRef = null;
     if (!mounted) return;
     closeHlPopup(); closeAskPopup(); closeReplyPanel(); closeAnnoPopup();
     $('selToolbar').style.display = 'none';
@@ -628,6 +628,7 @@ function closeAskPopup() {
 
 function closeReplyPanel() {
   $('readerReply').classList.remove('show');
+  activeReadingRef = null;
 }
 
 let replyConvId = null;
@@ -636,6 +637,7 @@ let replyGroupRoomId = null;
 let replySending = false;
 let replyPreparing = false;
 let replyAionModel = null;   // Aion 使用的模型，从主聊天同步
+let activeReadingRef = null;
 
 // 渲染一条聊天气泡
 function renderChatBubble(role, content, who) {
@@ -792,7 +794,16 @@ async function submitAskToChat() {
 
   // 发送消息
   if (token !== epoch) return;
-  await doSendInPanel(msgContent, true, { highlightInfo: askHighlightInfo, question: askQuestion, selectedText: sel, source });
+  const readingRef = {
+    book_id: currentBook.book_id,
+    chapter_index: currentChIdx,
+    chapter_id: chapterData.chapter.id,
+    start_p: askHighlightInfo ? askHighlightInfo.start_p : null,
+    end_p: askHighlightInfo ? askHighlightInfo.end_p : null,
+    selected_text: sel,
+  };
+  activeReadingRef = readingRef;
+  await doSendInPanel(msgContent, true, { highlightInfo: askHighlightInfo, question: askQuestion, selectedText: sel, source }, readingRef);
   } finally {
     if (token === epoch) replyPreparing = false;
   }
@@ -808,7 +819,13 @@ async function sendReplyMsg() {
   if (askTarget === 'connor' && !replyConnorRoomId) return;
   if (askTarget === 'group' && !replyGroupRoomId) return;
   input.value = '';
-  await doSendInPanel(text);
+  const readingRef = activeReadingRef
+    && activeReadingRef.book_id === currentBook?.book_id
+    && activeReadingRef.chapter_index === currentChIdx
+    && activeReadingRef.chapter_id === chapterData?.chapter?.id
+    ? activeReadingRef
+    : null;
+  await doSendInPanel(text, false, null, readingRef);
 }
 
 // 清理 AI 回复中的指令标签（只保留可读文字）
@@ -838,7 +855,7 @@ function renderAiBubbles(aiBody, displayText) {
 
 // 实际调用 send API 并流式渲染
 // skipUserBubble: 若为 true 则不再重复添加用户气泡（已由调用方添加）
-async function doSendInPanel(msgContent, skipUserBubble, highlightMeta) {
+async function doSendInPanel(msgContent, skipUserBubble, highlightMeta, readingRef) {
   const token = epoch, target = askTarget;
   replyAbort = new AbortController();
   replySending = true;
@@ -873,7 +890,7 @@ async function doSendInPanel(msgContent, skipUserBubble, highlightMeta) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: replyAbort.signal,
-        body: JSON.stringify({ content: msgContent, context_limit: 30 })
+        body: JSON.stringify({ content: msgContent, context_limit: 30, ...(readingRef ? { reading_ref: readingRef } : {}) })
       });
       fullReply = await _streamToBody(resp, aiBody, msgs);
     } catch(e) {
@@ -897,6 +914,7 @@ async function doSendInPanel(msgContent, skipUserBubble, highlightMeta) {
     try {
       const connorPayload = { content: msgContent };
       if (replyAionModel) connorPayload.model = replyAionModel;
+      if (readingRef) connorPayload.reading_ref = readingRef;
       const resp = await fetch(`/api/chatroom/rooms/${replyConnorRoomId}/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -936,6 +954,7 @@ async function doSendInPanel(msgContent, skipUserBubble, highlightMeta) {
     try {
       const groupPayload = { content: msgContent };
       if (replyAionModel) groupPayload.model = replyAionModel;
+      if (readingRef) groupPayload.reading_ref = readingRef;
       const resp = await fetch(`/api/chatroom/rooms/${replyGroupRoomId}/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

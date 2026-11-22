@@ -12,7 +12,7 @@ const Studio = (() => {
   let discussionNames={user_name:'用户',ai_name:'AI'};
   let player = null, audio = null, playbackToken = 0, audioPollBusy = false;
   let readingFollow = null;
-  const durations = new Map();
+  const durations = new Map(), prefetched = new Set();
   const statusNames = {planned:'待写',writing:'正在写',draft:'待确认完成',ready:'已完成',interrupted:'可续写'};
   const oldSelect = selectConv, oldRender = renderMessages, oldSend = send;
   const oldSync = handleSync, oldList = renderConvList, oldStop = stopTTSPlayback;
@@ -32,7 +32,85 @@ const Studio = (() => {
   function setPlanningView(value) {
     readerComposerOpen=false;
     planningView=value;
-    if(currentConvId)localStorage.setItem('studio_view_'+currentConvId,value?'discussion':'reader');
+    remember(currentConvId,'book',null,{chapter:selected,view:value?'discussion':'reader'},0);
+  }
+  // Places are kept on the server so the LAN and remote addresses resume at the same spot.
+  const places=new Map(), unsentPlaces=new Map();
+  let placeTimer=null;
+  const newerPlace=(a,b)=>b && (!a || b.t>=a.t) ? b : a;
+  function mergePlaces(a,b) {
+    const merged={book:newerPlace(a?.book,b?.book),positions:{...a?.positions},listen:{...a?.listen}};
+    for(const field of ['positions','listen'])
+      for(const [key,value] of Object.entries(b?.[field]||{}))merged[field][key]=newerPlace(merged[field][key],value);
+    return merged;
+  }
+  function place(cid) {
+    if(!places.has(cid)) {
+      let saved=null;
+      try{saved=JSON.parse(localStorage.getItem('studio_place_'+cid));}catch(e){}
+      places.set(cid,mergePlaces(null,saved));
+    }
+    return places.get(cid);
+  }
+  function keepPlace(cid,value) {
+    places.set(cid,value);
+    try{localStorage.setItem('studio_place_'+cid,JSON.stringify(value));}catch(e){}
+  }
+  function remember(cid,field,key,value,delay=1500) {
+    if(!cid)return;
+    const entry={...value,t:Date.now()};
+    const patch=field==='book'?{book:entry}:{[field]:{[key]:entry}};
+    keepPlace(cid,mergePlaces(place(cid),patch));
+    unsentPlaces.set(cid,mergePlaces(unsentPlaces.get(cid),patch));
+    if(!delay)sendPlaces();
+    else if(!placeTimer)placeTimer=setTimeout(sendPlaces,delay);
+  }
+  function sendPlaces(keepalive=false) {
+    clearTimeout(placeTimer);placeTimer=null;
+    for(const [cid,body] of unsentPlaces) {
+      unsentPlaces.delete(cid);
+      fetch(base+'/books/'+encodeURIComponent(cid)+'/progress',{method:'PUT',keepalive,
+        headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+        .then(r=>{if(!r.ok && r.status!==404)throw Error();})
+        .catch(()=>{
+          unsentPlaces.set(cid,mergePlaces(body,unsentPlaces.get(cid)));
+          if(!placeTimer)placeTimer=setTimeout(sendPlaces,15000);
+        });
+    }
+  }
+  function readerTop(el) { return el.getBoundingClientRect().top+(parseFloat(getComputedStyle(el).paddingTop)||0); }
+  // Paragraph source offsets survive font size, width and illustration changes.
+  function readingPoint() {
+    const el=$('messages');
+    if(el.scrollTop<2)return {offset:0,frac:0};
+    const top=readerTop(el);
+    for(const p of $('novelBody')?.querySelectorAll('[data-source-start]')||[]) {
+      const r=p.getBoundingClientRect();
+      if(r.bottom>top)return {offset:Number(p.dataset.sourceStart)||0,frac:Math.max(0,Math.min(1,(top-r.top)/(r.height||1)))};
+    }
+    return null;
+  }
+  let restoreTarget=null, readingTimer=null;
+  function restoreReading() {
+    const id=restoreTarget, el=$('messages');
+    if(!id || id!==selected || planningView)return;
+    const saved=place(currentConvId).positions[id];
+    if(!saved || (!saved.offset && !saved.frac)) {
+      el.scrollTop=saved?0:Number(localStorage.getItem('studio_read_'+id)||0);
+      restoreTarget=null;return;
+    }
+    const paragraph=[...($('novelBody')?.querySelectorAll('[data-source-start]')||[])]
+      .filter(p=>Number(p.dataset.sourceStart)<=saved.offset).pop();
+    if(!paragraph)return;
+    const r=paragraph.getBoundingClientRect();
+    el.scrollTop+=r.top+saved.frac*r.height-readerTop(el);
+    restoreTarget=null;
+  }
+  function saveReading() {
+    clearTimeout(readingTimer);readingTimer=null;
+    if(!novel() || planningView || !selected || restoreTarget)return;
+    const point=readingPoint();
+    if(point)remember(currentConvId,'positions',selected,point);
   }
   function readerSize(value) {
     const size=Math.max(12,Math.min(24,Number(value)||16));
@@ -160,7 +238,7 @@ const Studio = (() => {
     TheaterReading.mount({
       state:()=>({book,chapter:chapter(),visible:novel() && !planningView && subPageVisible}),
       content:()=>$('novelBody'), inviteHost:$('studioCoreading'),
-      onRender:()=>readingFollow?.update(), onUnavailable:()=>renderNovel()
+      onRender:()=>{restoreReading();readingFollow?.update();}, onUnavailable:()=>renderNovel()
     });
     document.body.insertAdjacentHTML('beforeend',`<dialog class="studio-dialog studio-image-dialog" id="studioImageDialog"><header><h2>故事插画</h2><button class="studio-btn" onclick="document.getElementById('studioImageDialog').close()" aria-label="关闭插画">✕</button></header><img id="studioFullImage" alt="故事插画原图"><p class="field-help">可长按图片保存；App 内点下方按钮保存到相册。</p><footer><a class="studio-btn" id="studioImageOriginal" target="_blank" rel="noopener">打开原图</a><button class="studio-btn primary" id="studioSaveImage">保存图片</button></footer></dialog>`);
     $('messages').addEventListener('click',e=>{
@@ -175,12 +253,15 @@ const Studio = (() => {
     ttsEnabled = false; localStorage.setItem('theater_tts_enabled','false');
     $('ttsToggle').checked=false; $('ttsToggle').closest('.tts-toggle-row').style.display='none';
     setInterval(backgroundPoll, 1000);
+    const flushPlaces = () => { if (readingTimer) saveReading(); saveListen(); sendPlaces(true); };
+    document.addEventListener('visibilitychange', () => { if (document.hidden) flushPlaces(); });
+    window.addEventListener('pagehide', flushPlaces);
     const previousVisibility = window.onAionSubPageVisibilityChanged;
     window.onAionSubPageVisibilityChanged = visible => {
       previousVisibility?.(visible);
       const returning = !subPageVisible && visible;
       subPageVisible = !!visible;
-      if (!visible) window.TheaterReading?.clear();
+      if (!visible) { window.TheaterReading?.clear(); flushPlaces(); }
       if (returning && !document.hidden) refresh();
       if (returning) readingFollow.update(true);
     };
@@ -192,7 +273,7 @@ const Studio = (() => {
       }
     });
     $('messages').addEventListener('scroll', () => {
-      if (novel() && !planningView && selected) localStorage.setItem('studio_read_'+selected, String($('messages').scrollTop));
+      if (!readingTimer) readingTimer = setTimeout(saveReading, 1000);
     }, {passive:true});
   }
 
@@ -318,7 +399,7 @@ const Studio = (() => {
     if($('novelNotice').innerHTML!==notice)$('novelNotice').innerHTML=notice;
     const completion=!c.writing && c.content && c.status!=='ready'?`<p>本轮生成已停止，你可以续写，或确认本章结束。</p><div>${button('续写本章','Studio.write(false)')}${button('本章已写完','Studio.completeChapter(true)','primary')}</div>`:'';
     if($('novelCompletion').innerHTML!==completion)$('novelCompletion').innerHTML=completion;
-    if (window.TheaterReading?.sync()) { readingFollow?.update(); return; }
+    if (window.TheaterReading?.sync()) { restoreReading(); readingFollow?.update(); return; }
     const images=[...(c.images||[])].sort((a,b)=>a.after-b.after);
     let pos=0, html='';
     const paras=t=>TheaterFollow.paragraphs(t,pos,escHtml);
@@ -331,6 +412,7 @@ const Studio = (() => {
     html+=paras(c.content.slice(pos));
     if (!c.content) html='<p class="studio-notice">'+(c.writing?'正在构思这一章，正文会逐渐出现在这里。':'本章尚未开始。你可以先看章节计划，再点下方「开始写」。')+'</p>';
     if ($('novelBody').innerHTML!==html) $('novelBody').innerHTML=html;
+    restoreReading();
     readingFollow?.update();
   }
 
@@ -381,23 +463,26 @@ const Studio = (() => {
     try {
       const data=await request('/books/'+id);
       if (token!==selectionToken) return;
+      if (readingTimer) saveReading();
       moveConversationToFront(id);
       localStorage.setItem('theater_last_conv', id);
       lastBookPoll=progressAt=performance.now();
       book=data.book; chapters=data.chapters; outlineDraft=data.outline_draft; discussion=data.discussion||{messages:[],status:'idle'};currentConvId=id;
       readerComposerOpen=false;
-      const savedView=localStorage.getItem('studio_view_'+id);
+      keepPlace(id, mergePlaces(place(id), data.progress));
+      const saved=place(id).book;
+      const savedView=saved?.view || localStorage.getItem('studio_view_'+id);
       planningView=!chapters.length || (savedView ? savedView==='discussion' : book.phase!=='writing' && !chapters.some(c=>c.content));
-      selected=localStorage.getItem('studio_chapter_'+id);
+      selected=saved?.chapter || localStorage.getItem('studio_chapter_'+id);
       if (!chapters.some(c=>c.id===selected)) selected=chapters[0]?.id||null;
       modes.set(id,book.mode); modeUI();
+      remember(id,'book',null,novel()?{chapter:selected,view:planningView?'discussion':'reader'}:{chapter:saved?.chapter,view:saved?.view},0);
       if (novel()) {
         renderConvList(); closeSidebar();
         const conv=conversations.find(c=>c.id===id);
         $('chatTitle').textContent=conv?.title||'小剧场';
         if (conv?.model) populateModelSelects(conv.model);
-        currentPersonaId=conv?.persona_id||''; renderPersonaList(); renderNovel();
-        $('messages').scrollTop=Number(localStorage.getItem('studio_read_'+selected)||0);
+        currentPersonaId=conv?.persona_id||''; restoreTarget=selected; renderPersonaList(); renderNovel();
       } else await oldSelect(id);
     } catch(e) {showToast(e.message);}
   };
@@ -512,7 +597,7 @@ const Studio = (() => {
           const conv=result.conversation;
           if(!conv)throw Error('后端尚未加载新草稿流程，请重启后端');
           if(!conversations.some(c=>c.id===conv.id))conversations.unshift(conv);
-          localStorage.setItem('studio_view_'+conv.id,'reader');
+          remember(conv.id,'book',null,{view:'reader'},0);
           modes.set(conv.id,'novel');d.close();await selectConv(conv.id);
           showToast(conv.id===cid?'大纲已确认，可以从第一章开始写了':'新剧场已创建，可以从第一章开始写了');
         } else {
@@ -726,8 +811,9 @@ const Studio = (() => {
 
   function selectChapter(id) {
     if(!chapters.some(c=>c.id===id))return;
-    setPlanningView(false);selected=id;localStorage.setItem('studio_chapter_'+currentConvId,id);modeUI();renderNovel();
-    $('messages').scrollTop=Number(localStorage.getItem('studio_read_'+id)||0);$('studioChapterDialog').close();
+    if(readingTimer)saveReading();
+    selected=id;restoreTarget=id;setPlanningView(false);modeUI();renderNovel();
+    $('studioChapterDialog').close();
   }
   function next() {
     const i=chapters.findIndex(c=>c.id===selected);
@@ -735,7 +821,7 @@ const Studio = (() => {
   }
 
   function time(value) { return TTSQueue.formatTime(value||0); }
-  function saveListen() { if (player) localStorage.setItem('studio_listen_'+player.id,JSON.stringify({seq:player.seq,at:audio?.currentTime||player.at||0})); }
+  function saveListen() { if (player) remember(player.cid,'listen',player.id,{seq:player.seq,at:audio?.currentTime||player.at||0},5000); }
   function releaseAudio() { playbackToken++; if (audio) {audio.pause();audio.onended=null;audio.ontimeupdate=null;audio.onerror=null;audio.src='';audio=null;} }
   function stopPlayer() {saveListen();releaseAudio();player=null;readingFollow?.update();$('studioPlayerLabel').classList.remove('show');$('studioCancelAudio').style.display='none';$('studioRetryAudio').style.display='none';oldStop();}
   function readySegments() { return player?.segments.filter((s,i,arr)=>arr.slice(0,i+1).every(x=>durations.has(x.url)))||[]; }
@@ -791,6 +877,13 @@ const Studio = (() => {
       if(token!==playbackToken)return;
       if(nativeAudio)failed();else {p.paused=true;updateProgress();}
     });
+    // Load the next segments while this one plays, so a slow line has no gaps.
+    const upcoming=p.segments.slice(p.seq+1,p.seq+3).map(s=>s.url);
+    if(nativeAudio)current.prefetch?.(upcoming);
+    else for(const url of upcoming) if(!prefetched.has(url)) {
+      prefetched.add(url);
+      fetch(url).then(r=>r.arrayBuffer()).catch(()=>prefetched.delete(url));
+    }
   }
   async function pollAudio() {
     if (!player || audioPollBusy) return;
@@ -800,8 +893,13 @@ const Studio = (() => {
       const state=await request('/speech/status/'+id);
       if(player?.id!==id)return;
       Object.assign(player,{segments:state.segments,status:state.status});
-      for(const s of state.segments) {await duration(s.url);if(player?.id!==id)return;}
+      for(const s of state.segments) if(s.duration>0)durations.set(s.url,s.duration);
       updateProgress();playSegment();
+      // Only files whose length the server could not read are probed, after playback starts.
+      for(const s of state.segments) {
+        if(durations.has(s.url))continue;
+        await duration(s.url);if(player?.id!==id)return;updateProgress();
+      }
     } catch(e) { if(player?.id===id) $('studioPlayerLabel').textContent='连接中断，正在重连…'; }
     finally {audioPollBusy=false;}
   }
@@ -817,11 +915,25 @@ const Studio = (() => {
       if(player.paused)toggleTopTTS();
       await pollAudio();return;
     }
+    openPlayer(state,chapters.find(c=>c.id===key)?.title||conversations.find(c=>c.id===currentConvId)?.title||'对话',currentConvId);
+    await pollAudio();
+  }
+  function openPlayer(state,title,cid) {
     stopPlayer();
-    let saved={};try{saved=JSON.parse(localStorage.getItem('studio_listen_'+state.id)||'{}');}catch(e){}
-    player={...state,seq:saved.seq||0,at:saved.at||0,paused:false,title:chapters.find(c=>c.id===key)?.title||conversations.find(c=>c.id===currentConvId)?.title||'对话',cid:currentConvId};
+    let saved=place(cid).listen[state.id];
+    if(!saved)try{saved=JSON.parse(localStorage.getItem('studio_listen_'+state.id)||'{}');}catch(e){saved={};}
+    player={...state,seq:saved.seq||0,at:saved.at||0,paused:false,title,cid};
     if(player.status==='ready'&&player.seq>=player.segments.length){player.seq=0;player.at=0;}
     $('ttsTopPlayer').classList.add('show');document.querySelector('.chat-area').classList.add('tts-player-open');$('studioPlayerLabel').classList.add('show');
+  }
+  async function retrySpeech() {
+    const p=player, voice=ttsVoice||p?.voice;
+    if(!p)return;
+    if(!voice)return showToast('请先在设置里选择音色');
+    const message=voice===p.voice?'是否继续合成尚未完成的语音？已有片段会保留。':'音色已更换，将用当前音色合成，原音色的片段会保留。';
+    if(!await confirmAction('继续合成语音',message,'继续合成') || player!==p)return;
+    const state=await request('/speech/'+p.source,'POST',{voice,prefer_cached:false,allow_generation:true});
+    if(state.id!==p.id)openPlayer(state,p.title,p.cid);
     await pollAudio();
   }
   replayTTS=function(key){return action(()=>speak(key));};
@@ -844,6 +956,7 @@ const Studio = (() => {
 
   async function boot() {
     mount();
+    window.theaterLastConversation=()=>request('/progress/last').then(r=>r.conv_id).catch(()=>null);
     action(async()=>{for(const b of await request('/books')) modes.set(b.id,b.mode);renderConvList();});
     action(async()=>{
       const names=await api('GET','/api/worldbook');
@@ -883,7 +996,7 @@ const Studio = (() => {
     restore:()=>action(async()=>{if(player?.source===selected)stopPlayer();await request('/chapters/'+selected+'/restore','POST');await refresh();}),
     illustrate:()=>action(async()=>{await request('/chapters/'+selected+'/illustrate','POST');await refresh();}),
     cancelAudio:()=>action(async()=>{if(player){await request('/speech/'+player.source+'/stop','POST');await pollAudio();}}),
-    retryAudio:()=>action(async()=>{const p=player;if(p && await confirmAction('继续合成语音','是否继续合成尚未完成的语音？已有片段会保留。','继续合成') && player===p){await request('/speech/'+p.source,'POST',{voice:p.voice,prefer_cached:false,allow_generation:true});await pollAudio();}}),
+    retryAudio:()=>action(retrySpeech),
     returnToPlaying:()=>action(async()=>{if(!player)return;const p=player;await selectConv(p.cid);if(chapters.some(c=>c.id===p.source))selectChapter(p.source);else document.querySelector(`[data-id="${p.source}"]`)?.scrollIntoView();readingFollow?.resume();})
   };
 })();

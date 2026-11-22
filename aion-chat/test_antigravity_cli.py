@@ -199,8 +199,9 @@ class AntigravityStreamTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(config.replace_antigravity_models, before)
         config.replace_antigravity_models(catalog)
         self.assertIn(key, config.MODELS)
-        self.assertEqual(config.MODELS[original]['provider'], 'antigravity_cli')
-        self.assertFalse(config.MODELS[key]['audio'])
+        self.assertNotIn(original, config.MODELS)  # Only the ACP route remains.
+        self.assertEqual(config.resolve_model_key(original), key)
+        self.assertTrue(config.MODELS[key]['audio'])  # Gemini hears audio through read_file.
 
         async def events(*args, **kwargs):
             yield 'thought', '第一段'
@@ -241,6 +242,53 @@ class AntigravityStreamTests(unittest.IsolatedAsyncioTestCase):
                         await session.configure(Path.cwd(), 'gemini-4-hydrogen-high', False)
                 methods = [json.loads(c.args[0])['method'] for c in process.stdin.write.call_args_list]
                 self.assertEqual('session/prompt' in methods, allowed)
+
+    async def test_acp_carbon_low_enabled_and_sets_low_thought_level(self):
+        import config
+        from antigravity_acp import _Session
+
+        before = dict(config.ANTIGRAVITY_MODELS)
+        self.addCleanup(config.replace_antigravity_models, before)
+        config.replace_antigravity_models({
+            'AGY · Gemini 4 Carbon (Low)': {'provider': 'antigravity_cli', 'model': 'gemini-4-carbon-low'},
+            'AGY · Gemini 4 Carbon (Medium)': {'provider': 'antigravity_cli', 'model': 'gemini-4-carbon-medium'},
+            'AGY · Gemini 4 Carbon (High)': {'provider': 'antigravity_cli', 'model': 'gemini-4-carbon-high'},
+        })
+        key = 'AGY ACP · Gemini 4 Carbon (Low)'
+        self.assertEqual(config.MODELS.get(key), {
+            'provider': 'antigravity_acp',
+            'model': 'gemini-4-carbon-low',
+            'vision': True,
+            'audio': True,
+        })
+        self.assertNotIn('AGY ACP · Gemini 4 Carbon (Medium)', config.MODELS)
+        self.assertNotIn('AGY ACP · Gemini 4 Carbon (High)', config.MODELS)
+
+        initial_options = [{'id': 'model', 'currentValue': 'gemini-4-neon'},
+                           {'id': 'thought_level', 'currentValue': 'high'}]
+        after_model = [{'id': 'model', 'currentValue': 'gemini-4-carbon'},
+                       {'id': 'thought_level', 'currentValue': 'high'}]
+        after_level = [{'id': 'model', 'currentValue': 'gemini-4-carbon'},
+                       {'id': 'thought_level', 'currentValue': 'low'}]
+        process = FakeProcess([
+            {'id': 1, 'result': {'protocolVersion': 1}},
+            {'id': 2, 'result': {'sessionId': 's', 'configOptions': initial_options}},
+            {'id': 3, 'result': {'configOptions': after_model}},
+            {'id': 4, 'result': {'configOptions': after_level}},
+            {'method': 'session/update', 'params': {'sessionId': 's', 'update': {
+                'sessionUpdate': 'available_commands_update', 'availableCommands': []}}},
+        ])
+        session = _Session(process)
+        await session.configure(Path.cwd(), 'gemini-4-carbon-low', False)
+        set_calls = [
+            json.loads(c.args[0])['params']
+            for c in process.stdin.write.call_args_list
+            if json.loads(c.args[0]).get('method') == 'session/set_config_option'
+        ]
+        self.assertEqual(set_calls, [
+            {'sessionId': 's', 'configId': 'model', 'value': 'gemini-4-carbon'},
+            {'sessionId': 's', 'configId': 'thought_level', 'value': 'low'},
+        ])
 
     async def test_response_progress_without_text_is_forwarded(self):
         process = FakeProcess([
@@ -355,6 +403,54 @@ class AntigravityStreamTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[-1]['usage']['output_tokens'], 4)
         cleanup.assert_awaited_once_with(process)
 
+    async def test_browser_login_fallback_is_stopped_and_retried_once(self):
+        def login_process():
+            process = FakeProcess([])
+            process.stdout = asyncio.StreamReader()
+            process.stderr = asyncio.StreamReader()
+            process.stderr.feed_data(b'Waiting for authentication (timeout 60s)...\n')
+            process.returncode = None
+
+            def kill():
+                process.returncode = 1
+                process.stdout.feed_eof()
+                process.stderr.feed_eof()
+            process.kill = kill
+            return process
+
+        success = FakeProcess([
+            {'event': 'init', 'init': {'agent': agy.AGENT_NAME}},
+            {'event': 'result', 'result': {'status': 'SUCCESS', 'response': 'done'}},
+        ])
+        for processes, expected in [([login_process(), success], 'done'), ([login_process(), login_process()], None)]:
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as directory, patch.object(
+                agy.asyncio, 'create_subprocess_exec', AsyncMock(side_effect=processes)
+            ) as spawn, patch('generation_control.terminate_process_tree', new_callable=AsyncMock):
+                stream = agy.stream_chat('agy.exe', 'hello', '', Path(directory))
+                if expected:
+                    events = await asyncio.wait_for(self._collect(stream), 1)
+                    self.assertEqual(''.join(e.get('text', '') for e in events), expected)
+                else:
+                    with self.assertRaisesRegex(agy.AntigravityError, '登录令牌'):
+                        await asyncio.wait_for(self._collect(stream), 1)
+                self.assertEqual(spawn.await_count, 2)
+
+    @staticmethod
+    async def _collect(stream):
+        return [event async for event in stream]
+
+    async def test_agy_runs_without_its_windowed_updater(self):
+        options = agy._process_options(NO_COLOR='1')
+        self.assertEqual(options['env']['AGY_CLI_DISABLE_AUTO_UPDATE'], 'true')
+        self.assertEqual(options['env']['NO_COLOR'], '1')
+        process = unittest.mock.Mock(returncode=1)
+        process.communicate = AsyncMock(return_value=(b'network down\n', None))
+        with patch.object(agy.asyncio, 'create_subprocess_exec', AsyncMock(return_value=process)) as spawn:
+            with self.assertRaisesRegex(agy.AntigravityError, 'network down'):
+                await agy._run_update('agy.exe')
+        self.assertEqual(spawn.call_args.args, ('agy.exe', 'update'))
+        self.assertEqual(spawn.call_args.kwargs['env']['AGY_CLI_DISABLE_AUTO_UPDATE'], 'true')
+
     async def test_discovery_uses_supported_tab_separated_models_command(self):
         process = unittest.mock.Mock(returncode=0)
         process.communicate = AsyncMock(return_value=(
@@ -365,6 +461,47 @@ class AntigravityStreamTests(unittest.IsolatedAsyncioTestCase):
             rows = await agy.discover_models(force=True)
         self.assertEqual(rows, [{'model': 'gemini-3.8-flash-low', 'name': 'Gemini 3.8 Flash (Low)'}])
         self.assertEqual(spawn.call_args.args, ('agy.exe', 'models'))
+
+    async def test_model_list_serves_saved_catalog_while_agy_refreshes(self):
+        import config
+        from routes import settings
+
+        release = asyncio.Event()
+        calls = []
+
+        async def discover():
+            calls.append(1)
+            await release.wait()
+            return [{'model': 'gemini-3.8-flash-high', 'name': 'Gemini 3.8 Flash (High)'},
+                    {'model': 'not-enabled-model', 'name': 'Not Enabled'}]
+
+        before = dict(config.ANTIGRAVITY_MODELS)
+        self.addCleanup(config.replace_antigravity_models, before)
+        config.replace_antigravity_models({'AGY · Saved': {'provider': 'antigravity_cli', 'model': 'gemini-3.8-flash-high'}})
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            config, 'ANTIGRAVITY_MODELS_PATH', Path(directory) / 'models.json'
+        ), patch.object(settings.antigravity_cli, 'discover_models', discover), patch.object(
+            settings.antigravity_cli, 'catalog_due', side_effect=[True, False]
+        ), patch.object(settings, '_agy_catalog_refresh', None):
+            rows = await asyncio.wait_for(settings.list_models(), .5)
+            self.assertIn('AGY ACP · Saved', [row['key'] for row in rows])
+            release.set()
+            await settings._agy_catalog_refresh
+            rows = await settings.list_models()
+            self.assertIn('AGY ACP · Gemini 3.8 Flash (High)', [row['key'] for row in rows])
+            saved = json.loads((Path(directory) / 'models.json').read_text(encoding='utf-8'))
+        self.assertEqual(len(calls), 1)
+        # Disabled models stay saved, so enabling one takes effect after a restart.
+        self.assertEqual(set(saved), {'AGY · Gemini 3.8 Flash (High)', 'AGY · Not Enabled'})
+
+    async def test_catalog_refreshes_every_six_hours_and_retries_failures_sooner(self):
+        recent = agy.time.monotonic() - 600
+        with patch.object(agy, '_catalog_checked', None):
+            self.assertTrue(agy.catalog_due())
+        with patch.object(agy, '_catalog_checked', recent), patch.object(agy, '_catalog', [{'model': 'm'}]):
+            self.assertFalse(agy.catalog_due())
+        with patch.object(agy, '_catalog_checked', recent), patch.object(agy, '_catalog', []):
+            self.assertTrue(agy.catalog_due())
 
     async def test_existing_provider_forwards_model_and_usage_to_home(self):
         import ai_providers
@@ -400,33 +537,40 @@ class AntigravityStreamTests(unittest.IsolatedAsyncioTestCase):
                 {'model': 'gemini-3.8-flash-high', 'name': 'Gemini 3.8 Flash (High)'},
                 {'model': 'claude-opus-5-5-medium', 'name': 'Claude Opus 5.5 (Medium)'},
                 {'model': 'gemini-3.1-pro-high', 'name': 'Gemini 3.1 Pro (High)'}
-            ])):
+            ])), patch.object(settings, '_agy_catalog_refresh', None), patch.object(
+                agy, 'catalog_due', side_effect=[True, False]
+            ):
+                await settings.list_models()
+                await settings._agy_catalog_refresh
                 rows = await settings.list_models()
                 self.assertEqual(len(config._read_antigravity_models()), 2)
-            route = next(row for row in rows if row['key'] == 'AGY · Gemini 3.8 Flash (High)')
-            self.assertEqual(route['provider'], 'antigravity_cli')
-            self.assertEqual([row['key'] for row in rows if row['provider'] == 'antigravity_cli'],
-                             ['AGY · Gemini 3.8 Flash (High)', 'AGY · Claude Opus 5.5 (Medium)'])
+            route = next(row for row in rows if row['key'] == 'AGY ACP · Gemini 3.8 Flash (High)')
+            self.assertEqual(route['provider'], 'antigravity_acp')
+            self.assertEqual([row['key'] for row in rows if row['provider'].startswith('antigravity')],
+                             ['AGY ACP · Gemini 3.8 Flash (High)', 'AGY ACP · Claude Opus 5.5 (Medium)'])
             key = route['key']
             self.assertEqual(config.resolve_model_key(key), key)
+            # Saved choices of the removed AGY CLI routes now use ACP.
+            self.assertEqual(config.resolve_model_key('AGY · Gemini 3.8 Flash (High)'), key)
             config.refresh_custom_models()
             self.assertEqual(config.MODELS[key]['model'], 'gemini-3.8-flash-high')
             self.assertFalse(config.is_model_deprecated(key))
-            self.assertNotIn('AGY · Gemini 3.1 Pro (High)', config.MODELS)
+            self.assertNotIn('AGY ACP · Gemini 3.1 Pro (High)', config.MODELS)
             self.assertTrue(config.MODELS[key]['vision'])
             self.assertTrue(all(value['vision'] for value in config.ANTIGRAVITY_MODELS.values()))
-            self.assertTrue(config.MODELS[key]['audio'])
-            self.assertFalse(config.MODELS['AGY · Claude Opus 5.5 (Medium)']['audio'])
+            catalog_key = 'AGY · Gemini 3.8 Flash (High)'
+            self.assertTrue(config.ANTIGRAVITY_MODELS[catalog_key]['audio'])
+            self.assertFalse(config.ANTIGRAVITY_MODELS['AGY · Claude Opus 5.5 (Medium)']['audio'])
             with tempfile.TemporaryDirectory() as directory, patch.object(
                 config, 'ANTIGRAVITY_MODELS_PATH', Path(directory) / 'old-cache.json'
             ):
                 config.ANTIGRAVITY_MODELS_PATH.write_text(json.dumps({
-                    key: {**config.MODELS[key], 'audio': False},
+                    catalog_key: {**config.ANTIGRAVITY_MODELS[catalog_key], 'audio': False},
                     'AGY · Claude Opus 5.5 (Medium)': {
                         'provider': 'antigravity_cli', 'model': 'claude-opus-5-5-medium', 'audio': True},
                 }), encoding='utf-8')
                 restored = config._read_antigravity_models()
-                self.assertTrue(restored[key]['audio'])
+                self.assertTrue(restored[catalog_key]['audio'])
                 self.assertFalse(restored['AGY · Claude Opus 5.5 (Medium)']['audio'])
             self.assertTrue(config.is_model_deprecated('AGY-3.1pro'))
         finally:
@@ -631,6 +775,95 @@ class AntigravityStreamTests(unittest.IsolatedAsyncioTestCase):
                         chunks = [chunk async for chunk in ai_providers.stream_ai(
                             history, 'audio-test', include_device_context=False)]
                         self.assertIn('收到', chunks)
+
+    async def test_acp_route_passes_gemini_voice_and_labels_it(self):
+        import ai_providers
+        import config
+        from routes.chat import _process_voice_attachments_in_history
+
+        before = dict(config.ANTIGRAVITY_MODELS)
+        self.addCleanup(config.replace_antigravity_models, before)
+        config.replace_antigravity_models({
+            'AGY · Gemini 3.8 Flash (High)': {'provider': 'antigravity_cli', 'model': 'gemini-3.8-flash-high'},
+            'AGY · Claude Opus 5.5 (Medium)': {'provider': 'antigravity_cli', 'model': 'claude-opus-5-5-medium'},
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            audio = Path(directory) / 'voice.webm'
+            audio.write_bytes(b'webm-audio')
+            for key, expected in [('AGY ACP · Gemini 3.8 Flash (High)', (str(audio.resolve()),)),
+                                  ('AGY ACP · Claude Opus 5.5 (Medium)', ())]:
+                history = [{'role': 'user', 'content': '', 'attachments': [
+                    {'type': 'voice', 'url': '/uploads/voice.webm', 'transcript': '浏览器录音'}]}]
+                _process_voice_attachments_in_history(history)
+
+                async def stream(*args, **kwargs):
+                    self.assertEqual(args[3], expected)
+                    self.assertIn('浏览器录音', args[0])
+                    self.assertEqual('（语音附件：音频1）' in args[0], bool(expected))
+                    yield 'text', '收到'
+
+                with self.subTest(key=key), patch.object(ai_providers, 'UPLOADS_DIR', Path(directory)), patch.object(
+                    ai_providers.antigravity_acp, 'stream', stream
+                ):
+                    chunks = [chunk async for chunk in ai_providers.stream_ai(history, key, include_device_context=False)]
+                    self.assertIn('收到', chunks)
+
+    async def test_acp_allows_only_reads_of_staged_audio(self):
+        from antigravity_acp import _Session
+
+        with tempfile.TemporaryDirectory() as directory:
+            staged = str(Path(directory) / 'audio-1.wav')
+            other = str(Path(directory) / 'secret.txt')
+            session = _Session(FakeProcess([]), (staged,))
+            session.check_tool({'toolCallId': 'a', 'rawInput': {'Path': staged}, 'status': 'in_progress'})
+            session.check_tool({'toolCallId': 'a', 'status': 'completed'})
+            for update, error in [
+                ({'toolCallId': 'b', 'rawInput': {'Path': other}}, '工具调用'),
+                ({'toolCallId': 'c', 'rawInput': {'CommandLine': 'dir'}}, '工具调用'),
+                ({'toolCallId': 'a', 'status': 'failed'}, '读取失败'),
+            ]:
+                with self.subTest(update=update), self.assertRaisesRegex(agy.AntigravityError, error):
+                    session.check_tool(update)
+            with self.assertRaisesRegex(agy.AntigravityError, '工具调用'):
+                _Session(FakeProcess([])).check_tool({'toolCallId': 'a', 'rawInput': {'Path': staged}})
+
+    async def test_acp_audio_turn_uses_reader_agent_and_cleans_up(self):
+        import antigravity_acp
+
+        options = [{'id': 'model', 'currentValue': 'gemini-3.8-flash'}, {'id': 'thought_level', 'currentValue': 'high'}]
+        process = FakeProcess([
+            {'id': 1, 'result': {'protocolVersion': 1}},
+            {'id': 2, 'result': {'sessionId': 's', 'configOptions': options}},
+            {'method': 'session/update', 'params': {'sessionId': 's', 'update': {
+                'sessionUpdate': 'available_commands_update', 'availableCommands': []}}},
+            {'method': 'session/update', 'params': {'sessionId': 's', 'update': {
+                'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': '听到了'}}}},
+            {'id': 3, 'result': {'stopReason': 'end_turn'}},
+        ])
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / 'workspace'
+            audio = Path(directory) / 'voice.webm'
+            audio.write_bytes(b'webm-audio')
+            prepare = agy.prepare_chat_workspace
+            with patch.object(agy, 'find_binary', return_value='agy.exe'), patch.object(
+                agy, 'prepare_chat_workspace', lambda vision=False: prepare(workspace, vision=vision)
+            ), patch.object(antigravity_acp.asyncio, 'create_subprocess_exec', AsyncMock(return_value=process)) as spawn, \
+                    patch('antigravity_acp.terminate_process_tree', new_callable=AsyncMock), \
+                    patch('system_logs.record_cli_prompt', new_callable=AsyncMock) as record:
+                events = [event async for event in antigravity_acp.stream('[User]\n听听', 'gemini-3.8-flash-high',
+                                                                          audio_paths=(str(audio),))]
+            self.assertIn(('text', '听到了'), events)
+            self.assertIn(agy.VISION_AGENT_NAME, spawn.call_args.args)
+            prompt = next(json.loads(c.args[0])['params']['prompt'][0]['text']
+                          for c in process.stdin.write.call_args_list
+                          if json.loads(c.args[0]).get('method') == 'session/prompt')
+            self.assertEqual(record.await_args.args, (prompt,))
+            self.assertEqual(record.await_args.kwargs['instructions_file'].name, f'{agy.VISION_AGENT_NAME}.md')
+            self.assertIn('音频1：', prompt)
+            self.assertTrue(prompt.endswith('[User]\n听听'))
+            self.assertFalse((workspace / '.agents/image-input.json').exists())
+            self.assertEqual(list((workspace / 'images').iterdir()), [])
+            self.assertTrue(audio.exists())
 
     async def test_vision_model_moments_keep_images_for_native_reading(self):
         import config

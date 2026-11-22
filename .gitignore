@@ -14,6 +14,7 @@ venv/
 
 # ── 用户数据（含隐私信息，不应上传） ──
 aion-chat/data/chat.db
+aion-chat/data/default_routine.json
 aion-chat/data/settings.json
 aion-chat/data/worldbook.json
 aion-chat/data/chat_status.json

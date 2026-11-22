@@ -12,6 +12,44 @@ from typing import Iterable
 _SEGMENT_SUFFIX_RE = re.compile(r"_s\d+$")
 log = logging.getLogger(__name__)
 
+_MP3_KBPS = {
+    (True, 1): (0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 384, 416, 448),
+    (True, 2): (0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384),
+    (True, 3): (0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320),
+    (False, 1): (0, 32, 48, 56, 64, 80, 96, 112, 128, 144, 160, 176, 192, 224, 256),
+    (False, 2): (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160),
+}
+_MP3_KBPS[(False, 3)] = _MP3_KBPS[(False, 2)]
+_MP3_RATES = {3: (44100, 48000, 32000), 2: (22050, 24000, 16000), 0: (11025, 12000, 8000)}
+
+
+def mp3_duration(data: bytes) -> float:
+    """Sum MPEG audio frame durations; 0 when the data has no frames."""
+    i = 0
+    if data[:3] == b"ID3" and len(data) >= 10:
+        i = 10 + ((data[6] & 0x7F) << 21 | (data[7] & 0x7F) << 14 | (data[8] & 0x7F) << 7 | (data[9] & 0x7F))
+    seconds = 0.0
+    while i + 4 <= len(data):
+        b1, b2 = data[i + 1], data[i + 2]
+        version, layer = (b1 >> 3) & 3, 4 - ((b1 >> 1) & 3)
+        bitrate_index, rate_index = b2 >> 4, (b2 >> 2) & 3
+        if (data[i] != 0xFF or b1 & 0xE0 != 0xE0 or version == 1 or layer == 4
+                or bitrate_index in (0, 15) or rate_index == 3):
+            i += 1
+            continue
+        mpeg1 = version == 3
+        rate = _MP3_RATES[version][rate_index]
+        bitrate = _MP3_KBPS[(mpeg1, layer)][bitrate_index] * 1000
+        padding = (b2 >> 1) & 1
+        if layer == 1:
+            samples, size = 384, (12 * bitrate // rate + padding) * 4
+        else:
+            samples = 1152 if layer == 2 or mpeg1 else 576
+            size = samples // 8 * bitrate // rate + padding
+        seconds += samples / rate
+        i += size
+    return seconds
+
 
 def _safe_message_id(value: object) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-]", "", str(value or ""))

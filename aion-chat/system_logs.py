@@ -64,13 +64,17 @@ def enrich_debug(data):
         row = db.execute("SELECT payload FROM logs WHERE id = ?", (log_id,)).fetchone()
         details = {k:v for k,v in data.items() if k not in ("prompt_messages","prompt_count")}
         if not row:
-            return {**details, "log_id": log_id}
+            return {**data, "log_id": log_id}
         saved = json.loads(row[0])
         entry = {**saved, **details, "log_id": log_id}
         if "usage" in saved:
             entry["usage"] = saved["usage"]
         if "model" in saved:
             entry["model"] = saved["model"]
+        if "model_key" in saved:
+            entry["model_key"] = saved["model_key"]
+        if "random_pool" in saved:
+            entry["random_pool"] = saved["random_pool"]
         db.execute("UPDATE logs SET payload = ? WHERE id = ?",
                    (json.dumps(entry, ensure_ascii=False, default=str), log_id))
     return entry
@@ -122,6 +126,8 @@ async def record_cli_prompt(prompt, *, instructions_file=None, developer="", ima
             instructions = instructions_file.read_text(encoding="utf-8")
         except (OSError,UnicodeError):
             instructions = f"[无法读取指令文件：{instructions_file.name}]"
+        # The CLI reads an agent file's front matter as settings; only the body reaches the model.
+        instructions = re.sub(r"\A---\n.*?\n---\n\s*", "", instructions, count=1, flags=re.S)
         messages.append({"role":"system","content":instructions})
     if developer:
         messages.append({"role":"developer","content":developer})
@@ -198,6 +204,8 @@ def logged_ai_call(provider, *, model=None):
                     meta = {}
                     bound.arguments["meta"] = meta
                 meta["system_log_id"] = entry["log_id"]
+                if isinstance(meta.get("_log_extra"), dict):
+                    entry.update(meta["_log_extra"])
                 if meta.get("_room_log"):
                     meta["_call_number"] = meta.get("_call_number",0) + 1
                     entry.update(meta["_room_log"], call_number=meta["_call_number"])
@@ -209,6 +217,8 @@ def logged_ai_call(provider, *, model=None):
             entry["duration_seconds"] = round(entry["finished_at"] - entry["started_at"], 3)
             if meta is not None:
                 entry["usage"] = {k: v for k, v in meta.items() if not k.startswith("_") and k not in ("system_log_id", "reasoning_content")} or None
+                if meta.get("reasoning_content"):
+                    entry["reasoning_content"] = meta["reasoning_content"]
             try:
                 await _publish(entry)
             except asyncio.CancelledError:
@@ -218,8 +228,10 @@ def logged_ai_call(provider, *, model=None):
         if inspect.isasyncgenfunction(func):
             @wraps(func)
             async def stream(*args, **kwargs):
+                from ai_providers import CLI_STATUS_PREFIX
                 bound, entry, meta = prepare(args, kwargs)
                 status, error = "success", ""
+                response = []
                 generator = func(*bound.args, **bound.kwargs)
                 try:
                     await _publish(entry)
@@ -231,8 +243,10 @@ def logged_ai_call(provider, *, model=None):
                             break
                         finally:
                             _active_call.reset(token)
-                        if isinstance(chunk, str) and re.match(r"^\[[^\]\n]*(?:错误|error)[^\]\n]*\]", chunk, re.I):
-                            status, error = "error", chunk
+                        if isinstance(chunk, str) and chunk and not chunk.startswith(CLI_STATUS_PREFIX):
+                            response.append(chunk)
+                            if re.match(r"^\[[^\]\n]*(?:错误|error)[^\]\n]*\]", chunk, re.I):
+                                status, error = "error", chunk
                         yield chunk
                 except (asyncio.CancelledError, GeneratorExit):
                     status, error = "cancelled", "调用已中断"
@@ -244,6 +258,7 @@ def logged_ai_call(provider, *, model=None):
                     try:
                         await generator.aclose()
                     finally:
+                        entry["response_text"] = "".join(response)
                         await finish(entry, meta, status, error)
             return stream
 
@@ -260,6 +275,8 @@ def logged_ai_call(provider, *, model=None):
                 result = await func(*bound.args, **bound.kwargs)
                 if result is None:
                     status, error = "error", "模型未返回结果"
+                else:
+                    entry["response_text"] = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
                 return result
             except asyncio.CancelledError:
                 status, error = "cancelled", "调用已中断"

@@ -59,7 +59,7 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
         default_enabled=True,
     ),
     CapabilityDef("expressive_voice", "主动语音", "media", "", default_enabled=False),
-    CapabilityDef("web_cards", "即兴互动网页", "media", "在私聊、群聊和主动消息中提示两位 AI 创作单屏小互动。关闭后停发创作提示，已有网页仍可打开。"),
+    CapabilityDef("web_cards", "即兴互动动画", "media", "在私聊、群聊和主动消息中提示两位 AI 即兴画能点着玩的 SVG 小动画。关闭后停发创作提示，已有作品仍可查看。"),
     CapabilityDef("music", "点歌", "media", "注入 [MUSIC:歌曲名 歌手名]，让模型可以点歌或推荐音乐。"),
     CapabilityDef("compose_music", "作曲 · 小音乐盒", "media", "开启后向两位 AI 提示 Strudel 作曲能力，可点曲或偶尔收到赠曲。关闭只停止提示，已保存的小曲仍可播放。", default_enabled=False),
     CapabilityDef("cam_check", "查看监控/状态", "core", "注入 [CAM_CHECK]，让模型可以主动请求查看当前画面。"),
@@ -92,7 +92,7 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef("pat", "AI 拍拍", "social", "让 AI 自己决定怎么拍：私聊里拍你或自己，群聊里也能拍另一位 AI。关闭只停用 AI 拍拍，你仍可手动拍拍，已有拍拍继续进入聊天上下文。"),
     CapabilityDef("rps", "猜拳", "core", "遇到商议不决的事情时，可以通过猜拳决胜。关闭后不再向 AI 提示这项能力，已有邀请仍可继续。"),
     CapabilityDef("mini_game", "小游戏邀请", "core", "让 AI 在你无聊或时机合适时邀请你玩桌球、斗地主、德州扑克、吹牛骰子，点击聊天中的邀请按钮进入游戏。关闭后不再发起新邀请，已有按钮仍可使用。"),
-    CapabilityDef("chat_ambience", "小家氛围", "core", "让 AI 根据聊天内容切换聊天界面的氛围动效（雨、雪、樱花、阳光、极光等）和叠加颜色，也可以放撒花、烟花、流星。关闭后 AI 不再切换，你仍可手动调整。"),
+    CapabilityDef("chat_ambience", "小家氛围", "core", "让 AI 根据聊天内容调整日夜模式、氛围动效和叠加颜色，也可以放撒花、烟花、流星。关闭后仍可手动调整。"),
     CapabilityDef("memory_write", "写入记忆", "social", "注入 [MEMORY:内容]，让模型可以记录重要记忆。"),
     CapabilityDef(
         "memory_search",
@@ -105,7 +105,7 @@ CAPABILITY_DEFS: list[CapabilityDef] = [
     CapabilityDef("wish", "许愿", "social", "注入 [许愿：内容]，让模型可以把自己的愿望投进许愿池。"),
     CapabilityDef("friend_visit", "拜访 AI 好友", "social", "注入 [LOUNGE_VISIT:好友 ID|话题]，让模型可在用户明确要求时拜访已配置好友。"),
     CapabilityDef("transfer", "钱包转账", "life", "注入 [转账：n元]，让模型可以在余额足够时转账。"),
-    CapabilityDef("private_whisper", "群聊悄悄话", "special", "注入 [悄悄话：内容]，让群聊角色可以向私聊窗口发送悄悄话。", runtime_note="仅群聊上下文会注入。"),
+    CapabilityDef("private_whisper", "群聊悄悄话", "special", "在群聊中选择私聊用户或另一位 AI 伴侣。", runtime_note="仅群聊上下文会注入。"),
     CapabilityDef("toy", "SOSEXY · 密语玩具", "special", "注入 [TOY:1]~[TOY:9] / [TOY:STOP]，让密语模式下可以控制玩具。", runtime_note="仅选用 SOSEXY 且在密语模式时注入。"),
     CapabilityDef("ankni", "ANKNI MX · AI 编排", "life", "按每段持续时间编排十种内置模式和停止，只有选中 ANKNI 时生效。", default_enabled=False),
     CapabilityDef("svakom", "SVAKOM SL278H · AI 循环编排", "life", "独立控制 SL278H 的主体模式、主体震动力度和小部件拍打；关闭会停止 AI 编排，不影响手动控制。", default_enabled=False, runtime_note="仅选用 SVAKOM 且开启时注入；不要求连接或密语模式，与玩具页开关同步。"),
@@ -641,10 +641,12 @@ async def build_capability_prompt_items(
         abilities.append(f"有商议不决的事情，或想鼓励{user_name}做某件事，比如催促起床，放下手机去运动，以及其他你认为合适的情况，可主动通过猜拳和{user_name}决胜。主动发起必须写一句本局约定，格式为[猜拳:石头|输了就马上起床，赢了可以再赖床五分钟]（石头可换剪刀或布；约定不超过200字，不含方括号或换行）。接到邀请时沿用对方约定，用[猜拳:石头]、[猜拳:剪刀]或[猜拳:布]接招。揭晓前不在正文透露拳型，不自行宣布输赢。结果由系统揭晓并记入聊天，后续结合上下文中的结果、约定和用户的话正常回应。")
 
     if include_private_whisper and is_capability_enabled("private_whisper"):
+        from peer_dm import PEER_DM_HINT
         abilities.append(
             f"[悄悄话：内容] — 当你想私下和{user_name}说悄悄话，不让第3个人听见时，可以使用该指令。"
             f"使用后会把“内容”发送到你和{user_name}的私聊窗口。不要在群聊正文里重复这段悄悄话。"
         )
+        abilities.append(PEER_DM_HINT)
 
     if is_capability_enabled("activity_check") and is_activity_tracking_enabled():
         abilities.append(

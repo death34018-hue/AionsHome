@@ -288,6 +288,7 @@ final class MediaCacheStore {
                 || path.startsWith("/cr-uploads/")
                 || path.startsWith("/api/tts/audio/")
                 || path.startsWith("/api/theater/tts/audio/")
+                || path.startsWith("/api/theater/studio/audio/")
                 || path.startsWith("/api/gift/thumbnail/")
                 || (path.startsWith("/api/diaries/") && path.endsWith("/tts/audio"));
     }

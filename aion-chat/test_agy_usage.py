@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock
 
@@ -41,7 +42,26 @@ class UsageTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(agy_usage.UsageError):
             agy_usage.parse_report({"status": "SUCCESS", "response": "98%"})
 
-    async def test_poll_failure_retains_values_and_recovers_on_the_next_check(self):
+    async def test_simultaneous_refreshes_share_one_cli_query(self):
+        started, finish = asyncio.Event(), asyncio.Event()
+
+        async def read_quota():
+            started.set()
+            await finish.wait()
+            return [{"name": "Codex", "buckets": []}]
+
+        query = AsyncMock(side_effect=read_quota)
+        monitor = agy_usage.UsageMonitor(query, "Codex")
+        first = asyncio.create_task(monitor.refresh())
+        await started.wait()
+        second = asyncio.create_task(monitor.refresh())
+        await asyncio.sleep(0)
+        finish.set()
+        await asyncio.gather(first, second)
+        query.assert_awaited_once()
+        self.assertEqual(monitor.snapshot["groups"][0]["name"], "Codex")
+
+    async def test_refresh_failure_retains_values_and_recovers_on_the_next_check(self):
         initial = [{"name": "Gemini", "buckets": []}]
         updated = [{"name": "Gemini 4 Argon", "buckets": []}]
         query = AsyncMock(side_effect=[initial, agy_usage.UsageError("查询失败"), updated])

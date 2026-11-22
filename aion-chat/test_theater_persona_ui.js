@@ -20,6 +20,7 @@ function setup() {
     escHtml: value => String(value), confirm:()=>true, showToast() {}, closeModelSettings() {},
     api: async (method, url, data) => {
       calls.push({method, url, data});
+      if (url === '/api/theater/prompt-modules') return data.prompt_modules;
       return method === 'DELETE' ? {ok:true} : {id:method === 'POST' ? 'created' : url.split('/').pop(), ...data};
     },
   });
@@ -105,4 +106,110 @@ test('using a role is explicit and deleting the final role leaves the manager re
   assert.equal(e.personaModalOverlay.classList.shown, true);
   assert.equal(e.personaEditId.value, '');
   assert.equal(e.personaText.value, '');
+});
+
+test('applyLoadedPromptModules populates both boxes and avoids clobbering unsaved edits', () => {
+  const {context:c, elements:e} = setup();
+  c.applyLoadedPromptModules([
+    { id: 'writing_prompt_1', title: '写作提示1', enabled: true, content: '已加载提示一' },
+    { id: 'writing_prompt_2', title: '写作提示2', enabled: false, content: '已加载禁令二' },
+  ]);
+  assert.equal(e.personaPromptEnabled1.checked, true);
+  assert.equal(e.personaPromptText1.value, '已加载提示一');
+  assert.equal(e.personaPromptState1.textContent, '已勾选 · 发送时附带');
+  assert.equal(e.personaPromptEnabled2.checked, false);
+  assert.equal(e.personaPromptText2.value, '已加载禁令二');
+  assert.equal(e.personaPromptState2.textContent, '未勾选 · 不发送');
+
+  c.openPersonaModal('one');
+  e.personaPromptText1.value = '正在编辑的提示一';
+  c.personaEdited();
+  c.applyLoadedPromptModules([
+    { id: 'writing_prompt_1', title: '写作提示1', enabled: false, content: '晚到的服务端旧数据' },
+  ]);
+  assert.equal(e.personaPromptText1.value, '正在编辑的提示一');
+  assert.equal(e.personaSaveStatus.textContent, '未保存');
+});
+
+test('editing only shared writing prompts saves only prompt-modules and keeps role switching smooth', async () => {
+  const {context:c, elements:e, calls} = setup();
+  let confirmCalls = 0;
+  c.confirm = () => { confirmCalls++; return false; };
+
+  c.openPersonaModal('two');
+  assert.equal(e.personaUse.disabled, false);
+
+  e.personaPromptEnabled1.checked = true;
+  e.personaPromptText1.value = '全局文风提示';
+  c.personaEdited();
+  assert.equal(e.personaSaveStatus.textContent, '未保存');
+  assert.equal(e.personaUse.disabled, true);
+  assert.equal(c.closePersonaModal(), false);
+  assert.equal(confirmCalls, 1);
+
+  // Switching to another role or creating a new role keeps unsaved shared prompt edits intact without a role-discard prompt.
+  c.openPersonaModal('one');
+  assert.equal(confirmCalls, 1);
+  assert.equal(e.personaEditId.value, 'one');
+  assert.equal(e.personaPromptEnabled1.checked, true);
+  assert.equal(e.personaPromptText1.value, '全局文风提示');
+  assert.equal(e.personaSaveStatus.textContent, '未保存');
+
+  c.openPersonaModal('');
+  assert.equal(e.personaEditId.value, '');
+  assert.equal(e.personaPromptEnabled1.checked, true);
+  assert.equal(e.personaPromptText1.value, '全局文风提示');
+
+  await c.savePersona();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, 'PUT');
+  assert.equal(calls[0].url, '/api/theater/prompt-modules');
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].data.prompt_modules)), [
+    { id: 'writing_prompt_1', title: '写作提示1', enabled: true, content: '全局文风提示' },
+    { id: 'writing_prompt_2', title: '写作提示2', enabled: false, content: '' },
+  ]);
+  assert.equal(c.personas.length, 2); // No bogus empty role created.
+  assert.equal(e.personaSaveStatus.textContent, '已保存');
+
+  c.openPersonaModal('two');
+  assert.equal(e.personaPromptEnabled1.checked, true);
+  assert.equal(e.personaPromptText1.value, '全局文风提示');
+  assert.equal(e.personaSaveStatus.textContent, '');
+});
+
+test('deleting final role keeps shared writing prompts and saving both role and modules handles failures cleanly', async () => {
+  const {context:c, elements:e, calls} = setup();
+  c.applyLoadedPromptModules([
+    { id: 'writing_prompt_1', title: '写作提示1', enabled: true, content: '长期保留提示' },
+  ]);
+  c.openPersonaModal('one');
+  e.personaText.value = '更新后的人设甲';
+  e.personaPromptEnabled2.checked = true;
+  e.personaPromptText2.value = '新增禁令二';
+  c.personaEdited();
+  await c.savePersona();
+
+  assert.deepEqual(calls.map(call => `${call.method} ${call.url}`), [
+    'PUT /api/theater/personas/one',
+    'PUT /api/theater/prompt-modules',
+  ]);
+  assert.equal(e.personaSaveStatus.textContent, '已保存');
+
+  await c.deletePersona('two');
+  await c.deletePersona('one');
+  assert.equal(e.personaEditId.value, '');
+  assert.equal(e.personaName.value, '');
+  assert.equal(e.personaText.value, '');
+  assert.equal(e.personaPromptEnabled1.checked, true);
+  assert.equal(e.personaPromptText1.value, '长期保留提示');
+  assert.equal(e.personaPromptEnabled2.checked, true);
+  assert.equal(e.personaPromptText2.value, '新增禁令二');
+
+  // Failed prompt-modules save keeps edits intact.
+  e.personaPromptText2.value = '未保存成功的禁令';
+  c.personaEdited();
+  c.api = async () => ({ error: 'disk error' });
+  await c.savePersona();
+  assert.equal(e.personaPromptText2.value, '未保存成功的禁令');
+  assert.match(e.personaSaveStatus.textContent, /保存失败/);
 });

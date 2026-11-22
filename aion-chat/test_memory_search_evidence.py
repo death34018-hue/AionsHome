@@ -87,6 +87,51 @@ class MemoryEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('MEMORY_SEARCH', answer)
         self.assertTrue(answer.strip())
 
+    async def test_peer_dm_keeps_participants_in_recent_history_and_memory_evidence(self):
+        import chatroom
+        import context_builder
+        import memory
+        from routes.memory_library import _source_rows
+
+        async with self.connect() as db:
+            await db.execute("ALTER TABLE messages ADD COLUMN attachments TEXT DEFAULT '[]'")
+            await db.execute("ALTER TABLE chatroom_messages ADD COLUMN attachments TEXT DEFAULT '[]'")
+            await db.execute("INSERT INTO chatroom_rooms VALUES ('cr_peer_dm','peer_dm')")
+            await db.execute("INSERT INTO chatroom_messages VALUES ('dm','cr_peer_dm','connor','一起去找北极星',110,'[]')")
+            await db.commit()
+        names = ('Mira', 'Sol', 'Nova')
+        with ExitStack() as stack:
+            for module in (context_builder, memory, chatroom):
+                stack.enter_context(patch.object(module, 'get_db', self.connect))
+            stack.enter_context(patch.object(context_builder, '_timeline_display_names', return_value=names))
+            stack.enter_context(patch.object(chatroom, 'get_chatroom_names', return_value=names))
+            stack.enter_context(patch.object(memory, '_connor_display_name', return_value='Nova'))
+            stack.enter_context(patch.object(memory, 'load_worldbook', return_value={'user_name': 'Mira', 'ai_name': 'Sol'}))
+            for actor, recall in (('aion', memory.fetch_source_details), ('connor', chatroom.fetch_chatroom_source_details)):
+                with self.subTest(actor=actor):
+                    recent = await context_builder.fetch_merged_timeline(actor, 1)
+                    self.assertEqual([(m['source'], m['sender']) for m in recent], [('peer_dm', 'connor')])
+                    rendered = context_builder.render_merged_timeline(recent, actor)[-1]
+                    self.assertEqual(rendered['_timeline_source'], 'peer_dm')
+                    line = rendered['content']
+                    self.assertIn('Nova：一起去找北极星', line)
+                    self.assertIn('Sol与Nova私聊', line)
+                    hits = await search.search_chat_history(actor, [search.MemorySearchRequest('北极星')])
+                    self.assertEqual([r.memory_id for r in hits], ['chatroom:dm'])
+                    opened = await search.open_memory_source(actor, hits[0].memory_id)
+                    for source in (hits[0].sources[0], opened[0].sources[0]):
+                        self.assertIn('Sol与Nova私聊', source)
+                        self.assertIn('Nova', source)
+                    evidence = await recall([{'id': 'memory', 'source_msg_id': '["chatroom:dm"]'}], [])
+                    self.assertIn('Sol与Nova私聊', evidence)
+                    self.assertIn('Nova: 一起去找北极星', evidence)
+                    dated = await recall([{'id': 'memory', 'source_start_ts': 100, 'source_end_ts': 111}], ['北极星'])
+                    self.assertIn('Sol与Nova私聊', dated)
+                    async with self.connect() as db:
+                        db.row_factory = aiosqlite.Row
+                        rows = await _source_rows(db, 'main' if actor == 'aion' else 'chatroom', ids=['chatroom:dm'])
+                    self.assertEqual([(r['source'], r['window_id'], r['role']) for r in rows], [('peer_dm', 'cr_peer_dm', 'connor')])
+
     def test_parser_accepts_history_and_open(self):
         _, requests = search.extract_memory_search_requests('[MEMORY_SEARCH:面馆|history] [MEMORY_SEARCH:店名|open=private:a]')
         self.assertTrue(requests[0].history)

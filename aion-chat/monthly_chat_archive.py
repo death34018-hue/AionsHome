@@ -198,6 +198,8 @@ def _repair_time_references(
 
     def room_target(old_id: str, timestamp: float | None, scope: str = "") -> str | None:
         room_type, room_created_at = old_room_meta.get(old_id, ("", 0.0))
+        if room_type == "peer_dm":
+            return None
         kind = "connor" if room_type == "connor_1v1" else "group" if room_type == "group" else None
         if kind is None and scope in {"connor", "group"}:
             kind = scope
@@ -375,7 +377,7 @@ def archive_chat_windows(
                 if db.execute("SELECT COUNT(*) FROM messages WHERE conv_id=?", (conv_id,)).fetchone()[0]:
                     raise AssertionError(f"Legacy conversation still contains messages: {conv_id}")
                 db.execute("DELETE FROM conversations WHERE id=?", (conv_id,))
-        for (room_id,) in db.execute("SELECT id FROM chatroom_rooms").fetchall():
+        for (room_id,) in db.execute("SELECT id FROM chatroom_rooms WHERE type != 'peer_dm'").fetchall():
             if room_id not in kept_rooms:
                 if db.execute("SELECT COUNT(*) FROM chatroom_messages WHERE room_id=?", (room_id,)).fetchone()[0]:
                     raise AssertionError(f"Legacy room still contains messages: {room_id}")
@@ -412,7 +414,7 @@ def archive_chat_windows(
             raise AssertionError(f"Chat foreign key violations remain: {sorted(chat_fk_violations)}")
         if db.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] != len(kept_conversations):
             raise AssertionError("Unexpected conversation inventory")
-        if db.execute("SELECT COUNT(*) FROM chatroom_rooms").fetchone()[0] != len(kept_rooms):
+        if db.execute("SELECT COUNT(*) FROM chatroom_rooms WHERE type != 'peer_dm'").fetchone()[0] != len(kept_rooms):
             raise AssertionError("Unexpected room inventory")
         for kind, rows in rows_by_kind.items():
             table = "messages" if kind == "aion" else "chatroom_messages"

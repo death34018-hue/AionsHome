@@ -110,3 +110,17 @@ class AutonomyAlbumTests(unittest.IsolatedAsyncioTestCase):
             self.store.save_photo(sample_image(), source="upload")
             self.assertEqual((await autonomy._select_action("aion"))["action"], "album_browse")
             self.assertEqual(len(self.store.random_unseen_photos("aion")), 1)
+
+    async def test_count_unseen_photos_and_prompt_hook(self):
+        self.assertEqual(2, self.store.count_unseen_photos("aion"))
+        self.store.mark_viewed("aion", [self.photos[0]["id"]])
+        self.assertEqual(1, self.store.count_unseen_photos("aion"))
+        config = {"actions": {"album_browse": True}}
+        with patch.object(autonomy, "get_album_store", return_value=self.store), \
+             patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value=config)), \
+             patch.object(autonomy, "recent_niche_index", new=AsyncMock(return_value=[])), \
+             patch.object(autonomy, "_recent_actor_actions", new=AsyncMock(return_value=[])), \
+             patch.object(autonomy, "_ask_actor_json", new=AsyncMock(return_value={"action": "album_browse"})) as ask:
+            selected = await autonomy._select_action("aion")
+        self.assertEqual("album_browse", selected["action"])
+        self.assertIn("还有 1 张未看照片", ask.await_args.args[1])

@@ -310,7 +310,7 @@ test('deleting a playing message or novel stops the shared player without affect
 
 test('native chapter playback failure falls back to the same cached segment and keeps its position',async()=>{
   const {installAionTtsAudio}=require('./static/native-tts-audio.js');
-  const browserPlayers=[],nativeCalls=[],notices=[];
+  const browserPlayers=[],nativeCalls=[],notices=[],nativePrefetch=[],fetches=[];
   class BrowserAudio {
     constructor(url){this.src=url;this.currentTime=0;this.duration=60;browserPlayers.push(this);}
     play(){this.playing=true;return Promise.resolve();}
@@ -318,9 +318,11 @@ test('native chapter playback failure falls back to the same cached segment and 
   }
   const root={Audio:BrowserAudio,AionTtsAudio:{
     prepareAudio(id,url){nativeCalls.push({id,url});return true;},stop(){},pauseAudio(){},resumeAudio(){},seekAudio(){},
+    prefetch:url=>nativePrefetch.push(url),
   }};
   installAionTtsAudio(root);
-  const c=vm.createContext({window:root,Audio:BrowserAudio,audio:null,playbackToken:0,
+  const c=vm.createContext({window:root,Audio:BrowserAudio,audio:null,playbackToken:0,prefetched:new Set(),
+    fetch:url=>{fetches.push(url);return Promise.resolve({arrayBuffer:async()=>null});},
     player:{id:'recording',status:'ready',seq:1,at:12,paused:false,segments:[{url:'/zero.mp3'},{url:'/one.mp3'},{url:'/two.mp3'}]},
     updateProgress(){},saveListen(){},showToast:text=>notices.push(text),request(){throw Error('Playback must not request synthesis');}});
   vm.runInContext(section('  function releaseAudio()', '  function stopPlayer()')+
@@ -337,6 +339,8 @@ test('native chapter playback failure falls back to the same cached segment and 
   assert.equal(nativeCalls.length,1);assert.equal(browserPlayers[1].src,'/two.mp3');
   browserPlayers[1].onerror();
   assert.equal(c.player.paused,true);assert.equal(browserPlayers.length,2);assert.equal(notices.length,1);
+  assert.deepEqual(nativePrefetch,['/two.mp3'],'the native player caches the next segment');
+  assert.deepEqual(fetches,['/two.mp3'],'the browser fallback loads the next segment once');
 });
 
 test('a completed chapter stays readable and shows failed illustrations in shared reading', () => {
@@ -344,7 +348,7 @@ test('a completed chapter stays readable and shows failed illustrations in share
   const current={id:'chapter-six',number:6,title:'第六章',content:'读完的正文',status:'ready',needs_review:true,images:[]};
   const c=vm.createContext({window:{},planningView:false,book:{},chapter:()=>current,chapters:[current],
     conversations:[{id:'book',title:'故事'}],currentConvId:'book',selected:current.id,statusNames:{ready:'已完成'},
-    readingFollow:null,TheaterFollow:{paragraphs:text=>`<p>${text}</p>`},escHtml:text=>text,
+    readingFollow:null,TheaterFollow:{paragraphs:text=>`<p>${text}</p>`},escHtml:text=>text,restoreReading(){},
     button:(label,handler)=>`<button onclick="${handler}">${label}</button>`,
     $:id=>{if(!elements.has(id))elements.set(id,{innerHTML:'',hidden:false});return elements.get(id);}});
   vm.runInContext(section('  function renderDirectory()', '  function toolbar()'),c);
@@ -392,7 +396,7 @@ test('dialogue replay checks existing recordings without requiring a selected vo
   const calls=[];
   const c=vm.createContext({ttsVoice:'',novel:()=>false,player:null,chapters:[],conversations:[],currentConvId:'story',
     request:async(...args)=>{calls.push(args);return {id:'legacy_msg',status:'ready',segments:[{seq:0,url:'/existing.mp3'}]};},
-    stopPlayer(){},localStorage:{getItem:()=>null},$:()=>({classList:{add(){}}}),
+    stopPlayer(){},place:()=>({listen:{}}),localStorage:{getItem:()=>null},$:()=>({classList:{add(){}}}),
     document:{querySelector:()=>({classList:{add(){}}})},pollAudio:async()=>calls.push('play'),showToast:s=>calls.push(s)});
   vm.runInContext(section('  async function speak(', '  replayTTS='),c);
   await c.speak('tm_old');
@@ -410,7 +414,7 @@ test('chapter without audio only synthesizes after confirmation; cancel keeps cu
     confirm:()=>false,confirmAction:async(title,message)=>{assert.match(message,/本章节没有语音/);confirmations++;return accepted;},
     request:async(...args)=>{calls.push(args);return args[2].allow_generation
       ? {id:'new',status:'running',segments:[]} : {needs_confirmation:true};},
-    stopPlayer(){c.player=null;},localStorage:{getItem:()=>null},$:()=>({classList:{add(){}}}),
+    stopPlayer(){c.player=null;},place:()=>({listen:{}}),localStorage:{getItem:()=>null},$:()=>({classList:{add(){}}}),
     document:{querySelector:()=>({classList:{add(){}}})},pollAudio:async()=>{},showToast(){}});
   vm.runInContext(section('  async function speak(', '  replayTTS='),c);
   await c.speak('chapter');
@@ -421,9 +425,24 @@ test('chapter without audio only synthesizes after confirmation; cancel keeps cu
   assert.equal(c.player.id,'new');
 });
 
+test('retry after changing the voice synthesizes with the selected voice and plays that recording',async()=>{
+  const calls=[],messages=[];
+  const wrong={id:'wrong',source:'chapter',voice:'wrong',status:'failed',segments:[{seq:0,url:'/wrong/0'}],title:'第一章',cid:'story'};
+  const c=vm.createContext({ttsVoice:'right',player:wrong,currentConvId:'other',
+    confirmAction:async(title,message)=>{messages.push(message);return true;},
+    request:async(...args)=>{calls.push(args);return {id:'right',source:'chapter',voice:args[2].voice,status:'running',segments:[]};},
+    stopPlayer(){c.player=null;},place:()=>({listen:{}}),localStorage:{getItem:()=>null},$:()=>({classList:{add(){}}}),
+    document:{querySelector:()=>({classList:{add(){}}})},pollAudio:async()=>calls.push('poll'),showToast(){}});
+  vm.runInContext(section('  async function speak(', '  replayTTS='),c);
+  await c.retrySpeech();
+  assert.match(messages[0],/音色已更换/);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)),[['/speech/chapter','POST',{voice:'right',prefer_cached:false,allow_generation:true}],'poll']);
+  assert.deepEqual([c.player.id,c.player.voice,c.player.seq,c.player.title,c.player.cid],['right','right',0,'第一章','story']);
+});
+
 test('first outline confirms in the current story; existing outlines clearly offer a new version',async()=>{
   for(const existing of [false,true]) {
-    const saved = new Map([['studio_view_story','discussion']]);
+    const remembered=[];
     const calls=[],fields={consensus:'共识',outline:'走向',title:'新版本',chapterTitle:'初遇',plan:'雨夜',min:'5000',max:'8000'};
     const plan={title:'初遇',plan:'雨夜',min_chars:5000,max_chars:8000};
     const draft={revision:'draft',consensus:'共识',outline:'走向',settings:{target_chars:6500},plans:[plan]};
@@ -438,7 +457,7 @@ test('first outline confirms in the current story; existing outlines clearly off
     const c=vm.createContext({book:{id:'story',outline:existing?'旧大纲':'',target_chars:6500},
       chapters:existing?[{id:'chapter',...plan}]:[],selected:'chapter',outlineDraft:draft,planningView:true,currentConvId:'story',
       conversations:[{id:'story',title:'原名'}],modes:new Map(),$:()=>dialog,escHtml:s=>s,
-      localStorage:{setItem:(key,value)=>saved.set(key,value)},
+      remember:(...args)=>remembered.push(args),
       request:async(path,method,body)=>{calls.push({path,method,body});return method==='PUT'?draft:{conversation:{id:existing?'copy':'story',title:existing?'新版本':'原名'}};},
       selectConv:async id=>calls.push(id),showToast:message=>calls.push(message)});
     vm.runInContext(section('  function outlineEditor(', '  function renderPlanningIfVisible('),c);
@@ -450,7 +469,7 @@ test('first outline confirms in the current story; existing outlines clearly off
     assert.equal(calls[1].body.title,existing?'新版本':'');
     assert.equal(calls[2],existing?'copy':'story');
     assert.equal(c.conversations.length,existing?2:1);
-    assert.equal(saved.get('studio_view_'+(existing?'copy':'story')),'reader');
+    assert.deepEqual(JSON.parse(JSON.stringify(remembered)),[[existing?'copy':'story','book',null,{view:'reader'},0]]);
     assert.match(calls[3],existing?/新剧场已创建/:/大纲已确认/);
   }
 });
@@ -469,36 +488,65 @@ test('copy outline sends the chosen model and opens the new story',async()=>{
   assert.equal(c.conversations[0].id,'copy');assert.equal(c.modes.get('copy'),'novel');
 });
 
-test('opening discussion leaves the confirmed story phase unchanged and remembers the view', async () => {
-  const saved = new Map();
-  const c = vm.createContext({book:{id:'story',phase:'writing'},currentConvId:'story',outlineBusy:false,
-    player:null,planningView:false,localStorage:{setItem:(k,v)=>saved.set(k,v)},
-    modeUI(){},renderPlanning(){},$(){return {focus(){}};},
-    request(){throw Error('Navigation must not mutate the story');}});
-  vm.runInContext(section('  function setPlanningView(', '  function readerSize(') +
-    section('  async function discussionMode()', '  async function outline('), c);
+function placeHarness(extra={}) {
+  const saved=new Map(extra.saved||[]), sent=[];
+  const c=vm.createContext({base:'/api/theater/studio',currentConvId:'story',selected:null,planningView:false,
+    localStorage:{setItem:(k,v)=>saved.set(k,v),getItem:k=>saved.get(k)??null},
+    setTimeout:()=>1,clearTimeout(){},
+    fetch:(url,options)=>{sent.push([url,JSON.parse(options.body)]);return Promise.resolve({ok:true});},
+    ...extra.context});
+  vm.runInContext(section('  function setPlanningView(', '  function readerSize(')+(extra.more||''),c);
+  return {c,saved,sent};
+}
+
+test('opening discussion leaves the confirmed story phase unchanged and remembers the view on the server', async () => {
+  const {c,saved,sent}=placeHarness({more:section('  async function discussionMode()', '  async function outline('),
+    context:{book:{id:'story',phase:'writing'},outlineBusy:false,player:null,selected:'one',
+      modeUI(){},renderPlanning(){},$(){return {focus(){}};},
+      request(){throw Error('Navigation must not mutate the story');}}});
   await c.discussionMode();
   assert.equal(c.planningView,true);
   assert.equal(c.book.phase,'writing');
-  assert.equal(saved.get('studio_view_story'),'discussion');
+  assert.equal(sent[0][0],'/api/theater/studio/books/story/progress');
+  assert.equal(sent[0][1].book.view,'discussion');assert.equal(sent[0][1].book.chapter,'one');
+  assert.equal(JSON.parse(saved.get('studio_place_story')).book.view,'discussion');
 });
 
 test('returning to a chapter during discussion restores reader, position and controls', () => {
-  const saved = new Map([['studio_read_one','420']]);
   let updates=0,closed=0;
   const messages={scrollTop:0};
-  const c=vm.createContext({currentConvId:'story',planningView:true,selected:null,chapters:[{id:'one'}],
-    localStorage:{setItem:(k,v)=>saved.set(k,v),getItem:k=>saved.get(k)},
-    modeUI(){updates++;},renderNovel(){},$:id=>id==='messages'?messages:{close(){closed++;}}});
-  vm.runInContext(section('  function setPlanningView(', '  function readerSize(')+
-    section('  function selectChapter(', '  function next()'),c);
+  const {c,sent}=placeHarness({saved:[['studio_read_one','420']],more:section('  function selectChapter(', '  function next()'),
+    context:{planningView:true,chapters:[{id:'one'}],
+      modeUI(){updates++;},renderNovel(){c.restoreReading();},$:id=>id==='messages'?messages:{close(){closed++;}}}});
   c.selectChapter('one');
   assert.equal(c.planningView,false);
-  assert.equal(saved.get('studio_view_story'),'reader');
-  assert.equal(saved.get('studio_chapter_story'),'one');
-  assert.equal(messages.scrollTop,420);
+  assert.equal(sent[0][1].book.view,'reader');
+  assert.equal(sent[0][1].book.chapter,'one');
+  assert.equal(messages.scrollTop,420,'positions saved before the update still restore');
   assert.equal(updates,1);
   assert.equal(closed,1);
+});
+
+test('reading positions follow paragraphs and the newest place wins across addresses', () => {
+  // Paragraph content offsets: [20,320), [320,720), [720,1000); the reader starts 100px down with 20px padding.
+  const messages={scrollTop:500,getBoundingClientRect:()=>({top:100})};
+  const paragraph=(start,top,height)=>({dataset:{sourceStart:String(start)},
+    getBoundingClientRect:()=>({top:100+top-messages.scrollTop,bottom:100+top+height-messages.scrollTop,height})});
+  const paragraphs=[paragraph(0,20,300),paragraph(40,320,400),paragraph(95,720,280)];
+  const {c,sent}=placeHarness({context:{selected:'one',novel:()=>true,getComputedStyle:()=>({paddingTop:'20px'}),
+    $:id=>id==='messages'?messages:{querySelectorAll:()=>paragraphs}}});
+  assert.deepEqual({...c.readingPoint()},{offset:40,frac:.5});
+  c.saveReading();
+  assert.deepEqual(sent,[],'scroll positions are batched');
+  c.sendPlaces();
+  assert.equal(sent[0][1].positions.one.offset,40);
+  messages.scrollTop=0;vm.runInContext("restoreTarget='one'",c);c.restoreReading();
+  assert.equal(messages.scrollTop,500);
+  const local={book:{chapter:'two',t:5},positions:{one:{offset:9,t:30}},listen:{a:{seq:1,t:5}}};
+  const remote={book:{chapter:'three',t:20},positions:{one:{offset:3,t:10}},listen:{b:{seq:2,t:1}}};
+  const merged=c.mergePlaces(local,remote);
+  assert.equal(merged.book.chapter,'three');assert.equal(merged.positions.one.offset,9);
+  assert.deepEqual(Object.keys(merged.listen).sort(),['a','b']);
 });
 
 test('font preference applies immediately and persists within the supported range', () => {

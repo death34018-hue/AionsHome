@@ -244,10 +244,10 @@ async def _source_rows(db, store, ids=None, start=None, end=None, page=None, lim
         args = []
         where = []
         if namespace == 'private':
-            sql = "SELECT 'private:'||m.id AS id,m.role,m.content,m.created_at,m.conv_id AS window_id FROM messages m"
+            sql = "SELECT 'private:'||m.id AS id,m.role,m.content,m.created_at,m.conv_id AS window_id,'private' AS source FROM messages m"
         else:
-            sql = "SELECT 'chatroom:'||m.id AS id,m.sender AS role,m.content,m.created_at,m.room_id AS window_id FROM chatroom_messages m JOIN chatroom_rooms r ON r.id=m.room_id"
-            where.append("r.type IN ('group','connor_1v1')" if store == 'chatroom' else "r.type='group'")
+            sql = "SELECT 'chatroom:'||m.id AS id,m.sender AS role,m.content,m.created_at,m.room_id AS window_id,r.type AS source FROM chatroom_messages m JOIN chatroom_rooms r ON r.id=m.room_id"
+            where.append("r.type IN ('group','connor_1v1','peer_dm')" if store == 'chatroom' else "r.type IN ('group','peer_dm')")
         if ids is not None:
             raw_ids = [v.split(':', 1)[1] for v in ids if v.startswith(namespace + ':')]
             if not raw_ids:

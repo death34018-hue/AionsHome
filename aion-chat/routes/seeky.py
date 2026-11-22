@@ -559,8 +559,8 @@ async def _fetch_source_messages(start_ts: float, end_ts: float) -> list[dict]:
         cur = await db.execute(
             "SELECT m.id, m.room_id, r.title, r.type AS room_type, m.sender, m.content, m.attachments, m.created_at "
             "FROM chatroom_messages m "
-            "LEFT JOIN chatroom_rooms r ON r.id = m.room_id "
-            "WHERE m.created_at >= ? AND m.created_at < ? AND m.sender != 'system' "
+            "JOIN chatroom_rooms r ON r.id = m.room_id "
+            "WHERE r.type IN ('group','connor_1v1') AND m.created_at >= ? AND m.created_at < ? AND m.sender != 'system' "
             "ORDER BY m.created_at ASC",
             (start_ts, end_ts),
         )
@@ -610,7 +610,10 @@ async def _fetch_quotes_for_memory(mem: dict, limit: int = 3) -> list[str]:
             if prefix == "private":
                 cur = await db.execute("SELECT content FROM messages WHERE id=?", (raw_id,))
             elif prefix == "chatroom":
-                cur = await db.execute("SELECT content FROM chatroom_messages WHERE id=?", (raw_id,))
+                cur = await db.execute(
+                    "SELECT m.content FROM chatroom_messages m JOIN chatroom_rooms r ON r.id=m.room_id "
+                    "WHERE m.id=? AND r.type IN ('group','connor_1v1')", (raw_id,),
+                )
             else:
                 continue
             row = await cur.fetchone()

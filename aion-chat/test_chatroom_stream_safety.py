@@ -40,6 +40,34 @@ class ChatroomStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
         # Transport tests must not depend on the user's live kitchen switch or database.
         self.enterContext(patch('kitchen.enabled', return_value=False))
 
+    async def test_peer_whisper_only_group_replies_have_no_public_row_or_audio(self):
+        send = self.enterContext(patch("peer_dm_wake.start_peer_dm", new_callable=AsyncMock))
+        self.enterContext(patch("capabilities.is_capability_enabled", return_value=False))
+        self.enterContext(patch.object(chatroom_routes, "is_capability_enabled", return_value=True))
+        self.enterContext(patch.object(chatroom_routes, "_get_room_type", AsyncMock(return_value="group")))
+        self.enterContext(patch.object(chatroom_routes, "build_aion_group_context", AsyncMock(return_value=([], {}))))
+        self.enterContext(patch.object(chatroom_routes, "build_connor_group_context", AsyncMock(return_value=([], {}))))
+        save = self.enterContext(patch.object(chatroom_routes, "_save_msg", new_callable=AsyncMock))
+        async def stream(*args):
+            for char in "[伙伴私聊：明天准备[草莓]蛋糕吧]":
+                yield char
+        self.enterContext(patch.object(chatroom_routes, "stream_ai", stream))
+        self.enterContext(patch.object(chatroom_routes, "_stream_connor_model", stream))
+        tts = self.enterContext(patch.object(chatroom_routes, "TTSStreamer"))
+        for actor in ("aion", "connor"):
+            q = asyncio.Queue()
+            if actor == "aion":
+                await chatroom_routes._reply_aion("group", [], 30, "晚安", "model", q, tts_enabled=True, tts_voice="voice")
+            else:
+                await chatroom_routes._reply_connor("group", [], 30, "晚安", q, tts_enabled=True, tts_voice="voice")
+            events = [q.get_nowait() for _ in range(q.qsize())]
+            self.assertEqual(events[-1], {"type": f"{actor}_done", "message": None, "silent": True})
+            self.assertNotIn("蛋糕", str(events))
+            self.assertEqual(send.await_args.args, (actor, "明天准备[草莓]蛋糕吧"))
+        save.assert_not_awaited()
+        tts.return_value.feed.assert_not_called()
+        tts.return_value.feed_async.assert_not_called()
+
     async def test_group_whispers_are_spoken_in_place_with_tts_switch(self):
         for sender, mode, enabled, reply, spoken in (
             ("aion", "safe_live", True, "前文。[悄悄话：只对你说。]后文。", "前文。只对你说。后文。"),

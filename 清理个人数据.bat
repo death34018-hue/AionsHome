@@ -22,6 +22,7 @@ echo     - 日记本数据 (存放在 chat.db)
 echo     - 定位配置 + 定位状态（含家坐标/高德Key）
 echo     - 世界书人设 (重置为空白)
 echo     - 小剧场角色预设 (theater_personas.json)
+echo     - 小剧场通用写作提示 (theater_prompt_modules.json)
 echo     - 奥罗斯幽林游戏数据 (ghost_forest/)
 echo     - 阅读书籍数据 (books/)
 echo     - API Key (Gemini / 硅基流动 / Tavily 等，需要朋友自己填)
@@ -60,6 +61,7 @@ echo 正在清理...
 
 :: ── aion-chat/data/ ──
 if exist "aion-chat\data\chat.db" del /q "aion-chat\data\chat.db"
+if exist "aion-chat\data\default_routine.json" del /q "aion-chat\data\default_routine.json"
 if exist "aion-chat\data\chat_status.json" del /q "aion-chat\data\chat_status.json"
 if exist "aion-chat\data\digest_anchor.json" del /q "aion-chat\data\digest_anchor.json"
 if exist "aion-chat\data\cam_config.json" del /q "aion-chat\data\cam_config.json"
@@ -104,8 +106,9 @@ mkdir "aion-chat\data\ghost_forest"
 if exist "aion-chat\data\books" rmdir /s /q "aion-chat\data\books"
 mkdir "aion-chat\data\books"
 
-:: ── 清理小剧场角色预设 ──
+:: ── 清理小剧场角色预设与通用写作提示 ──
 if exist "aion-chat\data\theater_personas.json" del /q "aion-chat\data\theater_personas.json"
+if exist "aion-chat\data\theater_prompt_modules.json" del /q "aion-chat\data\theater_prompt_modules.json"
 
 :: ── 清理聊天室配置 + 图片 ──
 if exist "aion-chat\data\chatroom_config.json" del /q "aion-chat\data\chatroom_config.json"

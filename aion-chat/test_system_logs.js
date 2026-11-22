@@ -18,6 +18,27 @@ const roomSource = fs.readFileSync(`${__dirname}/static/chatroom.js`, 'utf8');
 const roomLogFunctions = roomSource.slice(roomSource.indexOf('function crHandleDebug('),
   roomSource.indexOf('async function fetchChatroomModels()'));
 
+test('both log views show and copy the whole exchange including peer commands', () => {
+  const entry = {model: 'test', _id: 'entry', response_text: '[伙伴私聊：答复原文]',
+    reasoning_content: '模型返回的思考摘要', prompt_messages: [{role: 'user', content: '[甲与乙私聊] 提问原文'}]};
+  const list = {innerHTML: '', querySelectorAll: () => []};
+  const chat = page();
+  chat.systemLogs.push(entry);
+  chat.$ = id => id === 'sysLogList' ? list : null;
+  chat.escHtml = String;
+  const group = {crSystemLogs: [entry], esc: String, crName: String,
+    document: {getElementById: id => id === 'crSysLogList' ? list : null}};
+  vm.runInNewContext(roomLogFunctions, group);
+  for (const [render, copy] of [[chat.renderSystemLogList, chat._formatSystemLogForCopy],
+                               [group.crRenderSystemLogList, group.crFormatSystemLogForCopy]]) {
+    render();
+    for (const content of [entry.prompt_messages[0].content, entry.response_text, entry.reasoning_content]) {
+      assert.ok(list.innerHTML.includes(content));
+      assert.ok(copy(entry).includes(content));
+    }
+  }
+});
+
 for (const [surface, render] of [
   ['private', page()._buildTokenHtml],
   ['group', vm.runInNewContext(roomLogFunctions + '\ncrBuildTokenHtml')],

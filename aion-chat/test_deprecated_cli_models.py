@@ -31,19 +31,18 @@ class DeprecatedCliModelTests(unittest.IsolatedAsyncioTestCase):
                     "provider": "antigravity_cli",
                     "model": "gemini-3.1-pro-preview",
                     "vision": True,
-                }
+                },
+                "AGY ACP · Test": {"provider": "antigravity_acp", "model": "gemini-test-high"},
             },
             clear=False,
         ):
-            with patch("antigravity_cli.discover_models", AsyncMock(return_value=[])), patch(
-                "routes.settings.replace_antigravity_models"
-            ):
+            with patch("antigravity_cli.catalog_due", return_value=False):
                 rows = await settings.list_models()
 
         providers = {row["provider"] for row in rows}
         keys = {row["key"] for row in rows}
         self.assertNotIn("gemini_cli", providers)
-        self.assertIn("antigravity_cli", providers)
+        self.assertIn("antigravity_acp", providers)
         self.assertNotIn("CLI-3.1pro", keys)
         self.assertNotIn("AGY-3.1pro", keys)
 
@@ -55,7 +54,8 @@ class DeprecatedCliModelTests(unittest.IsolatedAsyncioTestCase):
                     "provider": "antigravity_cli",
                     "model": "gemini-3.1-pro-preview",
                     "vision": True,
-                }
+                },
+                "AGY ACP · Test": {"provider": "antigravity_acp", "model": "gemini-test-high"},
             },
             clear=False,
         ):
@@ -64,7 +64,7 @@ class DeprecatedCliModelTests(unittest.IsolatedAsyncioTestCase):
         providers = {row["provider"] for row in rows}
         keys = {row["key"] for row in rows}
         self.assertNotIn("gemini_cli", providers)
-        self.assertIn("antigravity_cli", providers)
+        self.assertIn("antigravity_acp", providers)
         self.assertNotIn("CLI-3.1pro", keys)
         self.assertNotIn("AGY-3.1pro", keys)
 

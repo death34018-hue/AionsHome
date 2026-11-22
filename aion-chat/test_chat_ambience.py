@@ -21,15 +21,16 @@ class ChatAmbienceTests(unittest.IsolatedAsyncioTestCase):
     async def test_prompt_is_on_by_default_and_reports_current_state(self):
         self.assertTrue(capabilities.get_capability_def('chat_ambience').default_enabled)
         self.assertIsNone(chat_ambience.load_state())
-        self.assertTrue(chat_ambience.ability_text('测试月亮').endswith('\n当前小家氛围：无|不叠加颜色'))
+        self.assertTrue(chat_ambience.ability_text('测试月亮').endswith('\n当前小家氛围：模式待同步｜无｜不叠加颜色'))
         await chat_ambience.set_state({'effect': 'snow', 'tint': '#ff5a5f'})
+        await chat_ambience.api_set_state({'theme': 'light'})
         prompt = '\n'.join(await capabilities.build_capability_prompt_items('测试月亮'))
-        self.assertIn('[小家氛围：效果|颜色编号]', prompt)
+        self.assertIn('[小家氛围：效果|颜色编号|模式]', prompt)
         self.assertIn('测试月亮', prompt)
         # 当前状态跟在指令说明后面，单独一行
-        self.assertIn('放一个特效。\n当前小家氛围：下雪|红色', prompt)
+        self.assertIn('放一个特效。\n当前小家氛围：日间｜下雪｜红色', prompt)
         await chat_ambience.set_state({'tint': '#123456'})
-        self.assertTrue(chat_ambience.ability_text('测试月亮').endswith('\n当前小家氛围：下雪|自定义颜色'))
+        self.assertTrue(chat_ambience.ability_text('测试月亮').endswith('\n当前小家氛围：日间｜下雪｜自定义颜色 #123456'))
         excluded = await capabilities.build_capability_prompt_items('测试月亮', excluded_capabilities={'chat_ambience'})
         self.assertFalse(any('小家氛围' in text for text in excluded))
 
@@ -45,6 +46,20 @@ class ChatAmbienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chat_ambience.load_state(), {'effect': 'leaves', 'tint': '#45a8ff'})
         await chat_ambience.process_ambience_commands('[小家氛围：无｜0]', sender='aion')
         self.assertEqual(chat_ambience.load_state(), {'effect': 'none', 'tint': ''})
+
+    async def test_theme_sync_between_existing_clients_and_both_senders(self):
+        await chat_ambience.set_state({'effect': 'rain', 'tint': '#123456'})
+        await chat_ambience.api_set_state({'only_missing': True, 'theme': 'light', 'effect': 'none', 'tint': ''})
+        self.assertEqual(chat_ambience.state_text(), '当前小家氛围：日间｜下雨｜自定义颜色 #123456')
+        cleaned = await chat_ambience.process_ambience_commands('晚安。[小家氛围：夜间]', sender='connor')
+        self.assertEqual(cleaned, '晚安。')
+        self.assertEqual(self.broadcast.await_args.args[0]['data']['theme'], 'dark')
+        self.broadcast.reset_mock()
+        await chat_ambience.api_set_state({'only_missing': True, 'theme': 'light'})
+        self.broadcast.assert_not_awaited()
+        self.assertEqual(chat_ambience.state_text(), '当前小家氛围：夜间｜下雨｜自定义颜色 #123456')
+        await chat_ambience.process_ambience_commands('[小家氛围：樱花|1|日间]', sender='aion')
+        self.assertEqual(chat_ambience.state_text(), '当前小家氛围：日间｜樱花｜红色')
 
     async def test_one_shot_bursts_play_without_changing_the_ambience(self):
         await chat_ambience.process_ambience_commands('[小家氛围：樱花|1]', sender='aion')

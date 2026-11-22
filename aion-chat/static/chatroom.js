@@ -9,6 +9,10 @@ let isAiChatting = false;
 let chatroomModel = '';
 let chatroomConnorModel = 'Codex';
 let chatroomReplyOrder = 'random';
+let crAionRandomEnabled = false;
+let crAionRandomModels = [];
+let crConnorRandomEnabled = false;
+let crConnorRandomModels = [];
 let isReplyOnce = false;
 let chatroomModels = [];
 let crStartupModelsReady = false;
@@ -159,10 +163,14 @@ function crName(sender) {
   return { user: crUserName || '我', aion: crAiName || 'AI', connor: crConnorName || '第二AI' }[sender] || sender;
 }
 
+function crRoomTitle(room) {
+  return room.type === 'peer_dm' ? `${crName('aion')} 和 ${crName('connor')} 的私聊` : room.title;
+}
+
 window.AionRps?.bind({
   container: document.getElementById('messages'),
   composer: document.getElementById('rpsComposer'),
-  getContext: () => ({ scope: 'chatroom', source_id: currentRoom?.id,
+  getContext: () => currentRoom?.type === 'peer_dm' ? null : ({ scope: 'chatroom', source_id: currentRoom?.id,
     names: { user: crName('user'), aion: crName('aion'), connor: crName('connor') },
     actors: currentRoom?.type === 'connor_1v1' ? ['connor'] : ['aion', 'connor'] }),
   getOptions: () => ({ model: chatroomModel, connor_model: chatroomConnorModel,
@@ -172,7 +180,7 @@ window.AionRps?.bind({
 });
 window.AionPat?.bind({
   container: document.getElementById('messages'),
-  getContext: () => ({
+  getContext: () => currentRoom?.type === 'peer_dm' ? null : ({
     scope: 'chatroom', source_id: currentRoom?.id,
     names: { user: crName('user'), aion: crName('aion'), connor: crName('connor') },
   }),
@@ -186,7 +194,7 @@ window.FamilyDynamicsInline?.attach({
   rowClass: 'system-event-msg',
   lineClass: 'system-event-line',
   getTimestamp: id => crMessagesById[id]?.created_at,
-  getQuery: () => currentRoom
+  getQuery: () => currentRoom && currentRoom.type !== 'peer_dm'
     ? `who=${currentRoom.type === 'connor_1v1' ? 'connor' : 'group'}&limit=${currentRoom.context_limit || currentRoom.context_minutes || 30}`
     : '',
 });
@@ -195,6 +203,11 @@ function applyChatroomNames(cfg = {}) {
   crAiName = cfg.ai_name || crAiName || 'AI';
   crUserName = cfg.user_name || crUserName || '我';
   crConnorName = cfg.connor_name || crConnorName || '第二AI';
+  if (currentRoom?.type === 'peer_dm') {
+    roomTitleEl.textContent = crRoomTitle(currentRoom);
+    renderMessages(Object.values(crMessagesById).sort((a, b) => a.created_at - b.created_at));
+    renderRoomList();
+  }
 
   const aionVoice = document.getElementById('setTtsAionVoice');
   if (aionVoice?.previousElementSibling) aionVoice.previousElementSibling.textContent = `${crAiName} 音色`;
@@ -214,6 +227,10 @@ function applyChatroomNames(cfg = {}) {
   if (aionModelLabel) aionModelLabel.textContent = `${crAiName} 模型线路`;
   const connorModelLabel = document.querySelector('#fieldConnorModel label');
   if (connorModelLabel) connorModelLabel.textContent = `${crConnorName} 模型线路`;
+  const aionPoolLabel = document.getElementById('labelAionRandomPool');
+  if (aionPoolLabel) aionPoolLabel.textContent = `${crAiName} 随机模型池`;
+  const connorPoolLabel = document.getElementById('labelConnorRandomPool');
+  if (connorPoolLabel) connorPoolLabel.textContent = `${crConnorName} 随机模型池`;
   updateHeaderActions();
 }
 
@@ -499,11 +516,12 @@ function crCurrentTTSVoice() {
 }
 
 function crSendTTSState() {
+  const enabled = crTtsEnabled && currentRoom?.type !== 'peer_dm';
   window.AionTtsAudio?.setAutoPlaybackState?.(crTtsEnabled, crCurrentTTSVoice(), crTtsPlaybackActiveAt);
   if (!crWs || crWs.readyState !== WebSocket.OPEN) return;
   crWs.send(JSON.stringify({
     type: 'tts_state',
-    enabled: crTtsEnabled,
+    enabled,
     voice: crCurrentTTSVoice(),
     can_play: crTtsPlaybackAllowed(),
     active_at: crTtsPlaybackActiveAt,
@@ -732,6 +750,7 @@ function crPlayMusicOnline(songId) {
 }
 
 function crEnqueueTTSChunk(msgId, seq, url, createdAt, targetClientId, text = "", expressive = false, parentMsgId = "") {
+  if (currentRoom?.type === 'peer_dm') return;
   const voiceCallActive = !!(window.VoiceCall && window.VoiceCall.isActive && window.VoiceCall.isActive());
   if (!expressive && !crTtsEnabled && !voiceCallActive) return;
   if (parentMsgId && crSuppressedTTSMsgIds.has(parentMsgId)) return;
@@ -747,6 +766,7 @@ async function crPlayNextTTSChunk() {
 }
 
 function crFinishTTSForMsg(msgId, createdAt, targetClientId) {
+  if (currentRoom?.type === 'peer_dm') return;
   if (targetClientId && targetClientId !== crAmbientClientId) return;
   const ts = Number(createdAt || 0);
   if (crSuppressedTTSMsgIds.has(msgId) || (ts && ts < crTtsAcceptAfter)) {
@@ -776,12 +796,14 @@ window.ChatroomVoiceCallAdapter = {
     const content = String(text || "").trim();
     if (!content) return;
     if (!currentRoom) throw new Error("请先选择聊天室");
+    const targetRoomId = currentRoom.id;
     let waited = 0;
     while ((isSending || isAiChatting || isReplyOnce) && waited < 10000) {
       await new Promise(resolve => setTimeout(resolve, 200));
       waited += 200;
     }
     if (isSending || isAiChatting || isReplyOnce) throw new Error("上一轮回复仍在进行");
+    if (currentRoom?.id !== targetRoomId || currentRoom?.type === 'peer_dm') return;
 
     const generation = _crControl.begin(currentRoom.id);
     isSending = true;
@@ -1021,12 +1043,12 @@ function toast(msg, ms = 2000) {
   setTimeout(() => toastEl.classList.remove('show'), ms);
 }
 
-function timeStr(ts) {
+function timeStr(ts, { showDate = false } = {}) {
   const d = new Date(ts * 1000);
   const now = new Date();
   const diffMs = now - d;
   const time = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-  if (diffMs > 12 * 60 * 60 * 1000) {
+  if (showDate || diffMs > 12 * 60 * 60 * 1000) {
     return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate() + ' ' + time;
   }
   return time;
@@ -2036,7 +2058,14 @@ function crHandleDebug(data) {
   const d = data?.data && data.data.type === 'debug' ? data.data : data;
   if (!d || d.type !== 'debug') return;
   if (!currentRoom || d.room_id !== currentRoom.id) return;
-  if (d.msg_id) crMsgDebugData[d.msg_id] = d;
+  if (d.msg_id) {
+    crMsgDebugData[d.msg_id] = d;
+    const label = String(d.model_key || d.model || '').trim();
+    if (label && crMessagesById[d.msg_id] && !crMessagesById[d.msg_id].model_key) {
+      crMessagesById[d.msg_id].model_key = label;
+    }
+    if (label) crSyncMsgModelBadge(d.msg_id, label);
+  }
   crAddSystemLog(d);
 }
 
@@ -2065,7 +2094,11 @@ function crAddSystemLog(d, live = true) {
 }
 
 function crLogTitle(d) {
-  return [d.actor && crName(d.actor), d.model || (d.log_kind === 'ambient_voice' ? 'ambient-sentinel' : '?')].filter(Boolean).join(' · ');
+  const modelLabel = d.model_key && d.model && d.model_key !== d.model
+    ? `${d.model_key} (${d.model})`
+    : (d.model_key || d.model || (d.log_kind === 'ambient_voice' ? 'ambient-sentinel' : '?'));
+  const prefix = d.random_pool ? '🎲 ' : '';
+  return [d.actor && crName(d.actor), `${prefix}${modelLabel}`].filter(Boolean).join(' · ');
 }
 
 function crPromptLabel(d) {
@@ -2127,6 +2160,10 @@ function crBuildTokenDetailHtml(u) {
 function crFormatSystemLogForCopy(d) {
   const lines = [];
   lines.push(`[${d._ts || ''}] ${crLogTitle(d)}`);
+  if (d.source) lines.push(`来源: ${d.source}`);
+  if (d.status) lines.push(`状态: ${d.status}`);
+  if (d.duration_seconds != null) lines.push(`耗时: ${d.duration_seconds} 秒`);
+  if (d.usage) lines.push(`Token 用量: ${JSON.stringify(d.usage)}`);
   if (d.has_error && d.error_text) lines.push(`错误: ${d.error_text}`);
   if (d.log_kind === 'ambient_voice') {
     if (d.ambient_source) lines.push(`音源: ${d.ambient_source}`);
@@ -2155,6 +2192,8 @@ function crFormatSystemLogForCopy(d) {
       lines.push(`--- ${i + 1}. ${m.role || ''} ---\n${m.content || ''}`);
     });
   }
+  if (d.reasoning_content) lines.push('模型返回的思考摘要\n' + d.reasoning_content);
+  if (d.response_text) lines.push('模型原始回复\n' + d.response_text);
   return lines.join('\n\n');
 }
 
@@ -2252,6 +2291,9 @@ function crRenderSystemLogList() {
     if (isError && d.error_text) {
       detailHtml += `<div style="color:#f44336;margin-bottom:8px;word-break:break-all;">⚠️ ${esc(d.error_text)}</div>`;
     }
+    if (d.random_pool) {
+      detailHtml += `<div class="debug-recall-keywords">🎲 模型来源: 随机模型池抽取${d.model_key ? ` · ${esc(d.model_key)}` : ''}</div>`;
+    }
     detailHtml += crBuildTokenDetailHtml(d.usage);
     if (d.is_search_needed !== undefined) {
       const searchTag = d.is_search_needed ? '<span style="color:#4caf50">✅ 需要搜索</span>' : '<span style="color:#ff9800">⏭️ 无需搜索</span>';
@@ -2288,6 +2330,8 @@ function crRenderSystemLogList() {
       detailHtml += `<h4>📝 ${crPromptLabel(d)} (${d.prompt_count || prompts.length} 条)</h4><div class="debug-prompt-list">${pmItems}</div>`;
     }
 
+    if (d.reasoning_content) detailHtml += `<h4>模型返回的思考摘要</h4><div class="debug-prompt-text">${esc(d.reasoning_content)}</div>`;
+    if (d.response_text) detailHtml += `<h4>模型原始回复</h4><div class="debug-prompt-text">${esc(d.response_text)}</div>`;
     const hasDetail = detailHtml.length > 0;
     const errorTag = isError ? '<span class="cr-syslog-error-tag">❌ 错误</span>' : '';
     const entryCls = isError ? 'cr-syslog-entry error-entry' : 'cr-syslog-entry';
@@ -2365,6 +2409,7 @@ async function fetchChatroomModels() {
     select.innerHTML = renderModelOptions(selected);
     select.value = selected;
   }
+  if (typeof crRenderRandomModelPools === 'function') crRenderRandomModelPools();
 }
 
 async function fetchCurrentModel(configPromise) {
@@ -2378,6 +2423,7 @@ async function fetchCurrentModel(configPromise) {
     Promise.resolve(configPromise || api('/config')).then(cfg => {
       if (cfg?.connor_model && chatroomConnorModel === initial.connor) chatroomConnorModel = cfg.connor_model;
       if (cfg?.reply_order && chatroomReplyOrder === initial.order) chatroomReplyOrder = cfg.reply_order;
+      if (typeof crApplyRandomModelConfig === 'function') crApplyRandomModelConfig(cfg);
       return cfg;
     }),
   ]);
@@ -2405,6 +2451,125 @@ function updateHeaderActions() {
   if (replyConnorBtn) replyConnorBtn.style.display = manualMode ? '' : 'none';
 }
 
+function crNormalizeModelList(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const result = [];
+  for (const raw of list) {
+    const key = String(raw || '').trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(key);
+  }
+  return result;
+}
+
+function crApplyRandomModelConfig(cfg = {}) {
+  if (!cfg || typeof cfg !== 'object') return;
+  if (cfg.aion_random_model_enabled !== undefined) crAionRandomEnabled = !!cfg.aion_random_model_enabled;
+  if (Array.isArray(cfg.aion_random_models)) crAionRandomModels = crNormalizeModelList(cfg.aion_random_models);
+  if (cfg.connor_random_model_enabled !== undefined) crConnorRandomEnabled = !!cfg.connor_random_model_enabled;
+  if (Array.isArray(cfg.connor_random_models)) crConnorRandomModels = crNormalizeModelList(cfg.connor_random_models);
+}
+
+function crRandomPoolElements(actor) {
+  const isAion = actor === 'aion';
+  return {
+    toggleEl: document.getElementById(isAion ? 'setAionRandomEnabled' : 'setConnorRandomEnabled'),
+    listEl: document.getElementById(isAion ? 'setAionRandomModels' : 'setConnorRandomModels'),
+    statusEl: document.getElementById(isAion ? 'crAionRandomStatus' : 'crConnorRandomStatus'),
+    summaryEl: document.getElementById(isAion ? 'crAionRandomSummary' : 'crConnorRandomSummary'),
+    countEl: document.getElementById(isAion ? 'crAionRandomCount' : 'crConnorRandomCount'),
+    foldEl: document.getElementById(isAion ? 'foldAionRandomPool' : 'foldConnorRandomPool'),
+  };
+}
+
+function crReadRandomPoolInput(actor) {
+  const { toggleEl, listEl } = crRandomPoolElements(actor);
+  const enabled = !!toggleEl?.checked;
+  let models = actor === 'aion' ? crAionRandomModels : crConnorRandomModels;
+  if (listEl && listEl.querySelectorAll('input[type="checkbox"]').length) {
+    models = crNormalizeModelList(
+      [...listEl.querySelectorAll('input[type="checkbox"]:checked')].map(el => el.value)
+    );
+  }
+  return { enabled, models };
+}
+
+function crUpdateRandomPoolStatus(actor) {
+  const { statusEl, summaryEl, countEl, listEl } = crRandomPoolElements(actor);
+  const { enabled, models } = crReadRandomPoolInput(actor);
+  if (listEl) {
+    listEl.querySelectorAll('.random-pool-option').forEach(label => {
+      const cb = label.querySelector('input[type="checkbox"]');
+      label.classList.toggle('selected', !!cb?.checked);
+    });
+  }
+  if (countEl) countEl.textContent = `已选 ${models.length} 个`;
+  if (summaryEl) {
+    summaryEl.textContent = models.length ? `已选 ${models.length} 个模型` : '未选择';
+  }
+  if (statusEl) {
+    statusEl.className = 'ambient-voice-status';
+    if (!enabled) {
+      statusEl.textContent = '关闭';
+    } else if (!models.length) {
+      statusEl.textContent = '已开启 · 未选模型';
+      statusEl.classList.add('warn');
+    } else {
+      statusEl.textContent = `已开启 · ${models.length} 个`;
+      statusEl.classList.add('on');
+    }
+  }
+}
+
+function crRenderRandomPoolList(actor, selectedList) {
+  const { listEl } = crRandomPoolElements(actor);
+  if (!listEl) return;
+  const selected = new Set(crNormalizeModelList(selectedList));
+  const availableKeys = crNormalizeModelList([
+    ...chatroomModels.map(m => m?.key),
+    ...selected,
+  ]);
+  if (!availableKeys.length) {
+    listEl.innerHTML = '<div class="random-pool-empty">暂无可选模型</div>';
+    crUpdateRandomPoolStatus(actor);
+    return;
+  }
+  listEl.innerHTML = availableKeys.map(key => {
+    const checked = selected.has(key);
+    return `<label class="random-pool-option${checked ? ' selected' : ''}"><input type="checkbox" value="${esc(key)}"${checked ? ' checked' : ''} onchange="crOnRandomPoolModelChange('${actor}')"><span>${esc(key)}</span></label>`;
+  }).join('');
+  crUpdateRandomPoolStatus(actor);
+}
+
+function crRenderRandomModelPools() {
+  const aionPool = crReadRandomPoolInput('aion');
+  const connorPool = crReadRandomPoolInput('connor');
+  crRenderRandomPoolList('aion', aionPool.models);
+  crRenderRandomPoolList('connor', connorPool.models);
+}
+
+function crOnRandomPoolToggle(actor) {
+  const { foldEl } = crRandomPoolElements(actor);
+  const { enabled, models } = crReadRandomPoolInput(actor);
+  if (enabled && !models.length && foldEl) foldEl.open = true;
+  crUpdateRandomPoolStatus(actor);
+}
+
+function crOnRandomPoolModelChange(actor) {
+  crUpdateRandomPoolStatus(actor);
+}
+
+function crClearRandomPool(actor) {
+  crSettingsDirtyAt = Date.now();
+  const { listEl } = crRandomPoolElements(actor);
+  if (listEl) {
+    listEl.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+  }
+  crUpdateRandomPoolStatus(actor);
+}
+
 // ══════════════════════════════════════════════════
 //  房间列表
 // ══════════════════════════════════════════════════
@@ -2415,6 +2580,26 @@ async function loadRooms() {
 }
 
 let activeTab = 'group';
+const crPeerReadKey = 'chatroom_peer_dm_read_at';
+let crPeerReadAt = Number(localStorage.getItem(crPeerReadKey)) || 0;
+let crPeerUnreadEvent = false;
+
+function crUpdatePeerBadge() {
+  const tab = document.getElementById('peerRoomTab');
+  const peer = rooms.find(room => room.type === 'peer_dm');
+  const unread = !crPeerRoomVisible() && (crPeerUnreadEvent || Number(peer?.last_message_at || 0) > crPeerReadAt);
+  tab.classList.toggle('has-unread', unread);
+  tab.setAttribute('aria-label', unread ? '他们俩，有新消息' : '他们俩');
+}
+
+function crMarkPeerRead(timestamp) {
+  crPeerUnreadEvent = false;
+  if (Number(timestamp) > crPeerReadAt) {
+    crPeerReadAt = Number(timestamp);
+    localStorage.setItem(crPeerReadKey, String(crPeerReadAt));
+  }
+  crUpdatePeerBadge();
+}
 
 function switchTab(tab) {
   activeTab = tab;
@@ -2424,10 +2609,22 @@ function switchTab(tab) {
   renderRoomList();
 }
 
+async function openPeerRoom() {
+  if (!rooms.some(room => room.type === 'peer_dm')) {
+    try { await loadRooms(); } catch (_) { toast('暂时读不到房间列表'); return; }
+  }
+  const peer = rooms.find(room => room.type === 'peer_dm');
+  if (peer) await selectRoom(peer.id);
+}
+
 function renderRoomList() {
+  crUpdatePeerBadge();
   const filtered = rooms.filter(r => r.type === activeTab);
   roomListEl.innerHTML = filtered.map(r => {
     const active = currentRoom && currentRoom.id === r.id ? 'active' : '';
+    if (r.type === 'peer_dm') {
+      return `<div class="room-item ${active}" onclick="openPeerRoom()"><span class="title">${esc(crRoomTitle(r))}</span></div>`;
+    }
     const typeBadge = r.type === 'connor_1v1'
       ? '<span class="type-badge connor">私聊</span>'
       : '<span class="type-badge group">群聊</span>';
@@ -2643,9 +2840,35 @@ async function crRerollIntimacyPreview() {
   }
 }
 
-function openAttentionRoom(roomId) {
-  if (!currentRoom || (roomId && !rooms.some(room => room.id === roomId))) return false;
-  if (roomId && currentRoom.id !== roomId) selectRoom(roomId);
+let crRoomSelectionVersion = 0;
+
+function openChatroomRoute(url) {
+  if (!rooms.length) return false;
+  const params = new URL(url, location.origin).searchParams;
+  const room = params.get('room');
+  if (room) {
+    if (!rooms.some(item => item.id === room)) return false;
+    const selected = currentRoom?.id !== room ? selectRoom(room)
+      : currentRoom.type === 'peer_dm' ? crFetchRoomMessages() : Promise.resolve();
+    const msg = params.get('msg');
+    if (msg) selected.then(() => { if (currentRoom?.id === room) jumpToChatSearchResult(msg); });
+    return true;
+  }
+  // The app retains the iframe. Leave a private room immediately on a normal launch.
+  const showGroup = () => {
+    const group = rooms.find(item => item.type === 'group');
+    if (group && group.id !== currentRoom?.id) selectRoom(group.id);
+    else if (!group) { renderEmptyChat(); switchTab('group'); }
+    else if (activeTab !== 'group') switchTab('group');
+  };
+  showGroup();
+  const version = ++crRoomSelectionVersion;
+  api('/rooms', { cache: 'no-store' }).then(result => {
+    if (version !== crRoomSelectionVersion) return;
+    rooms = result;
+    showGroup();
+    renderRoomList();
+  }).catch(() => {});
   return true;
 }
 
@@ -2653,35 +2876,50 @@ async function selectRoom(roomId) {
   document.getElementById('chatroomReplyPreparation')?.remove();
   const room = rooms.find(r => r.id === roomId);
   if (!room) return;
+  ++crRoomSelectionVersion;
+  const readOnly = room.type === 'peer_dm';
+  const changedPeerMode = readOnly !== (currentRoom?.type === 'peer_dm');
   if (currentRoom?.id !== roomId) {
     crAmbientStop(false);
     crSystemLogs = [];
     ++crLogLoadVersion;
     crCloseSystemLog();
+    oldestMsgTs = null;
+    loadingOlder = false;
   }
   currentRoom = room;
-  crApplyIntimacyState({
-    enabled: crIntimacyEnabled(roomId),
-    state: crIntimacyEnabled(roomId) ? 'armed' : 'off',
-  });
-  crSyncIntimacy(roomId);
+  document.body.classList.toggle('peer-room', readOnly);
+  if (readOnly) crMarkPeerRead(room.last_message_at);
+  if (changedPeerMode) {
+    crTtsAcceptAfter = Date.now() / 1000;
+    if (readOnly) crStopTTS();
+    crSendTTSState();
+  }
+  if (!readOnly) {
+    const enabled = crIntimacyEnabled(roomId);
+    crApplyIntimacyState({ enabled, state: enabled ? 'armed' : 'off' });
+    crSyncIntimacy(roomId);
+  }
   window.AionRps?.refresh();
   crRenderProactiveOrbit();
   // 自动切换到对应 tab
   if (activeTab !== room.type) switchTab(room.type);
   else renderRoomList();
-  roomTitleEl.textContent = room.title;
+  roomTitleEl.textContent = crRoomTitle(room);
+  roomTitleEl.disabled = readOnly;
+  roomTitleEl.title = readOnly ? '' : '点击修改房间名称';
+  roomTitleEl.setAttribute('aria-label', readOnly ? roomTitleEl.textContent : '修改房间名称');
   // 退出语音模式（如果在语音模式中切换房间）
   if (_crVoiceMode) {
     _crVoiceMode = false;
     document.getElementById('crVoiceModeRow').classList.remove('active');
   }
-  composer.style.display = 'flex';
+  composer.style.display = readOnly ? 'none' : 'flex';
   updateHeaderActions();
   resetChatSearch();
-  await loadMessages();
-  crAmbientSyncRunning();
   closeSidebar();
+  await loadMessages();
+  if (currentRoom?.id === roomId) crAmbientSyncRunning();
 }
 
 // ══════════════════════════════════════════════════
@@ -2694,6 +2932,9 @@ async function loadMessages() {
 
 async function refreshCurrentChatroomFromServer(options = {}) {
   if (!currentRoom) return false;
+  if (currentRoom.type === 'peer_dm') {
+    return crPeerRoomVisible() && crFetchRoomMessages(options);
+  }
   window.AionRps?.refresh({live:true});
   // Android resume and reconnect can arrive together. Share both requests.
   if (!options.force && crRoomMessageLoad?.roomId === currentRoom.id) return crRoomMessageLoad.promise;
@@ -2730,7 +2971,11 @@ function crFetchRoomMessages(options = {}) {
 
   // A preserved room already contains live messages. Never replace them with
   // an older disk snapshot just because the user selects that room again.
-  if (options.snapshot && crRenderedRoomId !== roomId) {
+  const peer = currentRoom.type === 'peer_dm';
+  if (peer && options.snapshot && crRenderedRoomId !== roomId) {
+    renderMessages([]);
+    messagesEl.querySelector('.empty-state').textContent = '正在读取对话…';
+  } else if (options.snapshot && crRenderedRoomId !== roomId) {
     let messages = [];
     let savedAt = 0;
     try {
@@ -2747,7 +2992,7 @@ function crFetchRoomMessages(options = {}) {
     scrollToBottom(true);
   }
 
-  window.onAionNativeMessages?.();
+  if (!peer) window.onAionNativeMessages?.();
   load.promise = (async () => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const revision = crMessageRevision;
@@ -2756,8 +3001,17 @@ function crFetchRoomMessages(options = {}) {
       // A live create/edit/delete crossed this request. Re-read instead of
       // guessing whether the HTTP snapshot or the event is newer.
       if (revision !== crMessageRevision) continue;
-      if (!options.snapshot && (isSending || isAiChatting || isReplyOnce)) {
+      if (peer && crPeerRoomVisible()) crMarkPeerRead(msgs.at(-1)?.created_at);
+      if (!peer && !options.snapshot && (isSending || isAiChatting || isReplyOnce)) {
         msgs.forEach(crApplyReceivedMessage);
+        return true;
+      }
+      // Peer history is append-only. Keep any older pages the reader has opened.
+      if (peer && !options.snapshot && msgs[0] && crMessagesById[msgs[0].id]) {
+        const additions = msgs.filter(msg => !crMessagesById[msg.id]);
+        for (const msg of additions) crMessagesById[msg.id] = msg;
+        messagesEl.insertAdjacentHTML('beforeend', additions.map(msg => msgHTML(msg)).join(''));
+        if (options.scroll) scrollToBottom(true);
         return true;
       }
       oldestMsgTs = msgs[0]?.created_at || null;
@@ -2768,6 +3022,7 @@ function crFetchRoomMessages(options = {}) {
         renderMessages(msgs);
       }
       if (options.scroll) scrollToBottom(true);
+      if (peer) return true;
       try {
         const payload = JSON.stringify({ savedAt: Date.now(), messages: msgs });
         if (payload.length < 900000) {
@@ -2788,6 +3043,10 @@ function crFetchRoomMessages(options = {}) {
     return false;
   })().catch(e => {
     console.warn('[chatroom] refresh current room failed:', e);
+    if (peer && isCurrent()) {
+      const empty = messagesEl.querySelector('.empty-state');
+      if (empty) empty.textContent = '暂时读不到对话，请重新打开。';
+    }
     return false;
   }).finally(() => {
     if (crRoomMessageLoad === load) crRoomMessageLoad = null;
@@ -2800,7 +3059,10 @@ async function loadOlderMessages() {
   loadingOlder = true;
   // 记住当前滚动高度以便加载后保持位置
   const prevHeight = messagesEl.scrollHeight;
-  const msgs = await api(`/rooms/${currentRoom.id}/messages?limit=50&before=${oldestMsgTs}`);
+  const room = currentRoom.id;
+  const selection = crRoomSelectionVersion;
+  const msgs = await api(`/rooms/${room}/messages?limit=50&before=${oldestMsgTs}`);
+  if (currentRoom?.id !== room || selection !== crRoomSelectionVersion) return;
   if (!msgs || !msgs.length) {
     noMoreMessages = true;
     loadingOlder = false;
@@ -3007,8 +3269,10 @@ async function runChatSearch(e) {
     return;
   }
   if (chatSearchMeta) chatSearchMeta.textContent = '搜索中...';
+  const room = currentRoom.id;
   try {
-    const result = await api(`/rooms/${currentRoom.id}/messages/search?q=${encodeURIComponent(keyword)}&limit=50`);
+    const result = await api(`/rooms/${room}/messages/search?q=${encodeURIComponent(keyword)}&limit=50`);
+    if (room !== currentRoom?.id) return;
     const items = Array.isArray(result?.items) ? result.items : [];
     if (chatSearchMeta) chatSearchMeta.textContent = items.length ? `找到 ${items.length} 条，点击可跳转` : '没有匹配的消息';
     renderChatSearchResults(items);
@@ -3022,9 +3286,11 @@ async function jumpToChatSearchResult(msgId) {
   if (!currentRoom || !msgId) return;
   let row = messagesEl.querySelector(crMsgSelector(msgId));
   if (!row) {
+    const room = currentRoom.id;
     if (chatSearchMeta) chatSearchMeta.textContent = '正在定位...';
     try {
-      const result = await api(`/rooms/${currentRoom.id}/messages/around/${encodeURIComponent(msgId)}?before_count=80&after_count=30`);
+      const result = await api(`/rooms/${room}/messages/around/${encodeURIComponent(msgId)}?before_count=80&after_count=30`);
+      if (room !== currentRoom?.id) return;
       const msgs = Array.isArray(result?.messages) ? result.messages : [];
       if (!result?.ok || !msgs.length) {
         toast('这条消息可能已经被删除');
@@ -3095,6 +3361,10 @@ function renderMessages(msgs) {
   crMessageRevision++;
   crMessagesById = {};
   if (!msgs || !msgs.length) {
+    if (currentRoom.type === 'peer_dm') {
+      messagesEl.innerHTML = '<div class="empty-state">他们俩还没有聊过。</div>';
+      return;
+    }
     messagesEl.innerHTML = `
       <div class="empty-state">
         <div class="icon">${currentRoom.type === 'connor_1v1' ? '🤖' : '👥'}</div>
@@ -3157,13 +3427,47 @@ function crMsgSenderLineHtml(sender, name, msgId, msg = null, opts = {}) {
   const ttsHtml = opts.tts && sender !== 'user' && msgId && !replyFailed
     ? `<button class="tts-replay-btn" onclick="crReplayTTS('${msgId}', this)" title="重听语音">🔊</button>`
     : '';
+  const dbg = (msgId && typeof crMsgDebugData !== 'undefined') ? crMsgDebugData?.[msgId] : null;
+  const modelLabel = (sender !== 'user' && !replyFailed)
+    ? String(msg?.model_key || dbg?.model_key || dbg?.model || '').trim()
+    : '';
+  const modelHtml = modelLabel ? `<span class="msg-model-badge" title="本次调用模型">${esc(modelLabel)}</span>` : '';
   const memoryHtml = opts.memory && msgId
     ? `<button class="memory-record-hint" onclick="event.stopPropagation();crShowMemoryRecordCard('${msgId}')" title="已记录到记忆库">💡</button>`
     : '';
   if (sender !== 'user') {
-    return `<div class="sender-line"><span class="sender-label ${sender}">${esc(name)}</span>${timeHtml}${menuHtml}${feedbackHtml}${ttsHtml}${memoryHtml}</div>`;
+    return `<div class="sender-line"><span class="sender-label ${sender}">${esc(name)}</span>${timeHtml}${menuHtml}${feedbackHtml}${ttsHtml}${modelHtml}${memoryHtml}</div>`;
   }
   return timeHtml || menuHtml ? `<div class="sender-line user-line">${timeHtml}${menuHtml}</div>` : '';
+}
+
+function crSyncMsgModelBadge(msgId, explicitLabel = '') {
+  if (!msgId) return;
+  const row = document.querySelector(`[data-msg-id="${msgId}"]`);
+  if (!row || row.classList.contains('user')) return;
+  const line = row.querySelector('.sender-line');
+  if (!line) return;
+  const msg = typeof crMessagesById !== 'undefined' ? crMessagesById?.[msgId] : null;
+  const dbg = typeof crMsgDebugData !== 'undefined' ? crMsgDebugData?.[msgId] : null;
+  const label = String(explicitLabel || msg?.model_key || dbg?.model_key || dbg?.model || '').trim();
+  if (!label) return;
+  const existing = line.querySelector('.msg-model-badge');
+  if (existing) {
+    existing.textContent = label;
+    return;
+  }
+  const badge = document.createElement('span');
+  badge.className = 'msg-model-badge';
+  badge.title = '本次调用模型';
+  badge.textContent = label;
+  const ttsBtn = line.querySelector('.tts-replay-btn');
+  if (ttsBtn) {
+    ttsBtn.insertAdjacentElement('afterend', badge);
+  } else {
+    const memHint = line.querySelector('.memory-record-hint');
+    if (memHint) line.insertBefore(badge, memHint);
+    else line.appendChild(badge);
+  }
 }
 
 function crEnsureMsgMenu(row, sender, msgId) {
@@ -3176,6 +3480,7 @@ function crEnsureMsgMenu(row, sender, msgId) {
     if (sender !== 'user' && !line.querySelector('.tts-replay-btn')) {
       line.insertAdjacentHTML('beforeend', `<button class="tts-replay-btn" onclick="crReplayTTS('${msgId}', this)" title="重听语音">🔊</button>`);
     }
+    if (sender !== 'user') crSyncMsgModelBadge(msgId);
     if (crMemoryRecordMsgIds.has(msgId) && !line.querySelector('.memory-record-hint')) {
       line.insertAdjacentHTML('beforeend', `<button class="memory-record-hint" onclick="event.stopPropagation();crShowMemoryRecordCard('${msgId}')" title="已记录到记忆库">💡</button>`);
     }
@@ -3283,8 +3588,9 @@ function crBubbleUnitHtml({ sender, name, avatar, msgId, msg, html, showHeader, 
   });
 }
 
-function crMessageUnitHtml({ sender, name, avatar, senderLine, contentHtml, extraClass = '' }) {
-  const avatarHtml = `<div class="msg-avatar-col"><img class="avatar" src="${avatar}" alt="${esc(name)}" data-pat-target="${sender}" role="button" tabindex="0" title="双击拍拍" aria-label="双击拍拍" draggable="false"></div>`;
+function crMessageUnitHtml({ sender, name, avatar, senderLine, contentHtml, extraClass = '', allowPat = true }) {
+  const patAttrs = allowPat ? ` data-pat-target="${sender}" role="button" tabindex="0" title="双击拍拍" aria-label="双击拍拍"` : '';
+  const avatarHtml = `<div class="msg-avatar-col"><img class="avatar" src="${avatar}" alt="${esc(name)}"${patAttrs} draggable="false"></div>`;
   if (sender === 'user') {
     return `<div class="message-unit ${sender} user-message-unit${extraClass}">
       <div class="message-header user-message-header">
@@ -3465,6 +3771,16 @@ async function crEditImagePrompt(event, button) {
 }
 
 function msgHTML(m, nextMessage = null) {
+  if (m.room_id === 'cr_peer_dm') {
+    const sender = m.sender === 'aion' ? 'aion' : 'connor';
+    const name = crName(sender);
+    const unit = crMessageUnitHtml({
+      sender, name, avatar: AVATARS[sender], allowPat: false,
+      senderLine: `<div class="sender-line"><span class="sender-label ${sender}">${esc(name)}</span><span class="message-time">${esc(timeStr(m.created_at, { showDate: true }))}</span></div>`,
+      contentHtml: `<div class="ai-message-content peer-message-text">${esc(m.content)}</div>`,
+    });
+    return `<div class="message-row ${sender}" data-msg-id="${esc(m.id)}"><div class="msg-body">${unit}</div></div>`;
+  }
   const sender = m.sender || 'user';
   const pat = window.AionPat?.isPat(m);
   const loungeStatus = window.LoungeVisitUI && window.LoungeVisitUI.isStatusMessage(m);
@@ -3826,7 +4142,7 @@ async function consumeChatroomSSE(resp) {
     } finally { clearTimeout(timer); }
     const { done, value } = result;
     if (done) {
-      if (pendingStreamSender || streamingBubble) {
+      if ((!generation || currentRoom?.id === generation.target) && (pendingStreamSender || streamingBubble)) {
         crHandleReplyFailure({ content: '回复连接已结束，但未收到完整回复。已保留收到的内容，可编辑上一条消息重试。' });
       }
       break;
@@ -3838,11 +4154,11 @@ async function consumeChatroomSSE(resp) {
       if (!line.startsWith('data: ')) continue;
       let data;
       try { data = JSON.parse(line.slice(6)); } catch { continue; }
-      if (_crControl.accepts(data, generation)) handleSSE(data);
+      if (_crControl.accepts(data, generation) && (!generation || currentRoom?.id === generation.target)) handleSSE(data);
     }
   } } catch (error) {
     if (!generation?.stopped && error.name !== 'AbortError') {
-      crHandleReplyFailure({ content: `本次回复接收失败：${error.message || error}` });
+      if (!generation || currentRoom?.id === generation.target) crHandleReplyFailure({ content: `本次回复接收失败：${error.message || error}` });
       // Stop waiting on the broken connection. Editing/resending explicitly
       // stops the owned backend request before starting a new one.
       reader.cancel().catch(() => {});
@@ -4365,6 +4681,7 @@ function crShowMemoryRecordCard(msgId) {
 
 composer.addEventListener('submit', async (e) => {
   e.preventDefault();
+  if (currentRoom?.type === 'peer_dm') return;
   if (_crControl.active) { _crControl.stop(); return; }
   if (!crRequireModels()) return;
   const rpsRoundId = window.AionRps?.pendingRoundId() || '';
@@ -4440,6 +4757,16 @@ function handleSSE(data) {
   const sender = /^(aion|connor)_/.exec(data.type)?.[1];
   if (sender) {
     if (data.type.endsWith('_start')) crSseMessageIds[sender] = data.id;
+    if (data.silent && data.type.endsWith('_done')) {
+      crCancelTTSMessage(crSseMessageIds[sender]);
+      streamingBubble?.closest('.message-row')?.remove();
+      streamingBubble = null;
+      streamingText = '';
+      pendingStreamId = null;
+      pendingStreamSender = null;
+      endStreamingBubble();
+      return;
+    }
     // A final message can arrive through native push before the old SSE catches up.
     if (crFinalMessageIds.has(crSseMessageIds[sender])) return;
   }
@@ -4661,6 +4988,7 @@ async function triggerReplyOnce(speaker) {
 // ══════════════════════════════════════════════════
 
 async function renameCurrentRoom() {
+  if (currentRoom?.type === 'peer_dm') return;
   if (!currentRoom) { toast('请先选择一个房间'); return; }
   const roomId = currentRoom.id;
   const title = prompt('修改房间名称：', currentRoom.title || '');
@@ -4681,7 +5009,7 @@ async function renameCurrentRoom() {
   } catch (e) {
     toast(`修改失败：${e.message || '网络异常'}`, 3500);
   } finally {
-    roomTitleEl.disabled = false;
+    roomTitleEl.disabled = currentRoom?.type === 'peer_dm';
   }
 }
 
@@ -4723,6 +5051,10 @@ function crCurrentSettingsConfig() {
     tts_connor_voice: crTtsConnorVoice,
     aion_model: chatroomModel,
     connor_model: chatroomConnorModel,
+    aion_random_model_enabled: crAionRandomEnabled,
+    aion_random_models: crAionRandomModels,
+    connor_random_model_enabled: crConnorRandomEnabled,
+    connor_random_models: crConnorRandomModels,
     reply_order: chatroomReplyOrder,
     ambient_voice_enabled: crAmbientVoiceEnabled,
     ambient_voice_wake_word: crAmbientWakeWord,
@@ -4752,6 +5084,13 @@ function crPopulateSettings(room, cfg = {}) {
   document.getElementById('setConnorModel').innerHTML = renderModelOptions(chatroomConnorModel);
   document.getElementById('setAionModel').value = chatroomModel || '';
   document.getElementById('setConnorModel').value = chatroomConnorModel || 'Codex';
+  crApplyRandomModelConfig(cfg);
+  const aionPoolToggle = document.getElementById('setAionRandomEnabled');
+  if (aionPoolToggle) aionPoolToggle.checked = !!crAionRandomEnabled;
+  const connorPoolToggle = document.getElementById('setConnorRandomEnabled');
+  if (connorPoolToggle) connorPoolToggle.checked = !!crConnorRandomEnabled;
+  crRenderRandomPoolList('aion', crAionRandomModels);
+  crRenderRandomPoolList('connor', crConnorRandomModels);
 
   document.getElementById('optAion').textContent = `${crAiName} 优先`;
   document.getElementById('optConnor').textContent = `${crConnorName} 优先`;
@@ -4764,10 +5103,13 @@ function crPopulateSettings(room, cfg = {}) {
   document.getElementById('fieldAiRounds').style.display = isConnor1v1 ? 'none' : '';
   document.getElementById('fieldReplyOrder').style.display = isConnor1v1 ? 'none' : '';
   document.getElementById('fieldAionModel').style.display = isConnor1v1 ? 'none' : '';
+  const aionRandomField = document.getElementById('fieldAionRandomPool');
+  if (aionRandomField) aionRandomField.style.display = isConnor1v1 ? 'none' : '';
   document.getElementById('fieldAionVoice').style.display = isConnor1v1 ? 'none' : '';
 }
 
 async function openSettings() {
+  if (currentRoom?.type === 'peer_dm') return;
   if (!currentRoom) { toast('请先选择一个房间'); return; }
 
   const roomId = currentRoom.id;
@@ -5345,12 +5687,18 @@ async function saveSettings() {
   const nextReplyOrder = document.getElementById('setReplyOrder').value || 'random';
   const nextAionModel = document.getElementById('setAionModel')?.value || chatroomModel;
   const nextConnorModel = document.getElementById('setConnorModel')?.value || chatroomConnorModel || 'Codex';
+  const nextAionPool = crReadRandomPoolInput('aion');
+  const nextConnorPool = crReadRandomPoolInput('connor');
   const ambient = crAmbientReadInputs();
   const payload = {
       context_limit: parseInt(document.getElementById('setContextLimit').value) || 30,
       ai_chat_rounds: parseInt(document.getElementById('setAiRounds').value) || 1,
       aion_model: nextAionModel,
       connor_model: nextConnorModel,
+      aion_random_model_enabled: nextAionPool.enabled,
+      aion_random_models: nextAionPool.models,
+      connor_random_model_enabled: nextConnorPool.enabled,
+      connor_random_models: nextConnorPool.models,
       tts_enabled: !!document.getElementById('setTtsEnabled').checked,
       tts_aion_voice: document.getElementById('setTtsAionVoice').value,
       tts_connor_voice: document.getElementById('setTtsConnorVoice').value,
@@ -5368,8 +5716,12 @@ async function saveSettings() {
       if (saveError?.status && saveError.status < 500) throw saveError;
       // 超时可能发生在服务器已落盘之后；只读核对避免误报失败。
       const checked = await api(`/rooms/${roomId}/settings`, { timeoutMs: 8000 }).catch(() => null);
-      if (!checked || !Object.entries(payload).every(([key, value]) =>
-        (key === 'context_limit' || key === 'ai_chat_rounds' ? checked.room?.[key] : checked.config?.[key]) === value)) {
+      if (!checked || !Object.entries(payload).every(([key, value]) => {
+        const actual = (key === 'context_limit' || key === 'ai_chat_rounds') ? checked.room?.[key] : checked.config?.[key];
+        return Array.isArray(value)
+          ? Array.isArray(actual) && actual.length === value.length && actual.every((item, idx) => item === value[idx])
+          : actual === value;
+      })) {
         throw saveError;
       }
       result = { ok: true, ...checked };
@@ -5377,6 +5729,7 @@ async function saveSettings() {
 
     chatroomModel = result.config?.aion_model || nextAionModel;
     chatroomConnorModel = result.config?.connor_model || nextConnorModel;
+    crApplyRandomModelConfig(result.config || payload);
     crTtsEnabled = !!(result.config?.tts_enabled ?? payload.tts_enabled);
     crTtsAionVoice = result.config?.tts_aion_voice ?? payload.tts_aion_voice;
     crTtsConnorVoice = result.config?.tts_connor_voice ?? payload.tts_connor_voice;
@@ -5387,6 +5740,7 @@ async function saveSettings() {
     updateHeaderActions();
     crAmbientSyncRunning().catch(() => {});
 
+    if (currentRoom?.id !== roomId) { await loadRooms(); return; }
     currentRoom = { ...currentRoom, ...(result.room || {}), context_limit: result.room?.context_limit || payload.context_limit };
     rooms = rooms.map(room => room.id === roomId ? { ...room, ...currentRoom } : room);
     roomTitleEl.textContent = currentRoom.title;
@@ -5860,7 +6214,11 @@ function crOpenToyControls() {
 
 function renderEmptyChat() {
   roomTitleEl.textContent = '聊天室';
+  roomTitleEl.disabled = false;
+  document.body.classList.remove('peer-room');
   currentRoom = null;
+  crMessagesById = {};
+  crRenderedRoomId = null;
   composer.style.display = 'none';
   updateHeaderActions();
   messagesEl.innerHTML = `
@@ -5882,6 +6240,7 @@ function crApplySettingsSync(data) {
     applyChatroomNames(cfg);
     chatroomModel = cfg.aion_model || chatroomModel;
     chatroomConnorModel = cfg.connor_model || chatroomConnorModel;
+    crApplyRandomModelConfig(cfg);
     chatroomReplyOrder = cfg.reply_order || chatroomReplyOrder;
     crTtsEnabled = !!(cfg.tts_enabled ?? crTtsEnabled);
     crTtsAionVoice = cfg.tts_aion_voice ?? crTtsAionVoice;
@@ -5941,7 +6300,7 @@ function crApplyReceivedMessage(msg) {
 }
 
 const crNativeMessages = window.NativeMessageSync?.create({
-  read: () => window.NativeMessageSync.read(), target: () => currentRoom?.id, field: 'room_id',
+  read: () => window.NativeMessageSync.read(), target: () => currentRoom?.type === 'peer_dm' ? null : currentRoom?.id, field: 'room_id',
   apply(event) {
     const msg = event.data;
     if (event.type === 'chatroom_msg_deleted') {
@@ -5961,6 +6320,7 @@ function crApplyReplayedSyncEvent(event) {
   // Reconcile them with one fresh read after replay, never replay old edits
   // or deletes directly into the live view.
   if (!event?.type) return;
+  if (event.type === 'peer_dm_updated') return crPeerRoomVisible() && currentRoom.id === event.data?.room_id;
   if (event.type === 'chatroom_settings_updated') {
     crApplySettingsSync(event.data || {});
     return;
@@ -6036,6 +6396,10 @@ async function crReconcileSyncEvents() {
   return crSyncReplayPromise;
 }
 
+function crPeerRoomVisible() {
+  return currentRoom?.type === 'peer_dm' && !document.hidden && window.frameElement?.dataset?.aionSubPageVisible !== '0';
+}
+
 function connectWS() {
   if (crWs && (crWs.readyState === WebSocket.OPEN || crWs.readyState === WebSocket.CONNECTING)) return;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -6046,18 +6410,30 @@ function connectWS() {
   ws.onopen = () => {
     if (crWs !== ws) return;
     crSocketRecovery.opened(ws);
+    window.AionAmbienceSync.restore();
     ws.send(JSON.stringify({ type: 'register_client', client_id: crAmbientClientId }));
     crSendTTSState();
     ws.send(JSON.stringify({ type: 'ping' }));
     crReconcileSyncEvents();
+    if (crPeerRoomVisible()) crFetchRoomMessages();
   };
 
   ws.onmessage = (e) => {
     if (crWs !== ws || crSocketRecovery.received(ws) === false) return;
     try {
       const data = JSON.parse(e.data);
+      if (data.type === 'peer_dm_updated') {
+        if (data.data?.room_id !== 'cr_peer_dm') return;
+        if (crPeerRoomVisible()) {
+          crFetchRoomMessages({ force: true, scroll: isNearBottom() });
+        } else {
+          crPeerUnreadEvent = true;
+          crUpdatePeerBadge();
+        }
+        return;
+      }
       if (crNativeMessages?.observe(data) === false) return;
-      if (data.type === 'chat_ambience') { window.AionChatAmbience?.applyRemote(data.data); return; }
+      if (data.type === 'chat_ambience') { window.AionAmbienceSync.receive(data.data); return; }
       if (data.type === 'generation_stopped') { _crControl.remoteStop(data.data); return; }
       if (!_crControl.accepts(data)) return;
       if (data.data?.room_id === currentRoom?.id
@@ -6211,6 +6587,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     window.aionCheckSocket();
     crReconcileSyncEvents();
+    if (crPeerRoomVisible()) crFetchRoomMessages();
   }
 });
 
@@ -7720,12 +8097,13 @@ function crToyCloseEditor() { document.getElementById('crToyEditorOverlay').clas
   const initParams = new URLSearchParams(location.search);
   const targetRoomId = initParams.get('room');
   const targetMsgId = initParams.get('msg');
-  // 默认打开最后一次聊天的房间
+  // 房间列表按消息活动排序，普通入口只打开群聊。
   if (targetRoomId && rooms.some(r => r.id === targetRoomId)) {
     await selectRoom(targetRoomId);
-    if (targetMsgId) setTimeout(() => jumpToChatSearchResult(targetMsgId), 100);
-  } else if (!currentRoom && rooms.length > 0) {
-    await selectRoom(rooms[0].id);
+    if (targetMsgId) setTimeout(() => { if (currentRoom?.id === targetRoomId) jumpToChatSearchResult(targetMsgId); }, 100);
+  } else if (!currentRoom) {
+    const group = rooms.find(room => room.type === 'group');
+    if (group) await selectRoom(group.id);
   }
   crAmbientSyncRunning();
   connectWS();

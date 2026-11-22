@@ -8,7 +8,9 @@ test('room messages appear while listener, model and companionship requests are 
   const calls = [];
   const never = new Promise(() => {});
   const context = {
-    api: async path => path === '/config' ? {} : [{ id: 'room-1' }],
+    api: async path => path === '/config' ? {} : [
+      { id: 'peer', type: 'peer_dm' }, { id: 'private', type: 'connor_1v1' }, { id: 'room-1', type: 'group' },
+    ],
     crAmbientRefreshListenerState: () => never,
     fetchCurrentModel: () => never,
     crLoadProactiveCompanionshipStatus: () => never,
@@ -21,6 +23,7 @@ test('room messages appear while listener, model and companionship requests are 
   vm.runInNewContext(source.slice(source.lastIndexOf('(async function init()')), context);
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(calls.includes('room-1'), 'messages must not wait for auxiliary requests');
+  assert.ok(!calls.includes('peer') && !calls.includes('private'));
   assert.ok(calls.includes('ws'));
 });
 

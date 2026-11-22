@@ -5,8 +5,8 @@ mainAgent: true
 subagent: false
 model: inherit
 excludeDefaultComponents: true
-inheritCustomizations: true
-# Explicit empty lists below keep coding customizations out; inherit workspace hooks.
+inheritCustomizations: false
+# Explicit empty lists below keep coding customizations out.
 inheritMcp: false
 commandExecutionPolicy: off
 # 1.5.2 resolves this legacy alias to read_file; listing both causes a conflict.

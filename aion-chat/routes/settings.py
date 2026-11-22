@@ -2,6 +2,7 @@
 设置、世界书、模型列表、TTS 路由
 """
 
+import asyncio
 import json
 import re
 
@@ -18,7 +19,7 @@ from config import EXPRESSIVE_VOICE_DIR
 from ws import manager
 import elevenlabs_tts
 import antigravity_cli
-from config import replace_antigravity_models
+from config import ANTIGRAVITY_MODELS, replace_antigravity_models
 from config import GROK_MODEL_EFFORTS, normalize_grok_reasoning_efforts, resolve_grok_reasoning_effort
 from asr import ASR_FIELDS, normalize_asr_settings
 
@@ -27,8 +28,10 @@ router = APIRouter()
 RELAY_MODEL_PROVIDERS = {"aipro", "custom_openai"}
 
 # ── 模型列表 ──────────────────────────────────────
-@router.get("/api/models")
-async def list_models():
+_agy_catalog_refresh = None
+
+
+async def _refresh_agy_catalog():
     try:
         catalog = await antigravity_cli.discover_models()
         replace_antigravity_models({
@@ -40,6 +43,16 @@ async def list_models():
         }, persist=True)
     except (antigravity_cli.AntigravityError, OSError, TimeoutError) as error:
         print(f"[AGY models] {error}")
+
+
+@router.get("/api/models")
+async def list_models():
+    global _agy_catalog_refresh
+    # agy models takes seconds: serve the saved catalog and refresh it in the background.
+    if antigravity_cli.catalog_due() and (_agy_catalog_refresh is None or _agy_catalog_refresh.done()):
+        _agy_catalog_refresh = asyncio.create_task(_refresh_agy_catalog())
+    if not ANTIGRAVITY_MODELS and _agy_catalog_refresh:
+        await asyncio.shield(_agy_catalog_refresh)  # First run has no saved catalog yet.
     rows = [
         {
             "key": k,

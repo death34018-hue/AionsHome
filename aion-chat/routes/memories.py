@@ -173,18 +173,20 @@ async def _fetch_source_rows_by_ids(source_ids: list[str], user_name: str, ai_na
                     })
             elif prefix == "chatroom":
                 cur = await db.execute(
-                    "SELECT sender, content, created_at FROM chatroom_messages WHERE id=? AND sender != 'system'",
+                    "SELECT m.sender, m.content, m.created_at, r.type AS room_type "
+                    "FROM chatroom_messages m JOIN chatroom_rooms r ON r.id=m.room_id "
+                    "WHERE m.id=? AND m.sender != 'system' AND r.type IN ('group','peer_dm')",
                     (raw_id,),
                 )
                 row = await cur.fetchone()
                 if row:
                     rows.append({
                         "id": f"chatroom:{raw_id}",
-                        "role": "assistant" if row["sender"] == "aion" else "user",
+                        "role": "assistant" if row["sender"] in ("aion", "connor") else "user",
                         "name": _chatroom_sender_name(row["sender"], user_name, ai_name),
                         "content": row["content"],
                         "created_at": row["created_at"],
-                        "source": "chatroom",
+                        "source": "peer_dm" if row["room_type"] == "peer_dm" else "chatroom",
                     })
     return rows
 
@@ -282,8 +284,8 @@ async def list_memories(
                 )
                 private_count = (await cur.fetchone())[0]
                 cur = await db.execute(
-                    "SELECT COUNT(*) FROM chatroom_messages "
-                    "WHERE sender != 'system' AND created_at >= ? AND created_at <= ?",
+                    "SELECT COUNT(*) FROM chatroom_messages m JOIN chatroom_rooms r ON r.id=m.room_id "
+                    "WHERE r.type IN ('group','peer_dm') AND m.sender != 'system' AND m.created_at BETWEEN ? AND ?",
                     (item["source_start_ts"], item["source_end_ts"]),
                 )
                 chatroom_count = (await cur.fetchone())[0]
@@ -589,19 +591,19 @@ async def get_memory_source(mem_id: str):
                 })
 
             cur = await db.execute(
-                "SELECT id, sender, content, created_at FROM chatroom_messages "
-                "WHERE created_at >= ? AND created_at <= ? AND sender != 'system' "
-                "ORDER BY created_at ASC",
+                "SELECT m.id, m.sender, m.content, m.created_at, r.type AS room_type FROM chatroom_messages m "
+                "JOIN chatroom_rooms r ON r.id=m.room_id WHERE r.type IN ('group','peer_dm') "
+                "AND m.created_at BETWEEN ? AND ? AND m.sender != 'system' ORDER BY m.created_at ASC",
                 (start_ts, end_ts),
             )
             for row in await cur.fetchall():
                 all_msgs.append({
                     "id": f"chatroom:{row['id']}",
-                    "role": "assistant" if row["sender"] == "aion" else "user",
+                    "role": "assistant" if row["sender"] in ("aion", "connor") else "user",
                     "name": _chatroom_sender_name(row["sender"], user_name, ai_name),
                     "content": row["content"],
                     "created_at": row["created_at"],
-                    "source": "chatroom",
+                    "source": "peer_dm" if row["room_type"] == "peer_dm" else "chatroom",
                 })
 
     if selected_ids:

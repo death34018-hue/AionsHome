@@ -122,7 +122,7 @@ test('an abnormal reply suppresses late audio and stops its queued playback', ()
 test('phone TTS settings reach the background service even without a page socket', () => {
   for (const [file, name, state] of [
     ['chat.js', '_sendTTSState', {ws: null, ttsEnabled: true, ttsVoiceId: 'voice', ttsPlaybackActiveAt: 20, _clientId: 'private'}],
-    ['chatroom.js', 'crSendTTSState', {crWs: null, crTtsEnabled: true, crCurrentTTSVoice: () => 'voice', crTtsPlaybackActiveAt: 30, crAmbientClientId: 'room'}],
+    ['chatroom.js', 'crSendTTSState', {currentRoom: {type: 'group'}, crWs: null, crTtsEnabled: true, crCurrentTTSVoice: () => 'voice', crTtsPlaybackActiveAt: 30, crAmbientClientId: 'room'}],
   ]) {
     const source = fs.readFileSync(path.join(__dirname, 'static', file), 'utf8');
     const start = source.indexOf(`function ${name}(`);
@@ -147,7 +147,7 @@ test('a late completion marker cannot re-enable cancelled message audio', () => 
     const source = fs.readFileSync(path.join(__dirname, 'static', file), 'utf8');
     const start = source.indexOf(`function ${name}(`);
     const suppressed = new Set(['bad']);
-    const context = vm.createContext({ [blocked]: suppressed, [client]: 'phone', [acceptAfter]: 0 });
+    const context = vm.createContext({ currentRoom: {type: 'group'}, [blocked]: suppressed, [client]: 'phone', [acceptAfter]: 0 });
     vm.runInContext(source.slice(start, source.indexOf('\n}', start) + 2), context);
     context[name]('bad', 1, 'phone');
     assert.ok(suppressed.has('bad'));
@@ -185,7 +185,7 @@ test('chatroom ignores another device copy without marking its segment as played
   const end = source.indexOf('async function crPlayNextTTSChunk(', start);
   const queued = [];
   const context = vm.createContext({
-    crTtsEnabled: true, window: {}, crSeenTTSChunks: new Set(),
+    currentRoom: {type: 'group'}, crTtsEnabled: true, window: {}, crSeenTTSChunks: new Set(),
     crShouldAcceptTTSMsg: (_id, _time, target) => target === 'phone',
     _ttsEngine: { enqueue: (...args) => queued.push(args) },
   });
@@ -193,6 +193,9 @@ test('chatroom ignores another device copy without marking its segment as played
   context.crEnqueueTTSChunk('message', 0, '/segment0', 1, 'desktop');
   context.crEnqueueTTSChunk('message', 0, '/segment0', 1, 'phone');
   context.crEnqueueTTSChunk('message', 0, '/segment0', 1, 'phone');
+  assert.equal(queued.length, 1);
+  context.currentRoom.type = 'peer_dm';
+  context.crEnqueueTTSChunk('other', 0, '/segment0', 2, 'phone');
   assert.equal(queued.length, 1);
 });
 

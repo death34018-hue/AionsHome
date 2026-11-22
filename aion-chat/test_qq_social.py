@@ -178,10 +178,10 @@ class QQProviderTests(unittest.IsolatedAsyncioTestCase):
         async def vertex(messages, model, *args, **kwargs):
             yield 'Vertex:' + model
 
-        models = {'qq-agy':{'provider':'antigravity_cli','model':'agy-model'},
+        models = {'qq-agy':{'provider':'antigravity_acp','model':'agy-model'},
                   'qq-vertex':{'provider':'vertex','model':'vertex-model'}}
         with patch.dict(ai_providers.MODELS, models), \
-             patch('ai_providers.call_antigravity_cli', new=agy), \
+             patch('ai_providers.call_antigravity_acp', new=agy), \
              patch('ai_providers.call_vertex', new=vertex):
             for key, expected in [('qq-agy','AGY:agy-model'), ('qq-vertex','Vertex:vertex-model')]:
                 with self.subTest(model=key):
@@ -781,7 +781,7 @@ class QQManagementTests(unittest.TestCase):
         from qq_social.worker import create_app
         home = {'aion_model':'home-a', 'connor_model':'home-c'}
         models = {key:{'provider':'custom_openai'} for key in ('home-a','home-c','cheap')}
-        models.update({'agy':{'provider':'antigravity_cli'}, 'vertex':{'provider':'vertex'},
+        models.update({'agy':{'provider':'antigravity_acp'}, 'vertex':{'provider':'vertex'},
                        'unsupported':{'provider':'unknown'}, 'CLI-3.1pro':{'provider':'codex_cli'}})
         with tempfile.TemporaryDirectory() as tmp, \
              patch('qq_social.context.home_config', return_value=(home, models, {}, {'aion':'甲','connor':'乙'})):

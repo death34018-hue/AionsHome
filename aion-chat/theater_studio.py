@@ -158,7 +158,8 @@ async def get_book(cid: str, chapter: str = ''):
             chapters[i] = {k: v for k, v in c.items() if k not in ('content', 'summary', 'images', 'versions')}
     draft = await load('outline_draft_'+cid)
     return {'book': book, 'chapters': chapters, 'discussion': await discussion(cid),
-            'outline_draft': draft if draft and not draft.get('confirmed_conversation') else None}
+            'outline_draft': draft if draft and not draft.get('confirmed_conversation') else None,
+            'progress': await reading_progress(cid)}
 
 
 @router.put('/books/{cid}')
@@ -180,6 +181,72 @@ async def put_book(cid: str, body: BookPatch):
         if changed and old.get('outline'):
             old['phase'] = 'review'
         return await save(old)
+
+
+class BookPlace(BaseModel):
+    chapter: str | None = Field(None, max_length=80)
+    view: Literal['reader', 'discussion'] | None = None
+    t: float
+
+
+class ReadPlace(BaseModel):
+    offset: int = Field(ge=0)
+    frac: float = Field(0, ge=0, le=1)
+    t: float
+
+
+class ListenPlace(BaseModel):
+    seq: int = Field(ge=0)
+    at: float = Field(0, ge=0)
+    t: float
+
+
+class ProgressPatch(BaseModel):
+    book: BookPlace | None = None
+    positions: dict[str, ReadPlace] = Field(default_factory=dict, max_length=50)
+    listen: dict[str, ListenPlace] = Field(default_factory=dict, max_length=50)
+
+
+PLACE_LIMIT = 200
+
+
+def _newer(old, new):
+    return new if not old or new['t'] >= old.get('t', 0) else old
+
+
+async def reading_progress(cid):
+    doc = await load('progress_'+cid) or {}
+    return {k: doc.get(k) or {} for k in ('book', 'positions', 'listen')}
+
+
+@router.put('/books/{cid}/progress')
+async def put_progress(cid: str, body: ProgressPatch):
+    """Reading and listening places are shared by every address of the home server."""
+    await conversation(cid)
+    patch = body.model_dump(exclude_none=True)
+    key = 'progress_'+cid
+    async with lock(key):
+        doc = await load(key) or dict(id=key, kind='progress', conv_id=cid)
+        if 'book' in patch:
+            doc['book'] = _newer(doc.get('book'), patch['book'])
+        for field in ('positions', 'listen'):
+            places = doc.get(field) or {}
+            for name, value in patch[field].items():
+                places[name] = _newer(places.get(name), value)
+            doc[field] = dict(sorted(places.items(), key=lambda kv: kv[1]['t'])[-PLACE_LIMIT:])
+        await save(doc)
+    if 'book' in patch:
+        async with lock('progress_last'):
+            last = await load('progress_last')
+            if _newer(last, patch['book']) is patch['book']:
+                await save(dict(id='progress_last', kind='progress_last', conv_id='', conv=cid, t=patch['book']['t']))
+    return {'ok': True}
+
+
+@router.get('/progress/last')
+async def last_progress():
+    last = await load('progress_last')
+    return {'conv_id': last['conv'] if last else None}
 
 
 
@@ -328,8 +395,9 @@ async def generate_text(cid, prompt, on_chunk=None, *, max_tokens=None, messages
     conv = await conversation(cid)
     book = await load(cid) if auxiliary else None
     model = (book or {}).get('auxiliary_model', '').strip() or conv[1]
-    from routes.theater import _load_personas
-    persona = next((p.get('persona', '') for p in _load_personas() if p['id'] == conv[2]), '')
+    from routes.theater import _load_personas, _load_prompt_modules, compose_persona_text
+    person = next((p for p in _load_personas() if p['id'] == conv[2]), None)
+    persona = compose_persona_text(person, _load_prompt_modules())
     history = [{'role': 'user', 'content': (f'你以以下人设陪用户讨论和创作，保留自己的性格、情感与说话方式。故事角色的身份和关系遵守平行宇宙设定，不把现实关系强加给初识剧情。\n{persona}\n\n' if persona else '') + prompt}]
     if messages is not None:
         history[0]['role'] = 'system'
@@ -479,6 +547,12 @@ async def put_chapter_summary(key: str, body: ChapterSummary):
         return {'summary': summary}
 
 
+ILLUSTRATION_GUIDANCE = (
+    '选一个主光源，交代光从哪里来、是什么颜色、哪里留暗。'
+    '用两三种主色呼应这幕情绪，选能突出动作或视线的景别和机位。'
+)
+
+
 def chapter_image_plan(content, scenes, cast):
     images = []
     positions = set()
@@ -507,7 +581,8 @@ def chapter_image_plan(content, scenes, cast):
         characters = [a['name'] for a in cast if any(name.strip() and name.strip() in excerpt
                       for name in [a['name'], *a.get('aliases', '').split(',')])]
         images.append(dict(id=uid('pic_'), after=content.index(paragraph)+len(paragraph),
-                           prompt='为这段正文画一幅场景插画：'+excerpt, characters=characters, status='pending', url=''))
+                           prompt=f'为这段正文画一幅场景插画。{ILLUSTRATION_GUIDANCE}\n正文：{excerpt}',
+                           characters=characters, status='pending', url=''))
     return images
 
 
@@ -526,6 +601,7 @@ async def summarize(c, *, include_images=False):
         if plan_images:
             cast, names = await cast_text(book)
             prompt += (f'同时按正文顺序选择1至4个不同场景配图。人物：{names}\n'
+                       f'写每张图的 prompt 时，{ILLUSTRATION_GUIDANCE}\n'
                        '只返回JSON：{"summary":"剧情摘要","scenes":[{"quote":"正文中连续且唯一的一句原文",'
                        '"prompt":"场景、服饰、人物位置与动作，明确名字","characters":["人物名字"]}]}。')
         else:
@@ -603,10 +679,11 @@ async def write_chapter(key, instruction):
             prompt += f"本次续写{target}，从下面已有正文末尾继续，不重写开头，也不进入下一章。\n本章已有正文（从末尾继续，不重复，写至本章结束）：\n{text}"
         else:
             prompt += f"现在从头写{target}。本章尚无正文，从本章计划的第一个场景开始，依次展开至本章结束节点；不得把本章计划当作已经发生的剧情，再接着写下一章。\n"
+        from routes.theater import _load_prompt_modules, compose_persona_text
         from theater_planning import persona_for
         person = await persona_for(c['conv_id'], required=True)
         await change(key, context_characters={
-            '角色人设': len(person['persona']), '故事共识': len(book.get('consensus') or ''),
+            '角色人设': len(compose_persona_text(person, _load_prompt_modules())), '故事共识': len(book.get('consensus') or ''),
             '人物外貌文字': len(cast), '全书大纲': 0,
             '前章剧情摘要': len(chr(10).join(memories)), '本章计划': len(c['plan']),
             '本次指导': len(instruction), '上一章结尾': 0,
@@ -975,6 +1052,40 @@ class SpeechRequest(BaseModel):
     allow_generation: bool = False
 
 
+_durations = {}
+
+
+def _segment_seconds(path):
+    """Duration of one recorded file, cached by size and modification time."""
+    from theater_tts_cache import mp3_duration
+    try:
+        stat = path.stat()
+    except OSError:
+        return 0
+    key = (stat.st_size, stat.st_mtime_ns)
+    cached = _durations.get(path)
+    if cached and cached[0] == key:
+        return cached[1]
+    seconds = round(mp3_duration(path.read_bytes()), 3)
+    _durations[path] = (key, seconds)
+    return seconds
+
+
+async def with_durations(doc):
+    """Players need each segment's length without downloading every file."""
+    missing = [s for s in doc.get('segments', []) if not s.get('duration')]
+    if not missing:
+        return doc
+    root = Path(THEATER_TTS_CACHE_DIR)
+    def paths():
+        for s in missing:
+            name = s['url'].rsplit('/', 1)[-1] + '.mp3' if doc.get('legacy') else f"{doc['id']}_{s['seq']}.mp3"
+            yield s, root/name
+    found = await asyncio.to_thread(lambda: {s['seq']: _segment_seconds(p) for s, p in paths()})
+    return dict(doc, segments=[dict(s, duration=found[s['seq']]) if found.get(s['seq']) else s
+                               for s in doc['segments']])
+
+
 async def legacy_message_audio(key, src):
     """Link existing message recordings without copying files or guessing their voice."""
     from theater_tts_cache import list_message_audio_segments
@@ -1025,8 +1136,12 @@ async def run_speech(key, aid):
             path = Path(THEATER_TTS_CACHE_DIR) / f'{aid}_{seq}.mp3'
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
-            audio['segments'].append(dict(seq=seq, url=f'/api/theater/studio/audio/{aid}/{seq}',
-                                          chars=len(raw), start=audio['offset'], end=audio['offset']+len(raw)))
+            from theater_tts_cache import mp3_duration
+            segment = dict(seq=seq, url=f'/api/theater/studio/audio/{aid}/{seq}',
+                           chars=len(raw), start=audio['offset'], end=audio['offset']+len(raw))
+            if seconds := round(mp3_duration(data), 3):
+                segment['duration'] = seconds
+            audio['segments'].append(segment)
             await change(aid, segments=audio['segments'], offset=audio['offset']+len(raw))
     except asyncio.CancelledError:
         await change(aid, status='stopped')
@@ -1050,9 +1165,10 @@ async def start_speech(key: str, body: SpeechRequest):
                 candidates = [a for a in existing if a['source'] == key and a['revision'] == src['revision']
                               and not a.get('legacy') and (a.get('segments') or
                                   (a['status'] == 'running' and key in _speech))]
-                # Listening chooses the most complete recording, independent of the selected voice.
+                # Finished recordings win in any voice; otherwise the one being synthesized, then the selected voice.
                 linked_id = source_doc.get('audio') if is_chapter else None
-                cached = max(candidates, key=lambda a: (a['status'] == 'ready', a.get('offset', 0),
+                cached = max(candidates, key=lambda a: (a['status'] == 'ready', a['status'] == 'running' and key in _speech,
+                                                       a['voice'] == body.voice, a.get('offset', 0),
                                                        a['id'] == linked_id), default=None)
                 if cached and not all((p := Path(THEATER_TTS_CACHE_DIR)/f"{cached['id']}_{seg['seq']}.mp3").is_file()
                                       and p.stat().st_size for seg in cached['segments']):
@@ -1074,7 +1190,7 @@ async def start_speech(key: str, body: SpeechRequest):
         if key in _speech:
             running = next((a for a in existing if a['source'] == key and a['status'] == 'running'), None)
             if running and running['voice'] == body.voice:
-                return running
+                return await with_durations(running)
             await stop_audio(key)
         if not audio:
             # Explicit new-voice requests retain a separate cache; old recordings stay intact.
@@ -1086,7 +1202,7 @@ async def start_speech(key: str, body: SpeechRequest):
         doc = await load(key)
         if doc and doc['kind'] == 'chapter':
             await change(key, audio=audio['id'])
-        return audio
+        return await with_durations(audio)
 
 
 @router.get('/speech/status/{aid}')
@@ -1096,7 +1212,7 @@ async def audio_status(aid: str):
         raise HTTPException(404, '语音不存在')
     if doc['status'] == 'running' and doc['source'] not in _speech:
         doc = await change(aid, status='stopped')
-    return doc
+    return await with_durations(doc)
 
 
 @router.post('/speech/{key}/stop')
@@ -1112,7 +1228,9 @@ async def audio_file(aid: str, seq: int):
     path = Path(THEATER_TTS_CACHE_DIR) / f'{aid}_{seq}.mp3'
     if not path.is_file():
         raise HTTPException(404)
-    return FileResponse(path, media_type='audio/mpeg')
+    # A recording ID and segment number always name the same audio.
+    return FileResponse(path, media_type='audio/mpeg',
+                        headers={'Cache-Control': 'private, max-age=31536000, immutable'})
 
 
 async def cleanup_conversation(cid):

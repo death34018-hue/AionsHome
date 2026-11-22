@@ -17,6 +17,7 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.db = self.root/'test.db'
         self.patches = [patch.object(studio, 'get_db', lambda: aiosqlite.connect(self.db)),
                         patch('routes.theater._load_personas', return_value=[dict(id='', name='Test', persona='温柔细腻，重视彼此的情感')]),
+                        patch('routes.theater._load_prompt_modules', return_value=[]),
                         patch.object(studio, 'THEATER_TTS_CACHE_DIR', self.root/'audio')]
         for p in self.patches: p.start()
         async with studio.get_db() as db:
@@ -591,6 +592,41 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(error.exception.status_code, 409)
         self.assertNotIn('chapter', studio._speech)
 
+    async def test_reading_progress_keeps_newer_places_for_every_address(self):
+        place = lambda t, **kw: studio.ProgressPatch(**{k: {**v, 't': t} if k == 'book' else
+                                                        {n: {**p, 't': t} for n, p in v.items()} for k, v in kw.items()})
+        await studio.put_progress('book', place(20, book={'chapter': 'chapter', 'view': 'reader'},
+                                                positions={'chapter': {'offset': 120, 'frac': .5}},
+                                                listen={'na_audio': {'seq': 3, 'at': 12.5}}))
+        await studio.put_progress('book', place(10, book={'chapter': 'old', 'view': 'discussion'},
+                                                positions={'chapter': {'offset': 0}}, listen={'na_other': {'seq': 1}}))
+        progress = (await studio.get_book('book'))['progress']
+        self.assertEqual((progress['book']['chapter'], progress['book']['view']), ('chapter', 'reader'))
+        self.assertEqual((progress['positions']['chapter']['offset'], progress['positions']['chapter']['frac']), (120, .5))
+        self.assertEqual((progress['listen']['na_audio']['seq'], progress['listen']['na_other']['seq']), (3, 1))
+        self.assertEqual(await studio.last_progress(), {'conv_id': 'book'})
+        with self.assertRaises(studio.HTTPException) as error:
+            await studio.put_progress('missing', place(30, book={}))
+        self.assertEqual(error.exception.status_code, 404)
+        self.assertEqual(await studio.last_progress(), {'conv_id': 'book'})
+
+    async def test_speech_reports_segment_lengths_and_audio_is_cacheable(self):
+        frame = bytes.fromhex('fffb98c0') + bytes(572)  # MPEG-1 Layer III, 128 kbps, 32 kHz
+        mp3 = b'ID3\x04\x00\x00\x00\x00\x00\x02xx' + frame*25
+        await studio.change('chapter', content='完整正文', status='ready')
+        with patch.object(studio, '_request_tts_audio', AsyncMock(return_value=mp3)):
+            audio = await studio.start_speech('chapter', studio.SpeechRequest(voice='test', allow_generation=True))
+            await studio._speech['chapter']
+        self.assertEqual([s['duration'] for s in (await studio.audio_status(audio['id']))['segments']], [.9])
+        aid = studio.uid('na_')
+        (studio.THEATER_TTS_CACHE_DIR/f'{aid}_0.mp3').write_bytes(mp3*2)
+        await studio.save(dict(id=aid, kind='audio', conv_id='book', source='old', revision=1, voice='v',
+                               status='ready', offset=3, segments=[dict(seq=0, url=f'/api/theater/studio/audio/{aid}/0')]))
+        self.assertEqual((await studio.audio_status(aid))['segments'][0]['duration'], 1.8)
+        self.assertNotIn('duration', (await studio.load(aid))['segments'][0])
+        response = await studio.audio_file(aid, 0)
+        self.assertIn('immutable', response.headers['cache-control'])
+
     async def test_listening_to_partial_recording_does_not_resume_synthesis(self):
         await studio.change('chapter', content='完整正文', status='ready')
         root = studio.THEATER_TTS_CACHE_DIR
@@ -692,6 +728,32 @@ class StudioTests(unittest.IsolatedAsyncioTestCase):
             await studio._speech['chapter']
         self.assertEqual((await studio.load(old['id']))['status'],'stopped')
         self.assertEqual((await studio.load(new['id']))['status'],'ready')
+
+    async def test_replay_after_voice_switch_keeps_the_new_voice_recording(self):
+        await studio.change('chapter',content='今晚的故事。'*100,status='ready')
+        root=studio.THEATER_TTS_CACHE_DIR
+        root.mkdir()
+        (root/'wrong_0.mp3').write_bytes(b'wrong-voice')
+        await studio.save(dict(id='wrong',kind='audio',conv_id='book',source='chapter',revision=1,voice='wrong',
+                               status='failed',offset=590,segments=[dict(seq=0,url='/audio/wrong/0')]))
+        calls=[]
+        second=asyncio.Event()
+        async def synth(text, voice, **kwargs):
+            calls.append(voice)
+            if len(calls)>1:
+                second.set(); await asyncio.Event().wait()
+            return b'right-voice'
+        with patch.object(studio,'_request_tts_audio',synth):
+            new=await studio.start_speech('chapter',studio.SpeechRequest(voice='right',prefer_cached=False,allow_generation=True))
+            self.assertEqual(new['voice'],'right')
+            await second.wait()
+            replay=await studio.start_speech('chapter',studio.SpeechRequest(voice='wrong'))
+            self.assertEqual((replay['id'],replay['status']),(new['id'],'running'))
+            self.assertIn('chapter',studio._speech)
+            await studio.stop_audio('chapter')
+        for voice,expected in [('right',new['id']),('wrong','wrong')]:
+            replay=await studio.start_speech('chapter',studio.SpeechRequest(voice=voice))
+            self.assertEqual(replay['id'],expected)
 
     async def test_new_voice_does_not_relabel_legacy_audio_with_unknown_voice(self):
         async with studio.get_db() as db:

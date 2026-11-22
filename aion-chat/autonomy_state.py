@@ -19,11 +19,13 @@ from config import DB_PATH
 ACTOR_IDS = ("aion", "connor")
 MIN_INTERVAL_MINUTES = 5
 MAX_INTERVAL_MINUTES = 24 * 60
+CHAT_QUIET_MINUTES = 15
 MAX_STATE_CHARS = 800
 ACTION_IDS = (
     "rest",
     "private_chat",
     "role_chat",
+    "peer_dm",
     "billiards_play",
     "home_dynamics",
     "memory_browse",
@@ -279,6 +281,36 @@ async def schedule_actor_wake(
         await db.execute(
             "UPDATE autonomy_actor_configs SET timer_started_at=?,next_wake_at=?,updated_at=? WHERE actor_id=?",
             (anchor, anchor + delay * 60, time.time(), actor),
+        )
+        await db.commit()
+        return await get_actor_config(actor, db=db)
+    finally:
+        if owns_db:
+            await db.close()
+
+
+async def defer_actor_wake(
+    actor: str,
+    *,
+    wake_at: float,
+    db=None,
+) -> dict:
+    """Defer an actor's next wake forward without resetting timer_started_at."""
+    actor = normalize_actor(actor)
+    owns_db = db is None
+    if owns_db:
+        db = await aiosqlite.connect(DB_PATH)
+        db.row_factory = aiosqlite.Row
+    try:
+        await ensure_autonomy_tables(db)
+        cfg = await get_actor_config(actor, db=db)
+        target_wake = float(wake_at)
+        current_wake = cfg.get("next_wake_at")
+        if not cfg["enabled"] or current_wake is None or target_wake <= float(current_wake):
+            return cfg
+        await db.execute(
+            "UPDATE autonomy_actor_configs SET next_wake_at=?,updated_at=? WHERE actor_id=?",
+            (target_wake, time.time(), actor),
         )
         await db.commit()
         return await get_actor_config(actor, db=db)

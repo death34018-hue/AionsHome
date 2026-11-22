@@ -71,7 +71,7 @@ body[data-theme="dark"] .chat-web-card {
 }
 .chat-web-card [aria-expanded="true"]::after { transform: rotate(-45deg); }
 @media (hover: hover) {
-  .chat-web-card [data-web-action="edit"]:hover { background: color-mix(in srgb, currentColor 9%, transparent); }
+  .chat-web-card :is([data-web-action="edit"], [data-web-action="replay"]):hover { background: color-mix(in srgb, currentColor 9%, transparent); }
   .chat-web-card [data-web-action="play"]:hover { filter: brightness(1.08); }
 }
 .chat-web-card button:focus-visible { outline: 2px solid var(--card-action); outline-offset: 2px; }
@@ -87,6 +87,16 @@ body[data-theme="dark"] .chat-web-card {
   .web-card-stage { aspect-ratio: 1; min-height: 0; }
 }
 .web-card-stage[hidden] { display: none; }
+/* The drawing keeps its viewBox ratio; paint containment keeps it inside the card. */
+.web-card-art {
+  width: 100%;
+  max-height: min(480px, 60vh);
+  max-height: min(480px, 60dvh);
+  overflow: hidden;
+  contain: layout paint;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
 /* chat-web-cards.js sizes the virtual screen and scales it into the stage. */
 .web-card-stage iframe { position: absolute; left: 0; top: 0; border: 0; display: block; transform-origin: 0 0; opacity: 0; }
 .chat-web-card small:not(:empty), .web-card-note { display: block; padding: .4rem .7rem; }

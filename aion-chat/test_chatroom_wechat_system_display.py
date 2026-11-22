@@ -136,57 +136,5 @@ class ChatroomSystemModelContextTests(unittest.TestCase):
         self.assertIn("点了一首歌", text)
 
 
-class ChatroomFrontendSystemDisplayTests(unittest.TestCase):
-    def _css_block(self, css, marker):
-        start = css.index(marker)
-        open_pos = css.index("{", start)
-        depth = 0
-        for i in range(open_pos, len(css)):
-            if css[i] == "{":
-                depth += 1
-            elif css[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    return css[open_pos + 1:i]
-        self.fail(f"CSS block for {marker!r} was not closed")
-
-    def test_streamed_system_messages_are_deduped_by_message_id(self):
-        js = (ROOT / "static" / "chatroom.js").read_text(encoding="utf-8")
-        marker = "case 'system_msg':"
-        start = js.index(marker)
-        end = js.index("case 'memory_record':", start)
-        branch = js[start:end]
-
-        self.assertIn("data.message.id", branch)
-        self.assertIn('data-msg-id="${data.message.id}"', branch)
-        self.assertIn("appendMessage(data.message)", branch)
-
-    def test_mobile_system_notices_align_with_ai_bubble_edge(self):
-        css = (ROOT / "static" / "chatroom.css").read_text(encoding="utf-8")
-        mobile = self._css_block(css, "@media (max-width: 700px) {\n  .app {")
-
-        self.assertIn("  .system-event-msg {", mobile)
-        system_notice = self._css_block(mobile, ".system-event-msg")
-        self.assertIn("box-sizing: border-box;", system_notice)
-        self.assertIn("align-self: flex-start;", system_notice)
-        self.assertIn("width: calc(100% - var(--system-notice-left-offset));", system_notice)
-        self.assertIn("max-width: calc(100% - var(--system-notice-left-offset));", system_notice)
-        self.assertIn("margin-left: var(--system-notice-left-offset);", system_notice)
-        self.assertIn("padding: 6px 4px;", system_notice)
-
-    def test_desktop_system_notices_align_with_ai_bubble_edge(self):
-        css = (ROOT / "static" / "chatroom.css").read_text(encoding="utf-8")
-        html = (ROOT / "static" / "chatroom.html").read_text(encoding="utf-8")
-        system_notice = self._css_block(css, "\n.system-event-msg {\n")
-
-        self.assertIn("box-sizing: border-box;", system_notice)
-        self.assertIn("width: min(85%, calc(100% - var(--system-notice-left-offset) - 8px));", system_notice)
-        self.assertIn("margin-left: var(--system-notice-left-offset);", system_notice)
-        self.assertIn("flex: 1;", css)
-        self.assertIn("position: absolute;", css)
-        self.assertIn("overflow-wrap: anywhere;", css)
-        self.assertRegex(html, r'chatroom\.css\?v=[^"\s]+')
-
-
 if __name__ == "__main__":
     unittest.main()

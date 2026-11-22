@@ -56,14 +56,15 @@ class SharedTimelineTests(unittest.IsolatedAsyncioTestCase):
             return [dict(row) for row in await (await db.execute("SELECT * FROM schedules ORDER BY trigger_at")).fetchall()]
 
     async def test_old_reminder_and_routine_share_the_timeline_with_distinct_status(self):
+        await routine_schedule.save_item(datetime(2026, 11, 9).date(), "weekly", {"content": "下午运动", "start": "15:30", "end": "17:00"})
         await schedule._add_schedule("alarm", "2026-11-09 13:50", "访谈提醒", "aion")
         response = await self.client.get("/api/routines/timeline", params={"date":"2026-11-09"})
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        gym = next(row for row in data["items"] if row["content"] == "健身 · 练胸")
+        slot = next(row for row in data["items"] if row["content"] == "下午运动")
         interview = next(row for row in data["items"] if row["content"] == "访谈提醒")
-        self.assertEqual(gym["kind"], "routine")
-        self.assertEqual(gym["reminders"], [])
+        self.assertEqual(slot["kind"], "routine")
+        self.assertEqual(slot["reminders"], [])
         self.assertEqual(interview["kind"], "schedule")
         self.assertEqual(interview["reminders"][0]["type"], "alarm")
         self.assertTrue(interview["origin_name"])
@@ -91,27 +92,32 @@ class SharedTimelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(pending[0]["id"],original["id"])
 
     async def test_plan_can_gain_a_reminder_and_linked_retries_reuse_it(self):
-        response = await self.client.put("/api/routines/items/gym", json={
-            "date":"2026-11-09", "scope":"day", "content":"健身 · 练胸", "start":"15:30", "end":"17:00",
+        created = await routine_schedule.save_item(datetime(2026, 11, 9).date(), "weekly", {"content": "下午运动", "start": "15:30", "end": "17:00"})
+        response = await self.client.put(f"/api/routines/items/{created['id']}", json={
+            "date":"2026-11-09", "scope":"day", "content":"下午运动", "start":"15:30", "end":"17:00",
             "remind":True, "reminder_at":"2026-11-09T15:20",
         })
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(len(await self.rows()), 1)
-        await schedule._add_schedule("alarm", "2026-11-09 15:20", "胸部训练别忘了", "connor", event_key="routine:2026-11-09:gym")
+        await schedule._add_schedule("alarm", "2026-11-09 15:20", "运动别忘了", "connor", event_key=f"routine:2026-11-09:{created['id']}")
         self.assertEqual(len(await self.rows()), 1)
         response = await self.client.get("/api/routines/timeline", params={"date":"2026-11-09"})
-        gym_rows = [row for row in response.json()["items"] if row["id"] == "gym"]
-        self.assertEqual(len(gym_rows), 1)
-        self.assertEqual(len(gym_rows[0]["reminders"]), 1)
+        slot_rows = [row for row in response.json()["items"] if row["id"] == created["id"]]
+        self.assertEqual(len(slot_rows), 1)
+        self.assertEqual(len(slot_rows[0]["reminders"]), 1)
 
     async def test_sharing_switch_only_controls_added_default_routines(self):
+        saturday = datetime(2026, 11, 7).date()
+        await routine_schedule.save_item(saturday, "weekly", {"content": "上午自习", "start": "10:30", "end": "13:00"})
+        await routine_schedule.save_item(saturday, "weekly", {"content": "午间休息", "start": "13:00", "end": "14:30"})
+        await routine_schedule.save_item(saturday, "weekly", {"content": "睡前阅读", "start": "22:00", "end": "23:30"})
         await schedule._add_schedule("alarm", "2026-11-09 13:50", "访谈", "aion")
         calendar = importlib.import_module("schedule_timeline")
         now = datetime(2026, 11, 7, 11, 0)
         brief = await calendar.build_routine_prompt(now=now)
-        self.assertEqual(brief, "以下是计划，实际聊天信息优先。\n今日：10:30—13:00 自由活动｜默认安排\n下一项：13:00—14:30 午餐、午间休息｜默认安排")
+        self.assertEqual(brief, "以下是计划，实际聊天信息优先。\n今日：10:30—13:00 上午自习｜默认安排\n下一项：13:00—14:30 午间休息｜默认安排")
         self.assertNotIn("访谈", brief)
-        self.assertNotIn("回窝", brief)
+        self.assertNotIn("睡前阅读", brief)
         result = await self.client.put("/api/routines/sharing", json={"enabled":False})
         self.assertEqual(result.status_code, 200)
         self.assertEqual(await calendar.build_routine_prompt(now=now), "")
@@ -146,11 +152,12 @@ class SharedTimelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(interview["reminder_state"], "triggered")
 
     async def test_deleting_a_date_plan_cancels_only_its_linked_reminder(self):
-        await self.client.put("/api/routines/items/gym", json={"date":"2026-11-09","scope":"day","content":"练胸","start":"15:30","end":"17:00","remind":True,"reminder_at":"2026-11-09T15:20"})
+        created = await routine_schedule.save_item(datetime(2026, 11, 9).date(), "weekly", {"content": "下午运动", "start": "15:30", "end": "17:00"})
+        await self.client.put(f"/api/routines/items/{created['id']}", json={"date":"2026-11-09","scope":"day","content":"下午运动","start":"15:30","end":"17:00","remind":True,"reminder_at":"2026-11-09T15:20"})
         await schedule._add_schedule("alarm", "2026-11-09 18:00", "独立访谈提醒", "aion")
-        await self.client.delete("/api/routines/items/gym", params={"date":"2026-11-09","scope":"day"})
+        await self.client.delete(f"/api/routines/items/{created['id']}", params={"date":"2026-11-09","scope":"day"})
         rows = await self.rows()
-        self.assertEqual(next(row["status"] for row in rows if row["content"] == "练胸"), "cancelled")
+        self.assertEqual(next(row["status"] for row in rows if row["content"] == "下午运动"), "cancelled")
         self.assertEqual(next(row["status"] for row in rows if row["content"] == "独立访谈提醒"), "active")
 
     async def test_calendar_context_stays_after_capabilities_and_before_device_context(self):
@@ -193,6 +200,7 @@ class SharedTimelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("临时访谈记录", [row["content"] for row in timeline["items"]])
 
     async def test_legacy_supervision_is_not_mixed_into_default_routines(self):
+        await routine_schedule.save_item(datetime(2026, 11, 7).date(), "weekly", {"content": "晚间整理", "start": "21:30", "end": "22:00"})
         for stype, when, content, status in (
             ("monitor", "09:40", "上午监督任务", "triggered"),
             ("monitor", "11:30", "取消的监督任务", "cancelled"),
@@ -206,7 +214,7 @@ class SharedTimelineTests(unittest.IsolatedAsyncioTestCase):
         calendar = importlib.import_module("schedule_timeline")
         now = datetime(2026, 11, 7, 19, 45)
         result = await calendar.build_routine_prompt(now=now)
-        self.assertIn("下一项：21:30—22:00 洗漱｜默认安排", result)
+        self.assertIn("下一项：21:30—22:00 晚间整理｜默认安排", result)
         self.assertNotIn("ref=", result)
         for title in ("上午监督任务", "取消的监督任务", "过期的监督记录", "晚间监督任务", "按需查询"):
             self.assertNotIn(title, result)

@@ -77,7 +77,7 @@ async def _default_binding_route() -> dict[str, str]:
     async with get_db() as db:
         private_cur = await db.execute("SELECT id, updated_at FROM conversations ORDER BY updated_at DESC LIMIT 1")
         private_row = await private_cur.fetchone()
-        room_cur = await db.execute("SELECT id, updated_at FROM chatroom_rooms ORDER BY updated_at DESC LIMIT 1")
+        room_cur = await db.execute("SELECT id, updated_at FROM chatroom_rooms WHERE type IN ('group','connor_1v1') ORDER BY updated_at DESC LIMIT 1")
         room_row = await room_cur.fetchone()
 
         route = choose_latest_binding_route(

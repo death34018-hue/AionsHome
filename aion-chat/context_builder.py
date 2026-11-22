@@ -17,7 +17,7 @@ from schedule_timeline import build_routine_prompt
 from luckin import LUCKIN_CMD_PATTERN
 from song_gen import SONG_CMD_PATTERN
 from compositions import COMPOSE_CMD_PATTERN
-from chat_web_cards import BLOCK as WEB_CARD_BLOCK
+from chat_web_cards import strip_drawings
 from wechat_bridge import WECHAT_MESSAGE_PATTERN
 from web_search import WEB_EXTRACT_CMD_PATTERN, WEB_SEARCH_CMD_PATTERN
 from capabilities import (
@@ -32,7 +32,7 @@ from rps import RPS_COMMAND_PATTERN
 from activity import get_device_context_for_prompt
 from memory import (
     instant_digest, recall_memories, build_surfacing_memories,
-    fetch_source_details, format_recalled_memories_for_prompt,
+    fetch_source_details, format_recalled_memories_for_prompt, chat_source_label,
 )
 
 # ── 工具指令正则（供调用方做后处理用，集中定义） ──
@@ -71,7 +71,6 @@ KITCHEN_CMD_PATTERN = re.compile(r'\[KITCHEN(?:_CARD)?\s*[:：][^\]]*\]', re.I)
 
 # 所有需要从 AI 回复中剥离的工具指令正则列表（TTS、保存时统一清理）
 _ALL_CMD_PATTERNS = [
-    WEB_CARD_BLOCK,
     MUSIC_CMD_PATTERN, MOMENT_CMD_PATTERN, MEMORY_CMD_PATTERN, WISH_CMD_PATTERN,
     ACTIVITY_CHECK_PATTERN, SELFIE_CMD_PATTERN, DRAW_CMD_PATTERN, SONG_CMD_PATTERN, COMPOSE_CMD_PATTERN,
     POI_SEARCH_PATTERN, TOY_CMD_PATTERN, SVAKOM_CMD_PATTERN, ANKNI_CMD_PATTERN, PET_CMD_PATTERN,
@@ -94,6 +93,10 @@ def extract_image_command(text: str) -> tuple[str, str, bool]:
 
 def strip_tool_commands(text: str) -> str:
     """从文本中移除所有工具指令标记，返回干净文本（用于 TTS 和保存）"""
+    if "[伙伴私聊" in text:
+        from peer_dm import extract_peer_dm
+        text, _ = extract_peer_dm(text)
+    text = strip_drawings(text)
     for pat in _ALL_CMD_PATTERNS:
         text = pat.sub("", text)
     if VIDEO_CALL_CMD in text:
@@ -740,10 +743,16 @@ def _merged_timeline_sources(
         sources.append((
             "private", "role", "FROM messages", conditions, params,
         ))
-    elif who == "connor":
-        created_at = timeline_created_at_sql("m.sender", "m.")
-        conditions = ["r.type = 'connor_1v1'"]
-        params = []
+    room_sources = [("group", "group"), ("peer_dm", "peer_dm")]
+    if who == "connor":
+        room_sources.append(("private", "connor_1v1"))
+    created_at = timeline_created_at_sql("m.sender", "m.")
+    for source, room_type in room_sources:
+        conditions = ["r.type = ?"]
+        params = [room_type]
+        if room_id and source == "group":
+            conditions.append("m.room_id=?")
+            params.append(room_id)
         if since_ts is not None:
             conditions.append(f"({created_at}) >= ?")
             params.append(since_ts)
@@ -751,26 +760,9 @@ def _merged_timeline_sources(
             conditions.append(f"({created_at}) <= ?")
             params.append(until_ts)
         sources.append((
-            "private", "m.sender", "FROM chatroom_messages m "
+            source, "m.sender", "FROM chatroom_messages m "
             "JOIN chatroom_rooms r ON r.id = m.room_id", conditions, params,
         ))
-
-    conditions = ["r.type = 'group'"]
-    created_at = timeline_created_at_sql("m.sender", "m.")
-    params = []
-    if room_id:
-        conditions.append("m.room_id=?")
-        params.append(room_id)
-    if since_ts is not None:
-        conditions.append(f"({created_at}) >= ?")
-        params.append(since_ts)
-    if until_ts is not None:
-        conditions.append(f"({created_at}) <= ?")
-        params.append(until_ts)
-    sources.append((
-        "group", "m.sender", "FROM chatroom_messages m "
-        "JOIN chatroom_rooms r ON r.id = m.room_id", conditions, params,
-    ))
     return sources
 
 
@@ -1002,6 +994,8 @@ def render_merged_timeline(
             "不要输出说话人标签，也不要替其他人续写。"
         ),
     }]
+    if "peer_dm" in sources:
+        history[0]["content"] += f"{ai_name}与{connor_name}私聊时只有双方在场，和{user_name}说话时请记得哪些事已经告诉过对方。"
     current_source = None
     pending_scene_marker = ""   # 待并入下一条消息内容的场景切换提示
 
@@ -1035,7 +1029,8 @@ def render_merged_timeline(
         if sender in ("assistant", "aion", "connor"):
             for att in message_attachments:
                 if isinstance(att, dict) and att.get('type') == 'web_card' and is_capability_enabled('web_cards'):
-                    content = (content + '\n[送了一张互动网页：' + str(att.get('title') or '小网页')[:60] + ']').strip()
+                    kind = '小动画' if att.get('format') == 'svg' else '互动网页'
+                    content = (content + f'\n[送了一个{kind}：' + str(att.get('title') or kind)[:60] + ']').strip()
             ai_images = [a for a in message_attachments if _is_timeline_image_attachment(a)]
             if ai_images:
                 content = (content + f"\n[发送了{len(ai_images)}张图片]").strip()
@@ -1062,7 +1057,7 @@ def render_merged_timeline(
         if has_mixed and not is_family and source != current_source:
             if current_source is not None:
                 # 第二次及以后的切换才需要明示，第一次直接由首条消息的 [群聊/私聊] meta 表明即可
-                label = "群聊" if source == "group" else "私聊"
+                label = chat_source_label(source, ai_name, connor_name)
                 pending_scene_marker = f"（以下切换到{label}场景）\n"
             current_source = source
 
@@ -1080,7 +1075,7 @@ def render_merged_timeline(
         else:
             speaker = sender or "未知说话人"
 
-        if sender in ("user", "assistant", "aion", "connor"):
+        if source != "peer_dm" and sender in ("user", "assistant", "aion", "connor"):
             def _describe_transfer(match: re.Match) -> str:
                 target, amount = match.groups()
                 # 负数是钱包扣除标记，不描述为向对方转账。
@@ -1102,8 +1097,8 @@ def render_merged_timeline(
         role = "user"
 
         # ── 清洗旧 meta 标签 + 添加精确时间戳 ──
-        if has_mixed and not is_family:
-            label = "群聊" if source == "group" else "私聊"
+        if (has_mixed and not is_family) or source == "peer_dm":
+            label = chat_source_label(source, ai_name, connor_name)
             content = append_message_meta(content, msg.get("created_at"), label)
         else:
             content = append_message_meta(content, msg.get("created_at"))
@@ -1115,6 +1110,8 @@ def render_merged_timeline(
 
         # API roles are all user here; retain the real speaker for attachment lifetime.
         entry = {"role": role, "content": content, "_timeline_sender": msg["sender"]}
+        if source == "peer_dm":
+            entry["_timeline_source"] = source
         if is_family:
             entry["_family_dynamic"] = True
 

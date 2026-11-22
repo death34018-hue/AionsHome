@@ -9,9 +9,6 @@ from antigravity_cli import CHAT_WORKSPACE, _process_options, find_binary
 from generation_control import terminate_process_tree
 
 
-POLL_SECONDS = 300
-
-
 class UsageError(Exception):
     pass
 
@@ -75,8 +72,14 @@ class UsageMonitor:
         self.query = query
         self.source = source
         self.snapshot = {"groups": [], "updated_at": None, "error": None}
+        self._in_flight = None
 
     async def refresh(self):
+        if self._in_flight is None or self._in_flight.done():
+            self._in_flight = asyncio.create_task(self._read_quota())
+        await asyncio.shield(self._in_flight)
+
+    async def _read_quota(self):
         try:
             groups = await self.query()
         except UsageError as exc:
@@ -88,13 +91,5 @@ class UsageMonitor:
             self.snapshot = {
                 "groups": groups, "updated_at": datetime.now(timezone.utc).isoformat(), "error": None,
             }
-
-    async def run(self):
-        loop = asyncio.get_running_loop()
-        while True:
-            due = loop.time() + POLL_SECONDS
-            await self.refresh()
-            await asyncio.sleep(max(0, due - loop.time()))
-
 
 monitor = UsageMonitor(query_usage, "AGY")

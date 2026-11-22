@@ -331,7 +331,7 @@ body.theater-page[data-theme="dark"] .input-box {
   border-top-color: var(--border);
 }
 body.theater-page[data-theme="dark"] .input-row textarea,
-body.theater-page[data-theme="dark"] .persona-modal input,
+body.theater-page[data-theme="dark"] .persona-modal input:not([type="checkbox"]),
 body.theater-page[data-theme="dark"] .persona-modal select,
 body.theater-page[data-theme="dark"] .persona-modal textarea,
 body.theater-page[data-theme="dark"] .config-popup select {

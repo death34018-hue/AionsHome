@@ -2317,17 +2317,31 @@ public class AionPushService extends Service {
         pushReplayCall = null;
     }
 
-    private String pushSyncKey(String endpoint) {
-        return "push-sync-v1:" + java.net.URI.create(endpoint).getAuthority();
+    // Home WiFi, Tailscale and Cloudflare reach the same server and its single
+    // sync_seq stream, so they share one checkpoint.
+    private static final String PUSH_SYNC_KEY = "push-sync-v2";
+
+    private void savePushSync(PushMessageSync state) throws Exception {
+        new SharedJsonStore(this).put(PUSH_SYNC_KEY, state.snapshot());
     }
 
-    private void savePushSync(String endpoint, PushMessageSync state) throws Exception {
-        new SharedJsonStore(this).put(pushSyncKey(endpoint), state.snapshot());
+    private String loadPushSync(String endpoint) {
+        SharedJsonStore store = new SharedJsonStore(this);
+        String saved = store.get(PUSH_SYNC_KEY);
+        if (!saved.isEmpty()) return saved;
+        // Migrate the per-address v1 checkpoints by keeping the newest one.
+        String[] urls = {endpoint, LauncherActivity.URL_HOME,
+                LauncherActivity.URL_CLOUDFLARE, LauncherActivity.URL_OUTDOOR};
+        String[] legacy = new String[urls.length];
+        for (int i = 0; i < urls.length; i++) {
+            legacy[i] = store.get("push-sync-v1:" + java.net.URI.create(urls[i]).getAuthority());
+        }
+        return PushMessageSync.newest(legacy);
     }
 
     private void beginMessageReplay(int generation, String endpoint) {
         if (!isCurrentPushSession(generation, endpoint)) return;
-        PushMessageSync state = new PushMessageSync(new SharedJsonStore(this).get(pushSyncKey(endpoint)));
+        PushMessageSync state = new PushMessageSync(loadPushSync(endpoint));
         pushSyncState = state;
         pushSyncGeneration = generation;
         pushReplayDelay = 3000;
@@ -2340,7 +2354,7 @@ public class AionPushService extends Service {
             try {
                 pushSyncState.acceptLive(event,
                         (message, notify) -> handleMessage(message.toString(), notify, endpoint));
-                savePushSync(endpoint, pushSyncState);
+                savePushSync(pushSyncState);
                 if (pushSyncState.needsReplay()) scheduleMessageReplay(generation, endpoint, pushSyncState, 3000);
             } catch (Exception error) {
                 Log.w(TAG, "Unable to save push sync progress", error);
@@ -2390,7 +2404,7 @@ public class AionPushService extends Service {
                     if (!state.initialized() || page.optBoolean("reset_required")) {
                         state.resetTo(page.optLong("latest_seq"));
                         state.finishReplay();
-                        savePushSync(endpoint, state);
+                        savePushSync(state);
                         return;
                     }
                     JSONArray events = page.optJSONArray("events");
@@ -2398,7 +2412,7 @@ public class AionPushService extends Service {
                         state.acceptReplay(events.getJSONObject(i),
                                 (message, notify) -> handleMessage(message.toString(), notify, endpoint));
                     }
-                    savePushSync(endpoint, state);
+                    savePushSync(state);
                     if (!page.optBoolean("has_more")) {
                         state.finishReplay();
                         pushReplayDelay = 3000;
@@ -4240,9 +4254,6 @@ public class AionPushService extends Service {
                         Log.i(TAG, "📱 Screen OFF");
                         screenOn = false;
                         if (phoneContextCollector != null) phoneContextCollector.onScreenOff();
-                        com.aion.chat.supervision.AppSupervisionRuntime runtime =
-                                com.aion.chat.supervision.AppSupervisionRuntime.get();
-                        if (runtime != null) runtime.onScreenOff();
                         lastReportedApp = "__screen_off__";
                         // 在后台线程发送，避免阻塞广播
                         new Thread(() -> {
@@ -4254,18 +4265,10 @@ public class AionPushService extends Service {
                         Log.i(TAG, "📱 Screen ON");
                         screenOn = true;
                         if (phoneContextCollector != null) phoneContextCollector.startForScreenOn();
-                        com.aion.chat.supervision.AppSupervisionRuntime screenOnRuntime =
-                                com.aion.chat.supervision.AppSupervisionRuntime.get();
-                        if (screenOnRuntime != null) screenOnRuntime.onScreenOn();
                         lastReportedApp = "__screen_on__";
                         new Thread(() -> {
                             postActivityToServer("screen_on");
                         }, "ScreenOn").start();
-                        break;
-                    case Intent.ACTION_USER_PRESENT:
-                        com.aion.chat.supervision.AppSupervisionRuntime userPresentRuntime =
-                                com.aion.chat.supervision.AppSupervisionRuntime.get();
-                        if (userPresentRuntime != null) userPresentRuntime.onUserPresent();
                         break;
                 }
             }
@@ -4273,7 +4276,6 @@ public class AionPushService extends Service {
         IntentFilter filter = new IntentFilter();
         filter.addAction(Intent.ACTION_SCREEN_OFF);
         filter.addAction(Intent.ACTION_SCREEN_ON);
-        filter.addAction(Intent.ACTION_USER_PRESENT);
         registerReceiver(screenReceiver, filter);
         Log.i(TAG, "📱 Screen receiver registered");
     }

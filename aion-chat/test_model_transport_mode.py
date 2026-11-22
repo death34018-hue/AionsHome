@@ -128,8 +128,7 @@ class ModelTransportSettingsApiTest(unittest.IsolatedAsyncioTestCase):
                 ("Codex-5.6-Sol", {"provider": "codex_cli"}),
                 ("relay", {"provider": "custom_openai"}),
             ]),
-        ), patch.dict(config.MODELS, {"relay": {"provider": "custom_openai"}}        ), patch.object(settings_routes.antigravity_cli, "discover_models", new=AsyncMock(return_value=[])), \
-                patch.object(settings_routes, "replace_antigravity_models"):
+        ), patch.dict(config.MODELS, {"relay": {"provider": "custom_openai"}}        ), patch.object(settings_routes.antigravity_cli, "catalog_due", return_value=False):
             rows = await settings_routes.list_models()
 
         self.assertEqual(

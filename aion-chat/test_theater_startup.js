@@ -8,11 +8,11 @@ const studio = fs.readFileSync(path.join(__dirname, 'static/theater-studio.js'),
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const pending = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
-function initHarness(api, storage = new Map()) {
+function initHarness(api, storage = new Map(), window = {}) {
   const elements = new Map();
   const calls = [];
   const context = vm.createContext({
-    api, models: [], personas: [], conversations: [], currentConvId: null,
+    window, api, models: [], personas: [], conversations: [], currentConvId: null,
     ttsEnabled: false, ttsVoice: '',
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     $: id => { if (!elements.has(id)) elements.set(id, { value: '', innerHTML: '' }); return elements.get(id); },
@@ -26,27 +26,44 @@ function initHarness(api, storage = new Map()) {
   return { context, elements, calls };
 }
 
-test('opening the second novel moves it first and restores it on the next visit', async () => {
-  const storage = new Map();
+test('opening the second novel moves it first and restores it on the next visit from any address', async () => {
+  const lanStorage = new Map();
+  const server = { last: null, progress: {} };
   let ids = ['old', 'reading'];
   const api = async (_, url) => url === '/api/theater/conversations' ? ids.map(id => ({ id })) : [];
-  const openPage = async () => {
-    const { context } = initHarness(api, storage);
+  const openPage = async (storage = lanStorage) => {
+    const window = { theaterLastConversation: async () => server.last };
+    const { context } = initHarness(api, storage, window);
     Object.assign(context, {
-      selectionToken: 0, performance, modes: new Map(), novel: () => true,
-      request: async () => ({ book: { mode: 'novel' }, chapters: [] }),
+      selectionToken: 0, performance, modes: new Map(), novel: () => true, base: '/api/theater/studio',
+      setTimeout: () => 1, clearTimeout() {},
+      fetch: async (url, options) => {
+        const cid = url.split('/').at(-2), body = JSON.parse(options.body);
+        server.progress[cid] = body;
+        if (body.book) server.last = cid;
+        return { ok: true };
+      },
+      request: async path => ({ book: { mode: 'novel' }, chapters: [{ id: 'one' }, { id: 'two' }],
+        progress: server.progress[path.split('/').at(-1)] }),
       closeSidebar() {}, modeUI() {}, renderNovel() {}, showToast(message) { throw Error(message); },
     });
+    vm.runInContext(studio.slice(studio.indexOf('  function setPlanningView('), studio.indexOf('  function readerSize(')), context);
     vm.runInContext(studio.slice(studio.indexOf('  selectConv = async'), studio.indexOf('  renderMessages = function')), context);
     await context.init();
     return context;
   };
   const first = await openPage();
   await first.selectConv('reading');
+  first.selectChapter = null;
+  vm.runInContext("selected='two'; setPlanningView(false)", first);
   assert.equal(first.conversations[0].id, 'reading');
   const reopened = await openPage();
   assert.equal(reopened.currentConvId, 'reading');
   assert.equal(reopened.conversations[0].id, 'reading');
+  const remote = await openPage(new Map());
+  assert.equal(remote.currentConvId, 'reading', 'another address opens the last story');
+  assert.equal(remote.selected, 'two', 'and the last chapter');
+  assert.equal(remote.planningView, false);
   ids = ['old'];
   assert.equal((await openPage()).currentConvId, 'old', 'a deleted story falls back to the first available one');
 });
@@ -87,7 +104,7 @@ test('studio opens stories before library metadata and names finish loading', as
   const library = pending(), names = pending();
   let opened = false, rerenders = 0;
   const context = vm.createContext({
-    mount() {}, action: fn => fn(), request: () => library.promise, api: () => names.promise,
+    window: {}, mount() {}, action: fn => fn(), request: () => library.promise, api: () => names.promise,
     modes: new Map(), discussionNames: {}, currentConvId: null,
     async init() { opened = true; context.currentConvId = 'story'; },
     renderConvList() {}, novel: () => true, renderNovel() { rerenders++; },

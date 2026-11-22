@@ -42,10 +42,17 @@ public final class TtsAudioBridge {
     public void prefetch(String playbackUrl) {
         webView.post(() -> {
             String url = TtsAudioUrlResolver.resolve(webView.getUrl(), playbackUrl);
-            if (url != null && java.net.URI.create(url).getPath().startsWith("/api/tts/audio/")) {
+            if (url != null && usesLocalCopy(url)) {
                 MediaCacheStore.shared(context).loadAudio(url, audioHeaders(url), true, file -> {});
             }
         });
+    }
+
+    /** Short replayable clips play from a host-independent local copy. */
+    static boolean usesLocalCopy(String url) {
+        String path = java.net.URI.create(url).getPath();
+        return path != null && (path.startsWith("/api/tts/audio/")
+                || path.startsWith("/api/theater/studio/audio/"));
     }
 
     private Map<String, String> audioHeaders(String url) {
@@ -226,7 +233,7 @@ public final class TtsAudioBridge {
 
     private void preparePlayer(String playerId, MediaPlayer player, String resolvedUrl, boolean autoPlay) {
         Map<String, String> headers = audioHeaders(resolvedUrl);
-        if (java.net.URI.create(resolvedUrl).getPath().startsWith("/api/tts/audio/")) {
+        if (usesLocalCopy(resolvedUrl)) {
             MediaCacheStore.shared(context).loadAudio(resolvedUrl, headers, false, file -> webView.post(() -> {
                 if (players.get(playerId) != player) return;
                 prepareSource(playerId, player, resolvedUrl, autoPlay, headers, file);

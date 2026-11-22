@@ -80,7 +80,7 @@ assert.match(family, /class="role-config-label">配置<span class="role-config-a
 assert.match(family, /<div class="settings" id="settings_\$\{role\.actor\}" hidden>/);
 assert.doesNotMatch(family, /配置与操作/);
 assert.match(family, /下次随机唤醒/);
-assert.match(family, /无新消息后随机间隔/);
+assert.match(family, /随机唤醒间隔/);
 assert.doesNotMatch(family, /<div class="packet">/);
 assert.doesNotMatch(family, /状态包历史/);
 assert.doesNotMatch(family, /醒来目的/);
@@ -99,9 +99,16 @@ const baseEvent = {kind: 'memory_compression', title: '整理了那天的记忆'
 const withoutReflection = renderContext.renderTimelineEvent(baseEvent, 0);
 assert.match(withoutReflection, /整理了那天的记忆/);
 assert.doesNotMatch(withoutReflection, /event-reflection/);
-const withReflection = renderContext.renderTimelineEvent({...baseEvent, reflection: '<img src=x onerror=alert(1)>'}, 0);
-assert.match(withReflection, /event-reflection/);
-assert.match(withReflection, /&lt;img/);
-assert.doesNotMatch(withReflection, /<img/);
+const withReflection = renderContext.renderTimelineEvent({
+  ...baseEvent,
+  reflection: '那段死循环还没来得及跑',
+  detail: '那段死循环还没来得及跑\n\n整理了 3 条记忆。',
+}, 0);
+assert.match(withReflection, /整理了那天的记忆/);
+assert.doesNotMatch(withReflection, /event-reflection/);
+assert.doesNotMatch(withReflection, /那段死循环还没来得及跑/);
+const escapedTitle = renderContext.renderTimelineEvent({kind: 'memory_compression', title: '<img src=x onerror=alert(1)>'}, 0);
+assert.match(escapedTitle, /&lt;img/);
+assert.doesNotMatch(escapedTitle, /<img/);
 
 console.log('family dynamics UI contract passed');

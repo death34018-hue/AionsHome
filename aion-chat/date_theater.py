@@ -623,6 +623,7 @@ async def list_chat_targets(db, *, private_label: str) -> list[dict]:
         SELECT r.id, r.title, r.type AS room_type, r.updated_at,
                (SELECT MAX(m.created_at) FROM chatroom_messages m WHERE m.room_id=r.id AND m.sender='user') AS last_user_at
         FROM chatroom_rooms r
+        WHERE r.type IN ('group','connor_1v1')
         ORDER BY r.updated_at DESC
         """
     )
@@ -706,7 +707,9 @@ async def resolve_sync_target(
     if target_type == "chatroom":
         if not target_id:
             raise ValueError("sync target not found")
-        cur = await db.execute("SELECT id, title, type FROM chatroom_rooms WHERE id=?", (target_id,))
+        cur = await db.execute(
+            "SELECT id, title, type FROM chatroom_rooms WHERE id=? AND type IN ('group','connor_1v1')", (target_id,),
+        )
         row = await cur.fetchone()
         if not row:
             raise ValueError("sync target not found")

@@ -2,8 +2,21 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import aiosqlite
+
 import autonomy
 import camera
+
+
+class _DbContext:
+    def __init__(self, db):
+        self.db = db
+
+    async def __aenter__(self):
+        return self.db
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
 
 class IndependentAutonomyTests(unittest.IsolatedAsyncioTestCase):
@@ -148,10 +161,10 @@ class IndependentAutonomyTests(unittest.IsolatedAsyncioTestCase):
         monitor_context = camera.MonitorPromptContext(
             image_result=camera.MonitorImageResult(status="unavailable", source="device"),
         )
-        with patch.object(autonomy.time, "time", return_value=1_600), \
+        with patch.object(autonomy.time, "time", return_value=2_000), \
              patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value=timer)), \
-             patch.object(autonomy, "_latest_user_message_ts", new=AsyncMock(return_value=1_000)), \
-             patch.object(autonomy, "refresh_actor_wake_for_user", new=AsyncMock(return_value=False)), \
+             patch.object(autonomy, "_latest_user_message_ts_for_actor", new=AsyncMock(return_value=1_000)), \
+             patch.object(autonomy, "defer_actor_wake", new=AsyncMock()) as defer, \
              patch.object(autonomy, "claim_due_wake", new=AsyncMock(return_value=timer)), \
              patch.object(autonomy, "_capture_autonomy_monitor_context", new=AsyncMock(return_value=monitor_context)), \
              patch.object(autonomy, "_save_autonomy_monitor_card", new=AsyncMock()), \
@@ -160,16 +173,16 @@ class IndependentAutonomyTests(unittest.IsolatedAsyncioTestCase):
             result = await manager.run_actor_once("aion", manual=False)
 
         self.assertTrue(result["ok"])
-        run.assert_awaited_once_with("aion", manual=False, idle_minutes=10)
-        schedule.assert_awaited_once_with("aion", anchor_at=1_600)
+        defer.assert_not_awaited()
+        run.assert_awaited_once_with("aion", manual=False, idle_minutes=16, wake_id="1300")
+        schedule.assert_awaited_once_with("aion", anchor_at=2_000)
 
     async def test_enabled_actor_without_a_timer_gets_an_initial_countdown(self):
         manager = autonomy.IdleAutonomyManager()
         config = {"enabled": True, "timer_started_at": None, "next_wake_at": None}
         with patch.object(autonomy.time, "time", return_value=2_000), \
              patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value=config)), \
-             patch.object(autonomy, "_latest_user_message_ts", new=AsyncMock(return_value=0)), \
-             patch.object(autonomy, "refresh_actor_wake_for_user", new=AsyncMock(return_value=False)), \
+             patch.object(autonomy, "_latest_user_message_ts_for_actor", new=AsyncMock(return_value=0)), \
              patch.object(autonomy, "schedule_actor_wake", new=AsyncMock(return_value={
                  **config, "timer_started_at": 2_000, "next_wake_at": 5_600,
              })) as schedule, \
@@ -225,6 +238,8 @@ class IndependentAutonomyTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertEqual(1, len(monitor_messages))
         self.assertIn("本次自主醒来实时环境", monitor_messages[0]["content"])
+        self.assertNotIn("现实变化可以让你放弃原计划", monitor_messages[0]["content"])
+        self.assertIn("不影响你安静做自己的事", monitor_messages[0]["content"])
 
     async def test_due_wake_captures_and_saves_monitor_card_before_action(self):
         manager = autonomy.IdleAutonomyManager()
@@ -241,15 +256,14 @@ class IndependentAutonomyTests(unittest.IsolatedAsyncioTestCase):
         async def save_card(_actor, _context):
             order.append("card")
 
-        async def run(_actor, *, manual=False, idle_minutes=0):
+        async def run(_actor, *, manual=False, idle_minutes=0, wake_id=""):
             order.append("action")
             self.assertIs(monitor_context, autonomy._AUTONOMY_WAKE_MONITOR_CONTEXT.get())
             return {"ok": True, "actor": _actor, "action": "rest", "result": {}}
 
-        with patch.object(autonomy.time, "time", return_value=1_600), \
+        with patch.object(autonomy.time, "time", return_value=2_000), \
              patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value=timer)), \
-             patch.object(autonomy, "_latest_user_message_ts", new=AsyncMock(return_value=1_000)), \
-             patch.object(autonomy, "refresh_actor_wake_for_user", new=AsyncMock(return_value=False)), \
+             patch.object(autonomy, "_latest_user_message_ts_for_actor", new=AsyncMock(return_value=1_000)), \
              patch.object(autonomy, "claim_due_wake", new=AsyncMock(return_value=timer)), \
              patch.object(autonomy, "_capture_autonomy_monitor_context", new=capture), \
              patch.object(autonomy, "_save_autonomy_monitor_card", new=save_card), \
@@ -264,12 +278,13 @@ class IndependentAutonomyTests(unittest.IsolatedAsyncioTestCase):
     async def test_disable_after_claim_stops_before_monitor_capture_and_action(self):
         manager = autonomy.IdleAutonomyManager()
         timer = {"actor": "aion", "enabled": True, "timer_started_at": 1_000, "next_wake_at": 1_300}
-        with patch.object(
-            autonomy,
-            "get_actor_config",
-            new=AsyncMock(side_effect=[timer, {"enabled": False}]),
-        ), patch.object(autonomy, "_latest_user_message_ts", new=AsyncMock(return_value=1_000)), \
-             patch.object(autonomy, "refresh_actor_wake_for_user", new=AsyncMock(return_value=False)), \
+        with patch.object(autonomy.time, "time", return_value=2_000), \
+             patch.object(
+                 autonomy,
+                 "get_actor_config",
+                 new=AsyncMock(side_effect=[timer, {"enabled": False}]),
+             ), \
+             patch.object(autonomy, "_latest_user_message_ts_for_actor", new=AsyncMock(return_value=1_000)), \
              patch.object(autonomy, "claim_due_wake", new=AsyncMock(return_value=timer)), \
              patch.object(autonomy, "_capture_autonomy_monitor_context", new=AsyncMock()) as capture, \
              patch.object(autonomy, "_run_actor_once", new=AsyncMock()) as run, \
@@ -279,16 +294,16 @@ class IndependentAutonomyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("disabled", result["skipped"])
         capture.assert_not_awaited()
         run.assert_not_awaited()
+
     async def test_failed_wake_still_starts_the_next_countdown(self):
         manager = autonomy.IdleAutonomyManager()
         timer = {"actor": "aion", "enabled": True, "timer_started_at": 1_000, "next_wake_at": 1_300}
         monitor_context = camera.MonitorPromptContext(
             image_result=camera.MonitorImageResult(status="unavailable", source="device"),
         )
-        with patch.object(autonomy.time, "time", return_value=1_600), \
+        with patch.object(autonomy.time, "time", return_value=2_000), \
              patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value=timer)), \
-             patch.object(autonomy, "_latest_user_message_ts", new=AsyncMock(return_value=1_000)), \
-             patch.object(autonomy, "refresh_actor_wake_for_user", new=AsyncMock(return_value=False)), \
+             patch.object(autonomy, "_latest_user_message_ts_for_actor", new=AsyncMock(return_value=1_000)), \
              patch.object(autonomy, "claim_due_wake", new=AsyncMock(return_value=timer)), \
              patch.object(autonomy, "_capture_autonomy_monitor_context", new=AsyncMock(return_value=monitor_context)), \
              patch.object(autonomy, "_save_autonomy_monitor_card", new=AsyncMock()), \
@@ -299,28 +314,198 @@ class IndependentAutonomyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual("action failed", result["error"])
-        schedule.assert_awaited_once_with("aion", anchor_at=1_600)
+        schedule.assert_awaited_once_with("aion", anchor_at=2_000)
 
-    async def test_user_message_during_wake_becomes_next_timer_anchor(self):
+    async def test_mid_interval_user_chat_does_not_reset_future_wake(self):
         manager = autonomy.IdleAutonomyManager()
-        timer = {"actor": "connor", "enabled": True, "timer_started_at": 1_000, "next_wake_at": 1_300}
+        timer = {"actor": "connor", "enabled": True, "timer_started_at": 1_000, "next_wake_at": 5_000}
+        with patch.object(autonomy.time, "time", return_value=2_000), \
+             patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value=timer)), \
+             patch.object(autonomy, "_latest_user_message_ts_for_actor", new=AsyncMock(return_value=1_900)), \
+             patch.object(autonomy, "schedule_actor_wake", new=AsyncMock()) as schedule, \
+             patch.object(autonomy, "defer_actor_wake", new=AsyncMock()) as defer, \
+             patch.object(autonomy, "claim_due_wake", new=AsyncMock()) as claim:
+            result = await manager.run_actor_once("connor", manual=False)
+
+        self.assertEqual("not due", result["skipped"])
+        schedule.assert_not_awaited()
+        defer.assert_not_awaited()
+        claim.assert_not_awaited()
+
+    async def test_due_wake_defers_to_chat_quiet_window_when_user_recently_chatted(self):
+        manager = autonomy.IdleAutonomyManager()
+        timer = {"actor": "connor", "enabled": True, "timer_started_at": 1_000, "next_wake_at": 1_950}
+        with patch.object(autonomy.time, "time", return_value=2_000), \
+             patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value=timer)), \
+             patch.object(autonomy, "_latest_user_message_ts_for_actor", new=AsyncMock(return_value=1_500)), \
+             patch.object(autonomy, "defer_actor_wake", new=AsyncMock()) as defer, \
+             patch.object(autonomy, "claim_due_wake", new=AsyncMock()) as claim, \
+             patch.object(autonomy, "schedule_actor_wake", new=AsyncMock()) as schedule:
+            result = await manager.run_actor_once("connor", manual=False)
+
+        expected_until = 1_500 + autonomy.CHAT_QUIET_MINUTES * 60
+        self.assertEqual("active_chat_deferred", result["skipped"])
+        self.assertEqual(expected_until, result["deferred_until"])
+        defer.assert_awaited_once_with("connor", wake_at=expected_until)
+        claim.assert_not_awaited()
+        schedule.assert_not_awaited()
+
+    async def test_actor_chat_timestamps_are_isolated_for_private_and_shared_for_group(self):
+        async with aiosqlite.connect(":memory:") as db:
+            await db.executescript("""
+                CREATE TABLE messages(id TEXT PRIMARY KEY, conv_id TEXT, role TEXT, content TEXT, created_at REAL);
+                CREATE TABLE chatroom_rooms(id TEXT PRIMARY KEY, type TEXT, updated_at REAL);
+                CREATE TABLE chatroom_messages(id TEXT PRIMARY KEY, room_id TEXT, sender TEXT, content TEXT, created_at REAL);
+                INSERT INTO chatroom_rooms VALUES('c1', 'connor_1v1', 0), ('g1', 'group', 0);
+                INSERT INTO messages VALUES('m1', 'conv', 'user', '私聊Aion', 2000);
+            """)
+            with patch.object(autonomy, "get_db", side_effect=lambda: _DbContext(db)):
+                self.assertEqual(2_000, await autonomy._latest_user_message_ts_for_actor("aion"))
+                self.assertEqual(0.0, await autonomy._latest_user_message_ts_for_actor("connor"))
+                await db.execute("INSERT INTO chatroom_messages VALUES('cm1', 'c1', 'user', '私聊Connor', 2500)")
+                self.assertEqual(2_000, await autonomy._latest_user_message_ts_for_actor("aion"))
+                self.assertEqual(2_500, await autonomy._latest_user_message_ts_for_actor("connor"))
+                await db.execute("INSERT INTO chatroom_messages VALUES('cm2', 'g1', 'user', '群里喊一声', 3000)")
+                self.assertEqual(3_000, await autonomy._latest_user_message_ts_for_actor("aion"))
+                self.assertEqual(3_000, await autonomy._latest_user_message_ts_for_actor("connor"))
+
+    async def test_overnight_wake_schedules_next_wake_using_configured_interval(self):
+        manager = autonomy.IdleAutonomyManager()
+        timer = {"actor": "connor", "enabled": True, "timer_started_at": 1_000, "next_wake_at": 9_900}
         monitor_context = camera.MonitorPromptContext(
             image_result=camera.MonitorImageResult(status="unavailable", source="device"),
         )
-        with patch.object(autonomy.time, "time", return_value=1_600), \
+        with patch.object(autonomy.time, "time", return_value=10_000), \
              patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value=timer)), \
-             patch.object(autonomy, "_latest_user_message_ts", new=AsyncMock(side_effect=[1_000, 1_500])), \
-             patch.object(autonomy, "refresh_actor_wake_for_user", new=AsyncMock(return_value=False)), \
+             patch.object(autonomy, "_latest_user_message_ts_for_actor", new=AsyncMock(return_value=0.0)), \
+             patch.object(autonomy, "defer_actor_wake", new=AsyncMock()) as defer, \
              patch.object(autonomy, "claim_due_wake", new=AsyncMock(return_value=timer)), \
              patch.object(autonomy, "_capture_autonomy_monitor_context", new=AsyncMock(return_value=monitor_context)), \
              patch.object(autonomy, "_save_autonomy_monitor_card", new=AsyncMock()), \
              patch.object(autonomy, "_run_actor_once", new=AsyncMock(return_value={
-                 "ok": True, "actor": "connor", "action": "rest", "result": {},
+                 "ok": True, "actor": "connor", "action": "web_roam", "result": {},
              })), \
              patch.object(autonomy, "schedule_actor_wake", new=AsyncMock()) as schedule:
-            await manager.run_actor_once("connor", manual=False)
+            result = await manager.run_actor_once("connor", manual=False)
 
-        schedule.assert_awaited_once_with("connor", anchor_at=1_500)
+        self.assertTrue(result["ok"])
+        defer.assert_not_awaited()
+        schedule.assert_awaited_once_with("connor", anchor_at=10_000)
+
+    async def test_rest_enabled_always_at_end_and_disabled_omitted(self):
+        prompts = []
+
+        async def ask(_actor, instruction, **_kwargs):
+            prompts.append(instruction)
+            return {"action": "web_roam", "reason": "逛逛"}
+
+        base_actions = {
+            "private_chat": True,
+            "role_chat": True,
+            "peer_dm": True,
+            "home_dynamics": True,
+            "memory_browse": True,
+            "web_roam": True,
+            "seeky_interaction": True,
+        }
+        with patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value={"actions": {**base_actions, "rest": True}})), \
+             patch.object(autonomy, "_is_idle_web_roam_available", return_value=True), \
+             patch.object(autonomy, "_recent_actor_actions", new=AsyncMock(return_value=[])), \
+             patch.object(autonomy, "recent_niche_index", new=AsyncMock(return_value=[])), \
+             patch.object(autonomy, "_ask_actor_json", new=ask):
+            await autonomy._select_action("connor", manual=False)
+
+        self.assertIn("- rest:", prompts[0])
+        option_lines = [line for line in prompts[0].splitlines() if line.startswith("- ")]
+        self.assertTrue(option_lines[-1].startswith("- rest:"))
+
+        prompts.clear()
+        with patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value={"actions": {**base_actions, "rest": False}})), \
+             patch.object(autonomy, "_is_idle_web_roam_available", return_value=True), \
+             patch.object(autonomy, "_recent_actor_actions", new=AsyncMock(return_value=[])), \
+             patch.object(autonomy, "recent_niche_index", new=AsyncMock(return_value=[])), \
+             patch.object(autonomy, "_ask_actor_json", new=ask):
+            await autonomy._select_action("connor", manual=False)
+
+        self.assertNotIn("- rest:", prompts[0])
+
+    async def test_weighted_sampling_limits_automatic_menu_and_avoids_back_to_back_repeat(self):
+        enabled = [
+            "rest", "private_chat", "role_chat", "web_roam", "book_read",
+            "home_dynamics", "memory_browse", "seeky_interaction", "peer_dm",
+        ]
+        recent = [
+            {"action": "book_read", "title": "Connor读了一段书", "created_at": 1_700_000_000},
+            {"action": "memory_browse", "title": "Connor查看了记忆库", "created_at": 1_699_990_000},
+        ]
+        for _ in range(20):
+            auto_offered = autonomy._sample_action_candidates(enabled, recent, manual=False)
+            non_rest = [item for item in auto_offered if item != "rest"]
+            self.assertEqual("rest", auto_offered[-1])
+            self.assertEqual(5, len(non_rest))
+            self.assertEqual(5, len(set(non_rest)))
+            self.assertIn("role_chat", non_rest)
+            self.assertNotIn("book_read", non_rest)
+            quiet_count = sum(1 for item in non_rest if item in autonomy.QUIET_ACTIONS)
+            interactive_count = sum(1 for item in non_rest if item in autonomy.INTERACTIVE_ACTIONS)
+            self.assertEqual(3, quiet_count)
+            self.assertEqual(2, interactive_count)
+
+        manual_offered = autonomy._sample_action_candidates(enabled, recent, manual=True)
+        self.assertEqual(set(enabled), set(manual_offered))
+
+        prompts = []
+        with patch.object(autonomy, "get_actor_config", new=AsyncMock(return_value={"actions": {
+            "rest": True, "web_roam": True, "home_dynamics": True,
+            "memory_browse": True, "seeky_interaction": True, "private_chat": True, "role_chat": True,
+        }})), \
+             patch.object(autonomy, "_is_idle_web_roam_available", return_value=True), \
+             patch.object(autonomy, "_recent_actor_actions", new=AsyncMock(return_value=recent)), \
+             patch.object(autonomy, "recent_niche_index", new=AsyncMock(return_value=[])), \
+             patch.object(autonomy, "_ask_actor_json", new=AsyncMock(side_effect=lambda _a, p: (prompts.append(p), {"action": "web_roam"})[1])):
+            await autonomy._select_action("connor", manual=False)
+
+        self.assertIn("你最近几次自主行动", prompts[0])
+        self.assertIn("Connor读了一段书", prompts[0])
+
+    async def test_role_chat_is_always_offered_when_enabled_without_crowding_out_other_actions(self):
+        quiet_actions = [
+            "web_roam", "book_read", "home_dynamics", "memory_browse", "seeky_interaction",
+        ]
+        recent = [{"action": "role_chat", "title": "Connor在群聊里找Aion主动聊了起来", "created_at": 1_700_000_000}]
+
+        enabled_with_others = ["rest", "private_chat", "wish_pool", "role_chat", *quiet_actions]
+        for _ in range(20):
+            offered = autonomy._sample_action_candidates(enabled_with_others, recent, manual=False)
+            non_rest = [item for item in offered if item != "rest"]
+            self.assertEqual("rest", offered[-1])
+            self.assertEqual(5, len(non_rest))
+            self.assertEqual(5, len(set(non_rest)))
+            self.assertIn("role_chat", non_rest)
+            self.assertEqual(3, sum(1 for item in non_rest if item in autonomy.QUIET_ACTIONS))
+            self.assertEqual(2, sum(1 for item in non_rest if item in autonomy.INTERACTIVE_ACTIONS))
+            self.assertTrue("private_chat" in non_rest or "wish_pool" in non_rest)
+
+        enabled_role_chat_only = ["rest", "role_chat", *quiet_actions]
+        for _ in range(10):
+            offered = autonomy._sample_action_candidates(enabled_role_chat_only, recent, manual=False)
+            non_rest = [item for item in offered if item != "rest"]
+            self.assertEqual("rest", offered[-1])
+            self.assertEqual(4, len(non_rest))
+            self.assertEqual(4, len(set(non_rest)))
+            self.assertIn("role_chat", non_rest)
+            self.assertEqual(3, sum(1 for item in non_rest if item in autonomy.QUIET_ACTIONS))
+            self.assertEqual(1, sum(1 for item in non_rest if item in autonomy.INTERACTIVE_ACTIONS))
+
+        disabled_role_chat = ["rest", "private_chat", "wish_pool", *quiet_actions]
+        for _ in range(20):
+            offered = autonomy._sample_action_candidates(disabled_role_chat, recent, manual=False)
+            non_rest = [item for item in offered if item != "rest"]
+            self.assertEqual("rest", offered[-1])
+            self.assertEqual(4, len(non_rest))
+            self.assertNotIn("role_chat", non_rest)
+            self.assertEqual(3, sum(1 for item in non_rest if item in autonomy.QUIET_ACTIONS))
+            self.assertEqual(1, sum(1 for item in non_rest if item in autonomy.INTERACTIVE_ACTIONS))
 
 
 if __name__ == "__main__":

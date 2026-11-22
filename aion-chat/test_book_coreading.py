@@ -55,12 +55,13 @@ class CoreadingTests(unittest.IsolatedAsyncioTestCase):
         await self.setup_reading()
         await api._save_annotations(self.bid, 0, 1, dict(annotations=[], summary='已经共读过'))
         decision = AsyncMock(side_effect=[
-            {'action': 'book_read', 'book': 1},
+            {'action': 'book_read'},
             {'annotations': [{'p': 0, 'text': '这句有意思'}], 'summary': '留在书页里',
              'share': 'group', 'message': '开场就埋伏笔？', 'quotes': ['x' * 55]},
         ])
         with patch.object(autonomy, 'get_actor_config', AsyncMock(return_value={'actions': {'book_read': True}})), \
              patch.object(autonomy, 'recent_niche_index', AsyncMock(return_value=[])), \
+             patch.object(autonomy, '_recent_actor_actions', AsyncMock(return_value=[])), \
              patch.object(autonomy, '_ask_actor_json', decision), \
              patch.object(autonomy, '_latest_group_room_id', AsyncMock(return_value='group')), \
              patch.object(autonomy, '_save_autonomy_chatroom_message', AsyncMock()) as group, \
@@ -71,7 +72,8 @@ class CoreadingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result['action'], 'book_read')
             self.assertTrue(result['ok'], result)
             self.assertEqual(decision.await_count, 2)
-            self.assertIn('Test', decision.await_args_list[0].args[1])
+            self.assertIn('自主阅读（书架上有 1 本可读', decision.await_args_list[0].args[1])
+            self.assertNotIn('Test', decision.await_args_list[0].args[1])
             self.assertIn('@', group.await_args.args[2])
             self.assertNotIn('x', group.await_args.args[2])
             self.assertIn('刚读完《Test》第1章', group.await_args.kwargs['reading_notice'])
@@ -89,6 +91,40 @@ class CoreadingTests(unittest.IsolatedAsyncioTestCase):
             already_read.assert_not_awaited()
             self.assertEqual(ok.await_count, 2)
         self.assertEqual((await api.get_book(self.bid))['chapters'][0]['read_counts'], {'aion': 2, 'connor': 2})
+
+    async def test_multi_book_shelf_uses_two_step_book_choice(self):
+        import autonomy
+        await self.setup_reading()
+        paragraphs = ['第二本书内容']
+        segments = book._compute_segments(paragraphs)
+        async with fixtures.studio.get_db() as db:
+            await db.execute(
+                "INSERT INTO books(book_id,title,author,total_chapters,import_time) VALUES('book_two','另一本书','作者乙',1,2)"
+            )
+            await db.execute(
+                "INSERT INTO book_chapters(book_id,chapter_index,title,html_content,text_content,paragraphs,char_count,segment_count,segments_meta) "
+                "VALUES('book_two',0,'序章','','第二本书内容',?,?,?,?)",
+                (json.dumps(paragraphs, ensure_ascii=False), 6, len(segments), json.dumps(segments)),
+            )
+            await db.commit()
+        decision = AsyncMock(side_effect=[
+            {'action': 'book_read', 'reason': '想看点别的'},
+            {'book': 2, 'reason': '挑第二本'},
+            {'annotations': [], 'summary': '读完了第二本', 'share': 'none'},
+        ])
+        with patch.object(autonomy, 'get_actor_config', AsyncMock(return_value={'actions': {'book_read': True}})), \
+             patch.object(autonomy, 'recent_niche_index', AsyncMock(return_value=[])), \
+             patch.object(autonomy, '_recent_actor_actions', AsyncMock(return_value=[])), \
+             patch.object(autonomy, '_ask_actor_json', decision), \
+             patch.object(autonomy, '_latest_group_room_id', AsyncMock(return_value=None)), \
+             patch.object(autonomy, 'append_idle_event', AsyncMock()):
+            result = await autonomy._run_actor_once('aion', manual=True)
+        self.assertTrue(result['ok'])
+        self.assertEqual(3, decision.await_count)
+        self.assertNotIn('另一本书', decision.await_args_list[0].args[1])
+        self.assertIn('自主阅读可选的书', decision.await_args_list[1].args[1])
+        self.assertIn('另一本书', decision.await_args_list[1].args[1])
+        self.assertIn(result['result']['title'], {'Test', '另一本书'})
 
     async def test_separate_bookmarks_resume_and_private_share(self):
         import autonomy

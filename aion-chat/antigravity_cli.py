@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -25,13 +26,22 @@ CLI_SETTINGS = Path.home() / '.gemini' / 'antigravity-cli' / 'settings.json'
 CHAT_DENIALS = ('write_file(*)', 'command(*)', 'unsandboxed(*)', 'mcp(*)', 'execute_url(*)')
 _requests = asyncio.Semaphore(1)
 _catalog_lock = asyncio.Lock()
+CATALOG_TTL = 6 * 3600
 _catalog = []
-_catalog_time = 0.0
+_catalog_checked = None  # Last attempt, successful or not.
 _ANSI = re.compile(r'\x1b\[[0-?]*[ -/]*[@-~]')
 
 
 class AntigravityError(RuntimeError):
     pass
+
+
+class _LoginPrompt(Exception):
+    pass
+
+
+# Print mode shows this after a token refresh network error, then opens browser sign-in.
+_LOGIN_PROMPT = b'Waiting for authentication'
 
 
 def require_chat_permissions(settings_path=CLI_SETTINGS):
@@ -103,8 +113,39 @@ def _timeout_seconds(value):
     return max(1, int(match[1]) * {'ms': .001, 's': 1, 'm': 60, 'h': 3600, None: 1}[match[2]])
 
 
-def _process_options():
-    return {'creationflags': subprocess.CREATE_NO_WINDOW} if os.name == 'nt' else {}
+def _process_options(**env):
+    # agy's own updater runs `agy --version` from a detached process, which
+    # opens a terminal window on Windows; update_loop() checks hidden instead.
+    options = {'env': {**os.environ, 'AGY_CLI_DISABLE_AUTO_UPDATE': 'true', **env}}
+    if os.name == 'nt':
+        options['creationflags'] = subprocess.CREATE_NO_WINDOW
+    return options
+
+
+async def _run_update(binary):
+    process = await asyncio.create_subprocess_exec(
+        binary, 'update', stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT, **_process_options(),
+    )
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), 600)
+    except TimeoutError:
+        from generation_control import terminate_process_tree
+        await terminate_process_tree(process)
+        raise
+    # Cancellation leaves a running install alone, like agy's detached updater.
+    if process.returncode:
+        raise AntigravityError(output.decode('utf-8', errors='replace').strip()[-500:] or 'agy update 失败')
+
+
+async def update_loop(interval=24 * 3600):
+    while True:
+        if binary := find_binary():
+            try:
+                await _run_update(binary)
+            except (OSError, AntigravityError) as exc:
+                logging.getLogger(__name__).warning('agy update failed: %s', exc)
+        await asyncio.sleep(interval)
 
 
 def parse_model_catalog(text):
@@ -137,14 +178,22 @@ def parse_model_catalog(text):
     return list({row['model']: row for row in result}.values())
 
 
+def catalog_due():
+    """Refresh every 6 hours; retry a failed read after 5 minutes."""
+    if _catalog_checked is None:
+        return True
+    return time.monotonic() - _catalog_checked >= (CATALOG_TTL if _catalog else 300)
+
+
 async def discover_models(force=False):
-    global _catalog, _catalog_time
+    global _catalog, _catalog_checked
     async with _catalog_lock:
-        if not force and time.monotonic() - _catalog_time < 300:
+        if not force and not catalog_due():
             return list(_catalog)
         binary = find_binary()
         if not binary:
             return []
+        _catalog_checked = time.monotonic()
         process = await asyncio.create_subprocess_exec(
             binary, 'models', stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -157,7 +206,7 @@ async def discover_models(force=False):
             rows = parse_model_catalog(stdout.decode('utf-8', errors='replace'))
             if not rows:
                 raise AntigravityError('AGY 未返回可识别的模型列表，请先完成官方 CLI 登录')
-            _catalog, _catalog_time = rows, time.monotonic()
+            _catalog = rows
             return list(rows)
         finally:
             if process.returncode is None:
@@ -165,10 +214,13 @@ async def discover_models(force=False):
                 await process.wait()
 
 
-async def _read_stderr(reader):
+async def _read_stderr(reader, on_login_prompt=None):
     tail = b''
     while chunk := await reader.read(4096):
         tail = (tail + chunk)[-4096:]
+        if on_login_prompt and _LOGIN_PROMPT in tail:
+            on_login_prompt()
+            on_login_prompt = None
     return tail.decode('utf-8', errors='replace').strip()
 
 
@@ -235,7 +287,19 @@ async def stream_chat(binary, prompt, model, workspace=CHAT_WORKSPACE, timeout='
             yield event
 
 
-async def _stream_chat(binary, prompt, model, workspace, timeout, *, agent=AGENT_NAME, attachment_paths=()):
+async def _stream_chat(*args, **kwargs):
+    """Retry once when a token refresh network error makes agy wait for browser sign-in."""
+    for attempt in range(2):
+        try:
+            async for event in _stream_chat_once(*args, **kwargs):
+                yield event
+            return
+        except _LoginPrompt:
+            if attempt:
+                raise AntigravityError('AGY 登录令牌刷新失败（网络中断），请稍后重试') from None
+
+
+async def _stream_chat_once(binary, prompt, model, workspace, timeout, *, agent=AGENT_NAME, attachment_paths=()):
     """Yield visible deltas and usage; never recover replies from private databases."""
     from generation_control import own_process, terminate_process_tree
 
@@ -246,6 +310,16 @@ async def _stream_chat(binary, prompt, model, workspace, timeout, *, agent=AGENT
         visible = ''
         final = None
         initialized = False
+        login_prompted = False
+
+        def stop_for_login():
+            nonlocal login_prompted
+            login_prompted = True
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+
         try:
             if attachment_paths:
                 image_manifest.write_text(json.dumps(attachment_paths, ensure_ascii=False), encoding='utf-8')
@@ -255,9 +329,9 @@ async def _stream_chat(binary, prompt, model, workspace, timeout, *, agent=AGENT
                 *build_chat_command(binary, model, timeout, agent=agent), cwd=str(workspace),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, limit=8 * 1024 * 1024,
-                env={**os.environ, 'NO_COLOR': '1'}, **_process_options(),
+                **_process_options(NO_COLOR='1'),
             ))
-            stderr_task = asyncio.create_task(_read_stderr(process.stderr))
+            stderr_task = asyncio.create_task(_read_stderr(process.stderr, stop_for_login))
             async with asyncio.timeout(_timeout_seconds(timeout) + 30):
                 payload = {'event': 'user', 'message': {'content': prompt}}
                 process.stdin.write((json.dumps(payload, ensure_ascii=False) + '\n').encode('utf-8'))
@@ -327,8 +401,12 @@ async def _stream_chat(binary, prompt, model, workspace, timeout, *, agent=AGENT
                 stderr = await stderr_task
                 if process.returncode or final is None or not visible:
                     raise AntigravityError(stderr or 'AGY 未收到完整回复，请检查登录、额度和网络')
-        except TimeoutError as exc:
-            raise AntigravityError('AGY 回复超时，请稍后重试') from exc
+        except (OSError, AntigravityError) as exc:  # Includes TimeoutError and broken pipes after kill.
+            if login_prompted:
+                raise _LoginPrompt() from exc
+            if isinstance(exc, TimeoutError):
+                raise AntigravityError('AGY 回复超时，请稍后重试') from exc
+            raise
         finally:
             try:
                 if process is not None:
