@@ -43,6 +43,7 @@ class ChatStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
         from pathlib import Path
         from types import SimpleNamespace
         from ai_providers import CLI_STATUS_PREFIX
+        from peer_dm_wake import WakePeerReply
 
         async def source(*args, **kwargs):
             yield StreamActivity()
@@ -58,7 +59,7 @@ class ChatStreamSafetyTest(unittest.IsolatedAsyncioTestCase):
                 queue = asyncio.Queue()
                 env = {'stream_ai': source, '_stream_connor_model': source, 'kitchen_stream': chat_routes.kitchen_stream,
                        'model_started': lambda: lambda c: None, 'kitchen_state': {}, 'conv_id': 'conv', 'room_id': 'room',
-                       'query_text': '', 'lounge_request_text': '',
+                       'query_text': '', 'lounge_request_text': '', 'peer_reply': WakePeerReply(),
                        'CLI_STATUS_PREFIX': CLI_STATUS_PREFIX, 'StreamActivity': StreamActivity,
                        '_q': queue, 'history': [], 'model_key': 'test', 'usage_meta': {},
                        'body': SimpleNamespace(max_tokens=None, content=''), 'cancel_event': None,
