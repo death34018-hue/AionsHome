@@ -12,7 +12,8 @@ test('remote TTS off stops queued speech and updates playback presence', () => {
     crTtsEnabled: true, crTtsAionVoice: 'a', crTtsConnorVoice: 'c',
     crTtsAcceptAfter: 0, crTtsPlaybackActiveAt: 0,
     chatroomModel: 'a', chatroomConnorModel: 'c', chatroomReplyOrder: 'random', currentRoom: null,
-    applyChatroomNames() {}, crApplyAmbientVoiceConfig() {}, updateHeaderActions() {}, renderRoomList() {},
+    applyChatroomNames() {}, crApplyAmbientVoiceConfig() {}, crApplyRandomModelConfig() {},
+    updateHeaderActions() {}, renderRoomList() {},
     document: {getElementById: () => ({classList: {contains: () => false}})},
     crStopTTS: () => calls.push('stop'), crSendTTSState: () => calls.push('sync'),
   });

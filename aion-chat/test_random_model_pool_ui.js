@@ -30,8 +30,9 @@ test('crLogTitle marks random pool entries with dice icon and model key', () => 
 
 test('chatroom random pool helpers normalize and track selected models', () => {
   const start = chatroomSource.indexOf('function crNormalizeModelList(');
-  const end = chatroomSource.indexOf('function crClearRandomPool(');
-  const tail = chatroomSource.indexOf('// ══════════════════════════════════════════════════\r\n//  房间列表', end);
+  const end = chatroomSource.indexOf('function crClearRandomPool(', start);
+  assert.notEqual(start, -1);
+  assert.ok(end > start);
   const elements = {};
   const context = {
     crAionRandomEnabled: false,
@@ -44,7 +45,7 @@ test('chatroom random pool helpers normalize and track selected models', () => {
     esc: s => String(s),
     document: { getElementById: id => elements[id] || null },
   };
-  vm.runInNewContext(chatroomSource.slice(start, tail), context);
+  vm.runInNewContext(chatroomSource.slice(start, end), context);
 
   assert.deepEqual(
     Array.from(context.crNormalizeModelList([' Model-A ', 'Model-A', '', 'Model-B'])),
